@@ -10,19 +10,19 @@ export default function HeroSection() {
         fill
         priority
         style={{objectFit:"cover"}} 
-        alt="A beautifully set table in a restaurant" 
+        alt="A modern restaurant dashboard shown on a laptop" 
         className="z-0 brightness-[0.4]"
-        data-ai-hint="restaurant dining"
+        data-ai-hint="restaurant management software"
       />
       <div className="relative z-10 p-4 text-white max-w-4xl">
         <h1 className="text-5xl md:text-7xl lg:text-8xl font-bold font-headline mb-4 drop-shadow-lg">
-          Effortless Elegance, Managed Perfectly
+          Streamline Your Restaurant Operations
         </h1>
         <p className="text-lg md:text-2xl mb-8 font-body drop-shadow-md">
-          CuisineFlow brings you a seamless restaurant management experience, from menu to guest.
+          CuisineFlow is the all-in-one platform to manage bookings, tables, customers, and analytics, all in one place.
         </p>
         <Button asChild size="lg" className="text-lg">
-          <Link href="#menu">Explore Our World</Link>
+          <Link href="#features">Discover Features</Link>
         </Button>
       </div>
     </section>

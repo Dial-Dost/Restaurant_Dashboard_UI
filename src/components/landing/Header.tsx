@@ -20,7 +20,7 @@ export default function Header() {
   }, []);
 
   const navLinks = [
-    { href: '#menu', label: 'Menu' },
+    { href: '#features', label: 'Features' },
     { href: '#about', label: 'About' },
     { href: '#testimonials', label: 'Reviews' },
     { href: '#contact', label: 'Contact' },
@@ -37,12 +37,15 @@ export default function Header() {
           <span>CuisineFlow</span>
         </Link>
         
-        <nav className="hidden md:flex items-center space-x-2">
+        <nav className="hidden md:flex items-center space-x-1">
           {navLinks.map((link) => (
             <Button key={link.href} variant="ghost" asChild>
               <Link href={link.href}>{link.label}</Link>
             </Button>
           ))}
+           <Button asChild>
+              <Link href="/login">Login</Link>
+            </Button>
         </nav>
 
         <Sheet open={open} onOpenChange={setOpen}>
@@ -58,6 +61,9 @@ export default function Header() {
                   <Link href={link.href}>{link.label}</Link>
                 </Button>
               ))}
+              <Button asChild onClick={() => setOpen(false)}>
+                  <Link href="/login">Login</Link>
+                </Button>
             </nav>
           </SheetContent>
         </Sheet>

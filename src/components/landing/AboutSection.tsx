@@ -1,23 +1,23 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Clock, MapPin, Phone } from "lucide-react";
+import { Users, BarChart, Package } from "lucide-react";
 import { AnimatedSection } from "@/components/AnimatedSection";
 
 export default function AboutSection() {
-  const info = [
+  const benefits = [
     {
-      icon: <MapPin className="h-10 w-10 text-primary" />,
-      title: "Address",
-      content: "123 Culinary Lane, Foodie City, FC 12345",
+      icon: <Users className="h-10 w-10 text-primary" />,
+      title: "For Your Team",
+      content: "Empower your staff with intuitive tools that reduce manual work and let them focus on providing excellent service.",
     },
     {
-      icon: <Clock className="h-10 w-10 text-primary" />,
-      title: "Opening Hours",
-      content: "Mon-Fri: 11am - 10pm, Sat-Sun: 9am - 11pm",
+      icon: <BarChart className="h-10 w-10 text-primary" />,
+      title: "For Your Business",
+      content: "Gain valuable insights with powerful analytics, helping you make data-driven decisions to boost profitability.",
     },
     {
-      icon: <Phone className="h-10 w-10 text-primary" />,
-      title: "Contact Us",
-      content: "contact@cuisineflow.com, (123) 456-7890",
+      icon: <Package className="h-10 w-10 text-primary" />,
+      title: "For Your Guests",
+      content: "Ensure a seamless dining experience from booking to billing, increasing customer satisfaction and loyalty.",
     },
   ];
 
@@ -25,10 +25,10 @@ export default function AboutSection() {
     <AnimatedSection id="about" className="bg-secondary">
       <div className="container mx-auto px-4">
         <h2 className="text-center text-4xl font-bold font-headline md:text-5xl mb-12">
-          Visit or Call
+          Designed for Growth
         </h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-          {info.map((item) => (
+          {benefits.map((item) => (
             <Card key={item.title} className="text-center shadow-lg border-2 border-transparent hover:border-primary transition-colors duration-300">
               <CardHeader className="flex items-center justify-center">
                 {item.icon}
