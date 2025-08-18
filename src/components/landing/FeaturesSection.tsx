@@ -1,35 +1,39 @@
+
 import Image from "next/image";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { BookMarked, Users, BarChart2, Table } from "lucide-react";
 import { AnimatedSection } from "@/components/AnimatedSection";
+import { useTranslation } from "@/context/LanguageContext";
 
 export default function FeaturesSection() {
+  const { t } = useTranslation();
+  
   const features = [
     {
       icon: <BookMarked className="h-8 w-8 mb-4 text-primary" />,
-      name: "Effortless Booking Management",
-      description: "Handle all your reservations from one simple, powerful interface. Add, edit, and track bookings with ease.",
+      name: t('feature1Title'),
+      description: t('feature1Desc'),
       image: "https://placehold.co/600x400",
       aiHint: "booking calendar",
     },
     {
       icon: <Table className="h-8 w-8 mb-4 text-primary" />,
-      name: "Visual Table Management",
-      description: "Get a real-time overview of your restaurant floor. Assign tables, track status, and optimize seating.",
+      name: t('feature2Title'),
+      description: t('feature2Desc'),
       image: "https://placehold.co/600x400",
       aiHint: "restaurant floor plan",
     },
     {
       icon: <Users className="h-8 w-8 mb-4 text-primary" />,
-      name: "Customer Relationship Hub",
-      description: "Keep track of your guests and their preferences to provide personalized service and build loyalty.",
+      name: t('feature3Title'),
+      description: t('feature3Desc'),
       image: "https://placehold.co/600x400",
       aiHint: "customer database",
     },
     {
       icon: <BarChart2 className="h-8 w-8 mb-4 text-primary" />,
-      name: "In-Depth Analytics",
-      description: "Make informed decisions with detailed reports on bookings, revenue, and customer trends.",
+      name: t('feature4Title'),
+      description: t('feature4Desc'),
       image: "https://placehold.co/600x400",
       aiHint: "analytics dashboard",
     },
@@ -39,7 +43,7 @@ export default function FeaturesSection() {
     <AnimatedSection id="features">
       <div className="container mx-auto px-4">
         <h2 className="text-center text-4xl font-bold font-headline md:text-5xl mb-12">
-          Everything You Need to Succeed
+          {t('featuresTitle')}
         </h2>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
           {features.map((item) => (

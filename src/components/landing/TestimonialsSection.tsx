@@ -11,34 +11,37 @@ import {
 } from "@/components/ui/carousel";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { AnimatedSection } from "@/components/AnimatedSection";
+import { useTranslation } from "@/context/LanguageContext";
 
 export default function TestimonialsSection() {
+  const { t } = useTranslation();
+
   const testimonials = [
     {
       name: "Sarah L.",
       initials: "SL",
-      quote: "The atmosphere is cozy and inviting, and the food is simply divine. The Terracotta Tagine is a must-try! A true 5-star experience.",
+      quote: t('testimonial1'),
       image: "https://placehold.co/100x100",
       aiHint: "woman portrait"
     },
     {
       name: "Michael B.",
       initials: "MB",
-      quote: "CuisineFlow has become our go-to for special occasions. The service is impeccable and every dish is a work of art. Highly recommended.",
+      quote: t('testimonial2'),
       image: "https://placehold.co/100x100",
       aiHint: "man portrait"
     },
     {
       name: "Jessica P.",
       initials: "JP",
-      quote: "I was impressed by the attention to detail in everything. From the decor to the presentation of the food, everything was perfect.",
+      quote: t('testimonial3'),
       image: "https://placehold.co/100x100",
       aiHint: "woman smiling"
     },
     {
       name: "David H.",
       initials: "DH",
-      quote: "A fantastic dining experience. The Olive Grove Salad was so fresh and flavorful. We'll definitely be back to explore more of the menu.",
+      quote: t('testimonial4'),
       image: "https://placehold.co/100x100",
       aiHint: "man smiling"
     },
@@ -48,7 +51,7 @@ export default function TestimonialsSection() {
     <AnimatedSection id="testimonials">
       <div className="container mx-auto px-4 overflow-hidden">
         <h2 className="text-center text-4xl font-bold font-headline md:text-5xl mb-12">
-          Words from Our Guests
+          {t('testimonialsTitle')}
         </h2>
         <Carousel
           opts={{

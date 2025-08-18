@@ -1,3 +1,4 @@
+
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -17,6 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { AnimatedSection } from "@/components/AnimatedSection";
+import { useTranslation } from "@/context/LanguageContext";
 
 const formSchema = z.object({
   name: z.string().min(2, {
@@ -32,6 +34,7 @@ const formSchema = z.object({
 
 export default function ContactSection() {
   const { toast } = useToast();
+  const { t } = useTranslation();
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
@@ -45,8 +48,8 @@ export default function ContactSection() {
   function onSubmit(values: z.infer<typeof formSchema>) {
     console.log(values);
     toast({
-      title: "Message Sent!",
-      description: "Thanks for reaching out. We'll get back to you soon.",
+      title: t('contactFormSuccessTitle'),
+      description: t('contactFormSuccessDesc'),
     });
     form.reset();
   }
@@ -55,7 +58,7 @@ export default function ContactSection() {
     <AnimatedSection id="contact" className="bg-background">
       <div className="container mx-auto px-4">
         <h2 className="text-center text-4xl font-bold font-headline md:text-5xl mb-12">
-          Get in Touch
+          {t('contactTitle')}
         </h2>
         <div className="mx-auto max-w-2xl">
           <Form {...form}>
@@ -65,7 +68,7 @@ export default function ContactSection() {
                 name="name"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Name</FormLabel>
+                    <FormLabel>{t('contactFormName')}</FormLabel>
                     <FormControl>
                       <Input placeholder="John Doe" {...field} className="text-base" />
                     </FormControl>
@@ -78,7 +81,7 @@ export default function ContactSection() {
                 name="email"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Email</FormLabel>
+                    <FormLabel>{t('contactFormEmail')}</FormLabel>
                     <FormControl>
                       <Input placeholder="john.doe@example.com" {...field} className="text-base" />
                     </FormControl>
@@ -91,10 +94,10 @@ export default function ContactSection() {
                 name="message"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Message</FormLabel>
+                    <FormLabel>{t('contactFormMessage')}</FormLabel>
                     <FormControl>
                       <Textarea
-                        placeholder="Tell us how we can help"
+                        placeholder={t('contactFormMessagePlaceholder')}
                         className="resize-none"
                         {...field}
                       />
@@ -104,7 +107,7 @@ export default function ContactSection() {
                 )}
               />
               <Button type="submit" size="lg" className="w-full">
-                Send Message
+                {t('contactFormSubmit')}
               </Button>
             </form>
           </Form>

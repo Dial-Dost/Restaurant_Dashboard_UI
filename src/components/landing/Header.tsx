@@ -15,8 +15,10 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Separator } from '../ui/separator';
 import { ThemeToggle } from '../ThemeToggle';
+import { useTranslation } from '@/context/LanguageContext';
 
 export default function Header() {
+  const { t, setLanguage } = useTranslation();
   const [isScrolled, setIsScrolled] = useState(false);
   const [open, setOpen] = useState(false);
 
@@ -29,10 +31,19 @@ export default function Header() {
   }, []);
 
   const navLinks = [
-    { href: '#features', label: 'Features' },
-    { href: '#about', label: 'About' },
-    { href: '#testimonials', label: 'Reviews' },
-    { href: '#contact', label: 'Contact' },
+    { href: '#features', label: t('features') },
+    { href: '#about', label: t('about') },
+    { href: '#testimonials', label: t('reviews') },
+    { href: '#contact', label: t('contact') },
+  ];
+
+  const languages = [
+    { code: 'en', name: 'English' },
+    { code: 'hi', name: 'हिन्दी (Hindi)' },
+    { code: 'kn', name: 'ಕನ್ನಡ (Kannada)' },
+    { code: 'te', name: 'తెలుగు (Telugu)' },
+    { code: 'ta', name: 'தமிழ் (Tamil)' },
+    { code: 'ml', name: 'മലയാളം (Malayalam)' },
   ];
 
   return (
@@ -41,35 +52,34 @@ export default function Header() {
       isScrolled ? 'bg-background/80 shadow-md backdrop-blur-sm' : 'bg-transparent'
     )}>
       <div className="container mx-auto flex h-20 items-center justify-between px-4">
-        <Link href="#home" className="flex items-center gap-2 font-bold text-2xl font-headline">
+        <Link href="/" className="flex items-center gap-2 font-bold text-2xl font-headline">
           <ChefHat className="h-8 w-8 text-primary" />
           <span>CuisineFlow</span>
         </Link>
         
-        <nav className="hidden md:flex items-center space-x-1">
+        <nav className="hidden md:flex items-center space-x-2">
           {navLinks.map((link) => (
             <Button key={link.href} variant="ghost" asChild>
               <Link href={link.href}>{link.label}</Link>
             </Button>
           ))}
            <Button asChild>
-              <Link href="/login">Login</Link>
+              <Link href="/login">{t('login')}</Link>
             </Button>
             <ThemeToggle />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="icon">
                   <Globe className="h-5 w-5" />
-                  <span className="sr-only">Select language</span>
+                  <span className="sr-only">{t('selectLanguage')}</span>
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem>English</DropdownMenuItem>
-                <DropdownMenuItem>हिन्दी (Hindi)</DropdownMenuItem>
-                <DropdownMenuItem>ಕನ್ನಡ (Kannada)</DropdownMenuItem>
-                <DropdownMenuItem>తెలుగు (Telugu)</DropdownMenuItem>
-                <DropdownMenuItem>தமிழ் (Tamil)</DropdownMenuItem>
-                <DropdownMenuItem>മലയാളം (Malayalam)</DropdownMenuItem>
+                {languages.map((lang) => (
+                  <DropdownMenuItem key={lang.code} onSelect={() => setLanguage(lang.code)}>
+                    {lang.name}
+                  </DropdownMenuItem>
+                ))}
               </DropdownMenuContent>
             </DropdownMenu>
         </nav>
@@ -88,20 +98,17 @@ export default function Header() {
                 </Button>
               ))}
               <Button asChild onClick={() => setOpen(false)} className="justify-start">
-                  <Link href="/login">Login</Link>
+                  <Link href="/login">{t('login')}</Link>
               </Button>
               <Separator className="my-2"/>
               <div className='px-2 py-1'>
                 <ThemeToggle />
               </div>
               <Separator className="my-2"/>
-              <p className="text-sm text-muted-foreground px-2">Language</p>
-               <Button variant="ghost" className="w-full justify-start">English</Button>
-              <Button variant="ghost" className="w-full justify-start">हिन्दी (Hindi)</Button>
-              <Button variant="ghost" className="w-full justify-start">ಕನ್ನಡ (Kannada)</Button>
-              <Button variant="ghost" className="w-full justify-start">తెలుగు (Telugu)</Button>
-              <Button variant="ghost" className="w-full justify-start">தமிழ் (Tamil)</Button>
-              <Button variant="ghost" className="w-full justify-start">മലയാളം (Malayalam)</Button>
+              <p className="text-sm text-muted-foreground px-2">{t('language')}</p>
+              {languages.map((lang) => (
+                 <Button key={lang.code} variant="ghost" className="w-full justify-start" onClick={() => { setLanguage(lang.code); setOpen(false); }}>{lang.name}</Button>
+              ))}
             </nav>
           </SheetContent>
         </Sheet>

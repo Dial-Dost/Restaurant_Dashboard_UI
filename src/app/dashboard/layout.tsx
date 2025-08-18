@@ -1,3 +1,4 @@
+
 "use client";
 
 import { Inter } from 'next/font/google';
@@ -44,19 +45,21 @@ import Image from 'next/image';
 import { ThemeProvider } from '@/components/ThemeProvider';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { usePathname } from 'next/navigation';
+import { useTranslation } from '@/context/LanguageContext';
 
 
 const inter = Inter({ subsets: ['latin'] });
 
 function DashboardNav() {
   const pathname = usePathname();
+  const { t } = useTranslation();
   
   const navItems = [
-    { href: '/dashboard', label: 'Dashboard', icon: Home, exact: true },
-    { href: '/dashboard/bookings', label: 'Bookings', icon: ShoppingCart, badge: '6' },
-    { href: '/dashboard/tables', label: 'Tables', icon: Package },
-    { href: '/dashboard/customers', label: 'Customers', icon: Users },
-    { href: '/dashboard/analytics', label: 'Analytics', icon: LineChart },
+    { href: '/dashboard', label: t('dashboard'), icon: Home, exact: true },
+    { href: '/dashboard/bookings', label: t('bookings'), icon: ShoppingCart, badge: '6' },
+    { href: '/dashboard/tables', label: t('tables'), icon: Package },
+    { href: '/dashboard/customers', label: t('customers'), icon: Users },
+    { href: '/dashboard/analytics', label: t('analytics'), icon: LineChart },
   ];
 
   return (
@@ -65,7 +68,6 @@ function DashboardNav() {
         {navItems.map((item) => (
           <SidebarMenuItem key={item.label}>
             <SidebarMenuButton 
-              href={item.href} 
               asChild
               isActive={item.exact ? pathname === item.href : pathname.startsWith(item.href)}
               tooltip={item.label}
@@ -93,6 +95,17 @@ export default function DashboardLayout({
 }: {
   children: React.ReactNode;
 }) {
+  const { t, setLanguage } = useTranslation();
+
+  const languages = [
+    { code: 'en', name: 'English' },
+    { code: 'hi', name: 'हिन्दी (Hindi)' },
+    { code: 'kn', name: 'ಕನ್ನಡ (Kannada)' },
+    { code: 'te', name: 'తెలుగు (Telugu)' },
+    { code: 'ta', name: 'தமிழ் (Tamil)' },
+    { code: 'ml', name: 'മലയാളം (Malayalam)' },
+  ] as const;
+
   return (
     <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false}>
       <SidebarProvider>
@@ -108,15 +121,14 @@ export default function DashboardLayout({
             <SidebarFooter>
               <Card>
                 <CardHeader className="p-2 pt-0 md:p-4 group-data-[[data-collapsible=icon][data-state=collapsed]]:hidden">
-                  <CardTitle>Upgrade to Pro</CardTitle>
+                  <CardTitle>{t('upgradeToPro')}</CardTitle>
                   <CardDescription>
-                    Unlock all features and get unlimited access to our support
-                    team.
+                    {t('upgradeToProDesc')}
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="p-2 pt-0 md:p-4 md:pt-0 group-data-[[data-collapsible=icon][data-state=collapsed]]:hidden">
                   <Button size="sm" className="w-full">
-                    Upgrade
+                    {t('upgrade')}
                   </Button>
                 </CardContent>
               </Card>
@@ -133,16 +145,15 @@ export default function DashboardLayout({
                 <DropdownMenuTrigger asChild>
                   <Button variant="ghost" size="icon">
                     <Globe className="h-5 w-5" />
-                    <span className="sr-only">Select language</span>
+                    <span className="sr-only">{t('selectLanguage')}</span>
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  <DropdownMenuItem>English</DropdownMenuItem>
-                  <DropdownMenuItem>हिन्दी (Hindi)</DropdownMenuItem>
-                  <DropdownMenuItem>ಕನ್ನಡ (Kannada)</DropdownMenuItem>
-                  <DropdownMenuItem>తెలుగు (Telugu)</DropdownMenuItem>
-                  <DropdownMenuItem>தமிழ் (Tamil)</DropdownMenuItem>
-                  <DropdownMenuItem>മലയാളം (Malayalam)</DropdownMenuItem>
+                  {languages.map((lang) => (
+                    <DropdownMenuItem key={lang.code} onSelect={() => setLanguage(lang.code)}>
+                      {lang.name}
+                    </DropdownMenuItem>
+                  ))}
                 </DropdownMenuContent>
               </DropdownMenu>
               <DropdownMenu>
@@ -160,19 +171,19 @@ export default function DashboardLayout({
                         className="rounded-full"
                         data-ai-hint="manager portrait"
                     />
-                    <span className="sr-only">Toggle user menu</span>
+                    <span className="sr-only">{t('toggleUserMenu')}</span>
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  <DropdownMenuLabel>My Account</DropdownMenuLabel>
+                  <DropdownMenuLabel>{t('myAccount')}</DropdownMenuLabel>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem asChild>
-                    <Link href="/dashboard/settings">Settings</Link>
+                    <Link href="/dashboard/settings">{t('settings')}</Link>
                   </DropdownMenuItem>
-                  <DropdownMenuItem>Support</DropdownMenuItem>
+                  <DropdownMenuItem>{t('support')}</DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem asChild>
-                    <Link href="/login">Logout</Link>
+                    <Link href="/">{t('logout')}</Link>
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
