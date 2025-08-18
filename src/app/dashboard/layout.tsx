@@ -1,4 +1,3 @@
-
 "use client";
 
 import { Inter } from 'next/font/google';
@@ -10,6 +9,7 @@ import {
   Package2,
   ShoppingCart,
   Users,
+  Globe
 } from 'lucide-react';
 import {
   Sidebar,
@@ -129,6 +129,22 @@ export default function DashboardLayout({
                 {/* Add nav items here */}
               </div>
               <ThemeToggle />
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon">
+                    <Globe className="h-5 w-5" />
+                    <span className="sr-only">Select language</span>
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem>English</DropdownMenuItem>
+                  <DropdownMenuItem>हिन्दी (Hindi)</DropdownMenuItem>
+                  <DropdownMenuItem>ಕನ್ನಡ (Kannada)</DropdownMenuItem>
+                  <DropdownMenuItem>తెలుగు (Telugu)</DropdownMenuItem>
+                  <DropdownMenuItem>தமிழ் (Tamil)</DropdownMenuItem>
+                  <DropdownMenuItem>മലയാളം (Malayalam)</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button

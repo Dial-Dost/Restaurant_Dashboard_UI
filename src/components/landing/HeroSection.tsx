@@ -1,8 +1,21 @@
+
+"use client";
+
 import Image from "next/image";
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
+import { useTheme } from "next-themes";
+import { cn } from "@/lib/utils";
+import { useState, useEffect } from "react";
 
 export default function HeroSection() {
+  const { theme } = useTheme();
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
   return (
     <section id="home" className="relative h-dvh flex items-center justify-center text-center">
       <Image 
@@ -11,10 +24,16 @@ export default function HeroSection() {
         priority
         style={{objectFit:"cover"}} 
         alt="A modern restaurant dashboard shown on a laptop" 
-        className="z-0 brightness-[0.4]"
+        className={cn(
+          "z-0 transition-all duration-500",
+          mounted && theme === 'light' ? 'brightness-75' : 'brightness-[0.4]'
+        )}
         data-ai-hint="restaurant management software"
       />
-      <div className="relative z-10 p-4 text-white max-w-4xl">
+      <div className={cn(
+          "relative z-10 p-4 max-w-4xl",
+          mounted && theme === 'light' ? 'text-foreground' : 'text-white'
+        )}>
         <h1 className="text-5xl md:text-7xl lg:text-8xl font-bold font-headline mb-4 drop-shadow-lg">
           Streamline Your Restaurant Operations
         </h1>

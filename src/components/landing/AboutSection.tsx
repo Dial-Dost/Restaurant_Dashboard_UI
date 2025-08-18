@@ -22,14 +22,14 @@ export default function AboutSection() {
   ];
 
   return (
-    <AnimatedSection id="about" className="bg-secondary">
+    <AnimatedSection id="about" className="bg-muted">
       <div className="container mx-auto px-4">
         <h2 className="text-center text-4xl font-bold font-headline md:text-5xl mb-12">
           Designed for Growth
         </h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
           {benefits.map((item) => (
-            <Card key={item.title} className="text-center shadow-lg border-2 border-transparent hover:border-primary transition-colors duration-300">
+            <Card key={item.title} className="text-center shadow-lg border-2 border-transparent hover:border-primary transition-colors duration-300 bg-background">
               <CardHeader className="flex items-center justify-center">
                 {item.icon}
               </CardHeader>

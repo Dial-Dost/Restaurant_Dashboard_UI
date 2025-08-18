@@ -1,11 +1,20 @@
+
 "use client";
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
-import { Menu, ChefHat } from 'lucide-react';
+import { Menu, ChefHat, Globe } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import { Separator } from '../ui/separator';
+import { ThemeToggle } from '../ThemeToggle';
 
 export default function Header() {
   const [isScrolled, setIsScrolled] = useState(false);
@@ -46,6 +55,23 @@ export default function Header() {
            <Button asChild>
               <Link href="/login">Login</Link>
             </Button>
+            <ThemeToggle />
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon">
+                  <Globe className="h-5 w-5" />
+                  <span className="sr-only">Select language</span>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem>English</DropdownMenuItem>
+                <DropdownMenuItem>हिन्दी (Hindi)</DropdownMenuItem>
+                <DropdownMenuItem>ಕನ್ನಡ (Kannada)</DropdownMenuItem>
+                <DropdownMenuItem>తెలుగు (Telugu)</DropdownMenuItem>
+                <DropdownMenuItem>தமிழ் (Tamil)</DropdownMenuItem>
+                <DropdownMenuItem>മലയാളം (Malayalam)</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
         </nav>
 
         <Sheet open={open} onOpenChange={setOpen}>
@@ -55,15 +81,27 @@ export default function Header() {
             </Button>
           </SheetTrigger>
           <SheetContent side="right">
-            <nav className="flex flex-col space-y-4 mt-8">
+            <nav className="flex flex-col space-y-2 mt-8">
               {navLinks.map((link) => (
-                <Button key={link.href} variant="ghost" asChild onClick={() => setOpen(false)}>
+                <Button key={link.href} variant="ghost" asChild onClick={() => setOpen(false)} className="justify-start">
                   <Link href={link.href}>{link.label}</Link>
                 </Button>
               ))}
-              <Button asChild onClick={() => setOpen(false)}>
+              <Button asChild onClick={() => setOpen(false)} className="justify-start">
                   <Link href="/login">Login</Link>
-                </Button>
+              </Button>
+              <Separator className="my-2"/>
+              <div className='px-2 py-1'>
+                <ThemeToggle />
+              </div>
+              <Separator className="my-2"/>
+              <p className="text-sm text-muted-foreground px-2">Language</p>
+               <Button variant="ghost" className="w-full justify-start">English</Button>
+              <Button variant="ghost" className="w-full justify-start">हिन्दी (Hindi)</Button>
+              <Button variant="ghost" className="w-full justify-start">ಕನ್ನಡ (Kannada)</Button>
+              <Button variant="ghost" className="w-full justify-start">తెలుగు (Telugu)</Button>
+              <Button variant="ghost" className="w-full justify-start">தமிழ் (Tamil)</Button>
+              <Button variant="ghost" className="w-full justify-start">മലയാളം (Malayalam)</Button>
             </nav>
           </SheetContent>
         </Sheet>

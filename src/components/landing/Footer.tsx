@@ -9,8 +9,8 @@ export default function Footer() {
   ];
 
   return (
-    <footer className="bg-secondary py-8">
-      <div className="container mx-auto px-4 text-center text-secondary-foreground">
+    <footer className="bg-muted py-8">
+      <div className="container mx-auto px-4 text-center text-muted-foreground">
         <div className="flex justify-center space-x-4 mb-4">
           {socialLinks.map((link, index) => (
             <Button asChild key={index} variant="ghost" size="icon">

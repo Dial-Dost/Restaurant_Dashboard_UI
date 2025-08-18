@@ -1,3 +1,4 @@
+
 "use client";
 
 import { Card, CardContent } from "@/components/ui/card";
@@ -45,7 +46,7 @@ export default function TestimonialsSection() {
 
   return (
     <AnimatedSection id="testimonials">
-      <div className="container mx-auto px-4">
+      <div className="container mx-auto px-4 overflow-hidden">
         <h2 className="text-center text-4xl font-bold font-headline md:text-5xl mb-12">
           Words from Our Guests
         </h2>
@@ -58,7 +59,7 @@ export default function TestimonialsSection() {
         >
           <CarouselContent>
             {testimonials.map((testimonial, index) => (
-              <CarouselItem key={index} className="md:basis-1/2 lg:basis-1/2 p-4">
+              <CarouselItem key={index} className="md:basis-1/2 lg:basis-1/2">
                 <Card className="h-full">
                   <CardContent className="flex flex-col items-center justify-center p-6 text-center h-full">
                     <p className="text-muted-foreground italic mb-6">"{testimonial.quote}"</p>
@@ -76,8 +77,8 @@ export default function TestimonialsSection() {
               </CarouselItem>
             ))}
           </CarouselContent>
-          <CarouselPrevious className="hidden md:flex"/>
-          <CarouselNext className="hidden md:flex"/>
+          <CarouselPrevious className="hidden md:flex -left-4"/>
+          <CarouselNext className="hidden md:flex -right-4"/>
         </Carousel>
       </div>
     </AnimatedSection>
