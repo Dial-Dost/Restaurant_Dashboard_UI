@@ -57,7 +57,7 @@ export default function Header() {
           <span>CuisineFlow</span>
         </Link>
         
-        <nav className="hidden md:flex items-center space-x-2">
+        <nav className="hidden md:flex items-center flex-wrap gap-x-4">
           {navLinks.map((link) => (
             <Button key={link.href} variant="ghost" asChild>
               <Link href={link.href}>{link.label}</Link>

@@ -68,6 +68,7 @@ function DashboardNav() {
         {navItems.map((item) => (
           <SidebarMenuItem key={item.label}>
             <SidebarMenuButton 
+              href={item.href} 
               asChild
               isActive={item.exact ? pathname === item.href : pathname.startsWith(item.href)}
               tooltip={item.label}
@@ -104,7 +105,7 @@ export default function DashboardLayout({
     { code: 'te', name: 'తెలుగు (Telugu)' },
     { code: 'ta', name: 'தமிழ் (Tamil)' },
     { code: 'ml', name: 'മലയാളം (Malayalam)' },
-  ] as const;
+  ];
 
   return (
     <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false}>
