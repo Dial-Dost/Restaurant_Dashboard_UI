@@ -1,7 +1,7 @@
-
 "use client";
 
-import { useState } from "react";
+import config from "@/context/server";
+import { useState, useEffect } from "react";
 import {
   Card,
   CardContent,
@@ -46,68 +46,96 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-const initialBookings = [
-  {
-    id: "1",
-    customer: "Liam Johnson",
-    time: "7:00 PM",
-    guests: 2,
-    table: "T2",
-    source: "Dineout",
-    status: "Confirmed",
-  },
-  {
-    id: "2",
-    customer: "Olivia Smith",
-    time: "7:15 PM",
-    guests: 4,
-    table: "T6",
-    source: "Call",
-    status: "Arrived",
-  },
-  {
-    id: "3",
-    customer: "Noah Williams",
-    time: "8:00 PM",
-    guests: 2,
-    table: "T8",
-    source: "Easydiner",
-    status: "Confirmed",
-  },
-  {
-    id: "4",
-    customer: "Emma Brown",
-    time: "8:30 PM",
-    guests: 3,
-    table: "T4",
-    source: "Walk-in",
-    status: "Seated",
-  },
-  {
-    id: "5",
-    customer: "James Jones",
-    time: "9:00 PM",
-    guests: 5,
-    table: "T9",
-    source: "Call",
-    status: "Pending",
-  },
-];
+type Booking = {
+  booking_id: number;
+  customer_id: string;
+  customer_name: string;
+  booking_date_time: string;
+  duration_mins: number;
+  number_of_people: number;
+  table_name: string;
+  source: string;
+  active: boolean;
+};
 
-type Booking = (typeof initialBookings)[0];
+type AddBooking = {
+  customer: {
+    name: string;
+    number: string;
+    email: string | undefined;
+  };
+  booking: {
+    table_name: string;
+    date: Date;
+    duration: number;
+    number_of_people: number;
+    source: string | undefined;
+  };
+};
 
 export default function BookingsPage() {
-  const [bookings, setBookings] = useState(initialBookings);
+  const [bookings, setBookings] = useState<Booking[]>([]);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
-  
-  const handleAddBooking = (newBookingData: Omit<Booking, 'id'>) => {
-    const newBooking: Booking = {
-        id: (bookings.length + 1).toString(),
-        ...newBookingData,
-    };
-    setBookings([...bookings, newBooking]);
-    setIsDialogOpen(false);
+
+  function duration_mins_string(duration: number): string {
+    if (duration == 60) {
+      return "1 hour";
+    } else if (duration < 60) {
+      return duration + "mins";
+    } else {
+      let hours = Math.floor(duration / 60);
+      let mins = duration % 60;
+      let min_string = mins === 0 ? "" : ` ${mins} mins`;
+
+      return `${hours} hours${min_string}`;
+    }
   }
+
+  const DateToString: (DateTime: Date) => string = (DateTime) => {
+    const hours = DateTime.getHours();
+    const minutes = DateTime.getMinutes();
+    const day = DateTime.getDate();
+    const month = DateTime.getMonth() + 1;
+    const year = DateTime.getFullYear();
+
+    // Convert to 12-hour format
+    const hour12 = hours === 0 ? 12 : hours > 12 ? hours - 12 : hours;
+    const ampm = hours >= 12 ? "PM" : "AM";
+    const minutesFormatted = minutes.toString().padStart(2, "0");
+
+    return `${hour12}:${minutesFormatted} ${ampm}, ${day}/${month}/${year}`;
+  };
+
+  const fetchBookings = async () => {
+    const response = await fetch(config.server_url + "/get-bookings");
+    if (!response.ok) {
+      console.log("Oops something went wrong with the server");
+    }
+    const data = await response.json();
+    setBookings(data);
+  };
+
+  useEffect(() => {
+    fetchBookings();
+  }, []);
+
+  const handleAddBooking = async (
+    newBookingData: AddBooking,
+  ): Promise<boolean> => {
+    const response = await fetch(config.server_url + "/add-booking", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(newBookingData),
+    });
+    console.log(newBookingData);
+
+    await fetchBookings();
+
+    setIsDialogOpen(false);
+    return response.ok;
+  };
 
   return (
     <div className="grid gap-4 md:gap-8">
@@ -116,11 +144,11 @@ export default function BookingsPage() {
         <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
           <DialogTrigger asChild>
             <Button>
-                <PlusCircle className="mr-2 h-4 w-4" />
-                Add Booking
+              <PlusCircle className="mr-2 h-4 w-4" />
+              Add Booking
             </Button>
           </DialogTrigger>
-          <DialogContent className="sm:max-w-[425px]">
+          <DialogContent className="sm:max-w-[500px]">
             <DialogHeader>
               <DialogTitle>Create On-Spot Booking</DialogTitle>
               <DialogDescription>
@@ -144,7 +172,10 @@ export default function BookingsPage() {
               <TableRow>
                 <TableHead>Customer</TableHead>
                 <TableHead className="hidden md:table-cell">Time</TableHead>
-                <TableHead className="hidden md:table-cell text-center">Guests</TableHead>
+                <TableHead className="hidden md:table-cell">Duration</TableHead>
+                <TableHead className="hidden md:table-cell text-center">
+                  Guests
+                </TableHead>
                 <TableHead className="hidden lg:table-cell">Table</TableHead>
                 <TableHead className="hidden lg:table-cell">Source</TableHead>
                 <TableHead>Status</TableHead>
@@ -154,46 +185,63 @@ export default function BookingsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {bookings.map((booking) => (
-                <TableRow key={booking.id}>
-                  <TableCell className="font-medium">
-                    <div>{booking.customer}</div>
-                    <div className="text-sm text-muted-foreground md:hidden">{booking.time} - {booking.guests} guests</div>
-                  </TableCell>
-                  <TableCell className="hidden md:table-cell">{booking.time}</TableCell>
-                  <TableCell className="hidden md:table-cell text-center">{booking.guests}</TableCell>
-                  <TableCell className="hidden lg:table-cell">{booking.table}</TableCell>
-                  <TableCell className="hidden lg:table-cell">{booking.source}</TableCell>
-                  <TableCell>
-                    <Badge
-                      variant={
-                        booking.status === "Confirmed"
-                          ? "default"
-                          : booking.status === "Arrived" || booking.status === "Seated"
-                          ? "secondary"
-                          : "outline"
-                      }
-                    >
-                      {booking.status}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button aria-haspopup="true" size="icon" variant="ghost">
-                          <MoreHorizontal className="h-4 w-4" />
-                          <span className="sr-only">Toggle menu</span>
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuLabel>Actions</DropdownMenuLabel>
-                        <DropdownMenuItem>Edit</DropdownMenuItem>
-                        <DropdownMenuItem>Cancel</DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </TableCell>
-                </TableRow>
-              ))}
+              {bookings.map((booking) => {
+                console.log(booking);
+                return (
+                  <TableRow key={booking.booking_id.toString()}>
+                    <TableCell className="font-medium">
+                      <div>{booking.customer_name}</div>
+                      <div className="text-sm text-muted-foreground md:hidden">
+                        {booking.booking_date_time} - {booking.number_of_people}{" "}
+                        guests
+                      </div>
+                    </TableCell>
+                    <TableCell className="hidden md:table-cell">
+                      {DateToString(new Date(booking.booking_date_time))}
+                    </TableCell>
+                    <TableCell className="hidden md:table-cell">
+                      {duration_mins_string(booking.duration_mins)}
+                    </TableCell>
+                    <TableCell className="hidden md:table-cell text-center">
+                      {booking.number_of_people}
+                    </TableCell>
+                    <TableCell className="hidden lg:table-cell">
+                      {booking.table_name}
+                    </TableCell>
+                    <TableCell className="hidden lg:table-cell">
+                      {booking.source ? booking.source : "Other"}
+                    </TableCell>
+                    <TableCell>
+                      <Badge
+                        variant={
+                          booking.active === true ? "default" : "outline"
+                        }
+                      >
+                        {booking.active ? "Arrived" : "Not yet arrived"}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            aria-haspopup="true"
+                            size="icon"
+                            variant="ghost"
+                          >
+                            <MoreHorizontal className="h-4 w-4" />
+                            <span className="sr-only">Toggle menu</span>
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuLabel>Actions</DropdownMenuLabel>
+                          <DropdownMenuItem>Edit</DropdownMenuItem>
+                          <DropdownMenuItem>Cancel</DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         </CardContent>
@@ -202,62 +250,153 @@ export default function BookingsPage() {
   );
 }
 
-function BookingForm({ onSubmit }: { onSubmit: (data: Omit<Booking, 'id'>) => void }) {
-    const [customer, setCustomer] = useState("");
-    const [guests, setGuests] = useState("");
-    const [time, setTime] = useState("");
-    const [table, setTable] = useState("");
-    const [source, setSource] = useState("");
+function BookingForm({
+  onSubmit,
+}: {
+  onSubmit: (data: AddBooking) => Promise<boolean>;
+}) {
+  const [customer, setCustomer] = useState("");
+  const [phone_number, setPhoneNumber] = useState("");
+  const [email, setEmail] = useState("");
+  const [guests, setGuests] = useState("");
+  const [time, setTime] = useState("");
+  const [table, setTable] = useState("");
+  const [source, setSource] = useState("");
+  const [duration, setDuration] = useState(60);
 
-    const handleSubmit = () => {
-        if(customer && guests && time && table && source) {
-            onSubmit({
-                customer,
-                guests: parseInt(guests, 10),
-                time,
-                table,
-                source,
-                status: 'Confirmed'
-            });
-        }
+  function make_date_from_time(time: string): Date | undefined {
+    let hours = time.split(":")[0];
+    let mins = time.split(":")[1];
+    let now: Date = new Date();
+
+    let date_time = now.setHours(parseInt(hours));
+    date_time = now.setMinutes(parseInt(mins));
+    date_time = now.setMilliseconds(0);
+
+    return isNaN(date_time) ? undefined : new Date(date_time);
+  }
+
+  const handleSubmit = () => {
+    let booking_time = make_date_from_time(time);
+    if (customer && phone_number && guests && booking_time && table && source) {
+      onSubmit({
+        customer: {
+          name: customer,
+          number: phone_number,
+          email: email,
+        },
+        booking: {
+          table_name: table,
+          date: booking_time,
+          duration: duration,
+          number_of_people: parseInt(guests),
+          source: source,
+        },
+      });
     }
+  };
 
-    return (
-        <div className="grid gap-4 py-4">
-          <div className="grid grid-cols-4 items-center gap-4">
-            <Label htmlFor="customer" className="text-right">Customer</Label>
-            <Input id="customer" value={customer} onChange={(e) => setCustomer(e.target.value)} className="col-span-3" placeholder="John Doe" />
-          </div>
-          <div className="grid grid-cols-4 items-center gap-4">
-            <Label htmlFor="guests" className="text-right">Guests</Label>
-            <Input id="guests" type="number" value={guests} onChange={(e) => setGuests(e.target.value)} className="col-span-3" placeholder="e.g., 4" />
-          </div>
-          <div className="grid grid-cols-4 items-center gap-4">
-            <Label htmlFor="time" className="text-right">Time</Label>
-            <Input id="time" type="time" value={time} onChange={(e) => setTime(e.target.value)} className="col-span-3" />
-          </div>
-          <div className="grid grid-cols-4 items-center gap-4">
-            <Label htmlFor="table" className="text-right">Table</Label>
-            <Input id="table" value={table} onChange={(e) => setTable(e.target.value)} className="col-span-3" placeholder="e.g., T5" />
-          </div>
-          <div className="grid grid-cols-4 items-center gap-4">
-            <Label htmlFor="source" className="text-right">Source</Label>
-            <Select onValueChange={setSource}>
-                <SelectTrigger className="col-span-3">
-                    <SelectValue placeholder="Select a source" />
-                </SelectTrigger>
-                <SelectContent>
-                    <SelectItem value="Call">Call</SelectItem>
-                    <SelectItem value="Dineout">Dineout</SelectItem>
-                    <SelectItem value="Easydiner">Easydiner</SelectItem>
-                    <SelectItem value="Walk-in">Walk-in</SelectItem>
-                    <SelectItem value="Other">Other</SelectItem>
-                </SelectContent>
-            </Select>
-          </div>
-          <DialogFooter>
-            <Button onClick={handleSubmit}>Save Booking</Button>
-          </DialogFooter>
-        </div>
-    )
+  return (
+    <div className="grid gap-4 py-4">
+      <div className="grid grid-cols-4 items-center gap-4">
+        <Label htmlFor="customer" className="text-right">
+          Customer
+        </Label>
+        <Input
+          id="customer"
+          value={customer}
+          onChange={(e) => setCustomer(e.target.value)}
+          className="col-span-3"
+          placeholder="John Doe"
+        />
+      </div>
+
+      <div className="grid grid-cols-4 items-center gap-4">
+        <Label htmlFor="phone_number" className="text-right">
+          Phone Number
+        </Label>
+        <Input
+          id="phone_number"
+          value={phone_number}
+          onChange={(e) => setPhoneNumber(e.target.value)}
+          className="col-span-3"
+          placeholder="987654321"
+        />
+      </div>
+
+      <div className="grid grid-cols-4 items-center gap-4">
+        <Label htmlFor="email" className="text-right">
+          Email ID
+        </Label>
+        <Input
+          id="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          className="col-span-3"
+          placeholder="example@gmail.com (Optional)"
+        />
+      </div>
+
+      <div className="grid grid-cols-4 items-center gap-4">
+        <Label htmlFor="guests" className="text-right">
+          Guests
+        </Label>
+        <Input
+          id="guests"
+          type="number"
+          value={guests}
+          onChange={(e) => setGuests(e.target.value)}
+          className="col-span-3"
+          placeholder="e.g., 4"
+        />
+      </div>
+
+      <div className="grid grid-cols-4 items-center gap-4">
+        <Label htmlFor="time" className="text-right">
+          Time
+        </Label>
+        <Input
+          id="time"
+          type="time"
+          value={time}
+          onChange={(e) => setTime(e.target.value)}
+          className="col-span-3"
+        />
+      </div>
+
+      <div className="grid grid-cols-4 items-center gap-4">
+        <Label htmlFor="table" className="text-right">
+          Table
+        </Label>
+        <Input
+          id="table"
+          value={table}
+          onChange={(e) => setTable(e.target.value)}
+          className="col-span-3"
+          placeholder="e.g., T5"
+        />
+      </div>
+
+      <div className="grid grid-cols-4 items-center gap-4">
+        <Label htmlFor="source" className="text-right">
+          Source
+        </Label>
+        <Select onValueChange={setSource}>
+          <SelectTrigger className="col-span-3">
+            <SelectValue placeholder="Select a source" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="Call">Call</SelectItem>
+            <SelectItem value="Dineout">Dineout</SelectItem>
+            <SelectItem value="Easydiner">Easydiner</SelectItem>
+            <SelectItem value="Walk-in">Walk-in</SelectItem>
+            <SelectItem value="Other">Other</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      <DialogFooter>
+        <Button onClick={handleSubmit}>Save Booking</Button>
+      </DialogFooter>
+    </div>
+  );
 }
