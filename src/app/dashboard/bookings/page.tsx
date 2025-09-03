@@ -129,7 +129,6 @@ export default function BookingsPage() {
       },
       body: JSON.stringify(newBookingData),
     });
-    console.log(newBookingData);
 
     await fetchBookings();
 
