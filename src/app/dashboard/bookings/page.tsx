@@ -122,12 +122,14 @@ export default function BookingsPage() {
   const handleAddBooking = async (
     newBookingData: AddBooking,
   ): Promise<boolean> => {
+    let x: any = newBookingData;
+    x.booking.from = "Desktop";
     const response = await fetch(config.server_url + "/add-booking", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(newBookingData),
+      body: JSON.stringify(x),
     });
 
     await fetchBookings();
