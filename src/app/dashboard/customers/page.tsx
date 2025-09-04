@@ -40,7 +40,6 @@ type Customer = {
   status: string;
 };
 
-
 export default function CustomersPage() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -51,15 +50,17 @@ export default function CustomersPage() {
     if (response.ok) {
       let data = await response.json();
 
-      setCustomers(data.map((x: any) => {
-        return {
+      setCustomers(
+        data.map((x: any) => {
+          return {
             name: x.name,
             email: x.email,
             phone: x.phone_number,
             booking_count: x.booking_count,
             status: x.has_booking ? "In-house" : "Departed",
-        }
-      }));
+          };
+        }),
+      );
       return true;
     }
     return false;
@@ -69,16 +70,29 @@ export default function CustomersPage() {
     fetch_customers();
   }, []);
 
-  const handleAddCustomer = (
+  const handleAddCustomer = async (
     newCustomerData: Omit<Customer, "booking_count" | "status">,
   ) => {
-    const newCustomer: Customer = {
-      ...newCustomerData,
-      booking_count: 1,
-      status: "In-house",
+    const newCustomer = {
+      customer: {
+        name: newCustomerData.name,
+        number: newCustomerData.phone,
+        email: newCustomerData.email,
+      },
     };
-    setCustomers([...customers, newCustomer]);
-    setIsDialogOpen(false);
+
+    let response = await fetch(config.server_url + "/add-customer", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(newCustomerData),
+    });
+
+    if (response.ok) {
+      fetch_customers();
+      setIsDialogOpen(false);
+    }
   };
 
   return (
@@ -133,7 +147,7 @@ export default function CustomersPage() {
                     <div>{customer.phone}</div>
                   </TableCell>
                   <TableCell className="font-medium">
-                    <div>{customer.email? customer.email: "N.A."}</div>
+                    <div>{customer.email ? customer.email : "N.A."}</div>
                   </TableCell>
                   <TableCell className="hidden md:table-cell text-center">
                     {customer.booking_count}
@@ -167,7 +181,7 @@ function CustomerForm({
   const [phone, setPhone] = useState("");
 
   const handleSubmit = () => {
-    if (name && email && phone) {
+    if (name && phone) {
       onSubmit({
         name,
         email,
