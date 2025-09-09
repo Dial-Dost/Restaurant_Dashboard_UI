@@ -1,7 +1,7 @@
+
 "use client";
 
-import config from "@/context/server";
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import {
   Card,
   CardContent,
@@ -31,69 +31,94 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PlusCircle } from "lucide-react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
 
-type Customer = {
-  name: string;
-  email: string;
-  phone: string;
-  booking_count: number;
-  status: string;
-};
+
+const initialCustomers = [
+  {
+    name: "Liam Johnson",
+    email: "liam@example.com",
+    phone: "555-0101",
+    totalBookings: 5,
+    status: "In-house",
+    billAmount: 250.00,
+  },
+  {
+    name: "Olivia Smith",
+    email: "olivia@example.com",
+    phone: "555-0102",
+    totalBookings: 2,
+    status: "Departed",
+    billAmount: 150.00,
+  },
+  {
+    name: "Noah Williams",
+    email: "noah@example.com",
+    phone: "555-0103",
+    totalBookings: 8,
+    status: "In-house",
+    billAmount: 350.00,
+  },
+  {
+    name: "Emma Brown",
+    email: "emma@example.com",
+    phone: "555-0104",
+    totalBookings: 1,
+    status: "Departed",
+    billAmount: 450.00,
+  },
+  {
+    name: "James Jones",
+    email: "james@example.com",
+    phone: "555-0105",
+    totalBookings: 12,
+    status: "In-house",
+    billAmount: 550.00,
+  },
+  {
+    name: "Sophia Garcia",
+    email: "sophia@example.com",
+    phone: "555-0106",
+    totalBookings: 3,
+    status: "Departed",
+    billAmount: 120.50,
+  },
+  {
+    name: "Logan Miller",
+    email: "logan@example.com",
+    phone: "555-0107",
+    totalBookings: 7,
+    status: "In-house",
+    billAmount: 280.75,
+  },
+];
+
+type Customer = (typeof initialCustomers)[0];
+
+const customerSchema = z.object({
+    name: z.string().min(1, "Name is required."),
+    email: z.string().email("Invalid email address."),
+    phone: z.string().min(10, "Phone number is too short."),
+    billAmount: z.coerce.number().positive("Bill amount must be positive."),
+});
+
+type CustomerFormData = z.infer<typeof customerSchema>;
 
 export default function CustomersPage() {
-  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [customers, setCustomers] = useState(initialCustomers);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
 
-  async function fetch_customers(): Promise<boolean> {
-    let response = await fetch(config.server_url + "/get-customers");
-
-    if (response.ok) {
-      let data = await response.json();
-
-      setCustomers(
-        data.map((x: any) => {
-          return {
-            name: x.name,
-            email: x.email,
-            phone: x.phone_number,
-            booking_count: x.booking_count,
-            status: x.has_booking ? "In-house" : "Departed",
-          };
-        }),
-      );
-      return true;
-    }
-    return false;
-  }
-
-  useEffect(() => {
-    fetch_customers();
-  }, []);
-
-  const handleAddCustomer = async (
-    newCustomerData: Omit<Customer, "booking_count" | "status">,
-  ) => {
-    const newCustomer = {
-      customer: {
-        name: newCustomerData.name,
-        number: newCustomerData.phone,
-        email: newCustomerData.email,
-      },
+  const handleAddCustomer = (data: CustomerFormData) => {
+    const newCustomer: Customer = {
+      ...data,
+      totalBookings: 1,
+      status: 'In-house',
     };
-
-    let response = await fetch(config.server_url + "/add-customer", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(newCustomerData),
-    });
-
-    if (response.ok) {
-      fetch_customers();
-      setIsDialogOpen(false);
-    }
-  };
+    setCustomers([...customers, newCustomer]);
+    setIsDialogOpen(false);
+  }
 
   return (
     <div className="grid gap-4 md:gap-8">
@@ -113,7 +138,7 @@ export default function CustomersPage() {
                 Fill in the details for the new customer.
               </DialogDescription>
             </DialogHeader>
-            <CustomerForm onSubmit={handleAddCustomer} />
+            <CustomerForm onSubmit={handleAddCustomer} afterSubmit={() => setIsDialogOpen(false)} />
           </DialogContent>
         </Dialog>
       </div>
@@ -129,38 +154,25 @@ export default function CustomersPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>Name</TableHead>
-                <TableHead>Phone Number</TableHead>
-                <TableHead>Email id</TableHead>
-                <TableHead className="hidden md:table-cell text-center">
-                  Total Bookings
-                </TableHead>
+                <TableHead className="hidden md:table-cell text-center">Total Bookings</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead className="text-right">Bill Amount</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {customers.map((customer, index) => (
-                <TableRow key={index}>
+              {customers.map((customer) => (
+                <TableRow key={customer.email}>
                   <TableCell className="font-medium">
                     <div>{customer.name}</div>
+                    <div className="text-sm text-muted-foreground md:hidden">{customer.email}</div>
                   </TableCell>
-                  <TableCell className="font-medium">
-                    <div>{customer.phone}</div>
-                  </TableCell>
-                  <TableCell className="font-medium">
-                    <div>{customer.email ? customer.email : "N.A."}</div>
-                  </TableCell>
-                  <TableCell className="hidden md:table-cell text-center">
-                    {customer.booking_count}
-                  </TableCell>
+                  <TableCell className="hidden md:table-cell text-center">{customer.totalBookings}</TableCell>
                   <TableCell>
-                    <Badge
-                      variant={
-                        customer.status === "In-house" ? "default" : "secondary"
-                      }
-                    >
+                    <Badge variant={customer.status === "In-house" ? "default" : "secondary"}>
                       {customer.status}
                     </Badge>
                   </TableCell>
+                  <TableCell className="text-right">${customer.billAmount.toFixed(2)}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -171,67 +183,50 @@ export default function CustomersPage() {
   );
 }
 
-function CustomerForm({
-  onSubmit,
-}: {
-  onSubmit: (data: Omit<Customer, "booking_count" | "status">) => void;
-}) {
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [phone, setPhone] = useState("");
 
-  const handleSubmit = () => {
-    if (name && phone) {
-      onSubmit({
-        name,
-        email,
-        phone,
-      });
+function CustomerForm({ onSubmit, afterSubmit }: { onSubmit: (data: CustomerFormData) => void; afterSubmit: () => void; }) {
+    const { register, handleSubmit, formState: { errors } } = useForm<CustomerFormData>({
+        resolver: zodResolver(customerSchema)
+    });
+
+    const handleFormSubmit = (data: CustomerFormData) => {
+        onSubmit(data);
+        afterSubmit();
     }
-  };
 
-  return (
-    <div className="grid gap-4 py-4">
-      <div className="grid grid-cols-4 items-center gap-4">
-        <Label htmlFor="name" className="text-right">
-          Name
-        </Label>
-        <Input
-          id="name"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          className="col-span-3"
-          placeholder="John Doe"
-        />
-      </div>
-      <div className="grid grid-cols-4 items-center gap-4">
-        <Label htmlFor="email" className="text-right">
-          Email
-        </Label>
-        <Input
-          id="email"
-          type="email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          className="col-span-3"
-          placeholder="john.doe@example.com"
-        />
-      </div>
-      <div className="grid grid-cols-4 items-center gap-4">
-        <Label htmlFor="phone" className="text-right">
-          Phone
-        </Label>
-        <Input
-          id="phone"
-          value={phone}
-          onChange={(e) => setPhone(e.target.value)}
-          className="col-span-3"
-          placeholder="555-123-4567"
-        />
-      </div>
-      <DialogFooter>
-        <Button onClick={handleSubmit}>Add Customer</Button>
-      </DialogFooter>
-    </div>
-  );
+    return (
+        <form onSubmit={handleSubmit(handleFormSubmit)} className="grid gap-4 py-4">
+          <div className="grid grid-cols-4 items-center gap-4">
+            <Label htmlFor="name" className="text-right">Name</Label>
+            <div className="col-span-3">
+              <Input id="name" {...register("name")} placeholder="John Doe" />
+              {errors.name && <p className="text-sm text-destructive mt-1">{errors.name.message}</p>}
+            </div>
+          </div>
+          <div className="grid grid-cols-4 items-center gap-4">
+            <Label htmlFor="email" className="text-right">Email</Label>
+            <div className="col-span-3">
+              <Input id="email" type="email" {...register("email")} placeholder="john.doe@example.com" />
+              {errors.email && <p className="text-sm text-destructive mt-1">{errors.email.message}</p>}
+            </div>
+          </div>
+          <div className="grid grid-cols-4 items-center gap-4">
+            <Label htmlFor="phone" className="text-right">Phone</Label>
+            <div className="col-span-3">
+              <Input id="phone" {...register("phone")} placeholder="555-123-4567" />
+              {errors.phone && <p className="text-sm text-destructive mt-1">{errors.phone.message}</p>}
+            </div>
+          </div>
+          <div className="grid grid-cols-4 items-center gap-4">
+            <Label htmlFor="billAmount" className="text-right">Bill Amount</Label>
+            <div className="col-span-3">
+              <Input id="billAmount" type="number" step="0.01" {...register("billAmount")} placeholder="e.g., 75.50" />
+              {errors.billAmount && <p className="text-sm text-destructive mt-1">{errors.billAmount.message}</p>}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="submit">Add Customer</Button>
+          </DialogFooter>
+        </form>
+    )
 }

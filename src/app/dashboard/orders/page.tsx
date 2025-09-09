@@ -1,0 +1,665 @@
+
+
+"use client";
+
+import React, { useState, useRef, forwardRef, useEffect } from "react";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { MoreHorizontal, PlusCircle, Clock, Printer, Trash2, X } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubTrigger,
+  DropdownMenuSubContent
+} from "@/components/ui/dropdown-menu";
+import { useRouter } from "next/navigation";
+import { Switch } from "@/components/ui/switch";
+import { Combobox } from "@/components/ui/combobox";
+
+
+type OrderItem = {
+    id: string;
+    name: string;
+    quantity: number;
+    price: number;
+    orderedAt: string;
+};
+
+type OrderStatus = "Preparing" | "Served" | "Paid";
+
+type Tax = {
+  id: string;
+  name: string;
+  percentage: number;
+};
+
+type Order = {
+  id: string;
+  table: string;
+  customer: string;
+  items: OrderItem[];
+  subtotal: number;
+  serviceChargePercentage?: number;
+  taxes?: Tax[];
+  applyServiceCharge: boolean;
+  total: number;
+  status: OrderStatus;
+};
+
+const MENU_ITEMS = [
+    { name: "Margherita Pizza", price: 12.50 },
+    { name: "Penne alla Vodka", price: 18.00 },
+    { name: "Ribeye Steak", price: 35.00 },
+    { name: "Fish Tacos", price: 6.00 },
+    { name: "Caesar Salad", price: 12.00 },
+    { name: "Coke", price: 3.00 },
+    { name: "Red Wine", price: 9.50 },
+    { name: "Sparkling Water", price: 4.00 },
+    { name: "Lager Beer", price: 7.50 },
+];
+
+const initialOrders: Order[] = [
+  {
+    id: "1",
+    table: "T2",
+    customer: "Liam Johnson",
+    items: [
+        { id: "i1", name: "Margherita Pizza", quantity: 2, price: 12.50, orderedAt: "7:05 PM" },
+        { id: "i2", name: "Coke", quantity: 1, price: 3.00, orderedAt: "7:05 PM" },
+    ],
+    subtotal: 28.00,
+    total: 28.00,
+    status: "Preparing",
+    applyServiceCharge: true,
+  },
+  {
+    id: "2",
+    table: "T6",
+    customer: "Olivia Smith",
+    items: [
+        { id: "i3", name: "Penne alla Vodka", quantity: 1, price: 18.00, orderedAt: "7:20 PM" },
+        { id: "i4", name: "Caesar Salad", quantity: 1, price: 12.00, orderedAt: "7:20 PM" },
+        { id: "i5", name: "Red Wine", quantity: 2, price: 9.50, orderedAt: "7:25 PM" },
+    ],
+    subtotal: 49.00,
+    total: 49.00,
+    status: "Served",
+    applyServiceCharge: true,
+  },
+  {
+    id: "3",
+    table: "T8",
+    customer: "Noah Williams",
+    items: [
+        { id: "i6", name: "Ribeye Steak", quantity: 1, price: 35.00, orderedAt: "8:02 PM" },
+        { id: "i7", name: "Sparkling Water", quantity: 1, price: 4.00, orderedAt: "8:02 PM" },
+    ],
+    subtotal: 39.00,
+    taxes: [{ id: 't1', name: 'VAT', percentage: 8 }],
+    serviceChargePercentage: 10,
+    total: 46.02,
+    status: "Preparing",
+    applyServiceCharge: true,
+  },
+  {
+    id: "4",
+    table: "T4",
+    customer: "Emma Brown",
+     items: [
+        { id: "i8", name: "Fish Tacos", quantity: 3, price: 6.00, orderedAt: "8:35 PM" },
+        { id: "i9", name: "Lager Beer", quantity: 2, price: 7.50, orderedAt: "8:35 PM" },
+    ],
+    subtotal: 33.00,
+    total: 33.00,
+    status: "Paid",
+    applyServiceCharge: false,
+  },
+];
+
+const calculateServiceCharge = (subtotal: number, percentage?: number, apply?: boolean) => {
+  if (!apply || !percentage) return 0;
+  return subtotal * (percentage / 100);
+}
+
+const calculateTaxes = (subtotal: number, taxes?: Tax[]) => {
+  if (!taxes) return [];
+  return taxes.map(tax => ({
+    ...tax,
+    amount: subtotal * (tax.percentage / 100)
+  }));
+}
+
+const calculateTotal = (order: Omit<Order, 'total'>) => {
+    const serviceCharge = calculateServiceCharge(order.subtotal, order.serviceChargePercentage, order.applyServiceCharge);
+    const totalTaxAmount = calculateTaxes(order.subtotal, order.taxes).reduce((acc, tax) => acc + tax.amount, 0);
+    return order.subtotal + serviceCharge + totalTaxAmount;
+}
+
+export default function OrdersPage() {
+  const [orders, setOrders] = useState(initialOrders);
+  const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
+  const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
+  const [isDetailsOpen, setIsDetailsOpen] = useState(false);
+  const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
+
+  const triggerPrint = (order: Order) => {
+    const calculatedTaxes = calculateTaxes(order.subtotal, order.taxes);
+    const orderWithCalculatedCharges = {
+        ...order,
+        serviceCharge: calculateServiceCharge(order.subtotal, order.serviceChargePercentage, order.applyServiceCharge),
+        calculatedTaxes,
+    };
+    const orderData = encodeURIComponent(JSON.stringify(orderWithCalculatedCharges));
+    const url = `/dashboard/orders/print?order=${orderData}`;
+    window.open(url, '_blank');
+    updateOrderStatus(order.id, "Paid");
+  }
+  
+  const handleAddOrder = (newOrderData: Omit<Order, 'id' | 'status' | 'items' | 'subtotal' | 'total' | 'applyServiceCharge'> & { items: string, subtotal: string }) => {
+    const subtotal = parseFloat(newOrderData.subtotal);
+    const newOrder: Order = {
+        id: (orders.length + 1).toString(),
+        table: newOrderData.table,
+        customer: newOrderData.customer,
+        status: "Preparing",
+        items: [{
+            id: `i${Date.now()}`,
+            name: newOrderData.items,
+            quantity: 1,
+            price: subtotal,
+            orderedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit'})
+        }],
+        subtotal: subtotal,
+        total: subtotal,
+        applyServiceCharge: true,
+    };
+    setOrders([...orders, newOrder]);
+    setIsAddDialogOpen(false);
+  }
+
+  const handleEditOrder = (editedOrderData: Omit<Order, 'total'>) => {
+    const total = calculateTotal(editedOrderData);
+    const updatedOrder: Order = { ...editedOrderData, total };
+    setOrders(orders.map(o => o.id === updatedOrder.id ? updatedOrder : o));
+    setIsEditDialogOpen(false);
+    setSelectedOrder(null);
+  }
+
+  const handleAddItemToOrder = (orderId: string, itemName: string, itemPrice: number) => {
+    setOrders(orders.map(order => {
+        if(order.id === orderId) {
+            const existingItem = order.items.find(item => item.name.toLowerCase() === itemName.toLowerCase());
+
+            let newItems;
+            if (existingItem) {
+                newItems = order.items.map(item => item.id === existingItem.id ? { ...item, quantity: item.quantity + 1 } : item);
+            } else {
+                newItems = [...order.items, {
+                    id: `i${Date.now()}`,
+                    name: itemName,
+                    quantity: 1,
+                    price: itemPrice,
+                    orderedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit'})
+                }];
+            }
+            
+            const newSubtotal = newItems.reduce((acc, item) => acc + item.price * item.quantity, 0);
+            const newTotal = calculateTotal({ ...order, items: newItems, subtotal: newSubtotal });
+            return { ...order, items: newItems, subtotal: newSubtotal, total: newTotal };
+        }
+        return order;
+    }));
+  }
+
+  const handleRemoveItemFromOrder = (orderId: string, itemId: string) => {
+     setOrders(orders.map(order => {
+        if(order.id === orderId) {
+            const newItems = order.items.filter(item => item.id !== itemId);
+            const newSubtotal = newItems.reduce((acc, item) => acc + item.price * item.quantity, 0);
+            const newTotal = calculateTotal({ ...order, items: newItems, subtotal: newSubtotal });
+            return { ...order, items: newItems, subtotal: newSubtotal, total: newTotal };
+        }
+        return order;
+    }));
+  }
+
+
+  const getStatusVariant = (status: string) => {
+    switch (status) {
+      case "Preparing":
+        return "secondary";
+      case "Served":
+        return "default";
+      case "Paid":
+        return "outline";
+      default:
+        return "outline";
+    }
+  };
+  
+  const handleRowClick = (order: Order) => {
+    setSelectedOrder(order);
+    setIsDetailsOpen(true);
+  }
+
+  const updateOrderStatus = (orderId: string, status: OrderStatus) => {
+    setOrders(orders.map(order => order.id === orderId ? { ...order, status } : order));
+  };
+
+
+  return (
+    <div className="grid gap-4 md:gap-8">
+      <div className="flex items-center justify-between">
+        <h1 className="text-lg font-semibold md:text-2xl">Orders</h1>
+        <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+          <DialogTrigger asChild>
+            <Button>
+                <PlusCircle className="mr-2 h-4 w-4" />
+                Add Order
+            </Button>
+          </DialogTrigger>
+          <DialogContent className="sm:max-w-[425px]">
+            <DialogHeader>
+              <DialogTitle>Add New Order</DialogTitle>
+              <DialogDescription>
+                Fill in the details for the new order.
+              </DialogDescription>
+            </DialogHeader>
+            <OrderForm onSubmit={handleAddOrder} />
+          </DialogContent>
+        </Dialog>
+      </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Current Orders</CardTitle>
+          <CardDescription>
+            A list of all active orders in the restaurant. Click a row to see details.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Table</TableHead>
+                <TableHead>Order Details</TableHead>
+                <TableHead className="hidden md:table-cell text-right">Total</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>
+                  <span className="sr-only">Actions</span>
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {orders.map((order) => (
+                <TableRow key={order.id} onClick={() => handleRowClick(order)} className="cursor-pointer">
+                  <TableCell className="font-medium">
+                    <div>{order.table}</div>
+                    <div className="text-sm text-muted-foreground">{order.customer}</div>
+                  </TableCell>
+                  <TableCell>
+                    <div className="font-medium">{order.items.map(i => `${i.quantity}x ${i.name}`).join(', ')}</div>
+                  </TableCell>
+                  <TableCell className="hidden md:table-cell text-right">${order.total.toFixed(2)}</TableCell>
+                  <TableCell>
+                    <Badge variant={getStatusVariant(order.status)}>
+                      {order.status}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button aria-haspopup="true" size="icon" variant="ghost" onClick={(e) => e.stopPropagation()}>
+                          <MoreHorizontal className="h-4 w-4" />
+                          <span className="sr-only">Toggle menu</span>
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuLabel>Actions</DropdownMenuLabel>
+                        <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleRowClick(order)}}>View Details</DropdownMenuItem>
+                        <DropdownMenuItem onClick={(e) => { e.stopPropagation(); setSelectedOrder(order); setIsEditDialogOpen(true); }}>Edit Bill</DropdownMenuItem>
+                        <DropdownMenuSub>
+                            <DropdownMenuSubTrigger>Update Status</DropdownMenuSubTrigger>
+                            <DropdownMenuSubContent>
+                                <DropdownMenuItem onClick={(e) => {e.stopPropagation(); updateOrderStatus(order.id, 'Preparing')}}>Preparing</DropdownMenuItem>
+                                <DropdownMenuItem onClick={(e) => {e.stopPropagation(); updateOrderStatus(order.id, 'Served')}}>Served</DropdownMenuItem>
+                                <DropdownMenuItem onClick={(e) => {e.stopPropagation(); updateOrderStatus(order.id, 'Paid')}}>Paid</DropdownMenuItem>
+                            </DropdownMenuSubContent>
+                        </DropdownMenuSub>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem onClick={(e) => { e.stopPropagation(); triggerPrint(order); }}>
+                            <Printer className="mr-2 h-4 w-4" />
+                            Print Bill
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+      
+      {selectedOrder && <OrderDetailsDialog 
+        order={selectedOrder} 
+        open={isDetailsOpen} 
+        onOpenChange={(isOpen) => { 
+          if (!isOpen) setSelectedOrder(null);
+          setIsDetailsOpen(isOpen);
+        }}
+        onAddItem={handleAddItemToOrder}
+        onRemoveItem={handleRemoveItemFromOrder}
+      />}
+
+      {selectedOrder && <EditOrderDialog
+            key={selectedOrder.id}
+            order={selectedOrder} 
+            open={isEditDialogOpen}
+            onOpenChange={(isOpen) => {
+                if(!isOpen) setSelectedOrder(null);
+                setIsEditDialogOpen(isOpen);
+            }}
+            onSubmit={handleEditOrder}
+        />}
+    </div>
+  );
+}
+
+function OrderForm({ onSubmit }: { onSubmit: (data: Omit<Order, 'id' | 'status' | 'items' | 'subtotal' | 'total' | 'applyServiceCharge'> & { items: string, subtotal: string }) => void }) {
+    const [table, setTable] = useState("");
+    const [customer, setCustomer] = useState("");
+    const [items, setItems] = useState("");
+    const [subtotal, setSubtotal] = useState("");
+
+    const handleSubmit = () => {
+        if(table && customer && items && subtotal) {
+            onSubmit({
+                table,
+                customer,
+                items,
+                subtotal
+            });
+        }
+    }
+
+    return (
+        <div className="grid gap-4 py-4">
+          <div className="grid grid-cols-4 items-center gap-4">
+            <Label htmlFor="table" className="text-right">Table</Label>
+            <Input id="table" value={table} onChange={(e) => setTable(e.target.value)} className="col-span-3" placeholder="e.g., T5" />
+          </div>
+          <div className="grid grid-cols-4 items-center gap-4">
+            <Label htmlFor="customer" className="text-right">Customer</Label>
+            <Input id="customer" value={customer} onChange={(e) => setCustomer(e.target.value)} className="col-span-3" placeholder="John Doe" />
+          </div>
+          <div className="grid grid-cols-4 items-center gap-4">
+            <Label htmlFor="items" className="text-right">Items</Label>
+            <Textarea id="items" value={items} onChange={(e) => setItems(e.target.value)} className="col-span-3" placeholder="e.g., 2x Pizza, 1x Coke" />
+          </div>
+          <div className="grid grid-cols-4 items-center gap-4">
+            <Label htmlFor="subtotal" className="text-right">Total Bill</Label>
+            <Input id="subtotal" type="number" value={subtotal} onChange={(e) => setSubtotal(e.target.value)} className="col-span-3" placeholder="e.g., 45.50" />
+          </div>
+          <DialogFooter>
+            <Button onClick={handleSubmit}>Save Order</Button>
+          </DialogFooter>
+        </div>
+    )
+}
+
+const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit }: { order: Order, open: boolean, onOpenChange: (open: boolean) => void, onSubmit: (data: Omit<Order, 'total'>) => void}) => {
+    const [serviceChargePerc, setServiceChargePerc] = useState(order.serviceChargePercentage?.toString() || "");
+    const [taxes, setTaxes] = useState<Tax[]>(order.taxes || []);
+    const [applyServiceCharge, setApplyServiceCharge] = useState(order.applyServiceCharge);
+    
+    useEffect(() => {
+        setServiceChargePerc(order.serviceChargePercentage?.toString() || "");
+        setTaxes(order.taxes || []);
+        setApplyServiceCharge(order.applyServiceCharge);
+    }, [order]);
+
+    const handleTaxChange = (id: string, field: 'name' | 'percentage', value: string) => {
+        setTaxes(taxes.map(tax => tax.id === id ? { ...tax, [field]: field === 'percentage' ? (parseFloat(value) || 0) : value } : tax));
+    }
+
+    const addTax = () => {
+        setTaxes([...taxes, { id: `t${Date.now()}`, name: "", percentage: 0 }]);
+    }
+    
+    const removeTax = (id: string) => {
+        setTaxes(taxes.filter(tax => tax.id !== id));
+    }
+
+    const handleSubmit = () => {
+        const updatedOrder = {
+            ...order,
+            serviceChargePercentage: serviceChargePerc ? parseFloat(serviceChargePerc) : undefined,
+            taxes: taxes.filter(t => t.name && t.percentage > 0),
+            applyServiceCharge,
+        };
+        onSubmit(updatedOrder);
+    }
+    
+    const serviceChargeAmount = calculateServiceCharge(order.subtotal, parseFloat(serviceChargePerc), applyServiceCharge);
+    const calculatedTaxesWithAmounts = calculateTaxes(order.subtotal, taxes);
+    const totalTaxAmount = calculatedTaxesWithAmounts.reduce((acc, tax) => acc + tax.amount, 0);
+    const totalAmount = order.subtotal + serviceChargeAmount + totalTaxAmount;
+
+    return (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <DialogContent className="sm:max-w-lg">
+                <DialogHeader>
+                    <DialogTitle>Edit Bill - {order.table}</DialogTitle>
+                    <DialogDescription>
+                       Add service charges and taxes. These are percentage-based.
+                    </DialogDescription>
+                </DialogHeader>
+                <div className="grid gap-6 py-4">
+                    <div className="grid grid-cols-3 items-center gap-4">
+                        <Label htmlFor="subtotal">Subtotal</Label>
+                        <Input id="subtotal" type="number" value={order.subtotal.toFixed(2)} className="col-span-2" disabled />
+                    </div>
+                    <div className="grid grid-cols-3 items-center gap-4">
+                        <Label>Service Charge</Label>
+                        <div className="col-span-2 flex items-center space-x-2">
+                            <Switch id="applyServiceCharge" checked={applyServiceCharge} onCheckedChange={setApplyServiceCharge}/>
+                            <Label htmlFor="applyServiceCharge" className="text-sm font-normal">{applyServiceCharge ? 'Enabled' : 'Disabled'}</Label>
+                        </div>
+                    </div>
+                    <div className="grid grid-cols-3 items-center gap-4">
+                        <Label htmlFor="serviceCharge">Percentage (%)</Label>
+                        <Input id="serviceCharge" type="number" value={serviceChargePerc} onChange={(e) => setServiceChargePerc(e.target.value)} className="col-span-2" placeholder="e.g., 10" disabled={!applyServiceCharge}/>
+                    </div>
+                    
+                    <div className="grid grid-cols-1 gap-y-2">
+                        <Label>Taxes</Label>
+                        <div className="space-y-2">
+                            {taxes.map((tax) => (
+                                <div key={tax.id} className="grid grid-cols-12 items-center gap-2">
+                                    <Input placeholder="Tax Name (e.g., VAT)" value={tax.name} onChange={(e) => handleTaxChange(tax.id, 'name', e.target.value)} className="col-span-7"/>
+                                    <Input placeholder="%" type="number" value={tax.percentage} onChange={(e) => handleTaxChange(tax.id, 'percentage', e.target.value)} className="col-span-3"/>
+                                    <Button variant="ghost" size="icon" onClick={() => removeTax(tax.id)} className="col-span-2"><X className="h-4 w-4"/></Button>
+                                </div>
+                            ))}
+                        </div>
+                        <Button variant="outline" size="sm" onClick={addTax} className="w-full mt-2">Add Tax</Button>
+                    </div>
+                  
+                    <div className="border-t pt-4 mt-2">
+                        <div className="flex justify-between text-sm">
+                            <span>Calculated Service Charge:</span>
+                            <span>{applyServiceCharge ? `$${serviceChargeAmount.toFixed(2)}` : '$0.00'}</span>
+                        </div>
+                        {calculatedTaxesWithAmounts.map(tax => (
+                            <div key={tax.id} className="flex justify-between text-sm">
+                                <span>{tax.name} ({tax.percentage}%):</span>
+                                <span>${tax.amount.toFixed(2)}</span>
+                            </div>
+                        ))}
+                        <div className="flex justify-between font-bold text-lg mt-2 border-t pt-2">
+                            <span>Final Total:</span>
+                            <span>${totalAmount.toFixed(2)}</span>
+                        </div>
+                    </div>
+                </div>
+                <DialogFooter>
+                    <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+                    <Button onClick={handleSubmit}>Save Changes</Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+    )
+});
+EditOrderDialog.displayName = 'EditOrderDialog';
+
+const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onAddItem, onRemoveItem }: { order: Order | null, open: boolean, onOpenChange: (open: boolean) => void, onAddItem: (orderId: string, name: string, price: number) => void, onRemoveItem: (orderId: string, itemId: string) => void }) => {
+    const [newItemName, setNewItemName] = useState("");
+    const [newItemPrice, setNewItemPrice] = useState("");
+    
+    useEffect(() => {
+        const selectedMenuItem = MENU_ITEMS.find(item => item.name.toLowerCase() === newItemName.toLowerCase());
+        if (selectedMenuItem) {
+            setNewItemPrice(selectedMenuItem.price.toString());
+        }
+    }, [newItemName]);
+
+    if (!order) return null;
+
+    const handleAddItem = () => {
+        if(newItemName && newItemPrice) {
+            onAddItem(order.id, newItemName, parseFloat(newItemPrice));
+            setNewItemName("");
+            setNewItemPrice("");
+        }
+    }
+
+    const serviceCharge = calculateServiceCharge(order.subtotal, order.serviceChargePercentage, order.applyServiceCharge);
+    const calculatedTaxes = calculateTaxes(order.subtotal, order.taxes);
+    const totalTaxAmount = calculatedTaxes.reduce((sum, tax) => sum + tax.amount, 0);
+    const total = order.subtotal + serviceCharge + totalTaxAmount;
+    
+    const menuOptions = MENU_ITEMS.map(item => ({ value: item.name.toLowerCase(), label: item.name }));
+
+
+    return (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <DialogContent className="sm:max-w-2xl">
+                <DialogHeader>
+                    <DialogTitle>Order Details - {order.table}</DialogTitle>
+                     <DialogDescription>
+                        <span className="flex items-center gap-2">
+                            <span>Customer: {order.customer} | Status:</span>
+                            <Badge variant={order.status === 'Preparing' ? 'secondary' : order.status === 'Served' ? 'default' : 'outline'} className="text-xs">{order.status}</Badge>
+                        </span>
+                    </DialogDescription>
+                </DialogHeader>
+                <div className="p-4">
+                    <div className="max-h-[40vh] overflow-y-auto my-4">
+                        <Table>
+                            <TableHeader>
+                                <TableRow>
+                                    <TableHead>Item</TableHead>
+                                    <TableHead className="text-center">Qty</TableHead>
+                                    <TableHead className="text-center">Time</TableHead>
+                                    <TableHead className="text-right">Price</TableHead>
+                                    <TableHead className="text-right">Actions</TableHead>
+                                </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                                {order.items.map(item => (
+                                    <TableRow key={item.id}>
+                                        <TableCell className="font-medium">{item.name}</TableCell>
+                                        <TableCell className="text-center">{item.quantity}</TableCell>
+                                        <TableCell className="text-muted-foreground text-center">
+                                          <div className="flex items-center justify-center">
+                                            <Clock className="h-3 w-3 mr-1"/>
+                                            {item.orderedAt}
+                                          </div>
+                                        </TableCell>
+                                        <TableCell className="text-right">${(item.price * item.quantity).toFixed(2)}</TableCell>
+                                        <TableCell className="text-right">
+                                            <Button variant="ghost" size="icon" onClick={() => onRemoveItem(order.id, item.id)}>
+                                                <Trash2 className="h-4 w-4 text-destructive"/>
+                                            </Button>
+                                        </TableCell>
+                                    </TableRow>
+                                ))}
+                            </TableBody>
+                        </Table>
+                    </div>
+                    <div className="grid grid-cols-6 gap-2 my-4 border-t pt-4">
+                         <Combobox
+                            options={menuOptions}
+                            value={newItemName.toLowerCase()}
+                            onChange={(value) => {
+                                const selectedItem = MENU_ITEMS.find(item => item.name.toLowerCase() === value);
+                                setNewItemName(selectedItem?.name || value);
+                            }}
+                            placeholder="Select or type item"
+                            searchPlaceholder="Search for an item..."
+                            emptyPlaceholder="No items found."
+                            className="col-span-3"
+                        />
+                        <Input placeholder="Price" type="number" value={newItemPrice} onChange={e => setNewItemPrice(e.target.value)} className="col-span-2"/>
+                        <Button onClick={handleAddItem} className="col-span-1">Add</Button>
+                    </div>
+                    <div className="space-y-2 text-sm">
+                        <div className="flex justify-between border-t pt-2">
+                            <span>Subtotal</span>
+                            <span>${order.subtotal.toFixed(2)}</span>
+                        </div>
+                         {order.serviceChargePercentage && (
+                            <div className="flex justify-between">
+                                <span>Service Charge ({order.serviceChargePercentage}%)</span>
+                                <span>{order.applyServiceCharge ? `$${serviceCharge.toFixed(2)}` : 'Opted-out'}</span>
+                            </div>
+                        )}
+                        {calculatedTaxes.map(tax => (
+                            <div key={tax.id} className="flex justify-between">
+                                <span>{tax.name} ({tax.percentage}%)</span>
+                                <span>${tax.amount.toFixed(2)}</span>
+                            </div>
+                        ))}
+                         <div className="flex justify-between font-bold text-lg border-t pt-2 mt-2">
+                            <span>Total:</span>
+                            <span>${total.toFixed(2)}</span>
+                        </div>
+                    </div>
+                </div>
+            </DialogContent>
+        </Dialog>
+    )
+});
+OrderDetailsDialog.displayName = 'OrderDetailsDialog';

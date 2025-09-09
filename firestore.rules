@@ -1,0 +1,25 @@
+
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Restaurants can be read by anyone to check for existence,
+    // and created by anyone during the sign-up process.
+    match /restaurants/{restaurantId} {
+      allow read, create: if true;
+
+      // Employees can only be managed by authenticated users.
+      // This is a simple rule for now, can be expanded to be more granular.
+      match /employees/{employeeId} {
+        allow read, create: if request.auth != null;
+      }
+      
+      // Allow any authenticated user to interact with other collections for now.
+      // TODO: Secure these collections with more specific rules.
+      match /{document=**} {
+        allow read, write: if request.auth != null;
+      }
+    }
+  }
+}

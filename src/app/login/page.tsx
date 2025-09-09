@@ -1,3 +1,4 @@
+
 "use client";
 
 import { Button } from "@/components/ui/button";
@@ -13,13 +14,30 @@ import { Label } from "@/components/ui/label";
 import { ChefHat } from "lucide-react";
 import { useRouter } from "next/navigation";
 import Link from 'next/link';
+import { useState } from "react";
+import { useToast } from "@/hooks/use-toast";
+import { findRestaurantByName } from "@/lib/db";
 
 export default function LoginPage() {
   const router = useRouter();
+  const [restaurantName, setRestaurantName] = useState("");
+  const { toast } = useToast();
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    router.push("/dashboard");
+    if (!restaurantName) return;
+
+    const restaurant = findRestaurantByName(restaurantName);
+
+    if (restaurant) {
+      router.push(`/login/employee?restaurant=${encodeURIComponent(restaurant.name)}`);
+    } else {
+       toast({
+        title: "Restaurant Not Found",
+        description: "This restaurant is not registered. Please sign up.",
+        variant: "destructive",
+      });
+    }
   };
 
   return (
@@ -31,9 +49,9 @@ export default function LoginPage() {
                <div className="flex justify-center mb-4">
                  <ChefHat className="h-12 w-12 text-primary" />
                </div>
-              <CardTitle className="text-2xl font-bold">Admin Login</CardTitle>
+              <CardTitle className="text-2xl font-bold">Welcome to CuisineFlow</CardTitle>
               <CardDescription>
-                Enter your credentials to access the dashboard.
+                Please enter your restaurant's name to begin.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -42,28 +60,21 @@ export default function LoginPage() {
                 <Input
                   id="restaurantName"
                   type="text"
-                  placeholder="CuisineFlow"
+                  placeholder="e.g., The Grand Bistro"
                   required
+                  value={restaurantName}
+                  onChange={(e) => setRestaurantName(e.target.value)}
                 />
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="email">Email</Label>
-                <Input
-                  id="email"
-                  type="email"
-                  placeholder="manager@cuisineflow.com"
-                  required
-                />
-              </div>
-              <div className="space-y-2">
-                <div className="flex items-center">
-                  <Label htmlFor="password">Password</Label>
-                </div>
-                <Input id="password" type="password" required />
-              </div>
-               <Button type="submit" className="w-full">
-                Sign In
+              <Button type="submit" className="w-full">
+                Continue
               </Button>
+               <div className="mt-4 text-center text-sm">
+                Need to register your restaurant?{" "}
+                <Link href="/signup/restaurant" className="underline">
+                  Sign up here
+                </Link>
+              </div>
             </CardContent>
           </Card>
         </form>

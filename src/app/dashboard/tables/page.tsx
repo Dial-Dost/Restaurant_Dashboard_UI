@@ -1,14 +1,8 @@
+
 "use client";
 
-import config from "@/context/server";
-import { useEffect, useState } from "react";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  CardDescription,
-} from "@/components/ui/card";
+import { useState } from "react";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,96 +19,59 @@ import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { Users, Armchair, PlusCircle } from "lucide-react";
 
-type Table = {
-  id: number;
-  name: string;
-  capacity: number;
-  status: string;
-};
+const initialTablesData = [
+  { id: 1, name: "T1", capacity: 2, status: "Available" },
+  { id: 2, name: "T2", capacity: 2, status: "Booked" },
+  { id: 3, name: "T3", capacity: 2, status: "Available" },
+  { id: 4, name: "T4", capacity: 4, status: "Available" },
+  { id: 5, name: "T5", capacity: 4, status: "Available" },
+  { id: 6, name: "T6", capacity: 4, status: "Booked" },
+  { id: 7, name: "T7", capacity: 4, status: "Available" },
+  { id: 8, name: "T8", capacity: 6, status: "Booked" },
+  { id: 9, name: "T9", capacity: 6, status: "Available" },
+  { id: 10, name: "T10", capacity: 8, status: "Available" },
+];
 
-type _ServerTable = {
-  name: string;
-  capacity: number;
-  booked: boolean;
-};
-
-function convertServerTable(tables: any[]) {
-  return tables.map((table, index) => ({
-    id: index + 1,
-    name: table.table_name,
-    capacity: table.capacity,
-    status: table.booked ? "Booked" : "Available",
-  }));
-}
+type Table = typeof initialTablesData[0];
 
 const groupTablesByCapacity = (tables: Table[]) => {
-  return tables.reduce(
-    (acc, table) => {
-      const capacity = table.capacity;
-      if (!acc[capacity]) {
-        acc[capacity] = [];
-      }
-      acc[capacity].push(table);
-      // Sort tables inside each capacity group by name
-      acc[capacity].sort((a, b) =>
-        a.name.localeCompare(b.name, undefined, { numeric: true }),
-      );
-      return acc;
-    },
-    {} as Record<number, Table[]>,
-  );
-};
+    return tables.reduce((acc, table) => {
+        const capacity = table.capacity;
+        if (!acc[capacity]) {
+            acc[capacity] = [];
+        }
+        acc[capacity].push(table);
+        // Sort tables inside each capacity group by name
+        acc[capacity].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+        return acc;
+    }, {} as Record<number, Table[]>);
+}
 
 export default function TablesPage() {
-  const [tablesData, setTablesData] = useState<Table[]>([]);
+  const [tablesData, setTablesData] = useState(initialTablesData);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [newTableName, setNewTableName] = useState("");
   const [newTableCapacity, setNewTableCapacity] = useState("");
 
-  async function fetchTables() {
-    let response = await fetch(config.server_url + "/get-tables");
-
-    if (!response.ok) {
-      console.log("Oops something went wrong with the server");
-    }
-    const data = await response.json();
-    setTablesData(convertServerTable(data));
-  }
-
-  useEffect(() => {
-    fetchTables();
-  }, []);
-
-  const handleAddTable = async () => {
+  const handleAddTable = () => {
     if (newTableName && newTableCapacity) {
-      let new_table = {
-        table: {
-          name: newTableName,
-          capacity: newTableCapacity,
-        },
+      const newTable: Table = {
+        id: tablesData.length + 1,
+        name: newTableName,
+        capacity: parseInt(newTableCapacity, 10),
+        status: "Available",
       };
-
-      let response = await fetch(config.server_url + "/add-table", {
-        method: "post",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(new_table),
-      });
-
+      setTablesData([...tablesData, newTable]);
+      setNewTableName("");
+      setNewTableCapacity("");
       setIsDialogOpen(false);
-      fetchTables()
-
-      return response.ok
     }
   };
 
   const groupedTables = groupTablesByCapacity(tablesData);
-  const sortedCapacities = Object.keys(groupedTables)
-    .map(Number)
-    .sort((a, b) => a - b);
+  const sortedCapacities = Object.keys(groupedTables).map(Number).sort((a, b) => a - b);
   const totalTables = tablesData.length;
-  const bookedTables = tablesData.filter((t) => t.status === "Booked").length;
+  const bookedTables = tablesData.filter(t => t.status === "Booked").length;
 
   return (
     <div className="grid gap-4 md:gap-8">
@@ -131,8 +88,7 @@ export default function TablesPage() {
             <DialogHeader>
               <DialogTitle>Add New Table</DialogTitle>
               <DialogDescription>
-                Enter the details for the new table. Click save when you're
-                done.
+                Enter the details for the new table. Click save when you're done.
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-4">
@@ -180,34 +136,23 @@ export default function TablesPage() {
             {sortedCapacities.map((capacity) => (
               <div key={capacity}>
                 <h3 className="text-lg font-semibold mb-4 flex items-center md:text-xl">
-                  <Users className="mr-2 h-5 w-5" /> {capacity}-Person Tables
+                    <Users className="mr-2 h-5 w-5" /> {capacity}-Person Tables
                 </h3>
                 <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-4">
                   {groupedTables[capacity].map((table) => (
-                    <Card
-                      key={table.id}
+                    <Card 
+                      key={table.id} 
                       className={cn(
-                        "transition-all hover:shadow-lg",
-                        table.status === "Booked"
-                          ? "bg-secondary"
-                          : "bg-background",
+                        "transition-all hover:shadow-lg", 
+                        table.status === 'Booked' ? 'bg-secondary' : 'bg-background'
                       )}
                     >
                       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2 p-3">
-                        <CardTitle className="text-xs font-medium sm:text-sm">
-                          {table.name}
-                        </CardTitle>
-                        <Armchair className="h-4 w-4 text-muted-foreground" />
+                        <CardTitle className="text-xs font-medium sm:text-sm">{table.name}</CardTitle>
+                         <Armchair className="h-4 w-4 text-muted-foreground" />
                       </CardHeader>
                       <CardContent className="p-3 pt-0">
-                        <Badge
-                          variant={
-                            table.status === "Booked"
-                              ? "destructive"
-                              : "default"
-                          }
-                          className="text-[10px] sm:text-xs"
-                        >
+                        <Badge variant={table.status === 'Booked' ? 'destructive' : 'default'} className="text-[10px] sm:text-xs">
                           {table.status}
                         </Badge>
                       </CardContent>

@@ -2,37 +2,22 @@
 "use client";
 
 import { Inter } from 'next/font/google';
-
 import {
   Home,
   LineChart,
   Package,
-  Package2,
   ShoppingCart,
   Users,
-  Globe
+  Globe,
+  ClipboardList,
+  ListOrdered,
+  FileText,
+  Settings,
+  LifeBuoy,
+  LogOut
 } from 'lucide-react';
-import {
-  Sidebar,
-  SidebarContent,
-  SidebarHeader,
-  SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
-  SidebarProvider,
-  SidebarFooter,
-  SidebarTrigger,
-} from '@/components/ui/sidebar';
 import { Button } from '@/components/ui/button';
 import Link from 'next/link';
-import { Badge } from '@/components/ui/badge';
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -44,59 +29,36 @@ import {
 import Image from 'next/image';
 import { ThemeProvider } from '@/components/ThemeProvider';
 import { ThemeToggle } from '@/components/ThemeToggle';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { useTranslation } from '@/context/LanguageContext';
-
+import { useAuth } from '@/context/AuthContext';
+import Dock from '@/components/ui/Dock';
+import '@/components/ui/Dock.css';
 
 const inter = Inter({ subsets: ['latin'] });
 
-function DashboardNav() {
+function LayoutContent({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { t } = useTranslation();
-  
+  const router = useRouter();
+  const { t, setLanguage } = useTranslation();
+  const { user, logout } = useAuth();
+
   const navItems = [
-    { href: '/dashboard', label: t('dashboard'), icon: Home, exact: true },
-    { href: '/dashboard/bookings', label: t('bookings'), icon: ShoppingCart, badge: '6' },
-    { href: '/dashboard/tables', label: t('tables'), icon: Package },
-    { href: '/dashboard/customers', label: t('customers'), icon: Users },
-    { href: '/dashboard/analytics', label: t('analytics'), icon: LineChart },
+    { href: '/dashboard', label: t('dashboard'), icon: <Home size={24} />, exact: true },
+    { href: '/dashboard/bookings', label: t('bookings'), icon: <ShoppingCart size={24} /> },
+    { href: '/dashboard/orders', label: t('orders'), icon: <ListOrdered size={24} /> },
+    { href: '/dashboard/tables', label: t('tables'), icon: <Package size={24} /> },
+    { href: '/dashboard/inventory', label: t('inventory'), icon: <ClipboardList size={24} /> },
+    { href: '/dashboard/customers', label: t('customers'), icon: <Users size={24} /> },
+    { href: '/dashboard/analytics', label: t('analytics'), icon: <LineChart size={24} /> },
   ];
 
-  return (
-    <SidebarContent>
-      <SidebarMenu>
-        {navItems.map((item) => (
-          <SidebarMenuItem key={item.label}>
-            <SidebarMenuButton 
-              href={item.href} 
-              asChild
-              isActive={item.exact ? pathname === item.href : pathname.startsWith(item.href)}
-              tooltip={item.label}
-            >
-              <Link href={item.href}>
-                <item.icon className="h-5 w-5" />
-                <span className="group-data-[[data-collapsible=icon][data-state=collapsed]]:hidden">{item.label}</span>
-                {item.badge && (
-                  <Badge className="ml-auto flex h-6 w-6 shrink-0 items-center justify-center rounded-full group-data-[[data-collapsible=icon][data-state=collapsed]]:hidden">
-                    {item.badge}
-                  </Badge>
-                )}
-              </Link>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        ))}
-      </SidebarMenu>
-    </SidebarContent>
-  );
-}
-
-
-export default function DashboardLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
-  const { t, setLanguage } = useTranslation();
+  const dockItems = navItems.map(item => ({
+    icon: item.icon,
+    label: item.label,
+    onClick: () => router.push(item.href),
+    className: (item.exact ? pathname === item.href : pathname.startsWith(item.href)) ? 'active-dock-item' : ''
+  }));
 
   const languages = [
     { code: 'en', name: 'English' },
@@ -107,94 +69,112 @@ export default function DashboardLayout({
     { code: 'ml', name: 'മലയാളം (Malayalam)' },
   ];
 
+  const handleLogout = () => {
+    logout();
+    router.push('/login');
+  }
+
   return (
-    <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false}>
-      <SidebarProvider>
-        <div className={`${inter.className} flex min-h-screen w-full`}>
-          <Sidebar collapsible="icon">
-            <SidebarHeader>
-                <Link href="/dashboard" className="flex items-center gap-2 font-semibold">
-                    <Package2 className="h-6 w-6" />
-                    <span className="group-data-[[data-collapsible=icon][data-state=collapsed]]:hidden">CuisineFlow</span>
-                </Link>
-            </SidebarHeader>
-            <DashboardNav />
-            <SidebarFooter>
-              <Card>
-                <CardHeader className="p-2 pt-0 md:p-4 group-data-[[data-collapsible=icon][data-state=collapsed]]:hidden">
-                  <CardTitle>{t('upgradeToPro')}</CardTitle>
-                  <CardDescription>
-                    {t('upgradeToProDesc')}
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="p-2 pt-0 md:p-4 md:pt-0 group-data-[[data-collapsible=icon][data-state=collapsed]]:hidden">
-                  <Button size="sm" className="w-full">
-                    {t('upgrade')}
-                  </Button>
-                </CardContent>
-              </Card>
-            </SidebarFooter>
-          </Sidebar>
-          <div className="flex flex-col w-full">
-            <header className="flex h-14 items-center gap-4 border-b bg-muted/40 px-4 lg:h-[60px] lg:px-6">
-              <SidebarTrigger className="md:hidden"/>
-              <div className="w-full flex-1">
-                {/* Add nav items here */}
-              </div>
-              <ThemeToggle />
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon">
-                    <Globe className="h-5 w-5" />
-                    <span className="sr-only">{t('selectLanguage')}</span>
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  {languages.map((lang) => (
-                    <DropdownMenuItem key={lang.code} onSelect={() => setLanguage(lang.code)}>
-                      {lang.name}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    variant="secondary"
-                    size="icon"
-                    className="rounded-full"
-                  >
-                     <Image 
-                        src="https://placehold.co/36x36" 
-                        width={36} 
-                        height={36} 
-                        alt="Avatar" 
-                        className="rounded-full"
-                        data-ai-hint="manager portrait"
-                    />
-                    <span className="sr-only">{t('toggleUserMenu')}</span>
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuLabel>{t('myAccount')}</DropdownMenuLabel>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem asChild>
-                    <Link href="/dashboard/settings">{t('settings')}</Link>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem>{t('support')}</DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem asChild>
-                    <Link href="/">{t('logout')}</Link>
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </header>
-            <main className="flex flex-1 flex-col gap-4 p-4 lg:gap-6 lg:p-6">
-              {children}
-            </main>
+      <div className={`${inter.className} flex min-h-screen w-full flex-col`}>
+        <header className="sticky top-0 flex h-14 items-center gap-4 border-b bg-background px-4 lg:h-[60px] lg:px-6 z-40">
+            <Link href="/dashboard" className="flex items-center gap-2 font-semibold">
+                <Package className="h-6 w-6" />
+                <span>CuisineFlow</span>
+            </Link>
+          <div className="w-full flex-1">
+            {/* Add nav items here */}
           </div>
+          <ThemeToggle />
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon">
+                <Globe className="h-5 w-5" />
+                <span className="sr-only">{t('selectLanguage')}</span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {languages.map((lang) => (
+                <DropdownMenuItem key={lang.code} onSelect={() => setLanguage(lang.code)}>
+                  {lang.name}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="secondary"
+                size="icon"
+                className="rounded-full"
+              >
+                 <Image 
+                    src="https://placehold.co/36x36" 
+                    width={36} 
+                    height={36} 
+                    alt="Avatar" 
+                    className="rounded-full"
+                    data-ai-hint="manager portrait"
+                />
+                <span className="sr-only">{t('toggleUserMenu')}</span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuLabel>{t('myAccount')}</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem asChild>
+                <Link href="/dashboard/settings">
+                  <Settings className="mr-2 h-4 w-4" />
+                  {t('settings')}
+                </Link>
+              </DropdownMenuItem>
+               {user?.role === 'admin' && (
+                <>
+                  <DropdownMenuItem asChild>
+                    <Link href="/dashboard/employees">
+                      <Users className="mr-2 h-4 w-4" />
+                      Employee List
+                    </Link>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem asChild>
+                    <Link href="/dashboard/audit-logs">
+                      <FileText className="mr-2 h-4 w-4" />
+                      Audit Logs
+                    </Link>
+                  </DropdownMenuItem>
+                </>
+              )}
+              <DropdownMenuItem>
+                <LifeBuoy className="mr-2 h-4 w-4" />
+                {t('support')}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={handleLogout}>
+                <LogOut className="mr-2 h-4 w-4" />
+                {t('logout')}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </header>
+        <main className="flex flex-1 flex-col gap-4 p-4 lg:gap-6 lg:p-6 pb-24">
+          {children}
+        </main>
+        <div className="fixed bottom-0 left-0 right-0 flex justify-center z-50">
+           <Dock 
+              items={dockItems}
+              panelHeight={68}
+              baseItemSize={50}
+            />
         </div>
-      </SidebarProvider>
-    </ThemeProvider>
+      </div>
   );
+}
+
+export default function DashboardLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  return (
+    <LayoutContent>{children}</LayoutContent>
+  )
 }

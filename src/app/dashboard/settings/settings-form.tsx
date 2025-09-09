@@ -1,8 +1,10 @@
+
 "use client"
 
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
 import { z } from "zod"
+import { useEffect } from "react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -18,6 +20,7 @@ import { Input } from "@/components/ui/input"
 import { useToast } from "@/hooks/use-toast"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Textarea } from "@/components/ui/textarea"
+import { useAuth } from "@/context/AuthContext"
 
 const settingsFormSchema = z.object({
   name: z
@@ -50,7 +53,7 @@ const settingsFormSchema = z.object({
 type SettingsFormValues = z.infer<typeof settingsFormSchema>
 
 const defaultValues: Partial<SettingsFormValues> = {
-  name: "CuisineFlow",
+  name: "",
   address: "123 Culinary Lane, Foodie City, FC 12345",
   phone: "(123) 456-7890",
   email: "manager@cuisineflow.com",
@@ -59,11 +62,18 @@ const defaultValues: Partial<SettingsFormValues> = {
 
 export function SettingsForm() {
   const { toast } = useToast()
+  const { user } = useAuth()
 
   const form = useForm<SettingsFormValues>({
     resolver: zodResolver(settingsFormSchema),
     defaultValues,
   })
+
+  useEffect(() => {
+    if (user?.restaurantName) {
+      form.setValue("name", user.restaurantName)
+    }
+  }, [user, form])
 
   function onSubmit(data: SettingsFormValues) {
     toast({
