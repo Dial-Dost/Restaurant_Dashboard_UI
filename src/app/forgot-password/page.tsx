@@ -1,7 +1,7 @@
 
 "use client";
 
-import { Suspense } from 'react';
+import { Suspense, useState, useEffect } from 'react';
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -32,16 +32,27 @@ type ForgotPasswordFields = z.infer<typeof forgotPasswordSchema>;
 function ForgotPasswordContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const restaurantNameParam = searchParams.get('restaurant');
   const { toast } = useToast();
+  
+  const [restaurantName, setRestaurantName] = useState<string | null>(null);
+  const [isReady, setIsReady] = useState(false);
 
-  const { register, handleSubmit, formState: { errors } } = useForm<ForgotPasswordFields>({
+  const { register, handleSubmit, formState: { errors }, setValue } = useForm<ForgotPasswordFields>({
     resolver: zodResolver(forgotPasswordSchema),
     defaultValues: {
-      restaurantName: restaurantNameParam || "",
+      restaurantName: "",
       employeeId: ""
     }
   });
+
+  useEffect(() => {
+    const name = searchParams.get('restaurant');
+    if (name) {
+      setRestaurantName(name);
+      setValue('restaurantName', name);
+    }
+    setIsReady(true);
+  }, [searchParams, setValue]);
 
   const handleReset = async (data: ForgotPasswordFields) => {
     try {
@@ -82,6 +93,7 @@ function ForgotPasswordContent() {
                   type="text"
                   placeholder="e.g., The Grand Bistro"
                   {...register("restaurantName")}
+                  disabled={!isReady}
                 />
                  {errors.restaurantName && <p className="text-sm text-destructive mt-1">{errors.restaurantName.message}</p>}
               </div>
@@ -92,15 +104,16 @@ function ForgotPasswordContent() {
                   type="text"
                   placeholder="e.g., 12345"
                   {...register("employeeId")}
+                   disabled={!isReady}
                 />
                 {errors.employeeId && <p className="text-sm text-destructive mt-1">{errors.employeeId.message}</p>}
               </div>
-               <Button type="submit" className="w-full">
+               <Button type="submit" className="w-full" disabled={!isReady}>
                 Send Reset Link
               </Button>
               <div className="mt-4 text-center text-sm">
                 Remember your password?{" "}
-                <Link href="/login" className="underline">
+                <Link href={`/login/employee?restaurant=${encodeURIComponent(restaurantName || '')}`} className="underline">
                   Sign in
                 </Link>
               </div>

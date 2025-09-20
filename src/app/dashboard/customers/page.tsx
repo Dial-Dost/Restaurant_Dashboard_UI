@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Card,
   CardContent,
@@ -34,68 +34,19 @@ import { PlusCircle } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
+import { useAuth } from "@/context/AuthContext";
+import { getCustomers, addCustomer } from "@/lib/db";
+import { useCurrency } from "@/hooks/use-currency";
 
 
-const initialCustomers = [
-  {
-    name: "Liam Johnson",
-    email: "liam@example.com",
-    phone: "555-0101",
-    totalBookings: 5,
-    status: "In-house",
-    billAmount: 250.00,
-  },
-  {
-    name: "Olivia Smith",
-    email: "olivia@example.com",
-    phone: "555-0102",
-    totalBookings: 2,
-    status: "Departed",
-    billAmount: 150.00,
-  },
-  {
-    name: "Noah Williams",
-    email: "noah@example.com",
-    phone: "555-0103",
-    totalBookings: 8,
-    status: "In-house",
-    billAmount: 350.00,
-  },
-  {
-    name: "Emma Brown",
-    email: "emma@example.com",
-    phone: "555-0104",
-    totalBookings: 1,
-    status: "Departed",
-    billAmount: 450.00,
-  },
-  {
-    name: "James Jones",
-    email: "james@example.com",
-    phone: "555-0105",
-    totalBookings: 12,
-    status: "In-house",
-    billAmount: 550.00,
-  },
-  {
-    name: "Sophia Garcia",
-    email: "sophia@example.com",
-    phone: "555-0106",
-    totalBookings: 3,
-    status: "Departed",
-    billAmount: 120.50,
-  },
-  {
-    name: "Logan Miller",
-    email: "logan@example.com",
-    phone: "555-0107",
-    totalBookings: 7,
-    status: "In-house",
-    billAmount: 280.75,
-  },
-];
-
-type Customer = (typeof initialCustomers)[0];
+export type Customer = {
+  name: string;
+  email: string;
+  phone: string;
+  totalBookings: number;
+  status: "In-house" | "Departed";
+  billAmount: number;
+};
 
 const customerSchema = z.object({
     name: z.string().min(1, "Name is required."),
@@ -107,16 +58,29 @@ const customerSchema = z.object({
 type CustomerFormData = z.infer<typeof customerSchema>;
 
 export default function CustomersPage() {
-  const [customers, setCustomers] = useState(initialCustomers);
+  const { user } = useAuth();
+  const { currencySymbol } = useCurrency();
+  const [customers, setCustomers] = useState<Customer[]>([]);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
 
-  const handleAddCustomer = (data: CustomerFormData) => {
+  useEffect(() => {
+    if (user) {
+        const fetchCustomers = async () => {
+          setCustomers(await getCustomers(user.restaurantId));
+        }
+        fetchCustomers();
+    }
+  }, [user]);
+
+  const handleAddCustomer = async (data: CustomerFormData) => {
+    if (!user) return;
     const newCustomer: Customer = {
       ...data,
       totalBookings: 1,
       status: 'In-house',
     };
-    setCustomers([...customers, newCustomer]);
+    await addCustomer(user.restaurantId, newCustomer);
+    setCustomers(await getCustomers(user.restaurantId));
     setIsDialogOpen(false);
   }
 
@@ -172,7 +136,7 @@ export default function CustomersPage() {
                       {customer.status}
                     </Badge>
                   </TableCell>
-                  <TableCell className="text-right">${customer.billAmount.toFixed(2)}</TableCell>
+                  <TableCell className="text-right">{currencySymbol}{customer.billAmount.toFixed(2)}</TableCell>
                 </TableRow>
               ))}
             </TableBody>

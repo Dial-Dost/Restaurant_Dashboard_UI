@@ -2,7 +2,7 @@
 "use client"
 
 import { zodResolver } from "@hookform/resolvers/zod"
-import { useForm } from "react-hook-form"
+import { useForm, Controller } from "react-hook-form"
 import { z } from "zod"
 import { useEffect } from "react"
 
@@ -17,10 +17,19 @@ import {
   FormMessage,
 } from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { useToast } from "@/hooks/use-toast"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Textarea } from "@/components/ui/textarea"
 import { useAuth } from "@/context/AuthContext"
+import { useCurrency } from "@/hooks/use-currency"
+import { getRestaurantProfile, updateRestaurantProfile, RestaurantProfile } from "@/lib/db"
 
 const settingsFormSchema = z.object({
   name: z
@@ -48,34 +57,58 @@ const settingsFormSchema = z.object({
     .min(5, {
       message: "Please enter your opening hours."
     }),
+  currency: z.string(),
 })
 
 type SettingsFormValues = z.infer<typeof settingsFormSchema>
 
-const defaultValues: Partial<SettingsFormValues> = {
-  name: "",
-  address: "123 Culinary Lane, Foodie City, FC 12345",
-  phone: "(123) 456-7890",
-  email: "manager@cuisineflow.com",
-  hours: "Mon-Fri: 11am - 10pm, Sat-Sun: 9am - 11pm",
-}
-
 export function SettingsForm() {
   const { toast } = useToast()
   const { user } = useAuth()
+  const { currency, setCurrency, currencyOptions } = useCurrency();
 
   const form = useForm<SettingsFormValues>({
     resolver: zodResolver(settingsFormSchema),
-    defaultValues,
+    defaultValues: {
+      name: "",
+      address: "",
+      phone: "",
+      email: "",
+      hours: "",
+      currency: currency,
+    }
   })
 
   useEffect(() => {
-    if (user?.restaurantName) {
-      form.setValue("name", user.restaurantName)
+    if (user?.restaurantId) {
+        const fetchProfile = async () => {
+          const profile = await getRestaurantProfile(user.restaurantId);
+          form.reset({
+              name: profile.name || "",
+              address: profile.address || "",
+              phone: profile.phone || "",
+              email: profile.email || "",
+              hours: profile.hours || "",
+              currency: currency
+          });
+        }
+        fetchProfile();
     }
-  }, [user, form])
+    form.setValue("currency", currency);
+  }, [user, currency, form])
 
-  function onSubmit(data: SettingsFormValues) {
+  async function onSubmit(data: SettingsFormValues) {
+    if(!user?.restaurantId) return;
+
+    const profileData: RestaurantProfile = {
+        name: data.name,
+        address: data.address,
+        phone: data.phone,
+        email: data.email,
+        hours: data.hours,
+    };
+    await updateRestaurantProfile(user.restaurantId, profileData);
+    setCurrency(data.currency);
     toast({
       title: "Settings saved!",
       description: "Your restaurant profile has been updated.",
@@ -156,6 +189,32 @@ export function SettingsForm() {
                         <FormControl>
                             <Input placeholder="e.g., Mon-Fri: 9am - 10pm" {...field} />
                         </FormControl>
+                        <FormMessage />
+                        </FormItem>
+                    )}
+                    />
+                <FormField
+                    control={form.control}
+                    name="currency"
+                    render={({ field }) => (
+                        <FormItem>
+                        <FormLabel>Currency</FormLabel>
+                          <Controller
+                            name="currency"
+                            control={form.control}
+                            render={({ field }) => (
+                              <Select onValueChange={field.onChange} value={field.value}>
+                                  <SelectTrigger>
+                                      <SelectValue placeholder="Select a currency" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                      {Object.entries(currencyOptions).map(([code, { label }]) => (
+                                        <SelectItem key={code} value={code}>{label}</SelectItem>
+                                      ))}
+                                  </SelectContent>
+                              </Select>
+                            )}
+                          />
                         <FormMessage />
                         </FormItem>
                     )}

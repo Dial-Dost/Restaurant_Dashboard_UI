@@ -14,8 +14,55 @@ import {
 } from "@/components/ui/table"
 import { Badge } from '@/components/ui/badge';
 import { ArrowUpRight, Activity, CircleUser, CreditCard, DollarSign } from 'lucide-react';
+import { useAuth } from '@/context/AuthContext';
+import { getBookings, getCustomers, getTables } from '@/lib/db';
+import { useEffect, useState } from 'react';
+import type { Booking } from './bookings/data';
+import type { Customer } from './customers/page';
+import type { Table as TableType } from './tables/data';
+import { useCurrency } from '@/hooks/use-currency';
 
 export default function Dashboard() {
+  const { user } = useAuth();
+  const { currencySymbol } = useCurrency();
+  const [bookings, setBookings] = useState<Booking[]>([]);
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [tables, setTables] = useState<TableType[]>([]);
+
+  useEffect(() => {
+    if (user && user.restaurantId) {
+      const fetchData = async () => {
+        setBookings(await getBookings(user.restaurantId));
+        setCustomers(await getCustomers(user.restaurantId));
+        setTables(await getTables(user.restaurantId));
+      }
+      fetchData();
+    }
+  }, [user]);
+
+  // Current month data
+  const totalRevenue = customers.reduce((acc, customer) => acc + customer.billAmount, 0);
+  const totalBookings = bookings.length;
+  const newCustomers = customers.filter(c => c.totalBookings === 1).length;
+  const activeTables = tables.filter(t => t.status !== "Available").length;
+  const totalTables = tables.length;
+
+  // Mock previous month data for comparison
+  const prevMonthRevenue = totalRevenue * 0.8; // Assume 20% growth
+  const prevMonthBookings = Math.floor(totalBookings * 0.9); // Assume 10% growth
+  const prevMonthNewCustomers = Math.floor(newCustomers * 0.85); // Assume 15% growth
+
+  const calculatePercentageChange = (current: number, previous: number) => {
+    if (previous === 0) {
+        return current > 0 ? '100% from last month' : '0% from last month';
+    }
+    const change = ((current - previous) / previous) * 100;
+    if (change > 0) {
+        return `+${change.toFixed(1)}% from last month`;
+    }
+    return `${change.toFixed(1)}% from last month`;
+  };
+  
   return (
     <>
       <div className="flex items-center justify-between">
@@ -33,9 +80,9 @@ export default function Dashboard() {
             <DollarSign className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">$45,231.89</div>
+            <div className="text-2xl font-bold">{currencySymbol}{totalRevenue.toFixed(2)}</div>
             <p className="text-xs text-muted-foreground">
-              +20.1% from last month
+                {calculatePercentageChange(totalRevenue, prevMonthRevenue)}
             </p>
           </CardContent>
         </Card>
@@ -47,9 +94,9 @@ export default function Dashboard() {
             <CreditCard className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">+2350</div>
-            <p className="text-xs text-muted-foreground">
-              +180.1% from last month
+            <div className="text-2xl font-bold">+{totalBookings}</div>
+             <p className="text-xs text-muted-foreground">
+                {calculatePercentageChange(totalBookings, prevMonthBookings)}
             </p>
           </CardContent>
         </Card>
@@ -59,9 +106,9 @@ export default function Dashboard() {
             <CircleUser className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">+573</div>
-            <p className="text-xs text-muted-foreground">
-              +19% from last month
+            <div className="text-2xl font-bold">+{newCustomers}</div>
+             <p className="text-xs text-muted-foreground">
+                {calculatePercentageChange(newCustomers, prevMonthNewCustomers)}
             </p>
           </CardContent>
         </Card>
@@ -71,9 +118,9 @@ export default function Dashboard() {
             <Activity className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">12 / 20</div>
+            <div className="text-2xl font-bold">{activeTables} / {totalTables}</div>
             <p className="text-xs text-muted-foreground">
-              60% capacity
+              {totalTables > 0 ? ((activeTables / totalTables) * 100).toFixed(0) : 0}% capacity
             </p>
           </CardContent>
         </Card>
@@ -95,99 +142,47 @@ export default function Dashboard() {
             </Button>
           </CardHeader>
           <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Customer</TableHead>
-                  <TableHead className="hidden md:table-cell">
-                    Time
-                  </TableHead>
-                  <TableHead className="hidden md:table-cell">
-                    Status
-                  </TableHead>
-                  <TableHead className="text-right">
-                    Amount
-                  </TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                <TableRow>
-                  <TableCell>
-                    <div className="font-medium">Liam Johnson</div>
-                    <div className="text-sm text-muted-foreground md:hidden">
-                      liam@example.com
-                    </div>
-                  </TableCell>
-                  <TableCell className="hidden md:table-cell">2023-06-23 6:30 PM</TableCell>
-                  <TableCell className="hidden md:table-cell">
-                    <Badge className="text-xs" variant="outline">
-                      Confirmed
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-right">$250.00</TableCell>
-                </TableRow>
-                <TableRow>
-                  <TableCell>
-                    <div className="font-medium">Olivia Smith</div>
-                    <div className="text-sm text-muted-foreground md:hidden">
-                      olivia@example.com
-                    </div>
-                  </TableCell>
-                  <TableCell className="hidden md:table-cell">2023-06-24 7:00 PM</TableCell>
-                  <TableCell className="hidden md:table-cell">
-                    <Badge className="text-xs" variant="outline">
-                      Pending
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-right">$150.00</TableCell>
-                </TableRow>
-                <TableRow>
-                  <TableCell>
-                    <div className="font-medium">Noah Williams</div>
-                    <div className="text-sm text-muted-foreground md:hidden">
-                      noah@example.com
-                    </div>
-                  </TableCell>
-                  <TableCell className="hidden md:table-cell">2023-06-25 8:00 PM</TableCell>
-                  <TableCell className="hidden md:table-cell">
-                    <Badge className="text-xs" variant="outline">
-                      Confirmed
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-right">$350.00</TableCell>
-                </TableRow>
-                <TableRow>
-                  <TableCell>
-                    <div className="font-medium">Emma Brown</div>
-                    <div className="text-sm text-muted-foreground md:hidden">
-                      emma@example.com
-                    </div>
-                  </TableCell>
-                  <TableCell className="hidden md:table-cell">2023-06-26 9:00 PM</TableCell>
-                  <TableCell className="hidden md:table-cell">
-                    <Badge className="text-xs" variant="outline">
-                      Cancelled
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-right">$450.00</TableCell>
-                </TableRow>
-                <TableRow>
-                  <TableCell>
-                    <div className="font-medium">Liam Johnson</div>
-                    <div className="text-sm text-muted-foreground md:hidden">
-                      liam@example.com
-                    </div>
-                  </TableCell>
-                  <TableCell className="hidden md:table-cell">2023-06-27 5:30 PM</TableCell>
-                  <TableCell className="hidden md:table-cell">
-                    <Badge className="text-xs" variant="outline">
-                      Confirmed
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-right">$550.00</TableCell>
-                </TableRow>
-              </TableBody>
-            </Table>
+             {bookings.length > 0 ? (
+                <Table>
+                <TableHeader>
+                    <TableRow>
+                    <TableHead>Customer</TableHead>
+                    <TableHead className="hidden md:table-cell">
+                        Time
+                    </TableHead>
+                    <TableHead className="hidden md:table-cell">
+                        Guests
+                    </TableHead>
+                    <TableHead>
+                        Status
+                    </TableHead>
+                    </TableRow>
+                </TableHeader>
+                <TableBody>
+                    {bookings.slice(0, 5).map(booking => (
+                    <TableRow key={booking.id}>
+                        <TableCell>
+                        <div className="font-medium">{booking.customer}</div>
+                        <div className="text-sm text-muted-foreground md:hidden">
+                            {booking.time}
+                        </div>
+                        </TableCell>
+                        <TableCell className="hidden md:table-cell">{booking.time}</TableCell>
+                        <TableCell className="hidden md:table-cell">{booking.guests}</TableCell>
+                        <TableCell>
+                        <Badge className="text-xs" variant={booking.status === "Confirmed" ? "default" : "outline"}>
+                            {booking.status}
+                        </Badge>
+                        </TableCell>
+                    </TableRow>
+                    ))}
+                </TableBody>
+                </Table>
+             ) : (
+                <div className="text-center text-muted-foreground py-8">
+                    <p>No recent bookings. Get started by adding a new one!</p>
+                </div>
+             )}
           </CardContent>
         </Card>
       </div>

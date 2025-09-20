@@ -51,7 +51,7 @@ import { z } from "zod";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import { addEmployeeToRestaurant, removeEmployeeFromRestaurant } from "@/services/authService";
-import { db, User } from "@/lib/db";
+import { findRestaurantByName, User } from "@/lib/db";
 
 const addEmployeeSchema = z.object({
   name: z.string().min(1, "Name is required."),
@@ -68,19 +68,22 @@ export default function EmployeesPage() {
   const [employees, setEmployees] = useState<User[]>([]);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
 
+  const fetchEmployees = async () => {
+      if (user && user.restaurantId) {
+        const restaurant = await findRestaurantByName(user.restaurantName);
+        setEmployees(restaurant?.users || []);
+      }
+  };
+
   useEffect(() => {
-    if (user?.restaurantId) {
-      const restaurant = db.find(r => r.id === user.restaurantId);
-      setEmployees(restaurant?.users || []);
-    }
+    fetchEmployees();
   }, [user]);
 
   const handleAddEmployee = async (data: AddEmployeeFormData) => {
     if (!user) return;
     try {
       await addEmployeeToRestaurant(user.restaurantId, data);
-      const restaurant = db.find(r => r.id === user.restaurantId);
-      setEmployees(restaurant?.users || []);
+      await fetchEmployees(); // Refetch employees to update list
       toast({
         title: "Employee Added",
         description: `${data.name} has been added to the system.`,
@@ -99,7 +102,7 @@ export default function EmployeesPage() {
     if (!user) return;
     try {
       await removeEmployeeFromRestaurant(user.restaurantId, employeeId);
-      setEmployees(employees.filter(emp => emp.employeeId !== employeeId));
+      await fetchEmployees(); // Refetch employees to update list
        toast({
         title: "Employee Removed",
         description: `The employee has been removed from the system.`,

@@ -1,7 +1,7 @@
 
 "use client";
 
-import { Suspense } from 'react';
+import { Suspense, useState, useEffect } from 'react';
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -34,9 +34,17 @@ type LoginFormFields = z.infer<typeof loginSchema>;
 function EmployeeLoginContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const restaurantName = searchParams.get('restaurant');
   const { toast } = useToast();
   const { login } = useAuth();
+  
+  const [restaurantName, setRestaurantName] = useState<string | null>(null);
+  const [isReady, setIsReady] = useState(false);
+
+  useEffect(() => {
+    const name = searchParams.get('restaurant');
+    setRestaurantName(name);
+    setIsReady(true);
+  }, [searchParams]);
 
   const { register, handleSubmit, formState: { errors } } = useForm<LoginFormFields>({
     resolver: zodResolver(loginSchema)
@@ -63,6 +71,10 @@ function EmployeeLoginContent() {
       });
     }
   };
+  
+  const descriptionText = isReady 
+    ? `Enter your credentials for ${restaurantName || "your restaurant"}.`
+    : "Loading restaurant...";
 
   return (
     <div className="flex min-h-dvh w-full items-center justify-center bg-background px-4">
@@ -75,7 +87,7 @@ function EmployeeLoginContent() {
                </div>
               <CardTitle className="text-2xl font-bold">Employee Login</CardTitle>
               <CardDescription>
-                Enter your credentials for {restaurantName || "your restaurant"}.
+                {descriptionText}
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -86,6 +98,7 @@ function EmployeeLoginContent() {
                   type="text"
                   placeholder="e.g., 12345"
                   {...register("employeeId")}
+                  disabled={!isReady || !restaurantName}
                 />
                 {errors.employeeId && <p className="text-sm text-destructive mt-1">{errors.employeeId.message}</p>}
               </div>
@@ -99,10 +112,10 @@ function EmployeeLoginContent() {
                     Forgot your password?
                   </Link>
                 </div>
-                <Input id="password" type="password" {...register("password")} />
+                <Input id="password" type="password" {...register("password")} disabled={!isReady || !restaurantName} />
                 {errors.password && <p className="text-sm text-destructive mt-1">{errors.password.message}</p>}
               </div>
-               <Button type="submit" className="w-full">
+               <Button type="submit" className="w-full" disabled={!isReady || !restaurantName}>
                 Sign In
               </Button>
                <div className="mt-4 text-center text-sm">

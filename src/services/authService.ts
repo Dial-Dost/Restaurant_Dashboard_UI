@@ -1,8 +1,13 @@
 
-import { db, findRestaurantByName, findUserInRestaurant, createRestaurant, User } from '@/lib/db';
+
+'use server';
+
+import { findRestaurantByName, findUserInRestaurant, createRestaurant, User, addEmployee, removeEmployee } from '@/lib/db';
 
 // This is a mock authentication service that uses the in-memory database.
 // In a real application, you would use a secure authentication provider.
+
+const getRestaurantId = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, "");
 
 // Restaurant and Admin Sign Up
 export const signUpRestaurant = async ({ restaurantName, adminName, adminEmployeeId, password }: {
@@ -18,29 +23,27 @@ export const signUpRestaurant = async ({ restaurantName, adminName, adminEmploye
             password: password, // In a real app, hash this password
             role: 'admin' as const
         };
-        const newRestaurant = createRestaurant(restaurantName, adminUser);
-        return { user: { uid: newRestaurant.id, name: adminName, ...adminUser } }; // Return a mock user object
+        const newRestaurant = await createRestaurant(restaurantName, adminUser);
+        return { user: { uid: newRestaurant.id, name: adminName, ...adminUser } };
     } catch (error: any) {
         console.error("Registration failed:", error);
-        throw error; // Re-throw the error to be caught by the UI
+        throw error;
     }
 }
 
 // Employee Sign In
 export const signInEmployee = async (restaurantName: string, employeeId: string, password: string) => {
-    const restaurant = findRestaurantByName(restaurantName);
+    const restaurant = await findRestaurantByName(restaurantName);
     if (!restaurant) {
         throw new Error('Invalid restaurant name.');
     }
 
-    const user = findUserInRestaurant(restaurant.id, employeeId);
+    const user = await findUserInRestaurant(restaurant.id, employeeId);
 
     if (!user || user.password !== password) {
         throw new Error('Invalid employee ID or password.');
     }
     
-    // In a real app, you'd get a session token here.
-    // For this mock service, we just return a mock user object with role and restaurant info.
     return {
         uid: user.employeeId,
         employeeId: user.employeeId,
@@ -53,39 +56,30 @@ export const signInEmployee = async (restaurantName: string, employeeId: string,
 
 // Password Reset - Mock implementation
 export const sendPasswordReset = async (restaurantName: string, employeeId: string) => {
-    const restaurant = findRestaurantByName(restaurantName);
+    const restaurant = await findRestaurantByName(restaurantName);
     if (!restaurant) {
-        // Don't reveal if user exists for security reasons
         console.log(`Password reset requested for non-existent restaurant: ${restaurantName}`);
         return;
     }
     
-    const user = findUserInRestaurant(restaurant.id, employeeId);
+    const user = await findUserInRestaurant(restaurant.id, employeeId);
     if (!user) {
-        // Don't reveal if user exists
         console.log(`Password reset requested for non-existent user: ${employeeId}`);
         return;
     }
 
-    // In a real app, you would send an email. Here we just log it.
     console.log(`A password reset link would be sent to the registered email for employee ${employeeId} at ${restaurantName}.`);
 }
 
 // Sign Out - Mock implementation
 export const signOutUser = async () => {
-    // In a real app, this would clear session tokens/cookies.
     console.log("User signed out.");
     return;
 }
 
 // Add a new employee to a restaurant
 export const addEmployeeToRestaurant = async (restaurantId: string, employeeData: Omit<User, 'password'> & {password: string}) => {
-    const restaurant = db.find(r => r.id === restaurantId);
-    if (!restaurant) {
-        throw new Error("Restaurant not found.");
-    }
-
-    const existingUser = restaurant.users.find(u => u.employeeId.toLowerCase() === employeeData.employeeId.toLowerCase());
+    const existingUser = await findUserInRestaurant(restaurantId, employeeData.employeeId);
     if (existingUser) {
         throw new Error("An employee with this ID already exists.");
     }
@@ -97,28 +91,28 @@ export const addEmployeeToRestaurant = async (restaurantId: string, employeeData
         role: employeeData.role,
     };
 
-    restaurant.users.push(newEmployee);
+    await addEmployee(restaurantId, newEmployee);
     return newEmployee;
 };
 
 // Remove an employee from a restaurant
 export const removeEmployeeFromRestaurant = async (restaurantId: string, employeeId: string) => {
-    const restaurant = db.find(r => r.id === restaurantId);
+    const restaurant = await findRestaurantByName(getRestaurantId(restaurantId));
      if (!restaurant) {
         throw new Error("Restaurant not found.");
     }
 
-    const userIndex = restaurant.users.findIndex(u => u.employeeId.toLowerCase() === employeeId.toLowerCase());
-    
-    if (userIndex === -1) {
+    const userToRemove = await findUserInRestaurant(restaurantId, employeeId);
+    if (!userToRemove) {
         throw new Error("Employee not found.");
     }
 
-    const userToRemove = restaurant.users[userIndex];
-    if (userToRemove.role === 'admin' && restaurant.users.filter(u => u.role === 'admin').length === 1) {
+    const adminUsers = restaurant.users.filter((u:User) => u.role === 'admin');
+    if (userToRemove.role === 'admin' && adminUsers.length <= 1) {
         throw new Error("Cannot remove the only admin of the restaurant.");
     }
-
-    restaurant.users.splice(userIndex, 1);
+    
+    await removeEmployee(restaurantId, employeeId);
+    
     return true;
 };

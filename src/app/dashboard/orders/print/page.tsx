@@ -33,6 +33,7 @@ type Order = {
   calculatedTaxes?: Tax[];
   total: number;
   status: string;
+  currencySymbol: string;
 };
 
 function PrintPageContents() {
@@ -60,6 +61,7 @@ function PrintPageContents() {
     }
     
     const order: Order = JSON.parse(decodeURIComponent(orderData));
+    const currencySymbol = order.currencySymbol || '$';
 
     return (
         <div className="p-8 bg-white text-black">
@@ -95,8 +97,8 @@ function PrintPageContents() {
                                 <TableRow key={item.id}>
                                     <TableCell className="font-medium">{item.name}</TableCell>
                                     <TableCell className="text-center">{item.quantity}</TableCell>
-                                    <TableCell className="text-right">${item.price.toFixed(2)}</TableCell>
-                                    <TableCell className="text-right">${(item.price * item.quantity).toFixed(2)}</TableCell>
+                                    <TableCell className="text-right">{currencySymbol}{item.price.toFixed(2)}</TableCell>
+                                    <TableCell className="text-right">{currencySymbol}{(item.price * item.quantity).toFixed(2)}</TableCell>
                                 </TableRow>
                             ))}
                         </TableBody>
@@ -104,23 +106,23 @@ function PrintPageContents() {
                     <div className="mt-6 space-y-2 text-sm ml-auto max-w-xs">
                         <div className="flex justify-between border-t border-black pt-2">
                             <span>Subtotal</span>
-                            <span>${order.subtotal.toFixed(2)}</span>
+                            <span>{currencySymbol}{order.subtotal.toFixed(2)}</span>
                         </div>
                         {order.serviceChargePercentage && (
                             <div className="flex justify-between">
                                 <span>Service Charge ({order.serviceChargePercentage}%)</span>
-                                <span>{order.applyServiceCharge ? `$${order.serviceCharge?.toFixed(2)}` : 'Opted-out'}</span>
+                                <span>{order.applyServiceCharge ? `${currencySymbol}${order.serviceCharge?.toFixed(2)}` : 'Opted-out'}</span>
                             </div>
                         )}
                         {order.calculatedTaxes?.map(tax => (
                              <div key={tax.id} className="flex justify-between">
                                 <span>{tax.name} ({tax.percentage}%)</span>
-                                <span>${tax.amount.toFixed(2)}</span>
+                                <span>{currencySymbol}{tax.amount.toFixed(2)}</span>
                             </div>
                         ))}
                         <div className="flex justify-between font-bold text-lg border-t border-dashed border-black pt-2 mt-2">
                             <span>Total Due:</span>
-                            <span>${order.total.toFixed(2)}</span>
+                            <span>{currencySymbol}{order.total.toFixed(2)}</span>
                         </div>
                     </div>
                      <div className="text-center mt-8 text-xs text-gray-600">

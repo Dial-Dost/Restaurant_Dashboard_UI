@@ -1,49 +1,42 @@
 
 "use client";
 
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { useAuth } from '@/context/AuthContext';
+import { getAuditLogs } from '@/lib/db';
 
-const auditLogs = [
-  {
-    id: "1",
-    employee: "Jane Smith (employee1)",
-    action: "Order Create",
-    details: "Created order #5 for table T3.",
-    timestamp: "2023-10-27T10:00:00Z",
-  },
-  {
-    id: "2",
-    employee: "John Doe (admin)",
-    action: "Inventory Update",
-    details: "Updated 'Tomatoes' stock to 45kg.",
-    timestamp: "2023-10-27T10:05:00Z",
-  },
-  {
-    id: "3",
-    employee: "Jane Smith (employee1)",
-    action: "Booking Confirmed",
-    details: "Confirmed booking for Emma Brown.",
-    timestamp: "2023-10-27T10:15:00Z",
-  },
-  {
-    id: "4",
-    employee: "John Doe (admin)",
-    action: "User Login",
-    details: "Admin user logged in.",
-    timestamp: "2023-10-27T09:58:00Z",
-  },
-   {
-    id: "5",
-    employee: "Jane Smith (employee1)",
-    action: "Order Status Update",
-    details: "Order #4 status changed to 'Served'.",
-    timestamp: "2023-10-27T10:20:00Z",
-  },
-];
+export type AuditLog = {
+  id: string;
+  employee: string;
+  action: string;
+  details: string;
+  timestamp: string;
+};
 
 export default function AuditLogsPage() {
+  const { user } = useAuth();
+  const [logs, setLogs] = useState<AuditLog[]>([]);
+
+  useEffect(() => {
+    if (user) {
+      const fetchLogs = async () => {
+        setLogs(await getAuditLogs(user.restaurantId));
+      }
+      fetchLogs();
+    }
+  }, [user]);
+
+  if (user?.role !== 'admin') {
+    return (
+        <div className="p-4">
+            <p>You do not have permission to view this page.</p>
+        </div>
+    );
+  }
+
   return (
     <div className="grid gap-4 md:gap-8">
       <div className="flex items-center justify-between">
@@ -67,7 +60,7 @@ export default function AuditLogsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {auditLogs.map((log) => (
+              {logs.map((log) => (
                 <TableRow key={log.id}>
                   <TableCell>
                     {new Date(log.timestamp).toLocaleString()}

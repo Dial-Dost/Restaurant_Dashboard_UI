@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { ThemeProvider } from '@/components/ThemeProvider';
 import { LanguageProvider } from '@/context/LanguageContext';
 import { AuthProvider } from '@/context/AuthContext';
+import { CurrencyProvider } from '@/hooks/use-currency';
 
 export const metadata: Metadata = {
   title: 'CuisineFlow',
@@ -28,8 +29,10 @@ export default function RootLayout({
         <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false}>
           <AuthProvider>
             <LanguageProvider>
-              {children}
-              <Toaster />
+              <CurrencyProvider>
+                {children}
+                <Toaster />
+              </CurrencyProvider>
             </LanguageProvider>
           </AuthProvider>
         </ThemeProvider>

@@ -21,28 +21,28 @@ export default function TestimonialsSection() {
       name: "Sarah L.",
       initials: "SL",
       quote: t('testimonial1'),
-      image: "https://placehold.co/100x100",
+      image: "https://picsum.photos/seed/woman1/100/100",
       aiHint: "woman portrait"
     },
     {
       name: "Michael B.",
       initials: "MB",
       quote: t('testimonial2'),
-      image: "https://placehold.co/100x100",
+      image: "https://picsum.photos/seed/man1/100/100",
       aiHint: "man portrait"
     },
     {
       name: "Jessica P.",
       initials: "JP",
       quote: t('testimonial3'),
-      image: "https://placehold.co/100x100",
+      image: "https://picsum.photos/seed/woman2/100/100",
       aiHint: "woman smiling"
     },
     {
       name: "David H.",
       initials: "DH",
       quote: t('testimonial4'),
-      image: "https://placehold.co/100x100",
+      image: "https://picsum.photos/seed/man2/100/100",
       aiHint: "man smiling"
     },
   ];

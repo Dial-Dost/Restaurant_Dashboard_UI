@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Card,
   CardContent,
@@ -37,7 +37,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { MoreHorizontal, PlusCircle } from "lucide-react";
+import { MoreHorizontal, PlusCircle, Trash2 } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -48,52 +48,17 @@ import {
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
+import { addAuditLogEntry, getInventory, addInventoryItem, removeInventoryItem } from "@/lib/db";
+import { useAuth } from "@/context/AuthContext";
 
-
-const initialInventory = [
-  {
-    id: "1",
-    name: "Tomatoes",
-    category: "Vegetable",
-    stock: 50,
-    unit: "kg",
-    status: "In Stock",
-  },
-  {
-    id: "2",
-    name: "Chicken Breast",
-    category: "Meat",
-    stock: 25,
-    unit: "kg",
-    status: "In Stock",
-  },
-  {
-    id: "3",
-    name: "Pasta",
-    category: "Dry Goods",
-    stock: 100,
-    unit: "packs",
-    status: "In Stock",
-  },
-  {
-    id: "4",
-    name: "Olive Oil",
-    category: "Oil",
-    stock: 5,
-    unit: "liters",
-    status: "Low Stock",
-  },
-  {
-    id: "5",
-    name: "Milk",
-    category: "Dairy",
-    stock: 0,
-    unit: "liters",
-    status: "Out of Stock",
-  },
-];
-
-type InventoryItem = (typeof initialInventory)[0];
+export type InventoryItem = {
+  id: string;
+  name: string;
+  category: string;
+  stock: number;
+  unit: string;
+  status: "In Stock" | "Low Stock" | "Out of Stock";
+};
 
 const inventorySchema = z.object({
     name: z.string().min(1, "Item name is required."),
@@ -106,11 +71,22 @@ type InventoryFormData = z.infer<typeof inventorySchema>;
 
 
 export default function InventoryPage() {
-  const [inventory, setInventory] = useState(initialInventory);
+  const { user } = useAuth();
+  const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   
-  const handleAddItem = (data: InventoryFormData) => {
-    let status = "In Stock";
+  useEffect(() => {
+    if (user) {
+        const fetchInventory = async () => {
+          setInventory(await getInventory(user.restaurantId));
+        }
+        fetchInventory();
+    }
+  }, [user]);
+  
+  const handleAddItem = async (data: InventoryFormData) => {
+    if (!user || !user.restaurantId) return;
+    let status: InventoryItem['status'] = "In Stock";
     if (data.stock === 0) status = "Out of Stock";
     else if (data.stock < 10) status = "Low Stock";
     
@@ -119,8 +95,22 @@ export default function InventoryPage() {
         ...data,
         status,
     };
-    setInventory([...inventory, newItem]);
+    await addInventoryItem(user.restaurantId, newItem);
+
+    await addAuditLogEntry(user.restaurantId, {
+        employee: user?.name || 'System',
+        action: 'Inventory Add',
+        details: `Added new item: ${data.name} (${data.stock} ${data.unit})`,
+    });
+    
+    setInventory(await getInventory(user.restaurantId));
     setIsDialogOpen(false);
+  }
+
+  const handleRemoveItem = async (itemId: string) => {
+    if (!user || !user.restaurantId) return;
+    await removeInventoryItem(user.restaurantId, itemId);
+    setInventory(await getInventory(user.restaurantId));
   }
 
   const getStatusVariant = (status: string) => {
@@ -202,8 +192,10 @@ export default function InventoryPage() {
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
                         <DropdownMenuLabel>Actions</DropdownMenuLabel>
-                        <DropdownMenuItem>Edit</DropdownMenuItem>
-                        <DropdownMenuItem>Delete</DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => handleRemoveItem(item.id)} className="text-destructive">
+                          <Trash2 className="mr-2 h-4 w-4" />
+                          Delete
+                        </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </TableCell>

@@ -1,6 +1,7 @@
 
 // lucide-react.d.ts
 declare module 'lucide-react' {
+
   import { FC, SVGProps } from 'react';
 
   export const X: FC<SVGProps<SVGSVGElement>>;
@@ -46,6 +47,13 @@ declare module 'lucide-react' {
   export const ArrowRight: FC<SVGProps<SVGSVGElement>>;
   export const Search: FC<SVGProps<SVGSVGElement>>;
   export const ChevronsUpDown: FC<SVGProps<SVGSVGElement>>;
+  export const Settings: FC<SVGProps<SVGSVGElement>>;
+  export const LifeBuoy: FC<SVGProps<SVGSVGElement>>;
+  export const LogOut: FC<SVGProps<SVGSVGElement>>;
+  export const FileText: FC<SVGProps<SVGSVGElement>>;
+  export const BookOpen: FC<SVGProps<SVGSVGElement>>;
+  export const MoreVertical: FC<SVGProps<SVGSVGElement>>;
+  export const Move: FC<SVGProps<SVGSVGElement>>;
+  export const Utensils: FC<SVGProps<SVGSVGElement>>;
+  export const GripVertical: FC<SVGProps<SVGSVGElement>>;
 }
-
-  

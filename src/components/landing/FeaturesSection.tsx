@@ -13,28 +13,28 @@ export default function FeaturesSection() {
       icon: <BookMarked className="h-8 w-8 mb-4 text-primary" />,
       name: t('feature1Title'),
       description: t('feature1Desc'),
-      image: "https://placehold.co/600x400",
+      image: "https://picsum.photos/seed/booking/600/400",
       aiHint: "booking calendar",
     },
     {
       icon: <Table className="h-8 w-8 mb-4 text-primary" />,
       name: t('feature2Title'),
       description: t('feature2Desc'),
-      image: "https://placehold.co/600x400",
+      image: "https://picsum.photos/seed/floorplan/600/400",
       aiHint: "restaurant floor plan",
     },
     {
       icon: <Users className="h-8 w-8 mb-4 text-primary" />,
       name: t('feature3Title'),
       description: t('feature3Desc'),
-      image: "https://placehold.co/600x400",
+      image: "https://picsum.photos/seed/crm/600/400",
       aiHint: "customer database",
     },
     {
       icon: <BarChart2 className="h-8 w-8 mb-4 text-primary" />,
       name: t('feature4Title'),
       description: t('feature4Desc'),
-      image: "https://placehold.co/600x400",
+      image: "https://picsum.photos/seed/analytics/600/400",
       aiHint: "analytics dashboard",
     },
   ];
@@ -48,6 +48,9 @@ export default function FeaturesSection() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
           {features.map((item) => (
             <Card key={item.name} className="flex flex-col text-center items-center overflow-hidden transition-all duration-300 hover:shadow-2xl hover:-translate-y-2">
+              <div className="w-full h-40 relative">
+                 <Image src={item.image} alt={item.name} layout="fill" objectFit="cover" data-ai-hint={item.aiHint} />
+              </div>
               <CardHeader className="flex-grow">
                  {item.icon}
                 <CardTitle className="font-headline text-xl">{item.name}</CardTitle>

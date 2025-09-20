@@ -14,7 +14,8 @@ import {
   FileText,
   Settings,
   LifeBuoy,
-  LogOut
+  LogOut,
+  BookOpen
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import Link from 'next/link';
@@ -46,7 +47,8 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
   const navItems = [
     { href: '/dashboard', label: t('dashboard'), icon: <Home size={24} />, exact: true },
     { href: '/dashboard/bookings', label: t('bookings'), icon: <ShoppingCart size={24} /> },
-    { href: '/dashboard/orders', label: t('orders'), icon: <ListOrdered size={24} /> },
+    { href: 'src/app/dashboard/orders', label: t('orders'), icon: <ListOrdered size={24} /> },
+    { href: '/dashboard/menu', label: 'Menu', icon: <BookOpen size={24} /> },
     { href: '/dashboard/tables', label: t('tables'), icon: <Package size={24} /> },
     { href: '/dashboard/inventory', label: t('inventory'), icon: <ClipboardList size={24} /> },
     { href: '/dashboard/customers', label: t('customers'), icon: <Users size={24} /> },
@@ -108,7 +110,7 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
                 className="rounded-full"
               >
                  <Image 
-                    src="https://placehold.co/36x36" 
+                    src="https://picsum.photos/seed/1/36/36"
                     width={36} 
                     height={36} 
                     alt="Avatar" 

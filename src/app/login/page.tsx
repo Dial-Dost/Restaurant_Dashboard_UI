@@ -23,11 +23,11 @@ export default function LoginPage() {
   const [restaurantName, setRestaurantName] = useState("");
   const { toast } = useToast();
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!restaurantName) return;
 
-    const restaurant = findRestaurantByName(restaurantName);
+    const restaurant = await findRestaurantByName(restaurantName);
 
     if (restaurant) {
       router.push(`/login/employee?restaurant=${encodeURIComponent(restaurant.name)}`);

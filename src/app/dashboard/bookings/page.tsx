@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Card,
   CardContent,
@@ -44,60 +44,18 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuTrigger,
+  DropdownMenuSub,
+  DropdownMenuSubTrigger,
+  DropdownMenuSubContent,
+  DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-
-const initialBookings = [
-  {
-    id: "1",
-    customer: "Liam Johnson",
-    time: "7:00 PM",
-    guests: 2,
-    table: "T2",
-    source: "Dineout",
-    status: "Confirmed",
-  },
-  {
-    id: "2",
-    customer: "Olivia Smith",
-    time: "7:15 PM",
-    guests: 4,
-    table: "T6",
-    source: "Call",
-    status: "Arrived",
-  },
-  {
-    id: "3",
-    customer: "Noah Williams",
-    time: "8:00 PM",
-    guests: 2,
-    table: "T8",
-    source: "Easydiner",
-    status: "Confirmed",
-  },
-  {
-    id: "4",
-    customer: "Emma Brown",
-    time: "8:30 PM",
-    guests: 3,
-    table: "T4",
-    source: "Walk-in",
-    status: "Seated",
-  },
-  {
-    id: "5",
-    customer: "James Jones",
-    time: "9:00 PM",
-    guests: 5,
-    table: "T9",
-    source: "Call",
-    status: "Pending",
-  },
-];
-
-type Booking = (typeof initialBookings)[0];
+import { addAuditLogEntry, getBookings, addBooking, updateTableStatus, getTables, cancelBooking, updateBookingStatus } from "@/lib/db";
+import { useAuth } from "@/context/AuthContext";
+import { type Booking } from "./data";
+import { type Table as TableType } from "../tables/data";
 
 const bookingSchema = z.object({
     customer: z.string().min(1, "Customer name is required."),
@@ -111,17 +69,67 @@ type BookingFormData = z.infer<typeof bookingSchema>;
 
 
 export default function BookingsPage() {
-  const [bookings, setBookings] = useState(initialBookings);
+  const { user } = useAuth();
+  const [bookings, setBookings] = useState<Booking[]>([]);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   
-  const handleAddBooking = (data: BookingFormData) => {
+  useEffect(() => {
+    if (user) {
+      const fetchBookings = async () => {
+        setBookings(await getBookings(user.restaurantId));
+      }
+      fetchBookings();
+    }
+  }, [user]);
+
+  const handleAddBooking = async (data: BookingFormData) => {
+    if (!user || !user.restaurantId) return;
+    
     const newBooking: Booking = {
         id: (bookings.length + 1).toString(),
         ...data,
         status: 'Confirmed'
     };
-    setBookings([...bookings, newBooking]);
+    await addBooking(user.restaurantId, newBooking);
+    await updateTableStatus(user.restaurantId, data.table, 'Booked');
+
+    await addAuditLogEntry(user.restaurantId, {
+        employee: user?.name || 'System',
+        action: 'Booking Create',
+        details: `Created booking for ${data.customer} at table ${data.table}`,
+    });
+
+    setBookings(await getBookings(user.restaurantId));
     setIsDialogOpen(false);
+  }
+
+  const handleCancelBooking = async (booking: Booking) => {
+    if (!user || !user.restaurantId) return;
+
+    await cancelBooking(user.restaurantId, booking.id);
+    await updateTableStatus(user.restaurantId, booking.table, 'Available');
+    
+    await addAuditLogEntry(user.restaurantId, {
+        employee: user?.name || 'System',
+        action: 'Booking Cancel',
+        details: `Cancelled booking for ${booking.customer} at table ${booking.table}`,
+    });
+
+    setBookings(await getBookings(user.restaurantId));
+  }
+
+  const handleStatusChange = async (booking: Booking, status: Booking['status']) => {
+    if (!user || !user.restaurantId) return;
+
+    await updateBookingStatus(user.restaurantId, booking.id, status);
+
+    if(status === 'Seated' || status === 'Arrived') {
+        await updateTableStatus(user.restaurantId, booking.table, 'Booked');
+    } else {
+        await updateTableStatus(user.restaurantId, booking.table, 'Available');
+    }
+
+    setBookings(await getBookings(user.restaurantId));
   }
 
   return (
@@ -202,8 +210,18 @@ export default function BookingsPage() {
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
                         <DropdownMenuLabel>Actions</DropdownMenuLabel>
-                        <DropdownMenuItem>Edit</DropdownMenuItem>
-                        <DropdownMenuItem>Cancel</DropdownMenuItem>
+                        <DropdownMenuSub>
+                          <DropdownMenuSubTrigger>Change Status</DropdownMenuSubTrigger>
+                          <DropdownMenuSubContent>
+                            <DropdownMenuItem onClick={() => handleStatusChange(booking, 'Confirmed')}>Confirmed</DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => handleStatusChange(booking, 'Arrived')}>Arrived</DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => handleStatusChange(booking, 'Seated')}>Seated</DropdownMenuItem>
+                          </DropdownMenuSubContent>
+                        </DropdownMenuSub>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem onClick={() => handleCancelBooking(booking)} className="text-destructive">
+                          Cancel
+                        </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </TableCell>
@@ -228,11 +246,24 @@ function BookingForm({ onSubmit, afterSubmit }: { onSubmit: (data: BookingFormDa
             source: "",
         }
     });
+    const { user } = useAuth();
+    const [tables, setTables] = useState<TableType[]>([]);
+
+    useEffect(() => {
+        if(user) {
+            const fetchTables = async () => {
+              setTables(await getTables(user.restaurantId));
+            }
+            fetchTables();
+        }
+    }, [user]);
 
     const handleFormSubmit = (data: BookingFormData) => {
         onSubmit(data);
         afterSubmit();
     }
+
+    const availableTables = tables.filter(t => t.status === 'Available');
 
     return (
         <form onSubmit={handleSubmit(handleFormSubmit)} className="grid gap-4 py-4">
@@ -260,7 +291,20 @@ function BookingForm({ onSubmit, afterSubmit }: { onSubmit: (data: BookingFormDa
           <div className="grid grid-cols-4 items-center gap-4">
             <Label htmlFor="table" className="text-right">Table</Label>
             <div className="col-span-3">
-              <Input id="table" {...register("table")} placeholder="e.g., T5" />
+              <Controller
+                name="table"
+                control={control}
+                render={({ field }) => (
+                  <Select onValueChange={field.onChange} defaultValue={field.value}>
+                      <SelectTrigger>
+                          <SelectValue placeholder="Select an available table" />
+                      </SelectTrigger>
+                      <SelectContent>
+                          {availableTables.map(t => <SelectItem key={t.id} value={t.name}>{t.name} (Capacity: {t.capacity})</SelectItem>)}
+                      </SelectContent>
+                  </Select>
+                )}
+              />
               {errors.table && <p className="text-sm text-destructive mt-1">{errors.table.message}</p>}
             </div>
           </div>
