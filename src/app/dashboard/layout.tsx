@@ -45,14 +45,14 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
   const { user, logout } = useAuth();
 
   const navItems = [
-    { href: '/dashboard', label: t('dashboard'), icon: <Home size={24} />, exact: true },
-    { href: '/dashboard/bookings', label: t('bookings'), icon: <ShoppingCart size={24} /> },
-    { href: 'src/app/dashboard/orders', label: t('orders'), icon: <ListOrdered size={24} /> },
-    { href: '/dashboard/menu', label: 'Menu', icon: <BookOpen size={24} /> },
-    { href: '/dashboard/tables', label: t('tables'), icon: <Package size={24} /> },
-    { href: '/dashboard/inventory', label: t('inventory'), icon: <ClipboardList size={24} /> },
-    { href: '/dashboard/customers', label: t('customers'), icon: <Users size={24} /> },
-    { href: '/dashboard/analytics', label: t('analytics'), icon: <LineChart size={24} /> },
+    { href: '/dashboard', label: t('dashboard'), icon: <Home className="h-6 w-6" />, exact: true },
+    { href: '/dashboard/bookings', label: t('bookings'), icon: <ShoppingCart className="h-6 w-6" /> },
+    { href: '/dashboard/orders', label: t('orders'), icon: <ListOrdered className="h-6 w-6" /> },
+    { href: '/dashboard/menu', label: 'Menu', icon: <BookOpen className="h-6 w-6" /> },
+    { href: '/dashboard/tables', label: t('tables'), icon: <Package className="h-6 w-6" /> },
+    { href: '/dashboard/inventory', label: t('inventory'), icon: <ClipboardList className="h-6 w-6" /> },
+    { href: '/dashboard/customers', label: t('customers'), icon: <Users className="h-6 w-6" /> },
+    { href: '/dashboard/analytics', label: t('analytics'), icon: <LineChart className="h-6 w-6" /> },
   ];
 
   const dockItems = navItems.map(item => ({
@@ -62,7 +62,7 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
     className: (item.exact ? pathname === item.href : pathname.startsWith(item.href)) ? 'active-dock-item' : ''
   }));
 
-  const languages = [
+  const languages: { code: 'en' | 'hi' | 'kn' | 'te' | 'ta' | 'ml'; name: string }[] = [
     { code: 'en', name: 'English' },
     { code: 'hi', name: 'हिन्दी (Hindi)' },
     { code: 'kn', name: 'ಕನ್ನಡ (Kannada)' },

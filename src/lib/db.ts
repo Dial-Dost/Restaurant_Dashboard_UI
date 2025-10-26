@@ -9,7 +9,7 @@ import { type MenuItem } from '@/app/dashboard/menu/data';
 import { type Order } from '@/app/dashboard/orders/page';
 import { type Table } from '@/app/dashboard/tables/data';
 import { type AuditLog } from '@/app/dashboard/audit-logs/page';
-import { Collection, ObjectId } from 'mongodb';
+import { ObjectId } from 'mongodb';
 
 export type User = {
     employeeId: string;
@@ -108,12 +108,12 @@ export const createRestaurant = async (restaurantName: string, admin: User) => {
 
 export const addEmployee = async (restaurantId: string, employee: User) => {
     const restaurants = await getCollection('restaurants');
-    return await restaurants.updateOne({ id: restaurantId }, { $push: { users: employee } });
+    return await (restaurants as any).updateOne({ id: restaurantId }, { $push: { users: employee } } as any);
 };
 
 export const removeEmployee = async (restaurantId: string, employeeId: string) => {
     const restaurants = await getCollection('restaurants');
-    return await restaurants.updateOne({ id: restaurantId }, { $pull: { users: { employeeId: employeeId } } });
+    return await (restaurants as any).updateOne({ id: restaurantId }, { $pull: { users: { employeeId: employeeId } } } as any);
 };
 
 
@@ -136,7 +136,7 @@ const getRestaurantDataField = async (restaurantId: string, field: string) => {
 
 const updateRestaurantDataField = async (restaurantId: string, field: string, data: any) => {
     const restaurants = await getCollection('restaurants');
-    return await restaurants.updateOne({ id: restaurantId }, { $set: { [`data.${field}`]: data } });
+    return await (restaurants as any).updateOne({ id: restaurantId }, { $set: { [`data.${field}`]: data } } as any);
 };
 
 const addItemToRestaurantData = async (restaurantId: string, field: string, item: any) => {
@@ -148,7 +148,7 @@ const addItemToRestaurantData = async (restaurantId: string, field: string, item
         const maxId = dataArray.reduce((max: number, current: any) => current.id > max ? current.id : max, 0);
         item.id = maxId + 1;
     }
-    return await restaurants.updateOne({ id: restaurantId }, { $push: { [`data.${field}`]: item } });
+    return await (restaurants as any).updateOne({ id: restaurantId }, { $push: { [`data.${field}`]: item } } as any);
 }
 
 // --- Specific Data Accessors ---
@@ -159,7 +159,27 @@ export const getMenuItems = async (restaurantId: string): Promise<MenuItem[]> =>
 export const getMenuCategories = async (restaurantId: string): Promise<string[]> => await getRestaurantDataField(restaurantId, 'menuCategories');
 export const getOrders = async (restaurantId: string): Promise<Order[]> => await getRestaurantDataField(restaurantId, 'orders');
 export const getTables = async (restaurantId: string): Promise<Table[]> => await getRestaurantDataField(restaurantId, 'tables');
-export const getAuditLogs = async (restaurantId: string): Promise<AuditLog[]> => await getRestaurantDataField(restaurantId, 'auditLogs');
+export const getAuditLogs = async (restaurantId: string, limit = 100): Promise<AuditLog[]> => {
+    try {
+        const auditLogsCollection = await getCollection('audit_logs');
+        const docs = await auditLogsCollection
+            .find({ restaurant_id: restaurantId })
+            .sort({ timestamp: -1 })
+            .limit(Math.max(1, limit))
+            .toArray();
+
+        return docs.map((doc: any) => ({
+            id: doc._id ? doc._id.toString() : `${restaurantId}-${Math.random().toString(36).slice(2, 10)}`,
+            employee: doc.employee ?? 'Unknown',
+            action: doc.action ?? 'Unknown',
+            details: doc.details ?? '',
+            timestamp: doc.timestamp instanceof Date ? doc.timestamp.toISOString() : new Date(doc.timestamp ?? Date.now()).toISOString(),
+        }));
+    } catch (error) {
+        console.error('Failed to fetch audit logs', error);
+        return [];
+    }
+};
 export const getRestaurantProfile = async (restaurantId: string): Promise<RestaurantProfile> => await getRestaurantDataField(restaurantId, 'profile');
 
 
@@ -172,20 +192,19 @@ export const addTable = async (restaurantId: string, table: Omit<Table, 'id'>) =
 
 export const addMenuCategory = async (restaurantId: string, category: string) => {
     const restaurants = await getCollection('restaurants');
-    return await restaurants.updateOne({ id: restaurantId }, { $addToSet: { 'data.menuCategories': category } });
+    return await (restaurants as any).updateOne({ id: restaurantId }, { $addToSet: { 'data.menuCategories': category } } as any);
 };
 
 export const addAuditLogEntry = async (restaurantId: string, log: Omit<AuditLog, 'id' | 'timestamp'>) => {
-    const restaurants = await getCollection('restaurants');
-    const logWithId = { ...log, id: new ObjectId().toHexString(), timestamp: new Date().toISOString() };
-    return await restaurants.updateOne({ id: restaurantId }, { 
-        $push: { 
-            'data.auditLogs': {
-                $each: [logWithId],
-                $position: 0
-            }
-        } 
-    });
+    const auditLogsCollection = await getCollection('audit_logs');
+    const entry = {
+        restaurant_id: restaurantId,
+        employee: log.employee,
+        action: log.action,
+        details: log.details ?? null,
+        timestamp: new Date(),
+    };
+    return await (auditLogsCollection as any).insertOne(entry);
 };
 
 export const updateTableStatus = async (restaurantId: string, tableName: string, status: 'Available' | 'Booked') => {
@@ -196,7 +215,7 @@ export const updateTableStatus = async (restaurantId: string, tableName: string,
 
 export const updateRestaurantProfile = async (restaurantId: string, profile: RestaurantProfile) => {
     const restaurants = await getCollection('restaurants');
-    await restaurants.updateOne({ id: restaurantId }, { $set: { name: profile.name, 'data.profile': profile } });
+    await (restaurants as any).updateOne({ id: restaurantId }, { $set: { name: profile.name, 'data.profile': profile } } as any);
 };
 
 export const removeInventoryItem = async (restaurantId: string, itemId: string) => {
@@ -207,7 +226,7 @@ export const removeInventoryItem = async (restaurantId: string, itemId: string) 
 
 export const removeTable = async (restaurantId: string, tableId: number) => {
     const restaurants = await getCollection('restaurants');
-    return await restaurants.updateOne({ id: restaurantId }, { $pull: { 'data.tables': { id: tableId } } });
+    return await (restaurants as any).updateOne({ id: restaurantId }, { $pull: { 'data.tables': { id: tableId } } } as any);
 }
 
 export const saveTables = async (restaurantId: string, tables: Table[]) => {

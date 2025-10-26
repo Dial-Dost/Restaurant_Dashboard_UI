@@ -110,10 +110,42 @@ export default function OrdersPage() {
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
 
   useEffect(() => {
-    if (user && user.restaurantId) {
-        setOrders(getOrders(user.restaurantId));
-        setMenuItems(getMenuItems(user.restaurantId));
+    if (!user?.restaurantId) {
+      setOrders([]);
+      setMenuItems([]);
+      return;
     }
+
+    let isActive = true;
+
+    const loadData = async () => {
+      try {
+        const [ordersData, menuData] = await Promise.all([
+          getOrders(user.restaurantId),
+          getMenuItems(user.restaurantId),
+        ]);
+
+        if (!isActive) {
+          return;
+        }
+
+        setOrders(Array.isArray(ordersData) ? ordersData : []);
+        setMenuItems(Array.isArray(menuData) ? menuData : []);
+      } catch (error) {
+        console.error("Failed to load orders", error);
+        if (!isActive) {
+          return;
+        }
+        setOrders([]);
+        setMenuItems([]);
+      }
+    };
+
+    loadData();
+
+    return () => {
+      isActive = false;
+    };
   }, [user]);
 
   const triggerPrint = (order: Order) => {
@@ -130,8 +162,8 @@ export default function OrdersPage() {
     updateOrderStatus(order.id, "Paid");
   }
   
-  const handleAddOrder = (newOrderData: Omit<Order, 'id' | 'status' | 'items' | 'subtotal' | 'total' | 'applyServiceCharge'> & { items: string, subtotal: string }) => {
-    if (!user) return;
+  const handleAddOrder = async (newOrderData: Omit<Order, 'id' | 'status' | 'items' | 'subtotal' | 'total' | 'applyServiceCharge'> & { items: string, subtotal: string }) => {
+    if (!user?.restaurantId) return;
     const subtotal = parseFloat(newOrderData.subtotal);
     const selectedMenuItem = menuItems.find(item => item.name.toLowerCase() === newOrderData.items.toLowerCase());
     
@@ -151,9 +183,14 @@ export default function OrdersPage() {
         total: selectedMenuItem ? selectedMenuItem.price : subtotal,
         applyServiceCharge: true,
     };
-    addOrder(user.restaurantId, newOrder);
-    setOrders(getOrders(user.restaurantId));
-    setIsAddDialogOpen(false);
+    try {
+      await addOrder(user.restaurantId, newOrder);
+      const updatedOrders = await getOrders(user.restaurantId);
+      setOrders(Array.isArray(updatedOrders) ? updatedOrders : []);
+      setIsAddDialogOpen(false);
+    } catch (error) {
+      console.error("Failed to add order", error);
+    }
   }
 
   const handleEditOrder = (editedOrderData: Omit<Order, 'total'>) => {
@@ -345,15 +382,15 @@ export default function OrdersPage() {
   );
 }
 
-function OrderForm({ onSubmit, menuItems }: { onSubmit: (data: Omit<Order, 'id' | 'status' | 'items' | 'subtotal' | 'total' | 'applyServiceCharge'> & { items: string, subtotal: string }) => void, menuItems: MenuItem[] }) {
+function OrderForm({ onSubmit, menuItems }: { onSubmit: (data: Omit<Order, 'id' | 'status' | 'items' | 'subtotal' | 'total' | 'applyServiceCharge'> & { items: string, subtotal: string }) => Promise<void> | void, menuItems: MenuItem[] }) {
     const [table, setTable] = useState("");
     const [customer, setCustomer] = useState("");
     const [items, setItems] = useState("");
     const [subtotal, setSubtotal] = useState("");
 
-    const handleSubmit = () => {
+  const handleSubmit = () => {
         if(table && customer && items && subtotal) {
-            onSubmit({
+      void onSubmit({
                 table,
                 customer,
                 items,

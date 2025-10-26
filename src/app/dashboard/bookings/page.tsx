@@ -62,7 +62,7 @@ const bookingSchema = z.object({
   contact: z.string().min(5, "Contact number is required."),
   guests: z.coerce.number().min(1, "At least one guest is required."),
   time: z.string().min(1, "Time is required."),
-  table: z.string().min(1, "Table is required."),
+  table: z.string().optional(),
   source: z.string().min(1, "Source is required."),
 });
 
@@ -100,9 +100,42 @@ export default function BookingsPage() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [tables, setTables] = useState<TableType[]>([]);
 
-  const loadBookings = async () => {
+  const recordAuditEntry = async (action: string, details: string) => {
+    if (!user?.restaurantId) return;
+
     try {
-      const response = await fetch(`${API_BASE_URL}/get-bookings`, { cache: "no-store" });
+      await fetch(`${API_BASE_URL}/audit-logs`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Restaurant-Id": user.restaurantId,
+        },
+        body: JSON.stringify({
+          employee: user?.name || "System",
+          action,
+          details,
+        }),
+      });
+    } catch (auditError) {
+      console.warn("Failed to record audit entry", auditError);
+    }
+  };
+
+  const loadBookings = async () => {
+    if (!user?.restaurantId) {
+      return;
+    }
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/get-bookings?restaurantId=${encodeURIComponent(user.restaurantId)}`,
+        {
+          cache: "no-store",
+          headers: {
+            "X-Restaurant-Id": user.restaurantId,
+          },
+        },
+      );
       if (!response.ok) {
         throw new Error("Failed to fetch bookings");
       }
@@ -123,8 +156,20 @@ export default function BookingsPage() {
   };
 
   const loadTables = async () => {
+    if (!user?.restaurantId) {
+      return;
+    }
+
     try {
-      const response = await fetch(`${API_BASE_URL}/get-tables`, { cache: "no-store" });
+      const response = await fetch(
+        `${API_BASE_URL}/get-tables?restaurantId=${encodeURIComponent(user.restaurantId)}`,
+        {
+          cache: "no-store",
+          headers: {
+            "X-Restaurant-Id": user.restaurantId,
+          },
+        },
+      );
       if (!response.ok) {
         throw new Error("Failed to fetch tables");
       }
@@ -158,17 +203,23 @@ export default function BookingsPage() {
     const [hour, minute] = data.time.split(":");
     reservationDate.setHours(Number(hour) || 0, Number(minute) || 0, 0, 0);
 
+    const requestedTable = data.table?.trim() || undefined;
+
     try {
       await fetch(`${API_BASE_URL}/add-booking`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-Restaurant-Id": user.restaurantId,
+        },
         body: JSON.stringify({
+          restaurantId: user.restaurantId,
           customer: {
             name: data.customer,
             number: sanitizedContact,
           },
           booking: {
-            table_name: data.table,
+            table_name: requestedTable,
             date: reservationDate.toISOString(),
             duration: 120,
             number_of_people: data.guests,
@@ -179,15 +230,12 @@ export default function BookingsPage() {
         }),
       });
 
-      try {
-        await addAuditLogEntry(user.restaurantId, {
-          employee: user?.name || 'System',
-          action: 'Booking Create',
-          details: `Created booking for ${data.customer} at table ${data.table}`,
-        });
-      } catch (auditError) {
-        console.warn("Failed to record audit entry", auditError);
-      }
+      await recordAuditEntry(
+        "Booking Create",
+        requestedTable
+          ? `Created booking for ${data.customer} at table ${requestedTable}`
+          : `Created booking for ${data.customer} (table unassigned)`,
+      );
 
       await loadBookings();
       await loadTables();
@@ -203,17 +251,15 @@ export default function BookingsPage() {
     try {
       await fetch(`${API_BASE_URL}/booking/${booking.id}`, {
         method: "DELETE",
+        headers: {
+          "X-Restaurant-Id": user.restaurantId,
+        },
       });
 
-      try {
-        await addAuditLogEntry(user.restaurantId, {
-          employee: user?.name || 'System',
-          action: 'Booking Cancel',
-          details: `Cancelled booking for ${booking.customer} at table ${booking.table}`,
-        });
-      } catch (auditError) {
-        console.warn("Failed to record audit entry", auditError);
-      }
+      await recordAuditEntry(
+        "Booking Cancel",
+        `Cancelled booking for ${booking.customer} at table ${booking.table || "Unassigned"}`,
+      );
 
       await loadBookings();
       await loadTables();
@@ -228,9 +274,17 @@ export default function BookingsPage() {
     try {
       await fetch(`${API_BASE_URL}/booking/${booking.id}/status`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-Restaurant-Id": user.restaurantId,
+        },
         body: JSON.stringify({ status }),
       });
+
+      await recordAuditEntry(
+        "Booking Status",
+        `Updated booking ${booking.id} status to ${status}`,
+      );
 
       await loadBookings();
       await loadTables();

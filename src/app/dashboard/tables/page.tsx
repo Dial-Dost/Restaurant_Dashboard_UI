@@ -36,7 +36,7 @@ import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { Users, Armchair, PlusCircle, MoreVertical, Trash2, GripVertical } from "lucide-react";
 import { type Table } from "./data";
-import { getTables, addTable, getBookings, removeTable, saveTables } from "@/lib/db";
+import { getTables, addTable, getBookings, removeTable, saveTables, addAuditLogEntry } from "@/lib/db";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import { DndContext, closestCenter, useSensor, useSensors, PointerSensor, DragEndEvent, DragOverlay, DragStartEvent } from "@dnd-kit/core";
@@ -160,8 +160,13 @@ export default function TablesPage() {
         capacity: parseInt(newTableCapacity, 10),
         status: "Available",
       };
-      await addTable(user.restaurantId, newTable);
-      await fetchData(); // Refetch to get the ID assigned by the DB
+            await addTable(user.restaurantId, newTable);
+            await addAuditLogEntry(user.restaurantId, {
+                employee: user?.name || "System",
+                action: "Table Added",
+                details: `Created table ${trimmedName} (capacity ${newTable.capacity})`,
+            });
+            await fetchData(); // Refetch to get the ID assigned by the DB
       setNewTableName("");
       setNewTableCapacity("");
       setIsDialogOpen(false);
@@ -170,8 +175,14 @@ export default function TablesPage() {
 
   const handleRemoveTable = async (tableId: number) => {
     if (!user) return;
-    await removeTable(user.restaurantId, tableId);
-    setTablesData(prev => prev.filter(t => t.id !== tableId));
+        await removeTable(user.restaurantId, tableId);
+        const removed = tablesData.find((t) => t.id === tableId);
+        await addAuditLogEntry(user.restaurantId, {
+            employee: user?.name || "System",
+            action: "Table Removed",
+            details: removed ? `Deleted table ${removed.name}` : `Removed table id ${tableId}`,
+        });
+        setTablesData(prev => prev.filter(t => t.id !== tableId));
     toast({
         title: "Table Removed",
         description: "The table has been successfully deleted.",
