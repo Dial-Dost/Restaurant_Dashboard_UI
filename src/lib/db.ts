@@ -195,7 +195,7 @@ export const addMenuCategory = async (restaurantId: string, category: string) =>
     return await (restaurants as any).updateOne({ id: restaurantId }, { $addToSet: { 'data.menuCategories': category } } as any);
 };
 
-export const addAuditLogEntry = async (restaurantId: string, log: Omit<AuditLog, 'id' | 'timestamp'>) => {
+export const addAuditLogEntry = async (restaurantId: string, log: Omit<AuditLog, 'id' | 'timestamp'>): Promise<void> => {
     const auditLogsCollection = await getCollection('audit_logs');
     const entry = {
         restaurant_id: restaurantId,
@@ -204,7 +204,7 @@ export const addAuditLogEntry = async (restaurantId: string, log: Omit<AuditLog,
         details: log.details ?? null,
         timestamp: new Date(),
     };
-    return await (auditLogsCollection as any).insertOne(entry);
+    await (auditLogsCollection as any).insertOne(entry);
 };
 
 export const updateTableStatus = async (restaurantId: string, tableName: string, status: 'Available' | 'Booked') => {
