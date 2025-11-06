@@ -23,8 +23,8 @@ export const signUpRestaurant = async ({ restaurantName, adminName, adminEmploye
             password: password, // In a real app, hash this password
             role: 'admin' as const
         };
-        const newRestaurant = await createRestaurant(restaurantName, adminUser);
-        return { user: { uid: newRestaurant.id, name: adminName, ...adminUser } };
+    const newRestaurant = await createRestaurant(restaurantName, adminUser);
+    return { user: { uid: newRestaurant.id, ...adminUser } };
     } catch (error: any) {
         console.error("Registration failed:", error);
         throw error;

@@ -3,6 +3,7 @@
 // Keeping it to avoid breaking potential future integrations.
 
 import { initializeApp, getApp, getApps } from "firebase/app";
+import { getFirestore } from "firebase/firestore";
 
 const firebaseConfig = {
   "projectId": "cuisineflow-mfu4e",
@@ -16,5 +17,6 @@ const firebaseConfig = {
 
 // Initialize Firebase
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+const db = getFirestore(app);
 
-export { app };
+export { app, db };

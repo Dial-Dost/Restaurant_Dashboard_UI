@@ -16,6 +16,7 @@ import {
 import { Separator } from '../ui/separator';
 import { ThemeToggle } from '../ThemeToggle';
 import { useTranslation } from '@/context/LanguageContext';
+import type { LanguageCode } from '@/context/LanguageContext';
 
 export default function Header() {
   const { t, setLanguage } = useTranslation();
@@ -37,7 +38,7 @@ export default function Header() {
     { href: '#contact', label: t('contact') },
   ];
 
-  const languages = [
+  const languages: { code: LanguageCode; name: string }[] = [
     { code: 'en', name: 'English' },
     { code: 'hi', name: 'हिन्दी (Hindi)' },
     { code: 'kn', name: 'ಕನ್ನಡ (Kannada)' },

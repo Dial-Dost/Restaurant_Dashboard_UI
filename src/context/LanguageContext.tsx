@@ -343,7 +343,7 @@ const translations = {
 };
 
 type Translations = typeof translations.en;
-type LanguageCode = keyof typeof translations;
+export type LanguageCode = keyof typeof translations;
 
 interface LanguageContextType {
   language: LanguageCode;
