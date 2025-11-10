@@ -64,6 +64,7 @@ const bookingSchema = z.object({
   time: z.string().min(1, "Time is required."),
   table: z.string().optional(),
   source: z.string().min(1, "Source is required."),
+  notes: z.string().optional(),
 });
 
 type BookingFormData = z.infer<typeof bookingSchema>;
@@ -148,6 +149,7 @@ export default function BookingsPage() {
         table: item.table_name ?? "",
         source: item.source ?? "Unknown",
         status: item.status ?? (item.active ? "Arrived" : "Confirmed"),
+        notes: item.notes ?? item.additional_information ?? "",
       }));
       setBookings(mapped);
     } catch (error) {
@@ -226,6 +228,7 @@ export default function BookingsPage() {
             source: data.source,
             status: "Confirmed",
             from: "dashboard",
+            notes: data.notes?.trim() || undefined,
           },
         }),
       });
@@ -335,6 +338,7 @@ export default function BookingsPage() {
                 <TableHead className="hidden md:table-cell text-center">Guests</TableHead>
                 <TableHead className="hidden lg:table-cell">Table</TableHead>
                 <TableHead className="hidden lg:table-cell">Source</TableHead>
+                <TableHead className="hidden xl:table-cell">Notes</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>
                   <span className="sr-only">Actions</span>
@@ -352,6 +356,7 @@ export default function BookingsPage() {
                   <TableCell className="hidden md:table-cell text-center">{booking.guests}</TableCell>
                   <TableCell className="hidden lg:table-cell">{booking.table}</TableCell>
                   <TableCell className="hidden lg:table-cell">{booking.source}</TableCell>
+                  <TableCell className="hidden xl:table-cell whitespace-pre-wrap">{booking.notes || "-"}</TableCell>
                   <TableCell>
                     <Badge
                       variant={
@@ -415,6 +420,7 @@ function BookingForm({ onSubmit, afterSubmit, tables }: { onSubmit: (data: Booki
       time: "",
       table: "",
       source: "",
+      notes: "",
     },
   });
 
@@ -513,6 +519,12 @@ function BookingForm({ onSubmit, afterSubmit, tables }: { onSubmit: (data: Booki
           {errors.source && (
             <p className="mt-1 text-sm text-destructive">{errors.source.message}</p>
           )}
+        </div>
+      </div>
+      <div className="grid grid-cols-4 items-center gap-4">
+        <Label htmlFor="notes" className="text-right">Notes</Label>
+        <div className="col-span-3">
+          <Input id="notes" {...register("notes")} placeholder="e.g., Vegan, peanut allergy, anniversary" />
         </div>
       </div>
       <DialogFooter>

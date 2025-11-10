@@ -8,6 +8,7 @@ export const initialBookings = [
     table: "T2",
     source: "Dineout",
     status: "Confirmed",
+    notes: "Birthday - vegan preference",
   },
   {
     id: "2",
@@ -17,6 +18,7 @@ export const initialBookings = [
     table: "T6",
     source: "Call",
     status: "Arrived",
+    notes: "Window seat",
   },
   {
     id: "3",
@@ -26,6 +28,7 @@ export const initialBookings = [
     table: "T8",
     source: "Easydiner",
     status: "Confirmed",
+    notes: "Allergic to peanuts",
   },
   {
     id: "4",
@@ -35,6 +38,7 @@ export const initialBookings = [
     table: "T4",
     source: "Walk-in",
     status: "Seated",
+    notes: "Anniversary",
   },
   {
     id: "5",
@@ -44,6 +48,7 @@ export const initialBookings = [
     table: "T9",
     source: "Call",
     status: "Pending",
+    notes: "",
   },
 ];
 
