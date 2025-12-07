@@ -176,12 +176,21 @@ export default function BookingsPage() {
         throw new Error("Failed to fetch tables");
       }
       const data = await response.json();
-      const mapped: TableType[] = data.map((table: any, index: number) => ({
+      const mapped: TableType[] = data.map((table: any, index: number) => {
+      const isBooked = Boolean(table.booked);
+      const isReserved = Boolean(table.reserved);
+      const status: TableType["status"] = isBooked
+        ? "Occupied"
+        : isReserved
+        ? "Reserved"
+        : "Available";
+      return {
         id: index + 1,
         name: table.table_name ?? `Table-${index + 1}`,
         capacity: table.capacity ?? 0,
-        status: table.booked ? "Booked" : "Available",
-      }));
+        status,
+      };
+      });
       setTables(mapped);
     } catch (error) {
       console.error("Failed to load tables", error);

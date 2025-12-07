@@ -207,7 +207,11 @@ export const addAuditLogEntry = async (restaurantId: string, log: Omit<AuditLog,
     await (auditLogsCollection as any).insertOne(entry);
 };
 
-export const updateTableStatus = async (restaurantId: string, tableName: string, status: 'Available' | 'Booked') => {
+export const updateTableStatus = async (
+    restaurantId: string,
+    tableName: string,
+    status: 'Available' | 'Reserved' | 'Booked' | 'Occupied',
+) => {
     const tables = await getTables(restaurantId);
     const updatedTables = tables.map(t => t.name === tableName ? { ...t, status } : t);
     return await updateRestaurantDataField(restaurantId, 'tables', updatedTables);

@@ -3,5 +3,5 @@ export type Table = {
   id: number;
   name: string;
   capacity: number;
-  status: "Available" | "Booked";
+  status: "Available" | "Reserved" | "Booked" | "Occupied";
 };

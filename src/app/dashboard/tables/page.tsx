@@ -36,11 +36,13 @@ import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { Users, Armchair, PlusCircle, MoreVertical, Trash2, GripVertical } from "lucide-react";
 import { type Table } from "./data";
-import { getTables, addTable, getBookings, removeTable, saveTables, addAuditLogEntry } from "@/lib/db";
+import { addAuditLogEntry } from "@/lib/db";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import { DndContext, closestCenter, useSensor, useSensors, PointerSensor, DragEndEvent, DragOverlay, DragStartEvent } from "@dnd-kit/core";
-import { SortableContext, useSortable, arrayMove, sortableKeyboardCoordinates } from "@dnd-kit/sortable";
+import { SortableContext, useSortable, arrayMove } from "@dnd-kit/sortable";
+
+const API_BASE_URL = process.env.NEXT_PUBLIC_RECEPTION_API_URL ?? "http://localhost:3000";
 
 
 function SortableTable({ table, onRemove }: { table: Table, onRemove: (tableId: number) => void }) {
@@ -50,6 +52,9 @@ function SortableTable({ table, onRemove }: { table: Table, onRemove: (tableId: 
         transform: transform ? `translate3d(${transform.x}px, ${transform.y}px, 0)` : undefined,
         transition,
     };
+
+    const isUnavailable = table.status === "Booked" || table.status === "Occupied";
+    const isReserved = table.status === "Reserved";
     
     return (
         <Card
@@ -57,7 +62,7 @@ function SortableTable({ table, onRemove }: { table: Table, onRemove: (tableId: 
             style={style}
             className={cn(
                 "transition-all touch-none",
-                table.status === 'Booked' ? 'bg-secondary' : 'bg-background',
+                isUnavailable ? 'bg-secondary' : isReserved ? 'bg-muted/40' : 'bg-background',
                 isDragging ? 'opacity-50 shadow-2xl z-10' : 'hover:shadow-lg'
             )}
         >
@@ -99,7 +104,10 @@ function SortableTable({ table, onRemove }: { table: Table, onRemove: (tableId: 
                 </DropdownMenu>
             </CardHeader>
             <CardContent className="p-3 pt-0 flex justify-between items-center">
-                 <Badge variant={table.status === 'Booked' ? 'destructive' : 'default'} className="text-[10px] sm:text-xs">
+                 <Badge
+                    variant={isUnavailable ? 'destructive' : isReserved ? 'secondary' : 'default'}
+                    className="text-[10px] sm:text-xs"
+                >
                     {table.status}
                 </Badge>
                 <div className="flex items-center text-muted-foreground">
@@ -122,22 +130,43 @@ export default function TablesPage() {
 
   const sensors = useSensors(useSensor(PointerSensor));
 
-  const fetchData = async () => {
-    if (user) {
-      const tables = await getTables(user.restaurantId);
-      const bookings = await getBookings(user.restaurantId);
-      // Sync table statuses with bookings
-      tables.forEach(bookingTable => {
-          const matchingBooking = bookings.find(b => b.table === bookingTable.name && (b.status === "Confirmed" || b.status === "Arrived" || b.status === "Seated"));
-          bookingTable.status = matchingBooking ? "Booked" : "Available";
-      });
-      setTablesData(tables);
-    }
-  }
+    const loadTables = async () => {
+        if (!user?.restaurantId) {
+            return;
+        }
+
+        try {
+            const response = await fetch(
+                `${API_BASE_URL}/get-tables?restaurantId=${encodeURIComponent(user.restaurantId)}`,
+                {
+                    cache: "no-store",
+                    headers: { "X-Restaurant-Id": user.restaurantId },
+                },
+            );
+            if (!response.ok) {
+                throw new Error("Failed to fetch tables");
+            }
+            const data = await response.json();
+            const mapped: Table[] = data.map((table: any, index: number) => {
+                const isBooked = Boolean(table.booked);
+                const isReserved = Boolean(table.reserved);
+                const status: Table["status"] = isBooked ? "Occupied" : isReserved ? "Reserved" : "Available";
+                return {
+                    id: index + 1,
+                    name: table.table_name ?? `Table-${index + 1}`,
+                    capacity: typeof table.capacity === "number" ? table.capacity : 0,
+                    status,
+                };
+            });
+            setTablesData(mapped);
+        } catch (error) {
+            console.error("Failed to load tables", error);
+        }
+    };
 
   useEffect(() => {
-    fetchData();
-  }, [user]);
+        loadTables();
+    }, [user]);
 
   const handleAddTable = async () => {
     if (newTableName && newTableCapacity && user?.restaurantId) {
@@ -155,39 +184,67 @@ export default function TablesPage() {
         return;
       }
       
-      const newTable: Omit<Table, 'id'> = {
-        name: trimmedName,
-        capacity: parseInt(newTableCapacity, 10),
-        status: "Available",
-      };
-            await addTable(user.restaurantId, newTable);
+            const payload: any = {
+                table: {
+                    name: trimmedName,
+                    capacity: newTableCapacity ? parseInt(newTableCapacity, 10) : undefined,
+                },
+            };
+
+            const response = await fetch(`${API_BASE_URL}/add-table`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "X-Restaurant-Id": user.restaurantId,
+                },
+                body: JSON.stringify(payload),
+            });
+
+            if (!response.ok) {
+                throw new Error("Failed to create table");
+            }
+
             await addAuditLogEntry(user.restaurantId, {
                 employee: user?.name || "System",
                 action: "Table Added",
-                details: `Created table ${trimmedName} (capacity ${newTable.capacity})`,
+                details: `Created table ${trimmedName}${payload.table.capacity ? ` (capacity ${payload.table.capacity})` : ""}`,
             });
-            await fetchData(); // Refetch to get the ID assigned by the DB
+
+            await loadTables();
       setNewTableName("");
       setNewTableCapacity("");
       setIsDialogOpen(false);
     }
   };
 
-  const handleRemoveTable = async (tableId: number) => {
-    if (!user) return;
-        await removeTable(user.restaurantId, tableId);
-        const removed = tablesData.find((t) => t.id === tableId);
+    const handleRemoveTable = async (tableId: number) => {
+        if (!user?.restaurantId) return;
+        const removed = tablesData.find(t => t.id === tableId);
+        if (!removed) return;
+
+        const response = await fetch(`${API_BASE_URL}/table/${encodeURIComponent(removed.name)}`, {
+            method: "DELETE",
+            headers: {
+                "X-Restaurant-Id": user.restaurantId,
+            },
+        });
+
+        if (!response.ok && response.status !== 204) {
+            throw new Error("Failed to delete table");
+        }
+
         await addAuditLogEntry(user.restaurantId, {
             employee: user?.name || "System",
             action: "Table Removed",
-            details: removed ? `Deleted table ${removed.name}` : `Removed table id ${tableId}`,
+            details: `Deleted table ${removed.name}`,
         });
-        setTablesData(prev => prev.filter(t => t.id !== tableId));
-    toast({
-        title: "Table Removed",
-        description: "The table has been successfully deleted.",
-    });
-  }
+
+        await loadTables();
+        toast({
+            title: "Table Removed",
+            description: "The table has been successfully deleted.",
+        });
+    };
 
   const handleDragStart = (event: DragStartEvent) => {
     setActiveId(Number(event.active.id));
@@ -202,9 +259,6 @@ export default function TablesPage() {
         const newIndex = tablesData.findIndex((t) => t.id === over.id);
         const newOrder = arrayMove(tablesData, oldIndex, newIndex);
         setTablesData(newOrder);
-        if (user) {
-            await saveTables(user.restaurantId, newOrder);
-        }
     }
   };
 
@@ -221,7 +275,7 @@ export default function TablesPage() {
 
   const sortedCapacities = Object.keys(groupedTables).map(Number).sort((a, b) => a - b);
   const totalTables = tablesData.length;
-  const bookedTables = tablesData.filter(t => t.status === "Booked").length;
+    const unavailableTables = tablesData.filter(t => t.status !== "Available").length;
 
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
@@ -280,7 +334,7 @@ export default function TablesPage() {
             <CardTitle>Table Status Overview</CardTitle>
             {totalTables > 0 ? (
                 <CardDescription className="text-sm text-muted-foreground">
-                    {bookedTables} of {totalTables} tables are currently booked. Drag to reorder tables.
+                    {unavailableTables} of {totalTables} tables are currently booked or reserved. Drag to reorder tables.
                 </CardDescription>
             ) : (
                 <CardDescription className="text-sm text-muted-foreground">
