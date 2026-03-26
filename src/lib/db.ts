@@ -15,7 +15,7 @@ export type User = {
     employeeId: string;
     name: string;
     password?: string; // Should be hashed. Optional for retrieval.
-    role: 'admin' | 'employee';
+    role: 'admin' | 'employee' | 'valet';
 };
 
 export type RestaurantProfile = {

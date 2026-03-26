@@ -1,6 +1,7 @@
 
 "use client";
 
+import { useEffect } from 'react';
 import { Inter } from 'next/font/google';
 import {
   Home,
@@ -15,7 +16,8 @@ import {
   Settings,
   LifeBuoy,
   LogOut,
-  BookOpen
+  BookOpen,
+  Activity,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import Link from 'next/link';
@@ -44,16 +46,41 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
   const { t, setLanguage } = useTranslation();
   const { user, logout } = useAuth();
 
-  const navItems = [
-    { href: '/dashboard', label: t('dashboard'), icon: <Home className="h-6 w-6" />, exact: true },
-    { href: '/dashboard/bookings', label: t('bookings'), icon: <ShoppingCart className="h-6 w-6" /> },
-    { href: '/dashboard/orders', label: t('orders'), icon: <ListOrdered className="h-6 w-6" /> },
-    { href: '/dashboard/menu', label: 'Menu', icon: <BookOpen className="h-6 w-6" /> },
-    { href: '/dashboard/tables', label: t('tables'), icon: <Package className="h-6 w-6" /> },
-    { href: '/dashboard/inventory', label: t('inventory'), icon: <ClipboardList className="h-6 w-6" /> },
-    { href: '/dashboard/customers', label: t('customers'), icon: <Users className="h-6 w-6" /> },
-    { href: '/dashboard/analytics', label: t('analytics'), icon: <LineChart className="h-6 w-6" /> },
-  ];
+  const isValet = user?.role === 'valet';
+  const canAccessValet = user?.role === 'valet' || user?.role === 'admin';
+
+  useEffect(() => {
+    if (!user) {
+      return;
+    }
+
+    if (isValet && pathname !== '/dashboard/valet') {
+      router.replace('/dashboard/valet');
+      return;
+    }
+
+    if (!canAccessValet && pathname.startsWith('/dashboard/valet')) {
+      router.replace('/dashboard');
+    }
+  }, [user, isValet, canAccessValet, pathname, router]);
+
+  const navItems = isValet
+    ? [
+        { href: '/dashboard/valet', label: 'Valet Dashboard', icon: <Activity className="h-6 w-6" />, exact: true },
+      ]
+    : [
+        { href: '/dashboard', label: t('dashboard'), icon: <Home className="h-6 w-6" />, exact: true },
+        { href: '/dashboard/bookings', label: t('bookings'), icon: <ShoppingCart className="h-6 w-6" /> },
+        { href: '/dashboard/orders', label: t('orders'), icon: <ListOrdered className="h-6 w-6" /> },
+        { href: '/dashboard/menu', label: 'Menu', icon: <BookOpen className="h-6 w-6" /> },
+        { href: '/dashboard/tables', label: t('tables'), icon: <Package className="h-6 w-6" /> },
+        { href: '/dashboard/inventory', label: t('inventory'), icon: <ClipboardList className="h-6 w-6" /> },
+        { href: '/dashboard/customers', label: t('customers'), icon: <Users className="h-6 w-6" /> },
+        { href: '/dashboard/analytics', label: t('analytics'), icon: <LineChart className="h-6 w-6" /> },
+        ...(user?.role === 'admin'
+          ? [{ href: '/dashboard/valet', label: 'Valet Dashboard', icon: <Activity className="h-6 w-6" /> }]
+          : []),
+      ];
 
   const dockItems = navItems.map(item => ({
     icon: item.icon,
@@ -79,7 +106,7 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
   return (
       <div className={`${inter.className} flex min-h-screen w-full flex-col`}>
         <header className="sticky top-0 flex h-14 items-center gap-4 border-b bg-background px-4 lg:h-[60px] lg:px-6 z-40">
-            <Link href="/dashboard" className="flex items-center gap-2 font-semibold">
+            <Link href={isValet ? "/dashboard/valet" : "/dashboard"} className="flex items-center gap-2 font-semibold">
                 <Package className="h-6 w-6" />
                 <span>CuisineFlow</span>
             </Link>
@@ -123,12 +150,14 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
             <DropdownMenuContent align="end">
               <DropdownMenuLabel>{t('myAccount')}</DropdownMenuLabel>
               <DropdownMenuSeparator />
-              <DropdownMenuItem asChild>
-                <Link href="/dashboard/settings">
-                  <Settings className="mr-2 h-4 w-4" />
-                  {t('settings')}
-                </Link>
-              </DropdownMenuItem>
+              {!isValet && (
+                <DropdownMenuItem asChild>
+                  <Link href="/dashboard/settings">
+                    <Settings className="mr-2 h-4 w-4" />
+                    {t('settings')}
+                  </Link>
+                </DropdownMenuItem>
+              )}
                {user?.role === 'admin' && (
                 <>
                   <DropdownMenuItem asChild>
@@ -145,10 +174,12 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
                   </DropdownMenuItem>
                 </>
               )}
-              <DropdownMenuItem>
-                <LifeBuoy className="mr-2 h-4 w-4" />
-                {t('support')}
-              </DropdownMenuItem>
+              {!isValet && (
+                <DropdownMenuItem>
+                  <LifeBuoy className="mr-2 h-4 w-4" />
+                  {t('support')}
+                </DropdownMenuItem>
+              )}
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={handleLogout}>
                 <LogOut className="mr-2 h-4 w-4" />
