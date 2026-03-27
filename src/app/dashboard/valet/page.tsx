@@ -15,30 +15,33 @@ import {
 } from "@/components/ui/select";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/hooks/use-toast";
-import { Activity, ArrowRight, Clock, Package, Users } from "lucide-react";
+import { Activity, RefreshCw, Clock, Package, Users, ArrowUpDown } from "lucide-react";
 
-type ValetTable = {
-  table_name: string;
-  capacity: number | null;
-  booked: boolean;
-  reserved?: boolean;
+type ValetBays = {
+  Bay_id: string,
+  Bay_name: string;
+  current_capacity: number;
+  total_capacity: number;
 };
 
 type ValetBooking = {
   booking_id?: string;
   customer_name?: string;
-  table_name?: string | null;
-  number_of_people?: number;
+  bay_name?: string | null;
+  bay_id?: string | null;
+  // number_of_people?: number;
   booking_date_time?: string;
+  exit_date_time?: string | null;
   status?: string;
   active?: boolean;
-  notes?: string | null;
+  number_plate?: string | null;
+  // notes?: string | null;
 };
 
 type ValetInfoResponse = {
   role: "admin" | "employee" | "valet";
   generated_at: string;
-  tables: ValetTable[];
+  bays: ValetBays[];
   bookings: ValetBooking[];
 };
 
@@ -133,8 +136,13 @@ function formatTicket(bookingId?: string, index?: number): string {
 }
 
 function extractVehiclePlate(booking: ValetBooking): string {
-  const notes = booking.notes ?? "";
-  const match = notes.match(/vehicle\s*plate\s*:\s*(.+)$/i);
+  // Prefer explicit number_plate field, fall back to legacy notes parsing.
+  if (booking.number_plate && String(booking.number_plate).trim().length > 0) {
+    return String(booking.number_plate).trim();
+  }
+
+  const notes = (booking as any).notes ?? "";
+  const match = String(notes).match(/vehicle\s*plate\s*:\s*(.+)$/i);
   if (!match || !match[1]) {
     return "N/A";
   }
@@ -168,12 +176,13 @@ export default function ValetDashboardPage() {
   const [newBayName, setNewBayName] = useState("");
   const [recordSearchQuery, setRecordSearchQuery] = useState("");
   const [recordStageFilter, setRecordStageFilter] = useState<"all" | ValetStage>("all");
+  const [recordDate, setRecordDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
+  const [sortAsc, setSortAsc] = useState<boolean>(true);
   const [showAllParked, setShowAllParked] = useState(false);
   const [showAllIncoming, setShowAllIncoming] = useState(false);
   const [newGuestName, setNewGuestName] = useState("");
   const [newVehiclePlate, setNewVehiclePlate] = useState("");
   const [newDateTime, setNewDateTime] = useState("");
-  const [newStage, setNewStage] = useState<ValetStage>("Vehicle added");
   const [creating, setCreating] = useState(false);
 
   const canViewValet = user?.role === "valet" || user?.role === "admin";
@@ -219,14 +228,16 @@ export default function ValetDashboardPage() {
       return;
     }
 
-    const response = await fetch(`${API_BASE_URL}/booking/${bookingId}/status`, {
-      method: "PATCH",
+    const stateCode = getStageIndex(status) + 1;
+
+    const response = await fetch(`${API_BASE_URL}/update_valet_state`, {
+      method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-Restaurant-Id": user.restaurantId,
         "X-Employee-Id": user.employeeId,
       },
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ booking_id: bookingId, state: stateCode }),
     });
 
     if (!response.ok) {
@@ -240,14 +251,15 @@ export default function ValetDashboardPage() {
       return;
     }
 
-    const response = await fetch(`${API_BASE_URL}/booking/${bookingId}/table`, {
-      method: "PATCH",
+    const response = await fetch(`${API_BASE_URL}/update_valet_bay`, {
+      method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-Restaurant-Id": user.restaurantId,
         "X-Employee-Id": user.employeeId,
       },
-      body: JSON.stringify({ table_name: tableName }),
+        // send bay_id (tableName may be a name or an id; caller should pass id when available)
+        body: JSON.stringify({ booking_id: bookingId, bay_id: tableName }),
     });
 
     if (!response.ok) {
@@ -272,14 +284,27 @@ export default function ValetDashboardPage() {
     const stage =
       overrides?.stage ?? draftStageByBookingId[bookingId] ?? normalizeStage(currentBooking.status);
     const selectedTable =
-      overrides?.tableName ?? draftTableByBookingId[bookingId] ?? (currentBooking.table_name ?? "");
-    const normalizedTable =
-      selectedTable === "" || selectedTable === "unassigned" ? null : selectedTable;
+      overrides?.tableName ?? draftTableByBookingId[bookingId] ?? (currentBooking.bay_name ?? currentBooking.bay_id ?? "");
+    const rawTable = selectedTable === "" || selectedTable === "unassigned" ? null : selectedTable;
+
+    // Normalize to bay_id: try to resolve by Bay_name from data.bays, fall back to assuming rawTable is already an id
+    let normalizedBayId: string | null = null;
+    let resolvedBayName: string | null = null;
+    if (rawTable) {
+      const match = (data?.bays ?? []).find((b) => b.Bay_name === rawTable || b.Bay_id === rawTable);
+      if (match) {
+        normalizedBayId = match.Bay_id;
+        resolvedBayName = match.Bay_name;
+      } else {
+        normalizedBayId = String(rawTable);
+        resolvedBayName = rawTable;
+      }
+    }
 
     try {
       setUpdatingId(bookingId);
       await patchBookingStatus(bookingId, stage);
-      await patchBookingTable(bookingId, normalizedTable);
+      await patchBookingTable(bookingId, normalizedBayId);
 
       setData((previous) => {
         if (!previous) {
@@ -293,7 +318,8 @@ export default function ValetDashboardPage() {
               ? {
                   ...booking,
                   status: stage,
-                  table_name: normalizedTable,
+                  bay_id: normalizedBayId,
+                  bay_name: resolvedBayName ?? null,
                   active: isParkedLikeStage(stage),
                 }
               : booking,
@@ -348,53 +374,35 @@ export default function ValetDashboardPage() {
 
     try {
       setCreating(true);
-      const response = await fetch(`${API_BASE_URL}/add-booking`, {
-        method: "POST",
+      const response = await fetch(`${API_BASE_URL}/create_valet_record`, {
+        method: 'POST',
         headers: {
           "Content-Type": "application/json",
           "X-Restaurant-Id": user.restaurantId,
           "X-Employee-Id": user.employeeId,
         },
-        body: JSON.stringify({
-          restaurantId: user.restaurantId,
-          customer: {
-            name: newGuestName.trim() || "Guest",
-            number: `+91${Math.floor(Math.random() * 9000000000 + 1000000000)}`,
-          },
-          booking: {
-            table_name: null,
-            date: date.toISOString(),
-            duration: 120,
-            number_of_people: 1,
-            source: "Valet",
-            status: newStage,
-            from: "valet_dashboard",
-            notes: `Vehicle Plate: ${newVehiclePlate.trim().toUpperCase()}`,
-          },
-        }),
-      });
+        body: JSON.stringify({ number_plate: newVehiclePlate.trim().toUpperCase()}),
+      });  
 
       if (!response.ok) {
         const message = await readErrorMessage(response);
         throw new Error(message || "Unable to create valet record.");
       }
 
-      const created = (await response.json()) as { booking_id?: string; table_name?: string | null };
+      const created = (await response.json()) as { message: string; booking_id?: string; entry_time?: string;};
       const createdBookingId = typeof created.booking_id === "string" ? created.booking_id : undefined;
-      const createdTableName =
-        typeof created.table_name === "string" && created.table_name.trim().length > 0
-          ? created.table_name
-          : null;
+      const createdEntryTime = typeof created.entry_time === "string" ? created.entry_time : undefined;
 
       setData((previous) => {
         const optimisticBooking: ValetBooking = {
           booking_id: createdBookingId,
           customer_name: newGuestName.trim() || "Guest",
-          table_name: createdTableName,
-          booking_date_time: date.toISOString(),
-          number_of_people: 1,
-          status: newStage,
-          notes: `Vehicle Plate: ${newVehiclePlate.trim().toUpperCase()}`,
+          bay_name: undefined,
+          booking_date_time: createdEntryTime ? createdEntryTime : new Date().toISOString(),
+          exit_date_time: undefined,
+          // number_of_people: 1,
+          status: "Vehicle added",
+          number_plate: newVehiclePlate.trim().toUpperCase(),
           active: true,
         };
 
@@ -402,7 +410,7 @@ export default function ValetDashboardPage() {
           return {
             role: user.role,
             generated_at: new Date().toISOString(),
-            tables: [],
+            bays: [],
             bookings: [optimisticBooking],
           };
         }
@@ -421,7 +429,6 @@ export default function ValetDashboardPage() {
       setNewGuestName("");
       setNewVehiclePlate("");
       setNewDateTime("");
-      setNewStage("Vehicle added");
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Unable to create valet record.";
       toast({ title: "Create Failed", description: message, variant: "destructive" });
@@ -440,7 +447,7 @@ export default function ValetDashboardPage() {
   );
 
   const stats = useMemo(() => {
-    const tables = data?.tables ?? [];
+    const tables = data?.bays ?? [];
 
     const parkedNow = inProgressBookings.filter((booking) => isParkedLikeStage(normalizeStage(booking.status))).length;
     const yetToPark = Math.max(inProgressBookings.length - parkedNow, 0);
@@ -481,20 +488,34 @@ export default function ValetDashboardPage() {
 
   const filteredEditableBookings = useMemo(() => {
     const query = recordSearchQuery.trim().toLowerCase();
-    return editableBookings.filter((booking, index) => {
+
+    const results = editableBookings.filter((booking, index) => {
       const bookingId = booking.booking_id;
       const stage = normalizeStage(booking.status);
+
+      // Stage filter
       if (recordStageFilter !== "all" && stage !== recordStageFilter) {
         return false;
       }
 
-      if (!query) {
-        return true;
+      // Date filter (compare YYYY-MM-DD)
+      if (recordDate) {
+        const raw = booking.booking_date_time;
+        if (!raw) return false;
+        const d = new Date(raw);
+        if (Number.isNaN(d.getTime())) return false;
+        if (d.toISOString().slice(0, 10) !== recordDate) return false;
       }
+
+      // Search query
+      if (!query) return true;
+
+      const bayDisplay =
+        booking.bay_name ?? (booking.bay_id ? (data?.bays ?? []).find((b) => b.Bay_id === booking.bay_id)?.Bay_name : "") ?? "";
 
       const searchable = [
         booking.customer_name ?? "",
-        booking.table_name ?? "",
+        bayDisplay,
         extractVehiclePlate(booking),
         stage,
         formatTicket(bookingId, index),
@@ -504,7 +525,16 @@ export default function ValetDashboardPage() {
 
       return searchable.includes(query);
     });
-  }, [editableBookings, recordSearchQuery, recordStageFilter]);
+
+    // Sort by booking time
+    results.sort((a, b) => {
+      const ta = a.booking_date_time ? new Date(a.booking_date_time).getTime() : 0;
+      const tb = b.booking_date_time ? new Date(b.booking_date_time).getTime() : 0;
+      return sortAsc ? ta - tb : tb - ta;
+    });
+
+    return results;
+  }, [editableBookings, recordSearchQuery, recordStageFilter, recordDate, sortAsc, data]);
 
   const bayOptions = useMemo(() => {
     const normalized = managedBays
@@ -525,7 +555,7 @@ export default function ValetDashboardPage() {
 
     const bayKey = `valet-bays:${user.restaurantId}`;
     const savedBaysRaw = window.localStorage.getItem(bayKey);
-    const serverBays = (data?.tables ?? []).map((table) => table.table_name).filter((name) => Boolean(name?.trim()));
+    const serverBays = (data?.bays ?? []).map((table) => table.Bay_name).filter((name) => Boolean(name?.trim()));
     const fallback = Array.from(new Set(["Main", ...serverBays]));
 
     if (!savedBaysRaw) {
@@ -555,7 +585,7 @@ export default function ValetDashboardPage() {
     }
 
     setBaysInitializedForRestaurant(user.restaurantId);
-  }, [user?.restaurantId, data?.tables, baysInitializedForRestaurant]);
+  }, [user?.restaurantId, data?.bays, baysInitializedForRestaurant]);
 
   useEffect(() => {
     if (!user?.restaurantId) {
@@ -659,7 +689,7 @@ export default function ValetDashboardPage() {
             Edit Records
           </Button>
           <Button onClick={fetchValetInfo} variant="outline" disabled={loading}>
-            <ArrowRight className="mr-2 h-4 w-4" />
+            <RefreshCw className="mr-2 h-4 w-4" />
             Refresh
           </Button>
         </div>
@@ -823,19 +853,7 @@ export default function ValetDashboardPage() {
                 onChange={(e) => setNewDateTime(e.target.value)}
               />
             </div>
-            <div>
-              <Label>Initial Stage</Label>
-              <Select value={newStage} onValueChange={(v) => setNewStage(v as ValetStage)}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select stage" />
-                </SelectTrigger>
-                <SelectContent>
-                  {VALET_STAGES.map((stageOption) => (
-                    <SelectItem key={stageOption} value={stageOption}>{stageOption}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            {/* Initial stage removed — new records default to 'Vehicle added' */}
           </div>
           <div className="mt-4">
             <Button type="button" onClick={createValetRecord} disabled={creating}>
@@ -853,7 +871,7 @@ export default function ValetDashboardPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="mb-4 grid gap-3 md:grid-cols-[1.4fr_1fr]">
+          <div className="mb-4 grid gap-3 md:grid-cols-3">
             <div>
               <Label htmlFor="record-search">Search records</Label>
               <Input
@@ -877,6 +895,25 @@ export default function ValetDashboardPage() {
                 </SelectContent>
               </Select>
             </div>
+            <div>
+              <Label>Filter date & sort</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  id="record-date"
+                  type="date"
+                  value={recordDate}
+                  onChange={(e) => setRecordDate(e.target.value)}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  title={sortAsc ? "Sort ascending" : "Sort descending"}
+                  onClick={() => setSortAsc((s) => !s)}
+                >
+                  <ArrowUpDown className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
           </div>
 
           {loading ? <p>Loading valet data...</p> : null}
@@ -890,8 +927,8 @@ export default function ValetDashboardPage() {
                 const stage = normalizeStage(booking.status);
                 const stageValue = bookingId ? (draftStageByBookingId[bookingId] ?? stage) : stage;
                 const tableValue = bookingId
-                  ? (draftTableByBookingId[bookingId] ?? (booking.table_name || "unassigned"))
-                  : (booking.table_name || "unassigned");
+                  ? (draftTableByBookingId[bookingId] ?? (booking.bay_name ?? (booking.bay_id ? (data?.bays ?? []).find((b) => b.Bay_id === booking.bay_id)?.Bay_name : "unassigned")))
+                  : (booking.bay_name ?? (booking.bay_id ? (data?.bays ?? []).find((b) => b.Bay_id === booking.bay_id)?.Bay_name : "unassigned"));
 
                 return (
                   <div key={bookingId ?? `${booking.customer_name}-${index}`} className="rounded-md border p-3">
@@ -1021,7 +1058,7 @@ export default function ValetDashboardPage() {
                         <Badge>{formatTicket(bookingId, index)}</Badge>
                       </div>
                       <p className="text-sm text-muted-foreground">Plate: {extractVehiclePlate(booking)}</p>
-                      <p className="text-sm text-muted-foreground">Bay: {booking.table_name || "Main"}</p>
+                      <p className="text-sm text-muted-foreground">Bay: {booking.bay_name ?? (booking.bay_id ? (data?.bays ?? []).find((b) => b.Bay_id === booking.bay_id)?.Bay_name : undefined) ?? "Main"}</p>
                       <p className="text-sm text-muted-foreground">Stage: {stage}</p>
                       <p className="text-sm text-muted-foreground">Time: {formatTime(booking.booking_date_time)}</p>
                     </div>
@@ -1063,7 +1100,7 @@ export default function ValetDashboardPage() {
                         <Badge variant="secondary">{formatTicket(bookingId, index)}</Badge>
                       </div>
                       <p className="text-sm text-muted-foreground">Plate: {extractVehiclePlate(booking)}</p>
-                      <p className="text-sm text-muted-foreground">Bay: {booking.table_name || "Main"}</p>
+                      <p className="text-sm text-muted-foreground">Bay: {booking.bay_name ?? (booking.bay_id ? (data?.bays ?? []).find((b) => b.Bay_id === booking.bay_id)?.Bay_name : undefined) ?? "Main"}</p>
                       <p className="text-sm text-muted-foreground">Stage: {stage}</p>
                       <p className="text-sm text-muted-foreground">ETA: {formatTime(booking.booking_date_time)}</p>
                     </div>
