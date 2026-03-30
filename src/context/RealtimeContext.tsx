@@ -36,6 +36,13 @@ export function RealtimeProvider({ children, restaurantId }: { children: ReactNo
       "table:deleted",
       "valet:created",
       "valet:updated",
+      "valet:bay_added",
+      "valet:bay_updated",
+      "valet:bay_deleted",
+      "valet:bay_current_set",
+      "feedback:created",
+      "feedback:updated",
+      "feedback:deleted",
     ];
 
     for (const e of events) {

@@ -5,8 +5,9 @@ let socket: Socket | null = null;
 export function initSocket({ url, restaurantId, token }: { url?: string; restaurantId: string; token?: string }) {
   if (socket) return socket;
 
-  // Prefer explicit url, then env var, then current origin
-  const serverUrl = url ?? (typeof window !== 'undefined' ? (process.env.NEXT_PUBLIC_API_URL ?? window.location.origin) : process.env.NEXT_PUBLIC_API_URL ?? "/");
+  // Prefer explicit url, then env var, then assume backend on port 3000 (dev fallback)
+  const serverUrl =
+    url ?? (typeof window !== 'undefined' ? (process.env.NEXT_PUBLIC_API_URL ?? `${window.location.protocol}//${window.location.hostname}:3000`) : process.env.NEXT_PUBLIC_API_URL ?? "/");
 
   const opts: any = {
     path: "/socket.io",

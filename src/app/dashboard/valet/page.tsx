@@ -236,12 +236,24 @@ export default function ValetDashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.restaurantId, user?.employeeId]);
 
-  // React to realtime events and refresh data when valet records change
-  const { lastEvent } = useRealtime ? useRealtime() : { lastEvent: null };
+  // React to realtime events and refresh data when valet records or bays change
+  const { lastEvent } = useRealtime();
 
   useEffect(() => {
     if (!lastEvent) return;
-    const relevant = ["valet:created", "valet:updated", "booking:deleted", "booking:created", "booking:status_updated", "table:added", "table:deleted"];
+    const relevant = [
+      "valet:created",
+      "valet:updated",
+      "valet:bay_added",
+      "valet:bay_updated",
+      "valet:bay_deleted",
+      "valet:bay_current_set",
+      "booking:deleted",
+      "booking:created",
+      "booking:status_updated",
+      "table:added",
+      "table:deleted",
+    ];
     if (relevant.includes(lastEvent.event)) {
       // lightweight approach: refetch the full valet snapshot
       fetchValetInfo();
