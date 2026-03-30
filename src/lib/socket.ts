@@ -5,8 +5,15 @@ let socket: Socket | null = null;
 export function initSocket({ url, restaurantId, token }: { url?: string; restaurantId: string; token?: string }) {
   if (socket) return socket;
 
-  // Prefer explicit url, then env var, then current origin
-  const serverUrl = url ?? (typeof window !== 'undefined' ? (process.env.NEXT_PUBLIC_API_URL ?? window.location.origin) : process.env.NEXT_PUBLIC_API_URL ?? "/");
+  // Prefer explicit url, then known backend env vars, then current origin.
+  const envServerUrl =
+    process.env.NEXT_PUBLIC_RECEPTION_SERVER_URL ??
+    process.env.NEXT_PUBLIC_API_URL;
+  const serverUrl =
+    url ??
+    (typeof window !== "undefined"
+      ? envServerUrl ?? window.location.origin
+      : envServerUrl ?? "/");
 
   const opts: any = {
     path: "/socket.io",
