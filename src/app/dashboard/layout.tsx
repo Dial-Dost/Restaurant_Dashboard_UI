@@ -76,6 +76,7 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
         { href: '/dashboard/tables', label: t('tables'), icon: <Package className="h-6 w-6" /> },
         { href: '/dashboard/inventory', label: t('inventory'), icon: <ClipboardList className="h-6 w-6" /> },
         { href: '/dashboard/customers', label: t('customers'), icon: <Users className="h-6 w-6" /> },
+        { href: '/dashboard/feedback', label: 'Feedback', icon: <FileText className="h-6 w-6" /> },
         { href: '/dashboard/analytics', label: t('analytics'), icon: <LineChart className="h-6 w-6" /> },
         ...(user?.role === 'admin'
           ? [{ href: '/dashboard/valet', label: 'Valet Dashboard', icon: <Activity className="h-6 w-6" /> }]

@@ -26,6 +26,39 @@ export type RestaurantProfile = {
     hours: string;
 }
 
+export type FeedbackCategoryRating = {
+    key: string;
+    label: string;
+    rating: number;
+    question?: string | null;
+    follow_up?: string | null;
+};
+
+export type FeedbackEntry = {
+    id: string;
+    restaurant_id: string;
+    customer_name?: string | null;
+    visit_date?: string | null;
+    comments?: string | null;
+    overall_rating?: number | null;
+    category_ratings: FeedbackCategoryRating[];
+    image_theme?: {
+        background: string;
+        surface: string;
+        text: string;
+        accent: string;
+    } | null;
+    source?: string | null;
+    submitted_at: string;
+};
+
+export type FeedbackSummary = {
+    totalResponses: number;
+    averageRating: number | null;
+    categoryAverages: Record<string, { label: string; average: number | null }>;
+    last30DaysResponses: number;
+};
+
 // Helper to serialize MongoDB objects
 const serializeMongoObject = (obj: any): any => {
     if (!obj) {
@@ -181,6 +214,87 @@ export const getAuditLogs = async (restaurantId: string, limit = 100): Promise<A
     }
 };
 export const getRestaurantProfile = async (restaurantId: string): Promise<RestaurantProfile> => await getRestaurantDataField(restaurantId, 'profile');
+
+export const getFeedbackEntries = async (restaurantId: string, limit = 100): Promise<FeedbackEntry[]> => {
+    try {
+        const feedbackCollection = await getCollection('feedback_entries');
+        const docs = await feedbackCollection
+            .find({ restaurant_id: restaurantId })
+            .sort({ submitted_at: -1 })
+            .limit(Math.max(1, Math.min(limit, 300)))
+            .toArray();
+
+        return docs.map((doc: any) => ({
+            id: doc._id ? doc._id.toString() : `${restaurantId}-${Math.random().toString(36).slice(2, 10)}`,
+            restaurant_id: doc.restaurant_id,
+            customer_name: doc.customer_name ?? null,
+            visit_date: doc.visit_date instanceof Date ? doc.visit_date.toISOString() : (doc.visit_date ?? null),
+            comments: doc.comments ?? null,
+            overall_rating: typeof doc.overall_rating === 'number' ? doc.overall_rating : null,
+            category_ratings: Array.isArray(doc.category_ratings) ? doc.category_ratings : [],
+            image_theme: doc.image_theme ?? null,
+            source: doc.source ?? null,
+            submitted_at: doc.submitted_at instanceof Date ? doc.submitted_at.toISOString() : new Date(doc.submitted_at ?? Date.now()).toISOString(),
+        }));
+    } catch (error) {
+        console.error('Failed to fetch feedback entries', error);
+        return [];
+    }
+};
+
+export const getFeedbackSummary = async (restaurantId: string): Promise<FeedbackSummary> => {
+    const rows = await getFeedbackEntries(restaurantId, 500);
+
+    let overallTotal = 0;
+    let overallCount = 0;
+    let last30DaysResponses = 0;
+    const categoryTotals = new Map<string, { label: string; total: number; count: number }>();
+    const start = Date.now() - 30 * 24 * 60 * 60 * 1000;
+
+    for (const row of rows) {
+        if (typeof row.overall_rating === 'number') {
+            overallTotal += row.overall_rating;
+            overallCount += 1;
+        }
+
+        const submittedTime = new Date(row.submitted_at).getTime();
+        if (!Number.isNaN(submittedTime) && submittedTime >= start) {
+            last30DaysResponses += 1;
+        }
+
+        for (const category of row.category_ratings) {
+            if (!category?.key || typeof category.rating !== 'number') {
+                continue;
+            }
+            const current = categoryTotals.get(category.key) ?? {
+                label: category.label || category.key,
+                total: 0,
+                count: 0,
+            };
+            current.total += category.rating;
+            current.count += 1;
+            if (category.label) {
+                current.label = category.label;
+            }
+            categoryTotals.set(category.key, current);
+        }
+    }
+
+    const categoryAverages: Record<string, { label: string; average: number | null }> = {};
+    for (const [key, current] of categoryTotals.entries()) {
+        categoryAverages[key] = {
+            label: current.label,
+            average: current.count > 0 ? Number((current.total / current.count).toFixed(2)) : null,
+        };
+    }
+
+    return {
+        totalResponses: rows.length,
+        averageRating: overallCount > 0 ? Number((overallTotal / overallCount).toFixed(2)) : null,
+        categoryAverages,
+        last30DaysResponses,
+    };
+};
 
 
 export const addBooking = async (restaurantId: string, booking: Booking) => await addItemToRestaurantData(restaurantId, 'bookings', booking);
