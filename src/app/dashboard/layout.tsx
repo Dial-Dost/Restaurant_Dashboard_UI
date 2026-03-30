@@ -35,6 +35,7 @@ import { ThemeToggle } from '@/components/ThemeToggle';
 import { usePathname, useRouter } from 'next/navigation';
 import { useTranslation } from '@/context/LanguageContext';
 import { useAuth } from '@/context/AuthContext';
+import { RealtimeProvider } from '@/context/RealtimeContext';
 import Dock from '@/components/ui/Dock';
 import '@/components/ui/Dock.css';
 
@@ -207,7 +208,16 @@ export default function DashboardLayout({
 }: {
   children: React.ReactNode;
 }) {
+  const { user } = useAuth();
+  const restaurantId = user?.restaurantId ?? "";
+
+  if (!restaurantId) {
+    return <LayoutContent>{children}</LayoutContent>;
+  }
+
   return (
-    <LayoutContent>{children}</LayoutContent>
-  )
+    <RealtimeProvider restaurantId={restaurantId}>
+      <LayoutContent>{children}</LayoutContent>
+    </RealtimeProvider>
+  );
 }

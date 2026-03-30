@@ -14,6 +14,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useAuth } from "@/context/AuthContext";
+import { useRealtime } from "@/context/RealtimeContext";
 import { useToast } from "@/hooks/use-toast";
 import { Activity, RefreshCw, Clock, Package, Users, ArrowUpDown } from "lucide-react";
 
@@ -234,6 +235,19 @@ export default function ValetDashboardPage() {
     fetchValetInfo();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.restaurantId, user?.employeeId]);
+
+  // React to realtime events and refresh data when valet records change
+  const { lastEvent } = useRealtime ? useRealtime() : { lastEvent: null };
+
+  useEffect(() => {
+    if (!lastEvent) return;
+    const relevant = ["valet:created", "valet:updated", "booking:deleted", "booking:created", "booking:status_updated", "table:added", "table:deleted"];
+    if (relevant.includes(lastEvent.event)) {
+      // lightweight approach: refetch the full valet snapshot
+      fetchValetInfo();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastEvent]);
 
   const patchBookingStatus = async (bookingId: string, status: ValetStage) => {
     if (!user?.restaurantId) {
