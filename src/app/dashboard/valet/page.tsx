@@ -14,31 +14,36 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useAuth } from "@/context/AuthContext";
+import { useRealtime } from "@/context/RealtimeContext";
 import { useToast } from "@/hooks/use-toast";
-import { Activity, ArrowRight, Clock, Package, Users } from "lucide-react";
+import { Activity, RefreshCw, Clock, Package, Users, ArrowUpDown } from "lucide-react";
 
-type ValetTable = {
-  table_name: string;
-  capacity: number | null;
-  booked: boolean;
-  reserved?: boolean;
+type ValetBays = {
+  Bay_id: string | undefined;
+  Bay_name: string;
+  current_capacity: number;
+  total_capacity: number;
+  restaurant_id?: string | undefined;
 };
 
 type ValetBooking = {
   booking_id?: string;
   customer_name?: string;
-  table_name?: string | null;
-  number_of_people?: number;
+  bay_name?: string | null;
+  bay_id?: string | null;
+  // number_of_people?: number;
   booking_date_time?: string;
+  exit_date_time?: string | null;
   status?: string;
   active?: boolean;
-  notes?: string | null;
+  number_plate?: string | null;
+  // notes?: string | null;
 };
 
 type ValetInfoResponse = {
   role: "admin" | "employee" | "valet";
   generated_at: string;
-  tables: ValetTable[];
+  bays: ValetBays[];
   bookings: ValetBooking[];
 };
 
@@ -80,12 +85,17 @@ function isInProgressStage(stage: ValetStage): boolean {
 }
 
 function isParkedLikeStage(stage: ValetStage): boolean {
+  // Parked-like stages: parked, request-to-bring (customer), request-accepted (valet).
+  // 'Car arrived at entrance' is treated separately as pickup stage.
   return (
     stage === "Parked" ||
     stage === "Request to bring car (from customer)" ||
-    stage === "Request accepted (from valet)" ||
-    stage === "Car arrived at entrance"
+    stage === "Request accepted (from valet)"
   );
+}
+
+function isPickupStage(stage: ValetStage): boolean {
+  return stage === "Car arrived at entrance";
 }
 
 async function readErrorMessage(response: Response): Promise<string> {
@@ -133,8 +143,13 @@ function formatTicket(bookingId?: string, index?: number): string {
 }
 
 function extractVehiclePlate(booking: ValetBooking): string {
-  const notes = booking.notes ?? "";
-  const match = notes.match(/vehicle\s*plate\s*:\s*(.+)$/i);
+  // Prefer explicit number_plate field, fall back to legacy notes parsing.
+  if (booking.number_plate && String(booking.number_plate).trim().length > 0) {
+    return String(booking.number_plate).trim();
+  }
+
+  const notes = (booking as any).notes ?? "";
+  const match = String(notes).match(/vehicle\s*plate\s*:\s*(.+)$/i);
   if (!match || !match[1]) {
     return "N/A";
   }
@@ -163,17 +178,24 @@ export default function ValetDashboardPage() {
   const [spaceAvailableDisplay, setSpaceAvailableDisplay] = useState(0);
   const [maxBaysDisplay, setMaxBaysDisplay] = useState(0);
   const [spaceInitializedForRestaurant, setSpaceInitializedForRestaurant] = useState<string | null>(null);
-  const [managedBays, setManagedBays] = useState<string[]>(["Main"]);
+  const [managedBays, setManagedBays] = useState<Array<{ name: string; total_capacity: number }>>([{ name: "Main", total_capacity: 5 }]);
   const [baysInitializedForRestaurant, setBaysInitializedForRestaurant] = useState<string | null>(null);
+  const [baysLoading, setBaysLoading] = useState<boolean>(true);
+  const [newBayCapacity, setNewBayCapacity] = useState<number | string>(5);
+  const [editingBay, setEditingBay] = useState<string | null>(null);
+  const [editingBayName, setEditingBayName] = useState<string>("");
+  const [editingBayCapacity, setEditingBayCapacity] = useState<number | string>(5);
   const [newBayName, setNewBayName] = useState("");
   const [recordSearchQuery, setRecordSearchQuery] = useState("");
   const [recordStageFilter, setRecordStageFilter] = useState<"all" | ValetStage>("all");
+  const [recordDate, setRecordDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
+  const [sortAsc, setSortAsc] = useState<boolean>(false);
   const [showAllParked, setShowAllParked] = useState(false);
   const [showAllIncoming, setShowAllIncoming] = useState(false);
+  const [showAllPickup, setShowAllPickup] = useState(false);
   const [newGuestName, setNewGuestName] = useState("");
   const [newVehiclePlate, setNewVehiclePlate] = useState("");
   const [newDateTime, setNewDateTime] = useState("");
-  const [newStage, setNewStage] = useState<ValetStage>("Vehicle added");
   const [creating, setCreating] = useState(false);
 
   const canViewValet = user?.role === "valet" || user?.role === "admin";
@@ -214,19 +236,34 @@ export default function ValetDashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.restaurantId, user?.employeeId]);
 
+  // React to realtime events and refresh data when valet records change
+  const { lastEvent } = useRealtime ? useRealtime() : { lastEvent: null };
+
+  useEffect(() => {
+    if (!lastEvent) return;
+    const relevant = ["valet:created", "valet:updated", "booking:deleted", "booking:created", "booking:status_updated", "table:added", "table:deleted"];
+    if (relevant.includes(lastEvent.event)) {
+      // lightweight approach: refetch the full valet snapshot
+      fetchValetInfo();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastEvent]);
+
   const patchBookingStatus = async (bookingId: string, status: ValetStage) => {
     if (!user?.restaurantId) {
       return;
     }
 
-    const response = await fetch(`${API_BASE_URL}/booking/${bookingId}/status`, {
-      method: "PATCH",
+    const stateCode = getStageIndex(status) + 1;
+
+    const response = await fetch(`${API_BASE_URL}/update_valet_state`, {
+      method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-Restaurant-Id": user.restaurantId,
         "X-Employee-Id": user.employeeId,
       },
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ booking_id: bookingId, state: stateCode }),
     });
 
     if (!response.ok) {
@@ -240,20 +277,42 @@ export default function ValetDashboardPage() {
       return;
     }
 
-    const response = await fetch(`${API_BASE_URL}/booking/${bookingId}/table`, {
-      method: "PATCH",
+    // If caller wants to unassign bay (tableName === null), call dedicated unassign endpoint
+    if (tableName === null) {
+      const resp = await fetch(`${API_BASE_URL}/unassign-valet-bay`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Restaurant-Id": user.restaurantId,
+          "X-Employee-Id": user.employeeId,
+        },
+        body: JSON.stringify({ booking_id: bookingId }),
+      });
+
+      if (!resp.ok) {
+        const message = await readErrorMessage(resp);
+        throw new Error(message || "Failed to unassign bay.");
+      }
+
+      return await resp.json().catch(() => ({}));
+    }
+
+    const response = await fetch(`${API_BASE_URL}/update_valet_bay`, {
+      method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-Restaurant-Id": user.restaurantId,
         "X-Employee-Id": user.employeeId,
       },
-      body: JSON.stringify({ table_name: tableName }),
+      // send bay_id (tableName may be a name or an id; caller should pass id when available)
+      body: JSON.stringify({ booking_id: bookingId, bay_id: tableName }),
     });
 
     if (!response.ok) {
       const message = await readErrorMessage(response);
       throw new Error(message || "Failed to update bay.");
     }
+    return await response.json().catch(() => ({}));
   };
 
   const handleUpdate = async (
@@ -272,32 +331,204 @@ export default function ValetDashboardPage() {
     const stage =
       overrides?.stage ?? draftStageByBookingId[bookingId] ?? normalizeStage(currentBooking.status);
     const selectedTable =
-      overrides?.tableName ?? draftTableByBookingId[bookingId] ?? (currentBooking.table_name ?? "");
-    const normalizedTable =
-      selectedTable === "" || selectedTable === "unassigned" ? null : selectedTable;
+      overrides?.tableName ?? draftTableByBookingId[bookingId] ?? (currentBooking.bay_name ?? currentBooking.bay_id ?? "");
+    const rawTable = selectedTable === "" || selectedTable === "unassigned" ? null : selectedTable;
+
+    // Normalize to bay_id: try to resolve by Bay_name from data.bays, fall back to assuming rawTable is already an id
+    let normalizedBayId: string | null = null;
+    let resolvedBayName: string | null = null;
+    if (rawTable) {
+      const match = (data?.bays ?? []).find((b) => b.Bay_name === rawTable || b.Bay_id === rawTable);
+      if (match) {
+        normalizedBayId = match.Bay_id;
+        resolvedBayName = match.Bay_name;
+      } else {
+        normalizedBayId = String(rawTable);
+        resolvedBayName = rawTable;
+      }
+    }
 
     try {
       setUpdatingId(bookingId);
+      // If stage indicates the vehicle has left (5 or 6), force unassign the bay
+      const stageCode = getStageIndex(stage) + 1;
+      if (stageCode === 5 || stageCode === 6) {
+        normalizedBayId = null;
+        resolvedBayName = null;
+      }
+
       await patchBookingStatus(bookingId, stage);
-      await patchBookingTable(bookingId, normalizedTable);
+      await patchBookingTable(bookingId, normalizedBayId);
+      // compute and persist bay capacity changes to server after updating state
+      const prevBays = data?.bays ?? [];
+
+      // Build updatedBays locally (same logic as used for setData update)
+      const prevBooking = (data?.bookings ?? []).find((b) => b.booking_id === bookingId);
+      const prevState = normalizeStage(prevBooking?.status);
+      const prevBayId = prevBooking?.bay_id ?? null;
+      const counted = (s: ValetStage) => isParkedLikeStage(s);
+
+      const updatedBaysLocal = (data?.bays ?? []).map((bay) => ({ ...bay }));
+
+      try {
+        if (prevBayId && prevBayId !== normalizedBayId) {
+          if (counted(prevState)) {
+            const idx = updatedBaysLocal.findIndex((b) => b.Bay_id === prevBayId);
+            if (idx >= 0) updatedBaysLocal[idx].current_capacity = Math.max(0, (updatedBaysLocal[idx].current_capacity ?? 0) - 1);
+          }
+
+          if (normalizedBayId && counted(stage)) {
+            const idx2 = updatedBaysLocal.findIndex((b) => b.Bay_id === normalizedBayId);
+            if (idx2 >= 0) updatedBaysLocal[idx2].current_capacity = (updatedBaysLocal[idx2].current_capacity ?? 0) + 1;
+          }
+        } else {
+          if (prevBayId && prevBayId === normalizedBayId) {
+            const idx = updatedBaysLocal.findIndex((b) => b.Bay_id === prevBayId);
+            if (idx >= 0) {
+              if (!counted(prevState) && counted(stage)) {
+                updatedBaysLocal[idx].current_capacity = (updatedBaysLocal[idx].current_capacity ?? 0) + 1;
+              }
+              if (counted(prevState) && !counted(stage)) {
+                updatedBaysLocal[idx].current_capacity = Math.max(0, (updatedBaysLocal[idx].current_capacity ?? 0) - 1);
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.error("Error computing local bay capacity diffs:", e);
+      }
+
+      // Persist changes to server for any bay with a changed current_capacity
+      try {
+        const adjustments: Array<Promise<any>> = [];
+        for (const ub of updatedBaysLocal) {
+          const prev = prevBays.find((b) => String(b.Bay_id) === String(ub.Bay_id));
+          const prevVal = prev ? Number(prev.current_capacity ?? 0) : 0;
+          const newVal = Number(ub.current_capacity ?? 0);
+          if (String(ub.Bay_id) && newVal !== prevVal) {
+            adjustments.push(
+              fetch(`${API_BASE_URL}/set-valet-bay-current`, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  ...(user?.restaurantId ? { "X-Restaurant-Id": user.restaurantId } : {}),
+                  ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
+                },
+                body: JSON.stringify({ Bay_id: ub.Bay_id, current_capacity: newVal }),
+              }).then(async (r) => {
+                if (!r.ok) {
+                  const txt = await r.text().catch(() => "");
+                  throw new Error(`Failed to set bay current: ${r.status} ${txt}`);
+                }
+                return r.json().catch(() => null);
+              }),
+            );
+          }
+        }
+
+        let adjustmentResults: any[] = [];
+        if (adjustments.length > 0) {
+          try {
+            adjustmentResults = await Promise.all(adjustments);
+          } catch (e) {
+            console.error("One or more set-bay-current requests failed:", e);
+            // attempt best-effort: ignore failed ones, we'll still merge available results
+            adjustmentResults = [];
+          }
+        }
+      } catch (e) {
+        console.error("Failed to persist bay capacity changes:", e);
+      }
 
       setData((previous) => {
         if (!previous) {
           return previous;
         }
 
+        const prevBooking = previous.bookings.find((b) => b.booking_id === bookingId);
+        const prevState = normalizeStage(prevBooking?.status);
+        const prevBayId = prevBooking?.bay_id ?? null;
+
+        const counted = (s: ValetStage) => isParkedLikeStage(s);
+
+        // produce updated bookings list
+        const updatedBookings = previous.bookings.map((booking) =>
+          booking.booking_id === bookingId
+            ? {
+                ...booking,
+                status: stage,
+                bay_id: normalizedBayId,
+                bay_name: resolvedBayName ?? null,
+                active: isParkedLikeStage(stage),
+              }
+            : booking,
+        );
+
+        // adjust local bay capacities based on transition
+        // Merge any server responses from set-valet-bay-current into local bay state
+        const serverAdjustmentsMap = new Map<string, any>();
+        try {
+          for (const r of (adjustmentResults ?? [])) {
+            if (r && (r.Bay_id || r.Bay_id === 0)) {
+              serverAdjustmentsMap.set(String(r.Bay_id), r);
+            }
+          }
+        } catch (e) {
+          // ignore
+        }
+
+        const updatedBays = (previous.bays ?? []).map((bay) => {
+          const copy = { ...bay };
+          const srv = serverAdjustmentsMap.get(String(copy.Bay_id));
+          if (srv && srv.current_capacity !== undefined) {
+            copy.current_capacity = Number(srv.current_capacity ?? copy.current_capacity ?? 0);
+          }
+          return copy;
+        });
+
+        try {
+          // If bay changed
+          if (prevBayId && prevBayId !== normalizedBayId) {
+            // if previously counted, decrement previous bay
+            if (counted(prevState)) {
+              const idx = updatedBays.findIndex((b) => b.Bay_id === prevBayId);
+              if (idx >= 0) {
+                updatedBays[idx].current_capacity = Math.max(0, (updatedBays[idx].current_capacity ?? 0) - 1);
+              }
+            }
+
+            // if now counted, increment new bay
+            if (normalizedBayId && counted(stage)) {
+              const idx2 = updatedBays.findIndex((b) => b.Bay_id === normalizedBayId);
+              if (idx2 >= 0) {
+                updatedBays[idx2].current_capacity = (updatedBays[idx2].current_capacity ?? 0) + 1;
+              }
+            }
+          } else {
+            // same bay or both unassigned
+            if (prevBayId && prevBayId === normalizedBayId) {
+              const idx = updatedBays.findIndex((b) => b.Bay_id === prevBayId);
+              if (idx >= 0) {
+                // was not counted -> now counted => +1
+                if (!counted(prevState) && counted(stage)) {
+                  updatedBays[idx].current_capacity = (updatedBays[idx].current_capacity ?? 0) + 1;
+                }
+                // was counted -> now not counted => -1
+                if (counted(prevState) && !counted(stage)) {
+                  updatedBays[idx].current_capacity = Math.max(0, (updatedBays[idx].current_capacity ?? 0) - 1);
+                }
+              }
+            }
+          }
+        } catch (e) {
+          // swallow UI-only errors
+          console.error("Error adjusting local bay capacities:", e);
+        }
+
         return {
           ...previous,
-          bookings: previous.bookings.map((booking) =>
-            booking.booking_id === bookingId
-              ? {
-                  ...booking,
-                  status: stage,
-                  table_name: normalizedTable,
-                  active: isParkedLikeStage(stage),
-                }
-              : booking,
-          ),
+          bookings: updatedBookings,
+          bays: updatedBays,
         };
       });
 
@@ -348,53 +579,35 @@ export default function ValetDashboardPage() {
 
     try {
       setCreating(true);
-      const response = await fetch(`${API_BASE_URL}/add-booking`, {
-        method: "POST",
+      const response = await fetch(`${API_BASE_URL}/create_valet_record`, {
+        method: 'POST',
         headers: {
           "Content-Type": "application/json",
           "X-Restaurant-Id": user.restaurantId,
           "X-Employee-Id": user.employeeId,
         },
-        body: JSON.stringify({
-          restaurantId: user.restaurantId,
-          customer: {
-            name: newGuestName.trim() || "Guest",
-            number: `+91${Math.floor(Math.random() * 9000000000 + 1000000000)}`,
-          },
-          booking: {
-            table_name: null,
-            date: date.toISOString(),
-            duration: 120,
-            number_of_people: 1,
-            source: "Valet",
-            status: newStage,
-            from: "valet_dashboard",
-            notes: `Vehicle Plate: ${newVehiclePlate.trim().toUpperCase()}`,
-          },
-        }),
-      });
+        body: JSON.stringify({ number_plate: newVehiclePlate.trim().toUpperCase()}),
+      });  
 
       if (!response.ok) {
         const message = await readErrorMessage(response);
         throw new Error(message || "Unable to create valet record.");
       }
 
-      const created = (await response.json()) as { booking_id?: string; table_name?: string | null };
+      const created = (await response.json()) as { message: string; booking_id?: string; entry_time?: string;};
       const createdBookingId = typeof created.booking_id === "string" ? created.booking_id : undefined;
-      const createdTableName =
-        typeof created.table_name === "string" && created.table_name.trim().length > 0
-          ? created.table_name
-          : null;
+      const createdEntryTime = typeof created.entry_time === "string" ? created.entry_time : undefined;
 
       setData((previous) => {
         const optimisticBooking: ValetBooking = {
           booking_id: createdBookingId,
           customer_name: newGuestName.trim() || "Guest",
-          table_name: createdTableName,
-          booking_date_time: date.toISOString(),
-          number_of_people: 1,
-          status: newStage,
-          notes: `Vehicle Plate: ${newVehiclePlate.trim().toUpperCase()}`,
+          bay_name: undefined,
+          booking_date_time: createdEntryTime ? createdEntryTime : new Date().toISOString(),
+          exit_date_time: undefined,
+          // number_of_people: 1,
+          status: "Vehicle added",
+          number_plate: newVehiclePlate.trim().toUpperCase(),
           active: true,
         };
 
@@ -402,7 +615,7 @@ export default function ValetDashboardPage() {
           return {
             role: user.role,
             generated_at: new Date().toISOString(),
-            tables: [],
+            bays: [],
             bookings: [optimisticBooking],
           };
         }
@@ -421,7 +634,6 @@ export default function ValetDashboardPage() {
       setNewGuestName("");
       setNewVehiclePlate("");
       setNewDateTime("");
-      setNewStage("Vehicle added");
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Unable to create valet record.";
       toast({ title: "Create Failed", description: message, variant: "destructive" });
@@ -440,20 +652,28 @@ export default function ValetDashboardPage() {
   );
 
   const stats = useMemo(() => {
-    const tables = data?.tables ?? [];
+    const tables = data?.bays ?? [];
 
     const parkedNow = inProgressBookings.filter((booking) => isParkedLikeStage(normalizeStage(booking.status))).length;
-    const yetToPark = Math.max(inProgressBookings.length - parkedNow, 0);
+    const pickupCount = inProgressBookings.filter((booking) => isPickupStage(normalizeStage(booking.status))).length;
+    // Yet to park specifically means stage 1 (Vehicle added)
+    const yetToPark = inProgressBookings.filter((booking) => normalizeStage(booking.status) === "Vehicle added").length;
     const activeCars = inProgressBookings.length;
-    const occupiedBays = Math.min(parkedNow, tables.length);
-    const spaceAvailable = Math.max(tables.length - occupiedBays, 0);
+
+    // Compute occupancy using bay capacities from server/local state
+    const totalCapacity = tables.reduce((s, b) => s + (Number(b.total_capacity) || 0), 0);
+    const occupiedCapacity = tables.reduce((s, b) => s + (Number(b.current_capacity) || 0), 0);
+    const spaceAvailable = Math.max(totalCapacity - occupiedCapacity, 0);
 
     return {
       activeCars,
       parkedNow,
+      pickupCount,
       yetToPark,
       spaceAvailable,
       totalBays: tables.length,
+      totalCapacity,
+      occupiedCapacity,
     };
   }, [data, inProgressBookings]);
 
@@ -462,8 +682,14 @@ export default function ValetDashboardPage() {
     [inProgressBookings],
   );
 
+  const pickupQueue = useMemo(
+    () => inProgressBookings.filter((booking) => isPickupStage(normalizeStage(booking.status))),
+    [inProgressBookings],
+  );
+
   const incomingCarQueue = useMemo(
-    () => inProgressBookings.filter((booking) => !isParkedLikeStage(normalizeStage(booking.status))),
+    // incoming = stage 1 (Vehicle added)
+    () => inProgressBookings.filter((booking) => normalizeStage(booking.status) === "Vehicle added"),
     [inProgressBookings],
   );
 
@@ -474,6 +700,11 @@ export default function ValetDashboardPage() {
     [activeCarQueue, showAllParked],
   );
 
+  const displayedPickupQueue = useMemo(
+    () => (showAllPickup ? pickupQueue : pickupQueue.slice(0, 5)),
+    [pickupQueue, showAllPickup],
+  );
+
   const displayedIncomingQueue = useMemo(
     () => (showAllIncoming ? incomingCarQueue : incomingCarQueue.slice(0, 5)),
     [incomingCarQueue, showAllIncoming],
@@ -481,20 +712,34 @@ export default function ValetDashboardPage() {
 
   const filteredEditableBookings = useMemo(() => {
     const query = recordSearchQuery.trim().toLowerCase();
-    return editableBookings.filter((booking, index) => {
+
+    const results = editableBookings.filter((booking, index) => {
       const bookingId = booking.booking_id;
       const stage = normalizeStage(booking.status);
+
+      // Stage filter
       if (recordStageFilter !== "all" && stage !== recordStageFilter) {
         return false;
       }
 
-      if (!query) {
-        return true;
+      // Date filter (compare YYYY-MM-DD)
+      if (recordDate) {
+        const raw = booking.booking_date_time;
+        if (!raw) return false;
+        const d = new Date(raw);
+        if (Number.isNaN(d.getTime())) return false;
+        if (d.toISOString().slice(0, 10) !== recordDate) return false;
       }
+
+      // Search query
+      if (!query) return true;
+
+      const bayDisplay =
+        booking.bay_name ?? (booking.bay_id ? (data?.bays ?? []).find((b) => b.Bay_id === booking.bay_id)?.Bay_name : "") ?? "";
 
       const searchable = [
         booking.customer_name ?? "",
-        booking.table_name ?? "",
+        bayDisplay,
         extractVehiclePlate(booking),
         stage,
         formatTicket(bookingId, index),
@@ -504,58 +749,124 @@ export default function ValetDashboardPage() {
 
       return searchable.includes(query);
     });
-  }, [editableBookings, recordSearchQuery, recordStageFilter]);
+
+    // Sort by booking time
+    results.sort((a, b) => {
+      const ta = a.booking_date_time ? new Date(a.booking_date_time).getTime() : 0;
+      const tb = b.booking_date_time ? new Date(b.booking_date_time).getTime() : 0;
+      return sortAsc ? ta - tb : tb - ta;
+    });
+
+    return results;
+  }, [editableBookings, recordSearchQuery, recordStageFilter, recordDate, sortAsc, data]);
 
   const bayOptions = useMemo(() => {
     const normalized = managedBays
-      .map((bay) => bay.trim())
-      .filter((bay) => bay.length > 0);
-    const withMain = normalized.includes("Main") ? normalized : ["Main", ...normalized];
-    return Array.from(new Set(withMain));
+      .map((bay) => ({ name: bay.name.trim(), total_capacity: bay.total_capacity }))
+      .filter((bay) => bay.name.length > 0);
+    const hasMain = normalized.some((b) => b.name === "Main");
+    const ensured = hasMain ? normalized : [{ name: "Main", total_capacity: 5 }, ...normalized];
+    return Array.from(new Set(ensured.map((b) => b.name)));
   }, [managedBays]);
 
   useEffect(() => {
-    if (!user?.restaurantId) {
-      return;
-    }
-
-    if (baysInitializedForRestaurant === user.restaurantId) {
-      return;
-    }
+    if (!user?.restaurantId) return;
+    if (baysInitializedForRestaurant === user.restaurantId) return;
 
     const bayKey = `valet-bays:${user.restaurantId}`;
     const savedBaysRaw = window.localStorage.getItem(bayKey);
-    const serverBays = (data?.tables ?? []).map((table) => table.table_name).filter((name) => Boolean(name?.trim()));
-    const fallback = Array.from(new Set(["Main", ...serverBays]));
 
-    if (!savedBaysRaw) {
-      setManagedBays(fallback);
-      window.localStorage.setItem(bayKey, JSON.stringify(fallback));
-      setBaysInitializedForRestaurant(user.restaurantId);
-      return;
-    }
+    // Fast path: use localStorage for immediate UI responsiveness
+    if (savedBaysRaw) {
+      try {
+        const parsed = JSON.parse(savedBaysRaw) as unknown;
+        if (Array.isArray(parsed)) {
+          const cleaned = parsed
+            .map((value) => {
+              if (typeof value === "string") return { name: value.trim(), total_capacity: 5 };
+              if (typeof value === "object" && value !== null) {
+                const n = (value as any).name ?? (value as any).Bay_name ?? "";
+                const cap = Number((value as any).total_capacity ?? (value as any).totalCapacity ?? 5) || 5;
+                return { name: String(n).trim(), total_capacity: cap };
+              }
+              return null;
+            })
+            .filter((v) => v && v.name.length > 0) as Array<{ name: string; total_capacity: number }>;
 
-    try {
-      const parsed = JSON.parse(savedBaysRaw) as unknown;
-      if (Array.isArray(parsed)) {
-        const cleaned = Array.from(
-          new Set(
-            parsed
-              .map((value) => (typeof value === "string" ? value.trim() : ""))
-              .filter((value) => value.length > 0),
-          ),
-        );
-        const ensuredMain = cleaned.includes("Main") ? cleaned : ["Main", ...cleaned];
-        setManagedBays(ensuredMain);
-      } else {
-        setManagedBays(fallback);
+          const ensuredMain = cleaned.some((c) => c.name === "Main") ? cleaned : [{ name: "Main", total_capacity: 5 }, ...cleaned];
+          setManagedBays(ensuredMain);
+        }
+      } catch {
+        // ignore parse errors
       }
-    } catch {
-      setManagedBays(fallback);
     }
 
-    setBaysInitializedForRestaurant(user.restaurantId);
-  }, [user?.restaurantId, data?.tables, baysInitializedForRestaurant]);
+    // Async: fetch authoritative bays from server, update UI and localStorage
+    (async () => {
+      setBaysLoading(true);
+      try {
+        const resp = await fetch(`${API_BASE_URL}/valet-bays`, {
+          method: "GET",
+          headers: {
+            "Content-Type": "application/json",
+            ...(user?.restaurantId ? { "X-Restaurant-Id": user.restaurantId } : {}),
+            ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
+          },
+        });
+
+        if (!resp.ok) {
+          setBaysInitializedForRestaurant(user.restaurantId);
+          setBaysLoading(false);
+          return;
+        }
+
+        const server = (await resp.json()) as any[];
+        const serverBays = server.map((b) => ({ name: b.Bay_name, total_capacity: Number(b.total_capacity) || 0, Bay_id: b.Bay_id, restaurant_id: b.restaurant_id }));
+
+        // If server has no Main, create it in DB
+        const hasMain = serverBays.some((b) => b.name === "Main");
+        let finalServerBays = serverBays;
+        if (!hasMain) {
+          try {
+            const addResp = await fetch(`${API_BASE_URL}/add-valet-bay`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                ...(user?.restaurantId ? { "X-Restaurant-Id": user.restaurantId } : {}),
+                ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
+              },
+              body: JSON.stringify({ Bay_name: "Main", total_capacity: 5 }),
+            });
+            if (addResp.ok) {
+              const addedJson = await addResp.json().catch(() => ({}));
+              finalServerBays = [{ name: "Main", total_capacity: 5, Bay_id: addedJson?.Bay_id, restaurant_id: user?.restaurantId }, ...serverBays];
+            }
+          } catch {
+            // ignore
+          }
+        }
+
+        // update UI and localStorage
+        setManagedBays(finalServerBays.map((b) => ({ name: b.name, total_capacity: b.total_capacity })));
+        setData((prev) => {
+          const mapped = finalServerBays.map((b) => ({ Bay_id: b.Bay_id ?? String(b.name), Bay_name: b.name, total_capacity: b.total_capacity, current_capacity: 0, restaurant_id: b.restaurant_id } as ValetBays));
+          if (!prev) return { role: user?.role ?? "valet", generated_at: new Date().toISOString(), bays: mapped, bookings: [] };
+          return { ...prev, bays: mapped };
+        });
+
+        try {
+          window.localStorage.setItem(bayKey, JSON.stringify(finalServerBays.map((b) => ({ name: b.name, total_capacity: b.total_capacity }))));
+        } catch {
+          // ignore
+        }
+      } catch (e) {
+        // network error: keep localStorage values
+      } finally {
+        setBaysInitializedForRestaurant(user.restaurantId);
+        setBaysLoading(false);
+      }
+    })();
+  }, [user?.restaurantId, data?.bays, baysInitializedForRestaurant]);
 
   useEffect(() => {
     if (!user?.restaurantId) {
@@ -567,28 +878,160 @@ export default function ValetDashboardPage() {
     }
 
     const bayKey = `valet-bays:${user.restaurantId}`;
-    window.localStorage.setItem(bayKey, JSON.stringify(bayOptions));
+    window.localStorage.setItem(bayKey, JSON.stringify(managedBays));
   }, [user?.restaurantId, baysInitializedForRestaurant, bayOptions]);
 
-  const addBay = () => {
+  const addBay = async () => {
     const normalized = newBayName.trim();
+    const capacity = Number(newBayCapacity);
     if (!normalized) {
+      toast({ title: "Missing Name", description: "Enter a bay name.", variant: "destructive" });
       return;
     }
-    if (bayOptions.includes(normalized)) {
+    if (!Number.isFinite(capacity) || capacity <= 0) {
+      toast({ title: "Invalid Capacity", description: "Enter a valid total capacity (positive integer).", variant: "destructive" });
+      return;
+    }
+
+    // Check against existing managed bays and server-provided bays
+    const existsLocal = managedBays.some((b) => b.name.toLowerCase() === normalized.toLowerCase());
+    const existsServer = (data?.bays ?? []).some((b) => String(b.Bay_name).toLowerCase() === normalized.toLowerCase());
+    if (existsLocal || existsServer) {
       toast({ title: "Bay exists", description: `${normalized} is already added.` });
       return;
     }
-    setManagedBays((prev) => [...prev, normalized]);
-    setNewBayName("");
+
+    // Persist to server and update data.bays and managedBays only on success
+    try {
+      const resp = await fetch(`${API_BASE_URL}/add-valet-bay`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(user?.restaurantId ? { "X-Restaurant-Id": user.restaurantId } : {}),
+          ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
+        },
+        body: JSON.stringify({ Bay_name: normalized, total_capacity: capacity }),
+      });
+
+      const json = await resp.json().catch(() => ({}));
+      if (resp.ok) {
+        const added = {
+          Bay_id: json?.Bay_id ?? undefined,
+          Bay_name: normalized,
+          total_capacity: capacity,
+          current_capacity: json?.current_capacity ?? 0,
+          restaurant_id: user?.restaurantId,
+        } as ValetBays;
+
+        // update managedBays and data.bays
+        setManagedBays((prev) => [...prev, { name: added.Bay_name, total_capacity: added.total_capacity }]);
+        setData((prev) => {
+          if (!prev) {
+            return { role: user?.role ?? "valet", generated_at: new Date().toISOString(), bays: [added], bookings: [] };
+          }
+          return { ...prev, bays: [added, ...(prev.bays ?? [])] };
+        });
+
+        // persist inputs and localStorage update
+        setNewBayName("");
+        setNewBayCapacity(5);
+        try {
+          if (user?.restaurantId) {
+            const bayKey = `valet-bays:${user.restaurantId}`;
+            const raw = window.localStorage.getItem(bayKey);
+            let arr: Array<{ name: string; total_capacity: number }> = [];
+            if (raw) {
+              try { arr = JSON.parse(raw); } catch { arr = []; }
+            }
+            arr.push({ name: added.Bay_name, total_capacity: added.total_capacity });
+            window.localStorage.setItem(bayKey, JSON.stringify(arr));
+          }
+        } catch {
+          // ignore
+        }
+      } else {
+        const err = (json?.error && String(json.error)) || "Failed to add bay";
+        toast({ title: "Add Bay Failed", description: err, variant: "destructive" });
+      }
+    } catch (e) {
+      toast({ title: "Add Bay Failed", description: "Network error while adding bay.", variant: "destructive" });
+    }
   };
 
-  const removeBay = (bayName: string) => {
+  const removeBay = async (bayName: string) => {
     if (bayName === "Main") {
       toast({ title: "Main bay required", description: "Main cannot be removed.", variant: "destructive" });
       return;
     }
-    setManagedBays((prev) => prev.filter((bay) => bay !== bayName));
+
+    const proceed = window.confirm(
+      `Removing bay '${bayName}' will delete all valet entries assigned to it. Do you want to proceed?`,
+    );
+    if (!proceed) return;
+
+    // Try to remove from server and cascade-delete valet_state records
+    try {
+      const serverMatch = (data?.bays ?? []).find((b) => String(b.Bay_name) === bayName);
+      const payload: Record<string, unknown> = {};
+      if (serverMatch && serverMatch.Bay_id) payload.Bay_id = serverMatch.Bay_id;
+      else payload.Bay_name = bayName;
+
+      const resp = await fetch(`${API_BASE_URL}/delete-valet-bay`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(user?.restaurantId ? { "X-Restaurant-Id": user.restaurantId } : {}),
+          ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const json = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        const err = (typeof json?.error === "string" ? json.error : "Unable to delete bay on server");
+        toast({ title: "Delete Failed", description: err, variant: "destructive" });
+        return;
+      }
+      // On success: remove locally and clear related bookings
+      setManagedBays((prev) => prev.filter((bay) => bay.name !== bayName));
+      setData((prev) => {
+        if (!prev) return prev;
+        const filteredBays = (prev.bays ?? []).filter((b) => String(b.Bay_name) !== bayName);
+        const filteredBookings = (prev.bookings ?? []).filter((bk) => {
+          const bayDisplay = bk.bay_name ?? (bk.bay_id ? (prev.bays ?? []).find((b) => b.Bay_id === bk.bay_id)?.Bay_name : "");
+          return String(bayDisplay) !== bayName;
+        });
+        return { ...prev, bays: filteredBays, bookings: filteredBookings };
+      });
+
+      // Clear any localStorage valet entries for this restaurant if present (best-effort)
+      try {
+        if (user?.restaurantId) {
+          const key = `valet-records:${user.restaurantId}`;
+          const raw = window.localStorage.getItem(key);
+          if (raw) {
+            try {
+              const parsed = JSON.parse(raw) as any[];
+              if (Array.isArray(parsed)) {
+                const filtered = parsed.filter((r) => {
+                  const bayNameLocal = (r?.bay_name ?? r?.bay ?? "") as string;
+                  return String(bayNameLocal) !== bayName;
+                });
+                window.localStorage.setItem(key, JSON.stringify(filtered));
+              }
+            } catch {
+              // ignore parse errors
+            }
+          }
+        }
+      } catch {
+        // ignore localStorage errors
+      }
+
+      toast({ title: "Bay Removed", description: `${bayName} deleted and related valet entries removed.` });
+    } catch (e) {
+      toast({ title: "Delete Failed", description: "Unable to delete bay on server.", variant: "destructive" });
+    }
   };
 
   useEffect(() => {
@@ -621,6 +1064,13 @@ export default function ValetDashboardPage() {
     window.localStorage.setItem(spaceKey, String(initialSpace));
     setSpaceInitializedForRestaurant(user.restaurantId);
   }, [user?.restaurantId, stats.spaceAvailable, stats.totalBays, spaceInitializedForRestaurant]);
+
+  // Keep the visible space available in sync when server-side capacities change.
+  useEffect(() => {
+    if (!user?.restaurantId) return;
+    if (spaceInitializedForRestaurant !== user.restaurantId) return;
+    setSpaceAvailableDisplay(Math.max(0, stats.spaceAvailable));
+  }, [user?.restaurantId, stats.spaceAvailable, spaceInitializedForRestaurant]);
 
   useEffect(() => {
     if (!user?.restaurantId) {
@@ -659,13 +1109,13 @@ export default function ValetDashboardPage() {
             Edit Records
           </Button>
           <Button onClick={fetchValetInfo} variant="outline" disabled={loading}>
-            <ArrowRight className="mr-2 h-4 w-4" />
+            <RefreshCw className="mr-2 h-4 w-4" />
             Refresh
           </Button>
         </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Active Cars</CardTitle>
@@ -674,6 +1124,11 @@ export default function ValetDashboardPage() {
           <CardContent>
             <div className="text-2xl font-bold">{stats.activeCars}</div>
             <p className="text-xs text-muted-foreground">Cars currently in valet workflow</p>
+            <div className="mt-2 flex flex-col gap-2 max-h-28 overflow-y-auto py-1">
+              {(inProgressBookings ?? []).slice(0, 12).map((b) => (
+                <Badge key={b.booking_id} variant="secondary" className="whitespace-nowrap">{extractVehiclePlate(b)}</Badge>
+              ))}
+            </div>
           </CardContent>
         </Card>
 
@@ -685,6 +1140,27 @@ export default function ValetDashboardPage() {
           <CardContent>
             <div className="text-2xl font-bold">{stats.parkedNow}</div>
             <p className="text-xs text-muted-foreground">Vehicles parked/in retrieval process</p>
+            <div className="mt-2 flex flex-col gap-2 max-h-28 overflow-y-auto py-1">
+              {(activeCarQueue ?? []).slice(0, 12).map((b) => (
+                <Badge key={b.booking_id} variant="secondary" className="whitespace-nowrap">{extractVehiclePlate(b)}</Badge>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">To be picked up</CardTitle>
+            <Clock className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{stats.pickupCount ?? 0}</div>
+            <p className="text-xs text-muted-foreground">Cars arrived and awaiting pickup</p>
+            <div className="mt-2 flex flex-col gap-2 max-h-28 overflow-y-auto py-1">
+              {(pickupQueue ?? []).slice(0, 12).map((b) => (
+                <Badge key={b.booking_id} variant="secondary" className="whitespace-nowrap">{extractVehiclePlate(b)}</Badge>
+              ))}
+            </div>
           </CardContent>
         </Card>
 
@@ -696,6 +1172,11 @@ export default function ValetDashboardPage() {
           <CardContent>
             <div className="text-2xl font-bold">{stats.yetToPark}</div>
             <p className="text-xs text-muted-foreground">Vehicles at stage 1</p>
+            <div className="mt-2 flex flex-col gap-2 max-h-28 overflow-y-auto py-1">
+              {(incomingCarQueue ?? []).slice(0, 12).map((b) => (
+                <Badge key={b.booking_id} variant="secondary" className="whitespace-nowrap">{extractVehiclePlate(b)}</Badge>
+              ))}
+            </div>
           </CardContent>
         </Card>
 
@@ -706,46 +1187,30 @@ export default function ValetDashboardPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{spaceAvailableDisplay}</div>
-            <p className="text-xs text-muted-foreground">Out of {maxBaysDisplay} total bays</p>
-            <div className="mt-2 flex items-center gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setSpaceAvailableDisplay((prev) => Math.max(0, prev - 1))}
-              >
-                -
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setSpaceAvailableDisplay((prev) => prev + 1)}
-              >
-                +
-              </Button>
-            </div>
-            <div className="mt-3 border-t pt-3">
-              <p className="text-xs text-muted-foreground">Max Bays</p>
-              <div className="mt-1 flex items-center gap-2">
-                <div className="text-base font-semibold">{maxBaysDisplay}</div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setMaxBaysDisplay((prev) => Math.max(0, prev - 1))}
-                >
-                  -
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setMaxBaysDisplay((prev) => prev + 1)}
-                >
-                  +
-                </Button>
-              </div>
+            <p className="text-xs text-muted-foreground">Total available spaces across bays</p>
+
+            {/* Per-bay availability list (responsive to bay and record updates) */}
+            <div className="mt-3 space-y-2">
+              {(data?.bays ?? []).length === 0 ? (
+                <p className="text-xs text-muted-foreground">No bays configured</p>
+              ) : (
+                <div className="grid gap-2">
+                  {(data?.bays ?? []).map((bay) => {
+                    const total = Number(bay.total_capacity ?? 0) || 0;
+                    const used = Number(bay.current_capacity ?? 0) || 0;
+                    const avail = Math.max(0, total - used);
+                    return (
+                      <div key={bay.Bay_id ?? bay.Bay_name} className="flex items-center justify-between gap-4 p-2 rounded-md border">
+                        <div className="flex flex-col">
+                          <div className="text-sm font-medium">{bay.Bay_name ?? bay.Bay_id}</div>
+                          <div className="text-xs text-muted-foreground">{used} / {total} occupied</div>
+                        </div>
+                        <div className="text-sm font-semibold">{avail} free</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -767,22 +1232,122 @@ export default function ValetDashboardPage() {
                 onChange={(e) => setNewBayName(e.target.value)}
               />
             </div>
+            <div className="w-36">
+              <Label htmlFor="new-bay-capacity">Total Capacity</Label>
+              <Input
+                id="new-bay-capacity"
+                type="number"
+                min={1}
+                value={String(newBayCapacity)}
+                onChange={(e) => setNewBayCapacity(e.target.value ? Number(e.target.value) : "")}
+              />
+            </div>
             <Button type="button" variant="outline" onClick={addBay}>Add Bay</Button>
           </div>
+
           <div className="mt-3 flex flex-wrap gap-2">
-            {bayOptions.map((bay) => (
-              <div key={bay} className="flex items-center gap-2 rounded-full border px-3 py-1 text-sm">
-                <span>{bay}</span>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-6 px-2"
-                  disabled={bay === "Main"}
-                  onClick={() => removeBay(bay)}
-                >
-                  x
-                </Button>
+            {managedBays.map((bay) => (
+              <div key={bay.name} className="flex items-center gap-2 rounded-full border px-3 py-1 text-sm">
+                {editingBay === bay.name ? (
+                  <div className="flex items-center gap-2">
+                    <Input value={editingBayName} onChange={(e) => setEditingBayName(e.target.value)} className="w-36" />
+                    <Input type="number" value={String(editingBayCapacity)} onChange={(e) => setEditingBayCapacity(e.target.value ? Number(e.target.value) : "")} className="w-24" />
+                      <Button size="sm" onClick={async () => {
+                      const newName = editingBayName.trim();
+                      const cap = Number(editingBayCapacity);
+                        if (baysLoading) { toast({ title: "Bays still loading", description: "Wait for bays to load before editing.", variant: "destructive" }); return; }
+                      if (!newName) { toast({ title: "Missing Name", description: "Enter a bay name.", variant: "destructive" }); return; }
+                      if (!Number.isFinite(cap) || cap <= 0) { toast({ title: "Invalid Capacity", description: "Enter a valid capacity.", variant: "destructive" }); return; }
+                      // prevent duplicate name
+                      const conflict = managedBays.some((b) => b.name.toLowerCase() === newName.toLowerCase() && b.name !== bay.name);
+                      const conflictServer = (data?.bays ?? []).some((b) => String(b.Bay_name).toLowerCase() === newName.toLowerCase() && String(b.Bay_name) !== bay.name);
+                      if (conflict || conflictServer) { toast({ title: "Bay exists", description: `${newName} already exists.`, variant: "destructive" }); return; }
+
+                      // Defer updating local managedBays/data until server confirms success
+
+
+                      try {
+                        // If there is a server record for this bay, call update; else create new
+                        const serverMatch = (data?.bays ?? []).find((sb) => String(sb.Bay_name) === bay.name || String(sb.Bay_id) === bay.name);
+                        if (serverMatch && serverMatch.Bay_id) {
+                          const resp = await fetch(`${API_BASE_URL}/update-valet-bay`, {
+                            method: "POST",
+                            headers: {
+                              "Content-Type": "application/json",
+                              ...(user?.restaurantId ? { "X-Restaurant-Id": user.restaurantId } : {}),
+                              ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
+                            },
+                            body: JSON.stringify({ Bay_id: serverMatch.Bay_id, Bay_name: newName, total_capacity: cap }),
+                          });
+                          const json = await resp.json().catch(() => ({}));
+                          if (resp.ok) {
+                            // If server didn't include current_capacity, refetch authoritative bay list
+                            let serverCurrent = json?.current_capacity;
+                            if (serverCurrent === undefined && serverMatch.Bay_id) {
+                              try {
+                                const fetchBays = await fetch(`${API_BASE_URL}/valet-bays`, {
+                                  method: "GET",
+                                  headers: {
+                                    "Content-Type": "application/json",
+                                    ...(user?.restaurantId ? { "X-Restaurant-Id": user.restaurantId } : {}),
+                                    ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
+                                  },
+                                });
+                                if (fetchBays.ok) {
+                                  const all = await fetchBays.json().catch(() => []);
+                                  const found = (Array.isArray(all) ? all : []).find((b: any) => String(b.Bay_id) === String(serverMatch.Bay_id));
+                                  serverCurrent = found?.current_capacity ?? serverMatch.current_capacity ?? 0;
+                                }
+                              } catch (e) {
+                                serverCurrent = serverMatch.current_capacity ?? 0;
+                              }
+                            }
+
+                            // update managedBays and data.bays with server-confirmed values
+                            setManagedBays((prev) => prev.map((p) => (p.name === bay.name ? { name: newName, total_capacity: cap } : p)));
+                            setData((prev) => {
+                              if (!prev) return prev;
+                              const updated = { Bay_id: json?.Bay_id ?? serverMatch.Bay_id, Bay_name: json?.Bay_name ?? newName, total_capacity: json?.total_capacity ?? cap, current_capacity: serverCurrent, restaurant_id: user?.restaurantId } as ValetBays;
+                              const filtered = (prev.bays ?? []).filter((b) => String(b.Bay_id) !== updated.Bay_id);
+                              return { ...prev, bays: [updated, ...filtered] };
+                            });
+                          }
+                        } else {
+                          const resp = await fetch(`${API_BASE_URL}/add-valet-bay`, {
+                            method: "POST",
+                            headers: {
+                              "Content-Type": "application/json",
+                              ...(user?.restaurantId ? { "X-Restaurant-Id": user.restaurantId } : {}),
+                              ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
+                            },
+                            body: JSON.stringify({ Bay_name: newName, total_capacity: cap }),
+                          });
+                          const json = await resp.json().catch(() => ({}));
+                          if (resp.ok) {
+                            const added = { Bay_id: json?.Bay_id ?? undefined, Bay_name: newName, total_capacity: cap, current_capacity: json?.current_capacity ?? 0, restaurant_id: user?.restaurantId } as ValetBays;
+                            setManagedBays((prev) => [...prev, { name: added.Bay_name, total_capacity: added.total_capacity }]);
+                            setData((prev) => {
+                              if (!prev) return prev;
+                              const filtered = (prev.bays ?? []).filter((b) => String(b.Bay_name) !== newName);
+                              return { ...prev, bays: [added, ...filtered] };
+                            });
+                          }
+                        }
+                      } catch (e) {
+                        // ignore
+                      }
+
+                      setEditingBay(null);
+                    }}>Save</Button>
+                    <Button size="sm" variant="ghost" onClick={() => setEditingBay(null)}>Cancel</Button>
+                  </div>
+                ) : (
+                  <>
+                    <span className="mr-2">{bay.name} ({bay.total_capacity})</span>
+                    <Button type="button" variant="ghost" size="sm" className="h-6 px-2" disabled={bay.name === "Main"} onClick={() => removeBay(bay.name)}>x</Button>
+                    <Button type="button" variant="ghost" size="sm" className="h-6 px-2" onClick={() => { setEditingBay(bay.name); setEditingBayName(bay.name); setEditingBayCapacity(bay.total_capacity); }}>Edit</Button>
+                  </>
+                )}
               </div>
             ))}
           </div>
@@ -823,19 +1388,7 @@ export default function ValetDashboardPage() {
                 onChange={(e) => setNewDateTime(e.target.value)}
               />
             </div>
-            <div>
-              <Label>Initial Stage</Label>
-              <Select value={newStage} onValueChange={(v) => setNewStage(v as ValetStage)}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select stage" />
-                </SelectTrigger>
-                <SelectContent>
-                  {VALET_STAGES.map((stageOption) => (
-                    <SelectItem key={stageOption} value={stageOption}>{stageOption}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            {/* Initial stage removed — new records default to 'Vehicle added' */}
           </div>
           <div className="mt-4">
             <Button type="button" onClick={createValetRecord} disabled={creating}>
@@ -853,7 +1406,7 @@ export default function ValetDashboardPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="mb-4 grid gap-3 md:grid-cols-[1.4fr_1fr]">
+          <div className="mb-4 grid gap-3 md:grid-cols-3">
             <div>
               <Label htmlFor="record-search">Search records</Label>
               <Input
@@ -877,6 +1430,25 @@ export default function ValetDashboardPage() {
                 </SelectContent>
               </Select>
             </div>
+            <div>
+              <Label>Filter date & sort</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  id="record-date"
+                  type="date"
+                  value={recordDate}
+                  onChange={(e) => setRecordDate(e.target.value)}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  title={sortAsc ? "Sort ascending" : "Sort descending"}
+                  onClick={() => setSortAsc((s) => !s)}
+                >
+                  <ArrowUpDown className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
           </div>
 
           {loading ? <p>Loading valet data...</p> : null}
@@ -888,13 +1460,20 @@ export default function ValetDashboardPage() {
               {filteredEditableBookings.map((booking, index) => {
                 const bookingId = booking.booking_id;
                 const stage = normalizeStage(booking.status);
-                const stageValue = bookingId ? (draftStageByBookingId[bookingId] ?? stage) : stage;
-                const tableValue = bookingId
-                  ? (draftTableByBookingId[bookingId] ?? (booking.table_name || "unassigned"))
-                  : (booking.table_name || "unassigned");
+                const currentTable = booking.bay_name ?? (booking.bay_id ? (data?.bays ?? []).find((b) => b.Bay_id === booking.bay_id)?.Bay_name : "unassigned");
+                const draftStage = bookingId ? draftStageByBookingId[bookingId] : undefined;
+                const draftTable = bookingId ? draftTableByBookingId[bookingId] : undefined;
+                const stageValue = bookingId ? (draftStage ?? stage) : stage;
+                const tableValue = bookingId ? (draftTable ?? currentTable) : currentTable;
+
+                const isDirty = Boolean(
+                  bookingId && (
+                    (draftStage !== undefined && draftStage !== stage) || (draftTable !== undefined && draftTable !== currentTable)
+                  ),
+                );
 
                 return (
-                  <div key={bookingId ?? `${booking.customer_name}-${index}`} className="rounded-md border p-3">
+                  <div key={bookingId ?? `${booking.customer_name}-${index}`} className={`rounded-md border p-3 ${isDirty ? "bg-yellow-50" : ""}`}>
                     <div className="mb-2 flex items-center justify-between">
                       <p className="font-medium">
                         {booking.customer_name ?? "Guest"} - {formatTicket(bookingId, index)}
@@ -915,11 +1494,10 @@ export default function ValetDashboardPage() {
                         type="button"
                         variant="outline"
                         disabled={!bookingId || updatingId === bookingId || getStageIndex(stageValue) === 0}
-                        onClick={async () => {
+                        onClick={() => {
                           if (!bookingId) return;
                           const next = moveStage(stageValue, -1);
                           setDraftStageByBookingId((prev) => ({ ...prev, [bookingId]: next }));
-                          await handleUpdate(bookingId, { stage: next });
                         }}
                       >
                         - Stage
@@ -928,21 +1506,13 @@ export default function ValetDashboardPage() {
                         type="button"
                         variant="outline"
                         disabled={!bookingId || updatingId === bookingId || getStageIndex(stageValue) === VALET_STAGES.length - 1}
-                        onClick={async () => {
+                        onClick={() => {
                           if (!bookingId) return;
                           const next = moveStage(stageValue, 1);
                           setDraftStageByBookingId((prev) => ({ ...prev, [bookingId]: next }));
-                          await handleUpdate(bookingId, { stage: next });
                         }}
                       >
                         + Stage
-                      </Button>
-                      <Button
-                        type="button"
-                        disabled={!bookingId || updatingId === bookingId}
-                        onClick={() => handleUpdate(bookingId)}
-                      >
-                        Save Changes
                       </Button>
                     </div>
 
@@ -968,8 +1538,20 @@ export default function ValetDashboardPage() {
                         value={tableValue}
                         onValueChange={(value) => {
                           if (!bookingId) return;
+                          if (baysLoading) {
+                            toast({ title: "Bays still loading", description: "Please wait until bays finish loading before assigning.", variant: "destructive" });
+                            return;
+                          }
+                          // Prevent assigning 'Unassigned' when the stage is a counted stage (2-4)
+                          const currentStage = draftStageByBookingId[bookingId] ?? normalizeStage(booking.status);
+                          const counted = (s: ValetStage) => isParkedLikeStage(s);
+                          if (value === "unassigned" && counted(currentStage)) {
+                            toast({ title: "Cannot unassign", description: "Vehicles in parked/active stages must be assigned a bay.", variant: "destructive" });
+                            return;
+                          }
                           setDraftTableByBookingId((prev) => ({ ...prev, [bookingId]: value }));
                         }}
+                        disabled={baysLoading}
                       >
                         <SelectTrigger>
                           <SelectValue placeholder="Assign Bay" />
@@ -982,7 +1564,7 @@ export default function ValetDashboardPage() {
                         </SelectContent>
                       </Select>
 
-                      <Button disabled={!bookingId || updatingId === bookingId} onClick={() => handleUpdate(bookingId)}>
+                      <Button disabled={!bookingId || updatingId === bookingId || !isDirty} onClick={() => handleUpdate(bookingId)}>
                         Save
                       </Button>
                     </div>
@@ -994,11 +1576,52 @@ export default function ValetDashboardPage() {
         </CardContent>
       </Card>
 
-      <div className="grid gap-4 md:grid-cols-2">
+      <div className="grid gap-4 grid-cols-1 md:grid-cols-3">
+        <Card>
+          <CardHeader>
+            <CardTitle>To be picked up by customer</CardTitle>
+            <CardDescription>Cars that have arrived at entrance and are waiting for customer pickup.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {loading ? <p>Loading valet data...</p> : null}
+            {!loading && error ? <p className="text-destructive">{error}</p> : null}
+            {!loading && !error && pickupQueue.length === 0 ? <p>No cars awaiting pickup.</p> : null}
+
+            {!loading && !error && pickupQueue.length > 0 ? (
+              <div className="space-y-2">
+                <p className="text-sm text-muted-foreground">
+                  Showing {displayedPickupQueue.length} of {pickupQueue.length} cars awaiting pickup
+                </p>
+                {displayedPickupQueue.map((booking, index) => {
+                  const bookingId = booking.booking_id;
+                  const stage = normalizeStage(booking.status);
+
+                  return (
+                    <div key={bookingId ?? `${booking.customer_name}-${index}`} className="rounded-md border p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="font-medium">{booking.customer_name ?? "Guest"}</p>
+                        <Badge>{formatTicket(bookingId, index)}</Badge>
+                      </div>
+                      <p className="text-sm text-muted-foreground">Plate: {extractVehiclePlate(booking)}</p>
+                      <p className="text-sm text-muted-foreground">Bay: {booking.bay_name ?? (booking.bay_id ? (data?.bays ?? []).find((b) => b.Bay_id === booking.bay_id)?.Bay_name : undefined) ?? "Main"}</p>
+                      <p className="text-sm text-muted-foreground">Stage: {stage}</p>
+                      <p className="text-sm text-muted-foreground">Time: {formatTime(booking.booking_date_time)}</p>
+                    </div>
+                  );
+                })}
+                {pickupQueue.length > 5 ? (
+                  <Button type="button" variant="outline" onClick={() => setShowAllPickup((prev) => !prev)}>
+                    {showAllPickup ? "Show Less" : `Show All (${pickupQueue.length})`}
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
+          </CardContent>
+        </Card>
         <Card>
           <CardHeader>
             <CardTitle>Currently Parked Cars</CardTitle>
-            <CardDescription>Cars in stages 2-5.</CardDescription>
+            <CardDescription>Cars in stages 2-4.</CardDescription>
           </CardHeader>
           <CardContent>
             {loading ? <p>Loading valet data...</p> : null}
@@ -1021,7 +1644,7 @@ export default function ValetDashboardPage() {
                         <Badge>{formatTicket(bookingId, index)}</Badge>
                       </div>
                       <p className="text-sm text-muted-foreground">Plate: {extractVehiclePlate(booking)}</p>
-                      <p className="text-sm text-muted-foreground">Bay: {booking.table_name || "Main"}</p>
+                      <p className="text-sm text-muted-foreground">Bay: {booking.bay_name ?? (booking.bay_id ? (data?.bays ?? []).find((b) => b.Bay_id === booking.bay_id)?.Bay_name : undefined) ?? "Main"}</p>
                       <p className="text-sm text-muted-foreground">Stage: {stage}</p>
                       <p className="text-sm text-muted-foreground">Time: {formatTime(booking.booking_date_time)}</p>
                     </div>
@@ -1063,7 +1686,7 @@ export default function ValetDashboardPage() {
                         <Badge variant="secondary">{formatTicket(bookingId, index)}</Badge>
                       </div>
                       <p className="text-sm text-muted-foreground">Plate: {extractVehiclePlate(booking)}</p>
-                      <p className="text-sm text-muted-foreground">Bay: {booking.table_name || "Main"}</p>
+                      <p className="text-sm text-muted-foreground">Bay: {booking.bay_name ?? (booking.bay_id ? (data?.bays ?? []).find((b) => b.Bay_id === booking.bay_id)?.Bay_name : undefined) ?? "Main"}</p>
                       <p className="text-sm text-muted-foreground">Stage: {stage}</p>
                       <p className="text-sm text-muted-foreground">ETA: {formatTime(booking.booking_date_time)}</p>
                     </div>
