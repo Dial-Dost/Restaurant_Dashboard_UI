@@ -62,7 +62,7 @@ export default function FeedbackPage() {
   const [employeesMap, setEmployeesMap] = useState<Record<string, { name: string; role?: string }>>({});
   const [loading, setLoading] = useState(true);
   const { lastEvent } = useRealtime();
-  const [stats, setStats] = useState<{ daily?: Array<any>; weekly?: Array<any>; overall?: Array<any>; monthly?: any; yearly?: any } | null>(null);
+  const [stats, setStats] = useState<{ daily?: any; weekly?: any; overall?: Array<any>; monthly?: any; yearly?: any } | null>(null);
   const [dailyDate, setDailyDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
   const [weeklyStart, setWeeklyStart] = useState<string>(() => {
     const d = new Date();
@@ -274,6 +274,51 @@ export default function FeedbackPage() {
       .map(([employeeId, count]) => ({ employeeId, name: employeesMap[employeeId]?.name ?? employeeId, count }))
       .sort((a, b) => b.count - a.count);
   }, [entries, employeesMap]);
+
+  const employeePerformance = useMemo(() => {
+    const map: Record<string, { name: string; responses: number; total: number; ratedResponses: number }> = {};
+
+    for (const entry of entries) {
+      const employeeId = entry.employee_id ?? "unknown";
+      if (!map[employeeId]) {
+        map[employeeId] = {
+          name: employeesMap[employeeId]?.name ?? employeeId,
+          responses: 0,
+          total: 0,
+          ratedResponses: 0,
+        };
+      }
+
+      map[employeeId].responses += 1;
+
+      if (typeof entry.overall_rating === "number" && Number.isFinite(entry.overall_rating)) {
+        map[employeeId].total += entry.overall_rating;
+        map[employeeId].ratedResponses += 1;
+      }
+    }
+
+    return Object.entries(map)
+      .map(([employeeId, value]) => ({
+        employeeId,
+        name: value.name,
+        responses: value.responses,
+        averageRating:
+          value.ratedResponses > 0
+            ? Number((value.total / value.ratedResponses).toFixed(2))
+            : null,
+      }))
+      .sort((a, b) => {
+        const aAvg = a.averageRating ?? -1;
+        const bAvg = b.averageRating ?? -1;
+        if (bAvg !== aAvg) return bAvg - aAvg;
+        return b.responses - a.responses;
+      });
+  }, [entries, employeesMap]);
+
+  const myPerformance = useMemo(() => {
+    if (!user?.employeeId) return null;
+    return employeePerformance.find((row) => row.employeeId === user.employeeId) ?? null;
+  }, [employeePerformance, user?.employeeId]);
 
   return (
     <div className="grid gap-4 md:gap-6">
@@ -488,6 +533,49 @@ export default function FeedbackPage() {
                 </div>
               ))}
             </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>{user?.role === "admin" ? "Employee Ratings" : "Your Rating"}</CardTitle>
+          <CardDescription>
+            {user?.role === "admin"
+              ? "Average feedback rating by employee"
+              : "Average rating from feedback forms linked to your QR code"}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="max-h-72 overflow-y-auto">
+          {user?.role === "admin" ? (
+            employeePerformance.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No employee feedback ratings yet.</p>
+            ) : (
+              <div className="grid gap-2">
+                {employeePerformance.map((row) => (
+                  <div key={row.employeeId} className="flex items-center justify-between rounded-md border p-2">
+                    <div>
+                      <p className="font-medium">{row.name}</p>
+                      <p className="text-xs text-muted-foreground">Responses: {row.responses}</p>
+                    </div>
+                    <Badge variant="secondary">
+                      {row.averageRating !== null ? `${row.averageRating}/5` : "N/A"}
+                    </Badge>
+                  </div>
+                ))}
+              </div>
+            )
+          ) : myPerformance ? (
+            <div className="rounded-md border p-3">
+              <p className="text-sm text-muted-foreground">Responses received</p>
+              <p className="text-xl font-semibold">{myPerformance.responses}</p>
+              <p className="mt-2 text-sm text-muted-foreground">Average rating</p>
+              <p className="text-xl font-semibold">
+                {myPerformance.averageRating !== null ? `${myPerformance.averageRating}/5` : "N/A"}
+              </p>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">No feedback linked to your profile yet.</p>
           )}
         </CardContent>
       </Card>

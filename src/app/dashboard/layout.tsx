@@ -55,7 +55,9 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    if (isValet && pathname !== '/dashboard/valet') {
+    const valetAllowedPaths = new Set(['/dashboard/valet', '/dashboard/settings']);
+
+    if (isValet && !valetAllowedPaths.has(pathname)) {
       router.replace('/dashboard/valet');
       return;
     }
@@ -152,14 +154,12 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
             <DropdownMenuContent align="end">
               <DropdownMenuLabel>{t('myAccount')}</DropdownMenuLabel>
               <DropdownMenuSeparator />
-              {!isValet && (
-                <DropdownMenuItem asChild>
-                  <Link href="/dashboard/settings">
-                    <Settings className="mr-2 h-4 w-4" />
-                    {t('settings')}
-                  </Link>
-                </DropdownMenuItem>
-              )}
+              <DropdownMenuItem asChild>
+                <Link href="/dashboard/settings">
+                  <Settings className="mr-2 h-4 w-4" />
+                  {t('settings')}
+                </Link>
+              </DropdownMenuItem>
                {user?.role === 'admin' && (
                 <>
                   <DropdownMenuItem asChild>
