@@ -26,6 +26,7 @@ type FeedbackCategoryRating = {
 type FeedbackEntry = {
   id: string;
   restaurant_id: string;
+  employee_id: string;
   customer_name?: string | null;
   visit_date?: string | null;
   comments?: string | null;
@@ -58,6 +59,7 @@ export default function FeedbackPage() {
   const { user } = useAuth();
   const [entries, setEntries] = useState<FeedbackEntry[]>([]);
   const [summary, setSummary] = useState<FeedbackSummary | null>(null);
+  const [employeesMap, setEmployeesMap] = useState<Record<string, { name: string; role?: string }>>({});
   const [loading, setLoading] = useState(true);
   const { lastEvent } = useRealtime();
   const [stats, setStats] = useState<{ daily?: Array<any>; weekly?: Array<any>; overall?: Array<any>; monthly?: any; yearly?: any } | null>(null);
@@ -97,6 +99,14 @@ export default function FeedbackPage() {
 
         const feedbackRows = itemsRes.ok ? (await itemsRes.json()).items ?? [] : [];
         const feedbackSummary = summaryRes.ok ? (await summaryRes.json()) : null;
+        const usersRes = await fetch(`${base}/restaurant/users`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId } });
+        const usersPayload = usersRes.ok ? (await usersRes.json()) : { users: [] };
+        const usersList = Array.isArray(usersPayload?.users) ? usersPayload.users : [];
+        const map: Record<string, { name: string; role?: string }> = {};
+        for (const u of usersList) {
+          if (u && u.employeeId) map[String(u.employeeId)] = { name: String(u.name ?? u.employeeId), role: String(u.role ?? "") };
+        }
+        setEmployeesMap(map);
 
         if (!active) return;
 
@@ -141,6 +151,19 @@ export default function FeedbackPage() {
           setEntries(feedbackRows as FeedbackEntry[]);
           setSummary(feedbackSummary as FeedbackSummary | null);
           setStats({ daily: statsDaily, weekly: statsWeekly, monthly: statsMonthly, yearly: statsYearly });
+          // refresh employee list
+          try {
+            const usersRes = await fetch(`${base}/restaurant/users`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId } });
+            const usersPayload = usersRes.ok ? (await usersRes.json()) : { users: [] };
+            const usersList = Array.isArray(usersPayload?.users) ? usersPayload.users : [];
+            const map: Record<string, { name: string; role?: string }> = {};
+            for (const u of usersList) {
+              if (u && u.employeeId) map[String(u.employeeId)] = { name: String(u.name ?? u.employeeId), role: String(u.role ?? "") };
+            }
+            setEmployeesMap(map);
+          } catch (err) {
+            // ignore
+          }
         } finally {
           setLoading(false);
         }
@@ -240,6 +263,17 @@ export default function FeedbackPage() {
       return bv - av;
     });
   }, [summary]);
+
+  const employeeCounts = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const e of entries) {
+      const id = (e as any).employee_id ?? "unknown";
+      map[id] = (map[id] ?? 0) + 1;
+    }
+    return Object.entries(map)
+      .map(([employeeId, count]) => ({ employeeId, name: employeesMap[employeeId]?.name ?? employeeId, count }))
+      .sort((a, b) => b.count - a.count);
+  }, [entries, employeesMap]);
 
   return (
     <div className="grid gap-4 md:gap-6">
@@ -431,6 +465,29 @@ export default function FeedbackPage() {
                 </div>
               </div>
             ))
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Employees</CardTitle>
+          <CardDescription>Feedback count per Captains</CardDescription>
+        </CardHeader>
+        <CardContent className="max-h-64 overflow-y-auto">
+          {employeeCounts.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No feedback associated with employees yet.</p>
+          ) : (
+            <div className="grid gap-2">
+              {employeeCounts.map((row) => (
+                <div key={row.employeeId} className="flex items-center justify-between rounded-md border p-2">
+                  <div>
+                    <p className="font-medium">{row.name}</p>
+                  </div>
+                  <Badge variant="secondary">{row.count}</Badge>
+                </div>
+              ))}
+            </div>
           )}
         </CardContent>
       </Card>
