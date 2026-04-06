@@ -352,7 +352,7 @@ export default function ValetDashboardPage() {
     if (rawTable) {
       const match = (data?.bays ?? []).find((b) => b.Bay_name === rawTable || b.Bay_id === rawTable);
       if (match) {
-        normalizedBayId = match.Bay_id;
+        normalizedBayId = match.Bay_id ?? null;
         resolvedBayName = match.Bay_name;
       } else {
         normalizedBayId = String(rawTable);
@@ -411,6 +411,7 @@ export default function ValetDashboardPage() {
       }
 
       // Persist changes to server for any bay with a changed current_capacity
+      let adjustmentResults: any[] = [];
       try {
         const adjustments: Array<Promise<any>> = [];
         for (const ub of updatedBaysLocal) {
@@ -438,7 +439,6 @@ export default function ValetDashboardPage() {
           }
         }
 
-        let adjustmentResults: any[] = [];
         if (adjustments.length > 0) {
           try {
             adjustmentResults = await Promise.all(adjustments);

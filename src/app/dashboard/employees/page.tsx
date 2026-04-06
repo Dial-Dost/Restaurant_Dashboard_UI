@@ -56,7 +56,7 @@ import { findRestaurantByName, User } from "@/lib/db";
 const addEmployeeSchema = z.object({
   name: z.string().min(1, "Name is required."),
   employeeId: z.string().min(1, "Employee ID is required."),
-  role: z.enum(["employee", "admin", "valet", "waiter"]),
+  role: z.enum(["employee", "admin", "valet"]),
   password: z.string().min(6, "Password must be at least 6 characters."),
 });
 
@@ -243,7 +243,6 @@ function AddEmployeeForm({ onSubmit }: { onSubmit: (data: AddEmployeeFormData) =
                                 <SelectItem value="employee">Employee</SelectItem>
                                 <SelectItem value="admin">Admin</SelectItem>
                                 <SelectItem value="valet">Valet</SelectItem>
-                                <SelectItem value="waiter">Waiter</SelectItem>
                             </SelectContent>
                         </Select>
                         )}
