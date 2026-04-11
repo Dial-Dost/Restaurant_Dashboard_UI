@@ -10,8 +10,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      MONGODB_URI: ${{ secrets.MONGODB_URI }}
-      NEXT_PUBLIC_BACKEND_URL: ${{ secrets.NEXT_PUBLIC_BACKEND_URL }}
+      NEXT_PUBLIC_RECEPTION_API_URL: ${{ secrets.NEXT_PUBLIC_RECEPTION_API_URL }}
     steps:
       - uses: actions/checkout@v4
 

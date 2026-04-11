@@ -6,7 +6,7 @@ Next.js 15 + Tailwind CSS dashboard for restaurant operations. It surfaces the s
 
 - Multi-surface dashboard: bookings, orders, tables, customers, analytics, audit logs.
 - Auth context that simulates admin and employee roles per restaurant.
-- MongoDB persistence shared with the voice/backend services.
+- Backend API persistence shared with the voice/backend services.
 - Firebase-style landing page with animated sections and marketing copy.
 - Genkit playground for iterating on AI copy or automations.
 
@@ -14,7 +14,7 @@ Next.js 15 + Tailwind CSS dashboard for restaurant operations. It surfaces the s
 
 - Node.js 20+
 - npm 10+
-- MongoDB connection string (local, Docker, or Atlas)
+- Running backend API URL (local or deployed)
 - Optional: Google/Firebase CLI if you deploy the marketing site with Firebase Hosting
 
 ## Getting Started
@@ -34,16 +34,15 @@ The dev server runs on <http://localhost:9002>. Update `ALLOWED_ORIGINS` inside 
 Create `.env.local` with the following keys:
 
 | Name | Required | Description |
-|------|----------|-------------|
-| `MONGODB_URI` | Yes | Mongo connection string. The default database in the URI will be used. |
-| `NEXT_PUBLIC_BACKEND_URL` | No | Point to the deployed backend if you plan to call REST endpoints instead of direct Mongo access. |
+| ---- | -------- | ----------- |
+| `NEXT_PUBLIC_RECEPTION_API_URL` | Yes | Backend base URL (for example `http://localhost:3000`). |
 
-> **Note:** Today the dashboard reads/writes directly to Mongo through the server actions in `src/lib/db.ts`. If you plan to harden auth and move to the REST API, gate that behind `NEXT_PUBLIC_BACKEND_URL`.
+> **Note:** Dashboard routes should use the backend API URL configured in `NEXT_PUBLIC_RECEPTION_API_URL`.
 
 ## NPM Scripts
 
 | Script | What it does |
-|--------|--------------|
+| ------ | ------------ |
 | `npm run dev` | Starts Next.js with Turbopack on port 9002. |
 | `npm run build` | Creates the production build (`.next/`). |
 | `npm start` | Serves the production build. |
@@ -55,15 +54,14 @@ Create `.env.local` with the following keys:
 
 ## Integrating With The Backend
 
-1. Start MongoDB (`docker run -p 27017:27017 mongodb/mongodb-community-server:7.0-ubi8` works for local dev).
-2. Run the Restaurant Backend repo so the receptionist continues to push bookings (`npm run dev` inside `../Restaurant_Backend`).
-3. Ensure the voice assistant and backend share the same `RECEPTION_RESTAURANT_ID`. The dashboard assumes `csrorganics` out of the box.
-4. Visit `/dashboard/bookings` to see live updates as the receptionist writes data.
+1. Run the Restaurant Backend repo so the receptionist continues to push bookings (`npm run dev` inside `../Restaurant_Backend`).
+2. Ensure the voice assistant and backend share the same `RECEPTION_RESTAURANT_ID`. The dashboard assumes `csrorganics` out of the box.
+3. Visit `/dashboard/bookings` to see live updates as the receptionist writes data.
 
 ## Testing & Quality
 
 - `npm run lint` and `npm run typecheck` should stay clean before submitting PRs.
-- `npm run test` runs Jest with the config in `jest.config.ts` (uses `ts-jest`). Provide `MONGODB_URI` pointing at a throwaway database when running tests locally or in CI.
+- `npm run test` runs Jest with the config in `jest.config.ts` (uses `ts-jest`). Configure `NEXT_PUBLIC_RECEPTION_API_URL` if tests need to call a running backend.
 - Use Storybook or Chromatic if you need visual regression coverage (not bundled yet).
 
 ## Continuous Integration
@@ -72,34 +70,34 @@ Add the provided `.github/workflows/dashboard-ci.yml` to run on push and pull re
 
 1. Install dependencies with `npm ci`.
 2. Lint + typecheck.
-3. Run Jest tests (with Mongo secrets).
+3. Run Jest tests.
 4. Build the app to ensure deploy readiness.
 
 ### Required Secrets
 
 | Secret | Purpose |
-|--------|---------|
-| `MONGODB_URI` | Connection string for CI tests/builds. |
+| ------ | ------- |
+| `NEXT_PUBLIC_RECEPTION_API_URL` | Backend base URL used by server actions and API-backed dashboard helpers. |
 
-If you call the backend through REST, also add `NEXT_PUBLIC_BACKEND_URL` or configure it in a deployment environment (Vercel, Firebase, etc.).
+If you call the backend through REST, configure `NEXT_PUBLIC_RECEPTION_API_URL` in your deployment environment (Vercel, Firebase, etc.).
 
 ## Deployment
 
-- **Vercel**: Set `MONGODB_URI` (and `NEXT_PUBLIC_BACKEND_URL` if needed) in project settings, then `vercel deploy`.
+- **Vercel**: Set `NEXT_PUBLIC_RECEPTION_API_URL` in project settings, then `vercel deploy`.
 - **Firebase Hosting**: Build with `npm run build`, then point `firebase.json` to `.next` via the Next.js adapter or host the static landing page while proxying `/dashboard` to Vercel.
 - **Docker**: Create a simple `Dockerfile` using the Next.js `node:alpine` example if you need on-prem deployments.
 
 ## Folder Map
 
-```
+```text
 src/
-	app/
-		dashboard/        # Authenticated dashboard routes
-		(marketing)       # Landing pages and auth flows
-	components/        # Landing + dashboard UI primitives
-	context/           # Auth + language providers
-	lib/               # Mongo helpers, utils, mocked services
-	services/          # Authentication + Firestore wrappers
+  app/
+    dashboard/        # Authenticated dashboard routes
+    (marketing)       # Landing pages and auth flows
+  components/        # Landing + dashboard UI primitives
+  context/           # Auth + language providers
+  lib/               # API-backed data helpers, utils, mocked services
+  services/          # Authentication + Firestore wrappers
 docs/                # Design blueprint / product notes
 ```
 
