@@ -1,7 +1,7 @@
 
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import {
   Card,
   CardContent,
@@ -45,7 +45,7 @@ import {
 import { useRouter } from "next/navigation";
 import { Switch } from "@/components/ui/switch";
 import { Combobox } from "@/components/ui/combobox";
-import { getMenuItems, getOrders, addOrder } from "@/lib/db";
+import { getMenuItems, getOrders, addOrder, getMonthlyApcInsight, type MonthlyApcInsight } from "@/lib/db";
 import { useAuth } from "@/context/AuthContext";
 import { useCurrency } from "@/hooks/use-currency";
 import type { MenuItem } from "../menu/data";
@@ -104,15 +104,25 @@ export default function OrdersPage() {
   const { currencySymbol } = useCurrency();
   const [orders, setOrders] = useState<Order[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+  const [monthlyApcInsight, setMonthlyApcInsight] = useState<MonthlyApcInsight | null>(null);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
 
+  const orderApcByOrderId = useMemo(() => {
+    const map = new Map<string, MonthlyApcInsight["orders"][number]>();
+    for (const item of monthlyApcInsight?.orders ?? []) {
+      map.set(String(item.order_id), item);
+    }
+    return map;
+  }, [monthlyApcInsight]);
+
   useEffect(() => {
     if (!user?.restaurantId) {
       setOrders([]);
       setMenuItems([]);
+      setMonthlyApcInsight(null);
       return;
     }
 
@@ -120,9 +130,10 @@ export default function OrdersPage() {
 
     const loadData = async () => {
       try {
-        const [ordersData, menuData] = await Promise.all([
+        const [ordersData, menuData, apcInsight] = await Promise.all([
           getOrders(user.restaurantId),
           getMenuItems(user.restaurantId),
+          getMonthlyApcInsight(user.restaurantId),
         ]);
 
         if (!isActive) {
@@ -131,6 +142,7 @@ export default function OrdersPage() {
 
         setOrders(Array.isArray(ordersData) ? ordersData : []);
         setMenuItems(Array.isArray(menuData) ? menuData : []);
+        setMonthlyApcInsight(apcInsight ?? null);
       } catch (error) {
         console.error("Failed to load orders", error);
         if (!isActive) {
@@ -138,6 +150,7 @@ export default function OrdersPage() {
         }
         setOrders([]);
         setMenuItems([]);
+        setMonthlyApcInsight(null);
       }
     };
 
@@ -262,6 +275,13 @@ export default function OrdersPage() {
     setOrders(orders.map(order => order.id === orderId ? { ...order, status } : order));
   };
 
+  const getApcBadgeClass = (zone?: "red" | "yellow" | "green") => {
+    if (zone === "green") return "bg-green-100 text-green-800 border-green-200";
+    if (zone === "yellow") return "bg-yellow-100 text-yellow-900 border-yellow-200";
+    if (zone === "red") return "bg-red-100 text-red-800 border-red-200";
+    return "";
+  };
+
 
   return (
     <div className="grid gap-4 md:gap-8">
@@ -293,12 +313,40 @@ export default function OrdersPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
+          <div className="mb-4 grid gap-3 md:grid-cols-3">
+            <Card className="border-dashed">
+              <CardHeader className="pb-2">
+                <CardDescription>Monthly APC</CardDescription>
+                <CardTitle className="text-xl">
+                  {monthlyApcInsight ? `${currencySymbol}${monthlyApcInsight.monthly_apc.toFixed(2)}` : "N/A"}
+                </CardTitle>
+              </CardHeader>
+            </Card>
+            <Card className="border-dashed">
+              <CardHeader className="pb-2">
+                <CardDescription>Total Revenue</CardDescription>
+                <CardTitle className="text-xl">
+                  {monthlyApcInsight ? `${currencySymbol}${monthlyApcInsight.total_revenue.toFixed(2)}` : "N/A"}
+                </CardTitle>
+              </CardHeader>
+            </Card>
+            <Card className="border-dashed">
+              <CardHeader className="pb-2">
+                <CardDescription>Total Covers</CardDescription>
+                <CardTitle className="text-xl">
+                  {monthlyApcInsight ? monthlyApcInsight.total_covers : "N/A"}
+                </CardTitle>
+              </CardHeader>
+            </Card>
+          </div>
+
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>Table</TableHead>
                 <TableHead>Order Details</TableHead>
                 <TableHead className="hidden md:table-cell text-right">Total</TableHead>
+                <TableHead className="hidden md:table-cell">APC Zone</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>
                   <span className="sr-only">Actions</span>
@@ -306,7 +354,9 @@ export default function OrdersPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {orders.map((order) => (
+              {orders.map((order) => {
+                const apcInsight = orderApcByOrderId.get(String(order.id));
+                return (
                 <TableRow key={order.id} onClick={() => handleRowClick(order)} className="cursor-pointer">
                   <TableCell className="font-medium">
                     <div>{order.table}</div>
@@ -316,6 +366,15 @@ export default function OrdersPage() {
                     <div className="font-medium">{order.items.map(i => `${i.quantity}x ${i.name}`).join(', ')}</div>
                   </TableCell>
                   <TableCell className="hidden md:table-cell text-right">{currencySymbol}{order.total.toFixed(2)}</TableCell>
+                  <TableCell className="hidden md:table-cell">
+                    {apcInsight ? (
+                      <Badge variant="outline" className={getApcBadgeClass(apcInsight.zone)}>
+                        {apcInsight.zone.toUpperCase()} ({currencySymbol}{apcInsight.target_total.toFixed(2)} target)
+                      </Badge>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">No APC data</span>
+                    )}
+                  </TableCell>
                   <TableCell>
                     <Badge variant={getStatusVariant(order.status)}>
                       {order.status}
@@ -350,7 +409,7 @@ export default function OrdersPage() {
                     </DropdownMenu>
                   </TableCell>
                 </TableRow>
-              ))}
+              )})}
             </TableBody>
           </Table>
         </CardContent>

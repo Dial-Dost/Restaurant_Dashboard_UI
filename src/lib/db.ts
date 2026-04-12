@@ -12,7 +12,8 @@ export type User = {
     employeeId: string;
     name: string;
     password?: string;
-    role: 'admin' | 'employee' | 'valet';
+    role: 'admin' | 'employee' | 'valet' | 'waiter';
+    role_all?: string[];
 };
 
 export type RestaurantProfile = {
@@ -21,6 +22,55 @@ export type RestaurantProfile = {
     phone: string;
     email: string;
     hours: string;
+};
+
+export type RoleDefinition = {
+    id: string;
+    role_name: string;
+    actions_performable: string[];
+};
+
+export type TableAssignmentDefinition = {
+    id: string;
+    table_name: string;
+    employee_id: string;
+    employee_name: string;
+    employee_role: string;
+};
+
+export type ApcZone = 'red' | 'yellow' | 'green';
+
+export type OrderApcInsight = {
+    order_id: string;
+    table_name: string;
+    created_at: string;
+    total: number;
+    people_count: number;
+    target_total: number;
+    zone: ApcZone;
+    assigned_employee_id: string | null;
+    assigned_employee_name: string | null;
+};
+
+export type EmployeeApcIncentive = {
+    employee_id: string;
+    employee_name: string;
+    employee_role: string;
+    assigned_tables: string[];
+    orders_count: number;
+    covers_count: number;
+    mean_apc: number;
+    zone: ApcZone;
+};
+
+export type MonthlyApcInsight = {
+    month: string;
+    monthly_apc: number;
+    total_revenue: number;
+    total_covers: number;
+    yellow_band_percent: number;
+    orders: OrderApcInsight[];
+    employee_incentives: EmployeeApcIncentive[];
 };
 
 type RestaurantData = {
@@ -173,6 +223,7 @@ const mapBooking = (item: any): Booking => ({
 });
 
 const mapCustomer = (item: any): Customer => ({
+    customerId: String(item.customer_id ?? item.id ?? ''),
     name: item.name ?? 'Unknown',
     email: item.email ?? '',
     phone: item.phone_number ?? item.phone ?? '',
@@ -198,6 +249,50 @@ const mapAuditLog = (item: any): AuditLog => ({
     action: item.action ?? 'Unknown',
     details: item.details ?? '',
     timestamp: item.timestamp ? new Date(item.timestamp).toISOString() : new Date().toISOString(),
+});
+
+const mapInventoryItem = (item: any): InventoryItem => ({
+    id: String(item.id ?? item.barcode ?? `${Date.now()}`),
+    name: String(item.name ?? 'Unnamed Item'),
+    category: String(item.category ?? 'General'),
+    stock: Math.max(0, Number(item.stock ?? 0)),
+    unit: String(item.unit ?? 'pcs'),
+    status: (item.status as InventoryItem['status']) ?? 'In Stock',
+});
+
+const mapMenuItem = (item: any): MenuItem => ({
+    id: String(item.id ?? `${Date.now()}`),
+    name: String(item.name ?? 'Unnamed Item'),
+    price: Number(item.price ?? 0),
+    category: String(item.category ?? 'General'),
+});
+
+const mapOrderItem = (item: any) => ({
+    id: String(item.id ?? `${Date.now()}`),
+    name: String(item.name ?? 'Unnamed'),
+    quantity: Math.max(1, Number(item.quantity ?? 1)),
+    price: Number(item.price ?? 0),
+    orderedAt: String(item.orderedAt ?? new Date().toISOString()),
+});
+
+const mapOrder = (item: any): Order => ({
+    id: String(item.id ?? `${Date.now()}`),
+    table: String(item.table ?? ''),
+    customer: String(item.customer ?? 'Guest'),
+    items: Array.isArray(item.items) ? item.items.map(mapOrderItem) : [],
+    subtotal: Number(item.subtotal ?? 0),
+    serviceChargePercentage:
+        item.serviceChargePercentage === undefined ? undefined : Number(item.serviceChargePercentage),
+    taxes: Array.isArray(item.taxes)
+        ? item.taxes.map((tax: any) => ({
+              id: String(tax.id ?? `${Date.now()}`),
+              name: String(tax.name ?? 'Tax'),
+              percentage: Number(tax.percentage ?? 0),
+          }))
+        : undefined,
+    applyServiceCharge: Boolean(item.applyServiceCharge),
+    total: Number(item.total ?? 0),
+    status: (item.status as Order['status']) ?? 'Preparing',
 });
 
 const readLocalField = async <T>(restaurantId: string, field: keyof RestaurantData): Promise<T> => {
@@ -360,17 +455,68 @@ export const getCustomers = async (restaurantId: string): Promise<Customer[]> =>
     return readLocalField<Customer[]>(restaurantId, 'customers');
 };
 
-export const getInventory = async (restaurantId: string): Promise<InventoryItem[]> =>
-    readLocalField<InventoryItem[]>(restaurantId, 'inventory');
+export const getInventory = async (restaurantId: string): Promise<InventoryItem[]> => {
+    const data = await backendJson<any[]>(
+        `/inventory?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
 
-export const getMenuItems = async (restaurantId: string): Promise<MenuItem[]> =>
-    readLocalField<MenuItem[]>(restaurantId, 'menuItems');
+    if (Array.isArray(data)) {
+        const mapped = data.map(mapInventoryItem);
+        await writeLocalField(restaurantId, 'inventory', mapped);
+        return mapped;
+    }
 
-export const getMenuCategories = async (restaurantId: string): Promise<string[]> =>
-    readLocalField<string[]>(restaurantId, 'menuCategories');
+    return readLocalField<InventoryItem[]>(restaurantId, 'inventory');
+};
 
-export const getOrders = async (restaurantId: string): Promise<Order[]> =>
-    readLocalField<Order[]>(restaurantId, 'orders');
+export const getMenuItems = async (restaurantId: string): Promise<MenuItem[]> => {
+    const data = await backendJson<any[]>(
+        `/menu?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+
+    if (Array.isArray(data)) {
+        const mapped = data.map(mapMenuItem);
+        await writeLocalField(restaurantId, 'menuItems', mapped);
+        return mapped;
+    }
+
+    return readLocalField<MenuItem[]>(restaurantId, 'menuItems');
+};
+
+export const getMenuCategories = async (restaurantId: string): Promise<string[]> => {
+    const data = await backendJson<string[]>(
+        `/menu/categories?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+
+    if (Array.isArray(data)) {
+        await writeLocalField(restaurantId, 'menuCategories', data);
+        return data;
+    }
+
+    return readLocalField<string[]>(restaurantId, 'menuCategories');
+};
+
+export const getOrders = async (restaurantId: string): Promise<Order[]> => {
+    const data = await backendJson<any[]>(
+        `/orders?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+
+    if (Array.isArray(data)) {
+        const mapped = data.map(mapOrder);
+        await writeLocalField(restaurantId, 'orders', mapped);
+        return mapped;
+    }
+
+    return readLocalField<Order[]>(restaurantId, 'orders');
+};
 
 export const getTables = async (restaurantId: string): Promise<Table[]> => {
     const data = await backendJson<any[]>(
@@ -404,8 +550,20 @@ export const getAuditLogs = async (restaurantId: string, limit = 100): Promise<A
     return readLocalField<AuditLog[]>(restaurantId, 'auditLogs');
 };
 
-export const getRestaurantProfile = async (restaurantId: string): Promise<RestaurantProfile> =>
-    readLocalField<RestaurantProfile>(restaurantId, 'profile');
+export const getRestaurantProfile = async (restaurantId: string): Promise<RestaurantProfile> => {
+    const data = await backendJson<RestaurantProfile>(
+        `/restaurant/profile?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+
+    if (data) {
+        await writeLocalField(restaurantId, 'profile', data);
+        return data;
+    }
+
+    return readLocalField<RestaurantProfile>(restaurantId, 'profile');
+};
 
 export const addBooking = async (restaurantId: string, booking: Booking) => {
     await addToLocalField(restaurantId, 'bookings', booking);
@@ -435,16 +593,49 @@ export const addCustomer = async (restaurantId: string, customer: Customer) => {
 };
 
 export const addInventoryItem = async (restaurantId: string, item: InventoryItem) => {
+    const response = await backendCall('/inventory', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(item),
+    });
+
+    if (response?.ok) {
+        await getInventory(restaurantId);
+        return { acknowledged: true };
+    }
+
     await addToLocalField(restaurantId, 'inventory', item);
     return { acknowledged: true };
 };
 
 export const addMenuItem = async (restaurantId: string, item: MenuItem) => {
+    const response = await backendCall('/menu', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(item),
+    });
+
+    if (response?.ok) {
+        await getMenuItems(restaurantId);
+        return { acknowledged: true };
+    }
+
     await addToLocalField(restaurantId, 'menuItems', item);
     return { acknowledged: true };
 };
 
 export const addOrder = async (restaurantId: string, order: Order) => {
+    const response = await backendCall('/orders', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(order),
+    });
+
+    if (response?.ok) {
+        await getOrders(restaurantId);
+        return { acknowledged: true };
+    }
+
     await addToLocalField(restaurantId, 'orders', order);
     return { acknowledged: true };
 };
@@ -473,6 +664,17 @@ export const addTable = async (restaurantId: string, table: Omit<Table, 'id'>) =
 };
 
 export const addMenuCategory = async (restaurantId: string, category: string) => {
+    const response = await backendCall('/menu/categories', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category }),
+    });
+
+    if (response?.ok) {
+        await getMenuCategories(restaurantId);
+        return { acknowledged: true };
+    }
+
     const categories = await getMenuCategories(restaurantId);
     if (!categories.includes(category)) {
         categories.push(category);
@@ -525,6 +727,17 @@ export const updateTableStatus = async (
 };
 
 export const updateRestaurantProfile = async (restaurantId: string, profile: RestaurantProfile) => {
+    const response = await backendCall('/restaurant/profile', restaurantId, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(profile),
+    });
+
+    if (response?.ok) {
+        await getRestaurantProfile(restaurantId);
+        return { acknowledged: true };
+    }
+
     const restaurant = ensureLocalRestaurant(restaurantId);
     restaurant.name = profile.name;
     restaurant.data.profile = deepClone(profile);
@@ -532,6 +745,15 @@ export const updateRestaurantProfile = async (restaurantId: string, profile: Res
 };
 
 export const removeInventoryItem = async (restaurantId: string, itemId: string) => {
+    const response = await backendCall(`/inventory/${encodeURIComponent(itemId)}`, restaurantId, {
+        method: 'DELETE',
+    });
+
+    if (response?.ok || response?.status === 204) {
+        await getInventory(restaurantId);
+        return { acknowledged: true };
+    }
+
     const inventory = await getInventory(restaurantId);
     const updated = inventory.filter((item) => item.id !== itemId);
     await writeLocalField(restaurantId, 'inventory', updated);
@@ -589,6 +811,176 @@ export const updateBookingStatus = async (
 };
 
 export const saveMenuItems = async (restaurantId: string, items: MenuItem[]) => {
+    const response = await backendCall('/menu', restaurantId, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items }),
+    });
+
+    if (response?.ok) {
+        await getMenuItems(restaurantId);
+        return { acknowledged: true };
+    }
+
     await writeLocalField(restaurantId, 'menuItems', items);
     return { acknowledged: true };
+};
+
+export const getRoles = async (restaurantId: string): Promise<RoleDefinition[]> => {
+    const data = await backendJson<RoleDefinition[]>(
+        `/roles?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+
+    return Array.isArray(data) ? data : [];
+};
+
+export const getRestaurantUsers = async (
+    restaurantId: string,
+    employeeId: string,
+): Promise<User[]> => {
+    const data = await backendJson<{ users: User[] }>(
+        `/restaurant/users?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        {
+            method: 'GET',
+            headers: {
+                'X-Employee-Id': employeeId,
+            },
+        },
+    );
+
+    if (Array.isArray(data?.users)) {
+        const local = ensureLocalRestaurant(restaurantId);
+        local.users = data.users.map((entry) => ({ ...entry }));
+        return data.users;
+    }
+
+    const local = ensureLocalRestaurant(restaurantId);
+    return deepClone(local.users);
+};
+
+export const createRole = async (
+    restaurantId: string,
+    roleName: string,
+    actions: string[] = [],
+): Promise<RoleDefinition | null> => {
+    const response = await backendCall('/roles', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role_name: roleName, actions_performable: actions }),
+    });
+
+    if (!response?.ok) {
+        return null;
+    }
+
+    return (await response.json()) as RoleDefinition;
+};
+
+export const deleteRole = async (restaurantId: string, roleId: string): Promise<boolean> => {
+    const response = await backendCall(`/roles/${encodeURIComponent(roleId)}`, restaurantId, {
+        method: 'DELETE',
+    });
+
+    return Boolean(response?.ok || response?.status === 204);
+};
+
+export const assignRoleToEmployee = async (
+    restaurantId: string,
+    employeeId: string,
+    roleName: string,
+): Promise<boolean> => {
+    const response = await backendCall('/roles/assign', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ employeeId, role_name: roleName }),
+    });
+
+    return Boolean(response?.ok);
+};
+
+export const removeRoleFromEmployee = async (
+    restaurantId: string,
+    employeeId: string,
+    roleName: string,
+): Promise<boolean> => {
+    const response = await backendCall('/roles/remove', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ employeeId, role_name: roleName }),
+    });
+
+    return Boolean(response?.ok);
+};
+
+export const getTableAssignments = async (
+    restaurantId: string,
+    employeeId: string,
+): Promise<TableAssignmentDefinition[]> => {
+    const data = await backendJson<TableAssignmentDefinition[]>(
+        `/table-assignments?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        {
+            method: 'GET',
+            headers: {
+                'X-Employee-Id': employeeId,
+            },
+        },
+    );
+
+    return Array.isArray(data) ? data : [];
+};
+
+export const assignTableToEmployee = async (
+    restaurantId: string,
+    employeeId: string,
+    tableName: string,
+    assigneeEmployeeId: string,
+): Promise<boolean> => {
+    const response = await backendCall('/table-assignments/assign', restaurantId, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-Employee-Id': employeeId,
+        },
+        body: JSON.stringify({
+            table_name: tableName,
+            employeeId: assigneeEmployeeId,
+        }),
+    });
+
+    return Boolean(response?.ok);
+};
+
+export const unassignTableEmployee = async (
+    restaurantId: string,
+    employeeId: string,
+    tableName: string,
+): Promise<boolean> => {
+    const response = await backendCall('/table-assignments/unassign', restaurantId, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-Employee-Id': employeeId,
+        },
+        body: JSON.stringify({ table_name: tableName }),
+    });
+
+    return Boolean(response?.ok);
+};
+
+export const getMonthlyApcInsight = async (
+    restaurantId: string,
+    month?: string,
+): Promise<MonthlyApcInsight | null> => {
+    const query = month ? `&month=${encodeURIComponent(month)}` : '';
+    const data = await backendJson<MonthlyApcInsight>(
+        `/orders/apc?restaurantId=${encodeURIComponent(restaurantId)}${query}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+
+    return data ?? null;
 };

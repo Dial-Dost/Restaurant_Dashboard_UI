@@ -133,6 +133,16 @@ function formatTime(value?: string): string {
   return parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+function getCurrentLocalDateTimeValue(): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  const hours = String(now.getHours()).padStart(2, "0");
+  const minutes = String(now.getMinutes()).padStart(2, "0");
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
 function formatTicket(bookingId?: string, index?: number): string {
   if (bookingId && bookingId.length >= 6) {
     return `VLT-${bookingId.slice(-6).toUpperCase()}`;
@@ -195,7 +205,8 @@ export default function ValetDashboardPage() {
   const [showAllPickup, setShowAllPickup] = useState(false);
   const [newGuestName, setNewGuestName] = useState("");
   const [newVehiclePlate, setNewVehiclePlate] = useState("");
-  const [newDateTime, setNewDateTime] = useState("");
+  const [newDateTime, setNewDateTime] = useState<string>(() => getCurrentLocalDateTimeValue());
+  const [newRecordBayValue, setNewRecordBayValue] = useState<string>("__default_main__");
   const [creating, setCreating] = useState(false);
 
   const canViewValet = user?.role === "valet" || user?.role === "admin";
@@ -591,6 +602,9 @@ export default function ValetDashboardPage() {
 
     try {
       setCreating(true);
+      const selectedBayIdentifier =
+        newRecordBayValue === "__default_main__" ? "Main" : newRecordBayValue;
+
       const response = await fetch(`${API_BASE_URL}/create_valet_record`, {
         method: 'POST',
         headers: {
@@ -598,7 +612,12 @@ export default function ValetDashboardPage() {
           "X-Restaurant-Id": user.restaurantId,
           "X-Employee-Id": user.employeeId,
         },
-        body: JSON.stringify({ number_plate: newVehiclePlate.trim().toUpperCase()}),
+        body: JSON.stringify({
+          number_plate: newVehiclePlate.trim().toUpperCase(),
+          customer_name: newGuestName.trim() || undefined,
+          booking_date_time: date.toISOString(),
+          bay_id: selectedBayIdentifier,
+        }),
       });  
 
       if (!response.ok) {
@@ -606,20 +625,42 @@ export default function ValetDashboardPage() {
         throw new Error(message || "Unable to create valet record.");
       }
 
-      const created = (await response.json()) as { message: string; booking_id?: string; entry_time?: string;};
+      const created = (await response.json()) as {
+        message: string;
+        booking_id?: string;
+        entry_time?: string;
+        bay_id?: string;
+        number_plate?: string;
+        customer_name?: string;
+      };
       const createdBookingId = typeof created.booking_id === "string" ? created.booking_id : undefined;
       const createdEntryTime = typeof created.entry_time === "string" ? created.entry_time : undefined;
+      const createdBayId = typeof created.bay_id === "string" ? created.bay_id : undefined;
+      const createdCustomerName =
+        typeof created.customer_name === "string" && created.customer_name.trim().length > 0
+          ? created.customer_name.trim()
+          : undefined;
+      const createdNumberPlate =
+        typeof created.number_plate === "string" && created.number_plate.trim().length > 0
+          ? created.number_plate.trim().toUpperCase()
+          : newVehiclePlate.trim().toUpperCase();
 
       setData((previous) => {
+        const resolvedBayName =
+          createdBayId && previous
+            ? (previous.bays ?? []).find((b) => String(b.Bay_id) === createdBayId)?.Bay_name ?? null
+            : null;
+
         const optimisticBooking: ValetBooking = {
           booking_id: createdBookingId,
-          customer_name: newGuestName.trim() || "Guest",
-          bay_name: undefined,
+          customer_name: createdCustomerName ?? (newGuestName.trim() || "Guest"),
+          bay_id: createdBayId ?? null,
+          bay_name: resolvedBayName,
           booking_date_time: createdEntryTime ? createdEntryTime : new Date().toISOString(),
           exit_date_time: undefined,
           // number_of_people: 1,
           status: "Vehicle added",
-          number_plate: newVehiclePlate.trim().toUpperCase(),
+          number_plate: createdNumberPlate,
           active: true,
         };
 
@@ -642,10 +683,14 @@ export default function ValetDashboardPage() {
       setRecordSearchQuery("");
       setRecordStageFilter("all");
 
+      // Pull authoritative row (including mapped bay name and persisted metadata).
+      await fetchValetInfo();
+
       toast({ title: "Valet Record Added", description: `${newGuestName.trim() || "Guest"} was added.` });
       setNewGuestName("");
       setNewVehiclePlate("");
-      setNewDateTime("");
+      setNewDateTime(getCurrentLocalDateTimeValue());
+      setNewRecordBayValue("__default_main__");
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Unable to create valet record.";
       toast({ title: "Create Failed", description: message, variant: "destructive" });
@@ -780,6 +825,31 @@ export default function ValetDashboardPage() {
     const ensured = hasMain ? normalized : [{ name: "Main", total_capacity: 5 }, ...normalized];
     return Array.from(new Set(ensured.map((b) => b.name)));
   }, [managedBays]);
+
+  const addRecordBayOptions = useMemo(() => {
+    const options = new Map<string, string>();
+
+    (data?.bays ?? []).forEach((bay) => {
+      const value = String(bay.Bay_id ?? bay.Bay_name ?? "").trim();
+      const label = String(bay.Bay_name ?? bay.Bay_id ?? "").trim();
+      if (value && label) {
+        options.set(value, label);
+      }
+    });
+
+    managedBays.forEach((bay) => {
+      const normalized = bay.name.trim();
+      if (normalized && !Array.from(options.values()).includes(normalized)) {
+        options.set(normalized, normalized);
+      }
+    });
+
+    if (!Array.from(options.values()).some((label) => label.toLowerCase() === "main")) {
+      options.set("Main", "Main");
+    }
+
+    return Array.from(options.entries()).map(([value, label]) => ({ value, label }));
+  }, [data?.bays, managedBays]);
 
   useEffect(() => {
     if (!user?.restaurantId) return;
@@ -1372,7 +1442,7 @@ export default function ValetDashboardPage() {
           <CardDescription>Create a new car/guest valet entry directly from this dashboard.</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
             <div>
               <Label htmlFor="valet-guest-name">Guest Name</Label>
               <Input
@@ -1399,6 +1469,22 @@ export default function ValetDashboardPage() {
                 value={newDateTime}
                 onChange={(e) => setNewDateTime(e.target.value)}
               />
+            </div>
+            <div>
+              <Label htmlFor="valet-bay">Bay</Label>
+              <Select value={newRecordBayValue} onValueChange={(value) => setNewRecordBayValue(value)}>
+                <SelectTrigger id="valet-bay">
+                  <SelectValue placeholder="Select Bay" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__default_main__">Main (Default)</SelectItem>
+                  {addRecordBayOptions
+                    .filter((bay) => bay.label.toLowerCase() !== "main")
+                    .map((bay) => (
+                      <SelectItem key={bay.value} value={bay.value}>{bay.label}</SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
             </div>
             {/* Initial stage removed — new records default to 'Vehicle added' */}
           </div>
@@ -1472,7 +1558,10 @@ export default function ValetDashboardPage() {
               {filteredEditableBookings.map((booking, index) => {
                 const bookingId = booking.booking_id;
                 const stage = normalizeStage(booking.status);
-                const currentTable = booking.bay_name ?? (booking.bay_id ? (data?.bays ?? []).find((b) => b.Bay_id === booking.bay_id)?.Bay_name : "unassigned");
+                const currentTable =
+                  booking.bay_name ??
+                  (booking.bay_id ? (data?.bays ?? []).find((b) => b.Bay_id === booking.bay_id)?.Bay_name : null) ??
+                  "unassigned";
                 const draftStage = bookingId ? draftStageByBookingId[bookingId] : undefined;
                 const draftTable = bookingId ? draftTableByBookingId[bookingId] : undefined;
                 const stageValue = bookingId ? (draftStage ?? stage) : stage;

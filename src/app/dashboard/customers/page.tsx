@@ -40,6 +40,7 @@ import { useCurrency } from "@/hooks/use-currency";
 
 
 export type Customer = {
+  customerId?: string;
   name: string;
   email: string;
   phone: string;
@@ -124,8 +125,8 @@ export default function CustomersPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {customers.map((customer) => (
-                <TableRow key={customer.email}>
+              {customers.map((customer, index) => (
+                <TableRow key={customer.customerId ?? `${customer.email}-${customer.phone}-${index}`}>
                   <TableCell className="font-medium">
                     <div>{customer.name}</div>
                     <div className="text-sm text-muted-foreground md:hidden">{customer.email}</div>
