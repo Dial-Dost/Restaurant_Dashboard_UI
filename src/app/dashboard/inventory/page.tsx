@@ -98,7 +98,8 @@ export default function InventoryPage() {
     await addInventoryItem(user.restaurantId, newItem);
 
     await addAuditLogEntry(user.restaurantId, {
-        employee: user?.name || 'System',
+      employee: user?.name || user?.employeeId || 'System',
+      employeeId: user?.employeeId,
         action: 'Inventory Add',
         details: `Added new item: ${data.name} (${data.stock} ${data.unit})`,
     });

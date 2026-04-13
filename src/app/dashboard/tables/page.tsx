@@ -274,7 +274,8 @@ export default function TablesPage() {
             }
 
             await addAuditLogEntry(user.restaurantId, {
-                employee: user?.name || "System",
+                employee: user?.name || user?.employeeId || "System",
+                employeeId: user?.employeeId,
                 action: "Table Added",
                 details: `Created table ${trimmedName}${payload.table.capacity ? ` (capacity ${payload.table.capacity})` : ""}`,
             });
@@ -303,7 +304,8 @@ export default function TablesPage() {
         }
 
         await addAuditLogEntry(user.restaurantId, {
-            employee: user?.name || "System",
+            employee: user?.name || user?.employeeId || "System",
+            employeeId: user?.employeeId,
             action: "Table Removed",
             details: `Deleted table ${removed.name}`,
         });
@@ -339,7 +341,8 @@ export default function TablesPage() {
     }
 
     await addAuditLogEntry(user.restaurantId, {
-        employee: user?.name || "System",
+        employee: user?.name || user?.employeeId || "System",
+        employeeId: user?.employeeId,
         action: "Table Assigned",
         details: `Assigned ${tableName} to employee ${selectedEmployeeId}`,
     });
@@ -365,7 +368,8 @@ export default function TablesPage() {
     }
 
     await addAuditLogEntry(user.restaurantId, {
-        employee: user?.name || "System",
+        employee: user?.name || user?.employeeId || "System",
+        employeeId: user?.employeeId,
         action: "Table Unassigned",
         details: `Removed employee assignment from ${tableName}`,
     });

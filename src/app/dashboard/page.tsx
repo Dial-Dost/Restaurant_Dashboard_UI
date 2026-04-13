@@ -15,12 +15,14 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { ArrowUpRight, Activity, CircleUser, CreditCard, DollarSign } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
-import { getBookings, getCustomers, getTables } from '@/lib/db';
+import { getBookings, getCustomers, getTables, getMonthlyApcInsight } from '@/lib/db';
 import { useEffect, useState } from 'react';
 import type { Booking } from './bookings/data';
 import type { Customer } from './customers/page';
 import type { Table as TableType } from './tables/data';
 import { useCurrency } from '@/hooks/use-currency';
+
+type ApcRange = 'day' | 'week' | 'month';
 
 export default function Dashboard() {
   const { user } = useAuth();
@@ -28,17 +30,44 @@ export default function Dashboard() {
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [tables, setTables] = useState<TableType[]>([]);
+  const [apcRange, setApcRange] = useState<ApcRange>('week');
+  const [employeeApc, setEmployeeApc] = useState<number | null>(null);
+  const [employeeApcOrdersCount, setEmployeeApcOrdersCount] = useState<number>(0);
+  const [employeeApcLoading, setEmployeeApcLoading] = useState<boolean>(false);
 
   useEffect(() => {
     if (user && user.restaurantId) {
       const fetchData = async () => {
-        setBookings(await getBookings(user.restaurantId));
-        setCustomers(await getCustomers(user.restaurantId));
-        setTables(await getTables(user.restaurantId));
+        setEmployeeApcLoading(true);
+        try {
+          const [bookingData, customerData, tableData, apcInsight] = await Promise.all([
+            getBookings(user.restaurantId),
+            getCustomers(user.restaurantId),
+            getTables(user.restaurantId),
+            getMonthlyApcInsight(user.restaurantId, {
+              period: apcRange,
+              employeeId: user.employeeId,
+            }),
+          ]);
+
+          setBookings(bookingData);
+          setCustomers(customerData);
+          setTables(tableData);
+          setEmployeeApc(apcInsight && apcInsight.total_covers > 0 ? apcInsight.monthly_apc : null);
+          setEmployeeApcOrdersCount(apcInsight?.orders?.length ?? 0);
+        } catch {
+          setEmployeeApc(null);
+          setEmployeeApcOrdersCount(0);
+        } finally {
+          setEmployeeApcLoading(false);
+        }
       }
       fetchData();
+    } else {
+      setEmployeeApc(null);
+      setEmployeeApcOrdersCount(0);
     }
-  }, [user]);
+  }, [user, apcRange]);
 
   // Current month data
   const totalRevenue = customers.reduce((acc, customer) => acc + customer.billAmount, 0);
@@ -71,7 +100,7 @@ export default function Dashboard() {
           <Link href="/dashboard/bookings">Create Booking</Link>
         </Button>
       </div>
-      <div className="grid gap-4 md:grid-cols-2 md:gap-8 lg:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 md:gap-8 lg:grid-cols-5">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">
@@ -121,6 +150,34 @@ export default function Dashboard() {
             <div className="text-2xl font-bold">{activeTables} / {totalTables}</div>
             <p className="text-xs text-muted-foreground">
               {totalTables > 0 ? ((activeTables / totalTables) * 100).toFixed(0) : 0}% capacity
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">My Avg APC</CardTitle>
+            <DollarSign className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="mb-2 flex items-center gap-1">
+              {(['day', 'week', 'month'] as ApcRange[]).map((range) => (
+                <Button
+                  key={range}
+                  type="button"
+                  size="sm"
+                  variant={apcRange === range ? 'default' : 'outline'}
+                  className="h-7 px-2 text-xs capitalize"
+                  onClick={() => setApcRange(range)}
+                >
+                  {range}
+                </Button>
+              ))}
+            </div>
+            <div className="text-2xl font-bold">
+              {employeeApcLoading ? '...' : employeeApc !== null ? `${currencySymbol}${employeeApc.toFixed(2)}` : 'N/A'}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {employeeApcOrdersCount} order{employeeApcOrdersCount === 1 ? '' : 's'} in selected {apcRange}
             </p>
           </CardContent>
         </Card>

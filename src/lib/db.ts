@@ -65,6 +65,9 @@ export type EmployeeApcIncentive = {
 
 export type MonthlyApcInsight = {
     month: string;
+    period?: 'day' | 'week' | 'month';
+    period_start?: string;
+    period_end?: string;
     monthly_apc: number;
     total_revenue: number;
     total_covers: number;
@@ -211,6 +214,28 @@ const backendCall = async (
     }
 };
 
+const readErrorMessage = async (response: Response): Promise<string> => {
+    try {
+        const payload = await response.json();
+        if (typeof payload?.error === 'string' && payload.error.trim().length > 0) {
+            return payload.error;
+        }
+    } catch {
+        // Ignore JSON parse issues and fall back to response text.
+    }
+
+    try {
+        const text = await response.text();
+        if (text.trim().length > 0) {
+            return text;
+        }
+    } catch {
+        // Ignore text parse issues and fall back to status code.
+    }
+
+    return `Request failed with status ${response.status}`;
+};
+
 const mapBooking = (item: any): Booking => ({
     id: String(item.booking_id ?? item.id ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
     customer: item.customer_name ?? 'Guest',
@@ -349,7 +374,17 @@ export const findRestaurantByName = async (name: string) => {
 
     const local = restaurantStore.get(normalized) ?? restaurantStore.get(direct);
     if (local) {
-        return deepClone(local);
+        const verify = await backendCall(
+            `/get-customers?restaurantId=${encodeURIComponent(local.id)}`,
+            local.id,
+            { method: 'GET' },
+        );
+        if (verify?.ok) {
+            return deepClone(local);
+        }
+
+        // Remove stale local-only entries that do not exist in backend.
+        restaurantStore.delete(local.id);
     }
 
     const probe = await backendCall(`/get-customers?restaurantId=${encodeURIComponent(normalized)}`, normalized, {
@@ -396,17 +431,54 @@ export const findUserInRestaurant = async (restaurantId: string, employeeId: str
 
 export const createRestaurant = async (restaurantName: string, admin: User) => {
     const id = getRestaurantId(restaurantName);
-    if (restaurantStore.has(id)) {
-        throw new Error(`A restaurant with the name "${restaurantName}" already exists.`);
+    if (!admin.password) {
+        throw new Error('Admin password is required.');
     }
 
+    const response = await backendCall('/auth/register-restaurant', id, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            restaurantName,
+            adminName: admin.name,
+            adminEmployeeId: admin.employeeId,
+            password: admin.password,
+        }),
+    });
+
+    if (!response) {
+        throw new Error('Unable to connect to backend while creating restaurant.');
+    }
+
+    if (!response.ok) {
+        throw new Error(await readErrorMessage(response));
+    }
+
+    const payload = (await response.json().catch(() => null)) as
+        | {
+              restaurantId?: string;
+              restaurantName?: string;
+          }
+        | null;
+
+    const persistedId =
+        typeof payload?.restaurantId === 'string' && payload.restaurantId.trim().length > 0
+            ? payload.restaurantId
+            : id;
+    const persistedName =
+        typeof payload?.restaurantName === 'string' && payload.restaurantName.trim().length > 0
+            ? payload.restaurantName
+            : restaurantName;
+
     const restaurant: RestaurantRecord = {
-        id,
-        name: restaurantName,
+        id: persistedId,
+        name: persistedName,
         users: [admin],
-        data: defaultRestaurantData(restaurantName),
+        data: defaultRestaurantData(persistedName),
     };
-    restaurantStore.set(id, restaurant);
+
+    restaurantStore.delete(id);
+    restaurantStore.set(persistedId, restaurant);
     return deepClone(restaurant);
 };
 
@@ -685,13 +757,17 @@ export const addMenuCategory = async (restaurantId: string, category: string) =>
 
 export const addAuditLogEntry = async (
     restaurantId: string,
-    log: Omit<AuditLog, 'id' | 'timestamp'>,
+    log: Omit<AuditLog, 'id' | 'timestamp'> & { employeeId?: string },
 ): Promise<void> => {
     const response = await backendCall('/audit-logs', restaurantId, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+            'Content-Type': 'application/json',
+            ...(log.employeeId ? { 'X-Employee-Id': log.employeeId } : {}),
+        },
         body: JSON.stringify({
-            employee: log.employee,
+            employee: log.employeeId ?? log.employee,
+            employee_id: log.employeeId ?? null,
             action: log.action,
             details: log.details ?? null,
         }),
@@ -973,11 +1049,26 @@ export const unassignTableEmployee = async (
 
 export const getMonthlyApcInsight = async (
     restaurantId: string,
-    month?: string,
+    options?: {
+        month?: string;
+        period?: 'day' | 'week' | 'month';
+        employeeId?: string;
+    },
 ): Promise<MonthlyApcInsight | null> => {
-    const query = month ? `&month=${encodeURIComponent(month)}` : '';
+    const params = new URLSearchParams();
+    if (options?.month) {
+        params.set('month', options.month);
+    }
+    if (options?.period) {
+        params.set('period', options.period);
+    }
+    if (options?.employeeId) {
+        params.set('employeeId', options.employeeId);
+    }
+    const query = params.toString();
+
     const data = await backendJson<MonthlyApcInsight>(
-        `/orders/apc?restaurantId=${encodeURIComponent(restaurantId)}${query}`,
+        `/orders/apc?restaurantId=${encodeURIComponent(restaurantId)}${query ? `&${query}` : ''}`,
         restaurantId,
         { method: 'GET' },
     );

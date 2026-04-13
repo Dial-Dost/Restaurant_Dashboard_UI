@@ -105,17 +105,11 @@ export default function BookingsPage() {
     if (!user?.restaurantId) return;
 
     try {
-      await fetch(`${API_BASE_URL}/audit-logs`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Restaurant-Id": user.restaurantId,
-        },
-        body: JSON.stringify({
-          employee: user?.name || "System",
-          action,
-          details,
-        }),
+      await addAuditLogEntry(user.restaurantId, {
+        employee: user?.name || user?.employeeId || "System",
+        employeeId: user?.employeeId,
+        action,
+        details,
       });
     } catch (auditError) {
       console.warn("Failed to record audit entry", auditError);

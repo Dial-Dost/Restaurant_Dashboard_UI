@@ -41,7 +41,7 @@ type ValetBooking = {
 };
 
 type ValetInfoResponse = {
-  role: "admin" | "employee" | "valet";
+  role: "admin" | "employee" | "valet" | "waiter";
   generated_at: string;
   bays: ValetBays[];
   bookings: ValetBooking[];
@@ -198,6 +198,7 @@ export default function ValetDashboardPage() {
   const [newBayName, setNewBayName] = useState("");
   const [recordSearchQuery, setRecordSearchQuery] = useState("");
   const [recordStageFilter, setRecordStageFilter] = useState<"all" | ValetStage>("all");
+  const [recordBayFilter, setRecordBayFilter] = useState<string>("all");
   const [recordDate, setRecordDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
   const [sortAsc, setSortAsc] = useState<boolean>(false);
   const [showAllParked, setShowAllParked] = useState(false);
@@ -682,6 +683,7 @@ export default function ValetDashboardPage() {
       // Prevent newly created records from being hidden by stale filters.
       setRecordSearchQuery("");
       setRecordStageFilter("all");
+      setRecordBayFilter("all");
 
       // Pull authoritative row (including mapped bay name and persisted metadata).
       await fetchValetInfo();
@@ -773,6 +775,21 @@ export default function ValetDashboardPage() {
     const results = editableBookings.filter((booking, index) => {
       const bookingId = booking.booking_id;
       const stage = normalizeStage(booking.status);
+      const bayDisplay =
+        booking.bay_name ??
+        (booking.bay_id ? (data?.bays ?? []).find((b) => b.Bay_id === booking.bay_id)?.Bay_name : "") ??
+        "";
+
+      // Bay filter
+      if (recordBayFilter === "__unassigned__") {
+        if (String(bayDisplay).trim().length > 0) {
+          return false;
+        }
+      } else if (recordBayFilter !== "all") {
+        if (String(bayDisplay).trim().toLowerCase() !== recordBayFilter.toLowerCase()) {
+          return false;
+        }
+      }
 
       // Stage filter
       if (recordStageFilter !== "all" && stage !== recordStageFilter) {
@@ -790,9 +807,6 @@ export default function ValetDashboardPage() {
 
       // Search query
       if (!query) return true;
-
-      const bayDisplay =
-        booking.bay_name ?? (booking.bay_id ? (data?.bays ?? []).find((b) => b.Bay_id === booking.bay_id)?.Bay_name : "") ?? "";
 
       const searchable = [
         booking.customer_name ?? "",
@@ -815,7 +829,7 @@ export default function ValetDashboardPage() {
     });
 
     return results;
-  }, [editableBookings, recordSearchQuery, recordStageFilter, recordDate, sortAsc, data]);
+  }, [editableBookings, recordSearchQuery, recordStageFilter, recordBayFilter, recordDate, sortAsc, data]);
 
   const bayOptions = useMemo(() => {
     const normalized = managedBays
@@ -849,6 +863,27 @@ export default function ValetDashboardPage() {
     }
 
     return Array.from(options.entries()).map(([value, label]) => ({ value, label }));
+  }, [data?.bays, managedBays]);
+
+  const recordBayFilterOptions = useMemo(() => {
+    const labels = new Set<string>();
+
+    (data?.bays ?? []).forEach((bay) => {
+      const label = String(bay.Bay_name ?? "").trim();
+      if (label) {
+        labels.add(label);
+      }
+    });
+
+    managedBays.forEach((bay) => {
+      const label = bay.name.trim();
+      if (label) {
+        labels.add(label);
+      }
+    });
+
+    labels.add("Main");
+    return Array.from(labels).sort((a, b) => a.localeCompare(b));
   }, [data?.bays, managedBays]);
 
   useEffect(() => {
@@ -1504,7 +1539,7 @@ export default function ValetDashboardPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="mb-4 grid gap-3 md:grid-cols-3">
+          <div className="mb-4 grid gap-3 md:grid-cols-4">
             <div>
               <Label htmlFor="record-search">Search records</Label>
               <Input
@@ -1524,6 +1559,21 @@ export default function ValetDashboardPage() {
                   <SelectItem value="all">All stages</SelectItem>
                   {VALET_STAGES.map((stageOption) => (
                     <SelectItem key={stageOption} value={stageOption}>{stageOption}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Filter bay</Label>
+              <Select value={recordBayFilter} onValueChange={setRecordBayFilter}>
+                <SelectTrigger>
+                  <SelectValue placeholder="All bays" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All bays</SelectItem>
+                  <SelectItem value="__unassigned__">Unassigned</SelectItem>
+                  {recordBayFilterOptions.map((bayOption) => (
+                    <SelectItem key={bayOption} value={bayOption}>{bayOption}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>

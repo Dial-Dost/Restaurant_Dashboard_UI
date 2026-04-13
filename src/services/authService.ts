@@ -8,6 +8,33 @@ import { findRestaurantByName, findUserInRestaurant, createRestaurant, User, add
 // In a real application, you would use a secure authentication provider.
 
 const getRestaurantId = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, "");
+const API_BASE_URL = (
+    process.env.NEXT_PUBLIC_RECEPTION_API_URL ??
+    process.env.NEXT_PUBLIC_BACKEND_URL ??
+    'http://localhost:3000'
+).replace(/\/$/, '');
+
+const readErrorMessage = async (response: Response): Promise<string> => {
+    try {
+        const payload = await response.json();
+        if (typeof payload?.error === 'string' && payload.error.trim().length > 0) {
+            return payload.error;
+        }
+    } catch {
+        // Ignore parse errors and fall back to text.
+    }
+
+    try {
+        const text = await response.text();
+        if (text.trim().length > 0) {
+            return text;
+        }
+    } catch {
+        // Ignore text read errors and return generic message.
+    }
+
+    return 'Unable to sign in.';
+};
 
 // Restaurant and Admin Sign Up
 export const signUpRestaurant = async ({ restaurantName, adminName, adminEmployeeId, password }: {
@@ -33,25 +60,22 @@ export const signUpRestaurant = async ({ restaurantName, adminName, adminEmploye
 
 // Employee Sign In
 export const signInEmployee = async (restaurantName: string, employeeId: string, password: string) => {
-    const restaurant = await findRestaurantByName(restaurantName);
-    if (!restaurant) {
-        throw new Error('Invalid restaurant name.');
+    const response = await fetch(`${API_BASE_URL}/auth/employee-login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        cache: 'no-store',
+        body: JSON.stringify({
+            restaurantName,
+            employeeId,
+            password,
+        }),
+    });
+
+    if (!response.ok) {
+        throw new Error(await readErrorMessage(response));
     }
 
-    const user = await findUserInRestaurant(restaurant.id, employeeId);
-
-    if (!user || user.password !== password) {
-        throw new Error('Invalid employee ID or password.');
-    }
-    
-    return {
-        uid: user.employeeId,
-        employeeId: user.employeeId,
-        name: user.name,
-        role: user.role,
-        restaurantId: restaurant.id,
-        restaurantName: restaurant.name,
-    };
+    return await response.json();
 }
 
 // Password Reset - Mock implementation
