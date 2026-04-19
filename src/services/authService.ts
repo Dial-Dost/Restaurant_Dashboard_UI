@@ -46,7 +46,9 @@ export const signUpRestaurant = async ({ restaurantName, adminName, adminEmploye
     try {
         const adminUser: User = {
             employeeId: adminEmployeeId,
-            name: adminName,
+            // store admin full name as first name for backwards-compatible signup UI
+            emp_Fname: adminName,
+            emp_Lname: null,
             password: password, // In a real app, hash this password
             role: 'admin' as const
         };
@@ -59,14 +61,14 @@ export const signUpRestaurant = async ({ restaurantName, adminName, adminEmploye
 }
 
 // Employee Sign In
-export const signInEmployee = async (restaurantName: string, employeeId: string, password: string) => {
+export const signInEmployee = async (restaurantName: string, employeeUsername: string, password: string) => {
     const response = await fetch(`${API_BASE_URL}/auth/employee-login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         cache: 'no-store',
         body: JSON.stringify({
             restaurantName,
-            employeeId,
+            employeeUsername,
             password,
         }),
     });
@@ -79,20 +81,20 @@ export const signInEmployee = async (restaurantName: string, employeeId: string,
 }
 
 // Password Reset - Mock implementation
-export const sendPasswordReset = async (restaurantName: string, employeeId: string) => {
+export const sendPasswordReset = async (restaurantName: string, employeeUsername: string) => {
     const restaurant = await findRestaurantByName(restaurantName);
     if (!restaurant) {
         console.log(`Password reset requested for non-existent restaurant: ${restaurantName}`);
         return;
     }
     
-    const user = await findUserInRestaurant(restaurant.id, employeeId);
+    const user = await findUserInRestaurant(restaurant.id, employeeUsername);
     if (!user) {
-        console.log(`Password reset requested for non-existent user: ${employeeId}`);
+        console.log(`Password reset requested for non-existent user: ${employeeUsername}`);
         return;
     }
 
-    console.log(`A password reset link would be sent to the registered email for employee ${employeeId} at ${restaurantName}.`);
+    console.log(`A password reset link would be sent to the registered email for employee ${employeeUsername} at ${restaurantName}.`);
 }
 
 // Sign Out - Mock implementation
@@ -102,20 +104,21 @@ export const signOutUser = async () => {
 }
 
 // Add a new employee to a restaurant
-export const addEmployeeToRestaurant = async (restaurantId: string, employeeData: Omit<User, 'password'> & {password: string}) => {
-    const existingUser = await findUserInRestaurant(restaurantId, employeeData.employeeId);
-    if (existingUser) {
-        throw new Error("An employee with this ID already exists.");
-    }
-    
-    const newEmployee: User = {
-        name: employeeData.name,
-        employeeId: employeeData.employeeId,
-        password: employeeData.password, // Hash in real app
-        role: employeeData.role,
-    };
+export const addEmployeeToRestaurant = async (restaurantId: string, outletId: string, employeeData: Record<string, any>, sendee_emp_id: string) => {
+    // Server will generate the employee ID. Forward payload to backend via addEmployee.
+    const newEmployee = {
+        emp_Fname: employeeData.emp_Fname ?? undefined,
+        emp_Lname: employeeData.emp_Lname ?? undefined,
+        // employeeId intentionally omitted
+        password: employeeData.password, // In a real app, hash this before sending
+        role: employeeData.role ?? 'employee',
+        username: employeeData.username ?? undefined,
+        email: employeeData.email ?? undefined,
+        ph: employeeData.ph ?? undefined,
+        add: employeeData.add ?? undefined,
+    } as any;
 
-    await addEmployee(restaurantId, newEmployee);
+    await addEmployee(restaurantId, newEmployee as any, outletId, sendee_emp_id);
     return newEmployee;
 };
 

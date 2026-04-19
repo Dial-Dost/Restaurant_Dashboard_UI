@@ -104,9 +104,9 @@ export default function BookingsPage() {
   const recordAuditEntry = async (action: string, details: string) => {
     if (!user?.restaurantId) return;
 
-    try {
-      await addAuditLogEntry(user.restaurantId, {
-        employee: user?.name || user?.employeeId || "System",
+      try {
+        await addAuditLogEntry(user.restaurantId, {
+        employee: ( `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || user?.employeeUsername ) ?? user?.employeeId ?? "System",
         employeeId: user?.employeeId,
         action,
         details,

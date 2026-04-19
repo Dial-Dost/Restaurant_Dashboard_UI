@@ -21,6 +21,7 @@ import { findRestaurantByName } from "@/lib/db";
 export default function LoginPage() {
   const router = useRouter();
   const [restaurantName, setRestaurantName] = useState("");
+
   const { toast } = useToast();
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -51,7 +52,7 @@ export default function LoginPage() {
                </div>
               <CardTitle className="text-2xl font-bold">Welcome to CuisineFlow</CardTitle>
               <CardDescription>
-                Please enter your restaurant's name to begin.
+                Please enter your restaurant&apost;s name to begin.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">

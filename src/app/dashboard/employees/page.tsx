@@ -115,7 +115,10 @@ const ACCESS_CATALOG: Array<{ group: string; actions: string[] }> = [
 
 const addEmployeeSchema = z.object({
   name: z.string().min(1, "Name is required."),
-  employeeId: z.string().min(1, "Employee ID is required."),
+  username: z.string().min(1, "Username is required."),
+  email: z.string().email("Invalid email").optional(),
+  phone: z.string().optional(),
+  address: z.string().optional(),
   role: z.enum(["employee", "admin", "valet"]),
   password: z.string().min(6, "Password must be at least 6 characters."),
 });
@@ -170,7 +173,24 @@ export default function EmployeesPage() {
   const handleAddEmployee = async (data: AddEmployeeFormData) => {
     if (!user) return;
     try {
-      await addEmployeeToRestaurant(user.restaurantId, data);
+      // split full name into first + last
+      const parts = (data.name || '').trim().replace(/\s+/g, ' ').split(' ');
+      const first = parts.shift() ?? '';
+      const last = parts.join(' ') || null;
+
+      const payload = {
+        emp_Fname: first,
+        emp_Lname: last,
+        employeeId: typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : String(Date.now()) + '-' + Math.random().toString(36).slice(2,8),
+        username: data.username,
+        email: data.email ?? null,
+        ph: data.phone ?? null,
+        add: data.address ?? null,
+        role: data.role,
+        password: data.password,
+      } as any;
+
+      await addEmployeeToRestaurant(user.restaurantId, user.outlet_id, payload, user.employeeId);
       await fetchEmployees();
       toast({
         title: "Employee Added",
@@ -336,15 +356,15 @@ export default function EmployeesPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {employees.map((employee) => {
+              {employees.map((employee, idx) => {
                 const employeeRoles = Array.from(new Set(employee.role_all ?? [employee.role]));
                 const normalizedRoles = employeeRoles.map((entry) => entry.trim().toLowerCase());
                 const assignable = allAssignableRoles.filter((entry) => !normalizedRoles.includes(entry));
                 const removable = normalizedRoles.filter((entry) => entry !== employee.role);
 
                 return (
-                  <TableRow key={employee.employeeId}>
-                    <TableCell className="font-medium">{employee.name}</TableCell>
+                  <TableRow key={employee.employeeId ?? employee.employeeUsername ?? `emp-${idx}`}>
+                    <TableCell className="font-medium">{`${employee.emp_Fname ?? ''}${employee.emp_Lname ? ` ${employee.emp_Lname}` : ''}`.trim() || employee.employeeId}</TableCell>
                     <TableCell>{employee.employeeId}</TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1">
@@ -550,13 +570,37 @@ function AddEmployeeForm({ onSubmit }: { onSubmit: (data: AddEmployeeFormData) =
         </div>
       </div>
 
+      
+
       <div className="grid grid-cols-4 items-center gap-4">
-        <Label htmlFor="employeeId" className="text-right">
-          Employee ID
-        </Label>
+        <Label htmlFor="username" className="text-right">Username</Label>
         <div className="col-span-3">
-          <Input id="employeeId" {...register("employeeId")} placeholder="e.g., JD001" />
-          {errors.employeeId ? <p className="mt-1 text-sm text-destructive">{errors.employeeId.message}</p> : null}
+          <Input id="username" {...register("username")} placeholder="e.g., jdoe" />
+          {errors.username ? <p className="mt-1 text-sm text-destructive">{errors.username.message}</p> : null}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-4 items-center gap-4">
+        <Label htmlFor="email" className="text-right">Email</Label>
+        <div className="col-span-3">
+          <Input id="email" {...register("email")} placeholder="e.g., jdoe@example.com" />
+          {errors.email ? <p className="mt-1 text-sm text-destructive">{errors.email.message}</p> : null}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-4 items-center gap-4">
+        <Label htmlFor="phone" className="text-right">Phone</Label>
+        <div className="col-span-3">
+          <Input id="phone" {...register("phone")} placeholder="e.g., +919876543210" />
+          {errors.phone ? <p className="mt-1 text-sm text-destructive">{errors.phone.message}</p> : null}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-4 items-center gap-4">
+        <Label htmlFor="address" className="text-right">Address</Label>
+        <div className="col-span-3">
+          <Input id="address" {...register("address")} placeholder="Optional address" />
+          {errors.address ? <p className="mt-1 text-sm text-destructive">{errors.address.message}</p> : null}
         </div>
       </div>
 

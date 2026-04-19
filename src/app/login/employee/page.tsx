@@ -24,7 +24,7 @@ import { useAuth } from '@/context/AuthContext';
 
 
 const loginSchema = z.object({
-  employeeId: z.string().min(1, "Employee ID is required."),
+  employeeUsername: z.string().min(1, "Employee ID is required."),
   password: z.string().min(1, "Password is required."),
 });
 
@@ -60,8 +60,22 @@ function EmployeeLoginContent() {
       return;
     }
     try {
-      const user = await signInEmployee(restaurantName, data.employeeId, data.password);
-      login(user);
+      const user = await signInEmployee(restaurantName, data.employeeUsername, data.password);
+      // normalize backend response to AuthUser shape
+      const authUser = {
+        uid: (user.uid ?? user.employeeId) as string,
+        employeeId: user.employeeId as string,
+        employeeUsername: user.employeeUsername as string,
+        role: user.role,
+        role_all: user.role_all ?? undefined,
+        restaurantId: user.restaurantId as string,
+        restaurantName: user.restaurantName as string,
+        res_id: user.res_id as string,
+        outlet_id: user.outlet_id as string,
+        emp_Fname: user.emp_Fname as string ?? (user.name ?? null) as string | null,
+        emp_Lname: user.emp_Lname ?? null as string | null,
+      };
+      login(authUser);
       router.push("/dashboard");
     } catch (error: any) {
       toast({
@@ -92,15 +106,15 @@ function EmployeeLoginContent() {
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-2">
-                <Label htmlFor="employeeId">Employee ID</Label>
+                <Label htmlFor="employeeUsername">Employee Username</Label>
                 <Input
-                  id="employeeId"
+                  id="employeeUsername"
                   type="text"
-                  placeholder="e.g., 12345"
-                  {...register("employeeId")}
+                  placeholder="e.g., john_doe"
+                  {...register("employeeUsername")}
                   disabled={!isReady || !restaurantName}
                 />
-                {errors.employeeId && <p className="text-sm text-destructive mt-1">{errors.employeeId.message}</p>}
+                {errors.employeeUsername && <p className="text-sm text-destructive mt-1">{errors.employeeUsername.message}</p>}
               </div>
               <div className="space-y-2">
                 <div className="flex items-center">

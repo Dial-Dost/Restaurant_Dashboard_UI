@@ -119,7 +119,7 @@ function SortableTable({
                                 <AlertDialogHeader>
                                     <AlertDialogTitle>Are you sure?</AlertDialogTitle>
                                     <AlertDialogDescription>
-                                        This will permanently delete the table "{table.name}". This action cannot be undone.
+                                        This will permanently delete the table &ldquo;{table.name}&rdquo;. This action cannot be undone.
                                     </AlertDialogDescription>
                                 </AlertDialogHeader>
                                 <AlertDialogFooter>
@@ -200,7 +200,7 @@ export default function TablesPage() {
         try {
             const [userList, assignmentList, apcInsight] = await Promise.all([
                 getRestaurantUsers(user.restaurantId, user.employeeId),
-                getTableAssignments(user.restaurantId, user.employeeId),
+                getTableAssignments(user.restaurantId, user.employeeId, user.outlet_id),
                 getMonthlyApcInsight(user.restaurantId),
             ]);
 
@@ -274,7 +274,7 @@ export default function TablesPage() {
             }
 
             await addAuditLogEntry(user.restaurantId, {
-                employee: user?.name || user?.employeeId || "System",
+                employee: ( `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || user?.employeeUsername ) ?? user?.employeeId ?? "System",
                 employeeId: user?.employeeId,
                 action: "Table Added",
                 details: `Created table ${trimmedName}${payload.table.capacity ? ` (capacity ${payload.table.capacity})` : ""}`,
@@ -304,7 +304,7 @@ export default function TablesPage() {
         }
 
         await addAuditLogEntry(user.restaurantId, {
-            employee: user?.name || user?.employeeId || "System",
+            employee: ( `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || user?.employeeUsername ) ?? user?.employeeId ?? "System",
             employeeId: user?.employeeId,
             action: "Table Removed",
             details: `Deleted table ${removed.name}`,
@@ -330,7 +330,7 @@ export default function TablesPage() {
         return;
     }
 
-    const ok = await assignTableToEmployee(user.restaurantId, user.employeeId, tableName, selectedEmployeeId);
+    const ok = await assignTableToEmployee(user.restaurantId, user.employeeId, user.outlet_id, tableName, selectedEmployeeId);
     if (!ok) {
         toast({
             title: "Assignment Failed",
@@ -341,7 +341,7 @@ export default function TablesPage() {
     }
 
     await addAuditLogEntry(user.restaurantId, {
-        employee: user?.name || user?.employeeId || "System",
+        employee: ( `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || user?.employeeUsername ) ?? user?.employeeId ?? "System",
         employeeId: user?.employeeId,
         action: "Table Assigned",
         details: `Assigned ${tableName} to employee ${selectedEmployeeId}`,
@@ -357,7 +357,7 @@ export default function TablesPage() {
   const handleUnassignTable = async (tableName: string) => {
     if (!user?.restaurantId || !user.employeeId) return;
 
-    const ok = await unassignTableEmployee(user.restaurantId, user.employeeId, tableName);
+    const ok = await unassignTableEmployee(user.restaurantId, user.employeeId, user.outlet_id, tableName);
     if (!ok) {
         toast({
             title: "Unassign Failed",
@@ -368,7 +368,7 @@ export default function TablesPage() {
     }
 
     await addAuditLogEntry(user.restaurantId, {
-        employee: user?.name || user?.employeeId || "System",
+        employee: ( `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || user?.employeeUsername ) ?? user?.employeeId ?? "System",
         employeeId: user?.employeeId,
         action: "Table Unassigned",
         details: `Removed employee assignment from ${tableName}`,
@@ -448,7 +448,7 @@ export default function TablesPage() {
                 <DialogHeader>
                 <DialogTitle>Add New Table</DialogTitle>
                 <DialogDescription>
-                    Enter the details for the new table. Click save when you're done.
+                    Enter the details for the new table. Click save when you&apos;re done.
                 </DialogDescription>
                 </DialogHeader>
                 <div className="grid gap-4 py-4">
@@ -571,7 +571,7 @@ export default function TablesPage() {
                                             <option value="">Select employee</option>
                                             {employees.map((employee) => (
                                                 <option key={`${table.name}-${employee.employeeId}`} value={employee.employeeId}>
-                                                    {employee.name} ({employee.employeeId})
+                                                    {((`${employee.emp_Fname ?? ''}${employee.emp_Lname ? ` ${employee.emp_Lname}` : ''}`.trim() || employee.employeeUsername) ?? employee.employeeId)} ({employee.employeeUsername ?? employee.employeeId})
                                                 </option>
                                             ))}
                                         </select>

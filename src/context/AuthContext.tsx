@@ -7,11 +7,16 @@ import { User } from '@/lib/db';
 
 type AuthUser = {
   uid: string;
-  employeeId: string;
-  name: string;
+  employeeId: string; // employee UUID
+  employeeUsername?: string;
   role: 'admin' | 'employee' | 'valet' | 'waiter';
+  role_all?: string[];
   restaurantId: string;
   restaurantName: string;
+  // res_id?: string;
+  outlet_id: string;
+  emp_Fname?: string | null;
+  emp_Lname?: string | null;
 }
 
 interface AuthContextType {

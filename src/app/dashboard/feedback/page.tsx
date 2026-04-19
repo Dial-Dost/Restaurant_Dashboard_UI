@@ -91,31 +91,45 @@ export default function FeedbackPage() {
         process.env.NEXT_PUBLIC_API_URL ?? (typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:3000` : '');
       try {
         const [itemsRes, summaryRes] = await Promise.all([
-          fetch(`${base}/feedback?limit=100`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId } }),
-          fetch(`${base}/feedback/summary`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId } }),
+          fetch(`${base}/feedback?limit=100`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id } }),
+          fetch(`${base}/feedback/summary`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id } }),
         ]);
 
         console.log("Fetched feedback data", { itemsRes, summaryRes });
 
         const feedbackRows = itemsRes.ok ? (await itemsRes.json()).items ?? [] : [];
         const feedbackSummary = summaryRes.ok ? (await summaryRes.json()) : null;
-        const usersRes = await fetch(`${base}/restaurant/users`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId } });
+        const usersRes = await fetch(`${base}/restaurant/users`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id} });
         const usersPayload = usersRes.ok ? (await usersRes.json()) : { users: [] };
         const usersList = Array.isArray(usersPayload?.users) ? usersPayload.users : [];
         const map: Record<string, { name: string; role?: string }> = {};
         for (const u of usersList) {
-          if (u && u.employeeId) map[String(u.employeeId)] = { name: String(u.name ?? u.employeeId), role: String(u.role ?? "") };
+          const fname = String(u?.emp_Fname ?? u?.first_name ?? u?.employeeId ?? u?.id ?? "Unknown");
+          const lname = String(u?.emp_Lname ?? u?.last_name ?? "");
+          const name = `${fname}${lname ? ` ${lname}` : ""}`;
+          const role = String(u?.role ?? "");
+          const keys = [u?.employeeId, u?.id, u?.employee_id].filter(Boolean as any);
+          for (const k of keys) {
+            map[String(k)] = { name, role };
+          }
         }
         setEmployeesMap(map);
+        // debug: log users payload and built map to help diagnose missing names
+        try {
+          console.debug("feedback: usersList", usersList);
+          console.debug("feedback: employeesMap keys", Object.keys(map));
+        } catch (e) {
+          // ignore in environments without console
+        }
 
         if (!active) return;
 
         setEntries(feedbackRows as FeedbackEntry[]);
         setSummary(feedbackSummary as FeedbackSummary | null);
-        const statsDaily = await (await fetch(`${base}/feedback/stats?mode=daily&date=${dailyDate}`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId } })).json().catch(() => null);
-        const statsWeekly = await (await fetch(`${base}/feedback/stats?mode=weekly&weekStart=${weeklyStart}`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId } })).json().catch(() => null);
-        const statsMonthly = await (await fetch(`${base}/feedback/stats?mode=monthly&start=${monthlyStart}`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId } })).json().catch(() => null);
-        const statsYearly = await (await fetch(`${base}/feedback/stats?mode=yearly&year=${yearlyYear}`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId } })).json().catch(() => null);
+        const statsDaily = await (await fetch(`${base}/feedback/stats?mode=daily&date=${dailyDate}`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id } })).json().catch(() => null);
+        const statsWeekly = await (await fetch(`${base}/feedback/stats?mode=weekly&weekStart=${weeklyStart}`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id } })).json().catch(() => null);
+        const statsMonthly = await (await fetch(`${base}/feedback/stats?mode=monthly&start=${monthlyStart}`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id } })).json().catch(() => null);
+        const statsYearly = await (await fetch(`${base}/feedback/stats?mode=yearly&year=${yearlyYear}`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id } })).json().catch(() => null);
         setStats({ daily: statsDaily, weekly: statsWeekly, monthly: statsMonthly, yearly: statsYearly });
       } finally {
         if (active) setLoading(false);
@@ -139,28 +153,39 @@ export default function FeedbackPage() {
         const base =
           process.env.NEXT_PUBLIC_API_URL ?? (typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:3000` : '');
         try {
-          const itemsRes = await fetch(`${base}/feedback?limit=100`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId } });
-          const summaryRes = await fetch(`${base}/feedback/summary`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId } });
+          const itemsRes = await fetch(`${base}/feedback?limit=100`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id } });
+          const summaryRes = await fetch(`${base}/feedback/summary`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id } });
           const feedbackRows = itemsRes.ok ? (await itemsRes.json()).items ?? [] : [];
           const feedbackSummary = summaryRes.ok ? (await summaryRes.json()) : null;
           // re-fetch stats windows
-          const statsDaily = await (await fetch(`${base}/feedback/stats?mode=daily&date=${dailyDate}`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId } })).json().catch(() => null);
-          const statsWeekly = await (await fetch(`${base}/feedback/stats?mode=weekly&weekStart=${weeklyStart}`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId } })).json().catch(() => null);
-          const statsMonthly = await (await fetch(`${base}/feedback/stats?mode=monthly&start=${monthlyStart}`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId } })).json().catch(() => null);
-          const statsYearly = await (await fetch(`${base}/feedback/stats?mode=yearly&year=${yearlyYear}`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId } })).json().catch(() => null);
+          const statsDaily = await (await fetch(`${base}/feedback/stats?mode=daily&date=${dailyDate}`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id } })).json().catch(() => null);
+          const statsWeekly = await (await fetch(`${base}/feedback/stats?mode=weekly&weekStart=${weeklyStart}`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id } })).json().catch(() => null);
+          const statsMonthly = await (await fetch(`${base}/feedback/stats?mode=monthly&start=${monthlyStart}`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id } })).json().catch(() => null);
+          const statsYearly = await (await fetch(`${base}/feedback/stats?mode=yearly&year=${yearlyYear}`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id } })).json().catch(() => null);
           setEntries(feedbackRows as FeedbackEntry[]);
           setSummary(feedbackSummary as FeedbackSummary | null);
           setStats({ daily: statsDaily, weekly: statsWeekly, monthly: statsMonthly, yearly: statsYearly });
           // refresh employee list
           try {
-            const usersRes = await fetch(`${base}/restaurant/users`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId } });
+            const usersRes = await fetch(`${base}/restaurant/users`, { headers: { 'X-Restaurant-Id': user.restaurantId, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id} });
             const usersPayload = usersRes.ok ? (await usersRes.json()) : { users: [] };
             const usersList = Array.isArray(usersPayload?.users) ? usersPayload.users : [];
             const map: Record<string, { name: string; role?: string }> = {};
             for (const u of usersList) {
-              if (u && u.employeeId) map[String(u.employeeId)] = { name: String(u.name ?? u.employeeId), role: String(u.role ?? "") };
+              const fname = String(u?.emp_Fname ?? u?.first_name ?? u?.employeeId ?? u?.id ?? "Unknown");
+              const lname = String(u?.emp_Lname ?? u?.last_name ?? "");
+              const name = `${fname}${lname ? ` ${lname}` : ""}`;
+              const role = String(u?.role ?? "");
+              const keys = [u?.employeeId, u?.id, u?.employee_id].filter(Boolean as any);
+              for (const k of keys) {
+                map[String(k)] = { name, role };
+              }
             }
             setEmployeesMap(map);
+            try {
+              console.debug("feedback: usersList (refetch)", usersList);
+              console.debug("feedback: employeesMap keys (refetch)", Object.keys(map));
+            } catch (e) {}
           } catch (err) {
             // ignore
           }
@@ -243,6 +268,16 @@ export default function FeedbackPage() {
     }
   }
 
+  function resolveEmployeeName(employeeId: any) {
+    if (employeeId === undefined || employeeId === null) return null;
+    const idStr = String(employeeId);
+    if (employeesMap[idStr]?.name) return employeesMap[idStr].name;
+    if (employeesMap[employeeId as any]?.name) return employeesMap[employeeId as any].name;
+    const numeric = Number(employeeId);
+    if (!Number.isNaN(numeric) && employeesMap[String(numeric)]?.name) return employeesMap[String(numeric)].name;
+    return null;
+  }
+
   const monthlyChartData = (() => {
     const monthly = stats?.monthly;
     const overall = stats?.overall;
@@ -271,7 +306,11 @@ export default function FeedbackPage() {
       map[id] = (map[id] ?? 0) + 1;
     }
     return Object.entries(map)
-      .map(([employeeId, count]) => ({ employeeId, name: employeesMap[employeeId]?.name ?? employeeId, count }))
+      .map(([employeeId, count]) => ({
+        employeeId,
+        name: resolveEmployeeName(employeeId) ?? employeesMap[employeeId]?.name ?? String(employeeId ?? "Unknown"),
+        count,
+      }))
       .sort((a, b) => b.count - a.count);
   }, [entries, employeesMap]);
 
@@ -282,7 +321,7 @@ export default function FeedbackPage() {
       const employeeId = entry.employee_id ?? "unknown";
       if (!map[employeeId]) {
         map[employeeId] = {
-          name: employeesMap[employeeId]?.name ?? employeeId,
+          name: resolveEmployeeName(employeeId) ?? employeesMap[employeeId]?.name ?? String(employeeId ?? "Unknown"),
           responses: 0,
           total: 0,
           ratedResponses: 0,

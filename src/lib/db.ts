@@ -10,7 +10,9 @@ import { type AuditLog } from '@/app/dashboard/audit-logs/page';
 
 export type User = {
     employeeId: string;
-    name: string;
+    employeeUsername?: string;
+    emp_Fname?: string | null;
+    emp_Lname?: string | null;
     password?: string;
     role: 'admin' | 'employee' | 'valet' | 'waiter';
     role_all?: string[];
@@ -356,7 +358,7 @@ const seedDefaultRestaurant = () => {
         users: [
             {
                 employeeId: 'admin',
-                name: 'Admin',
+                emp_Fname: 'Admin',
                 password: 'admin123',
                 role: 'admin',
             },
@@ -440,7 +442,7 @@ export const createRestaurant = async (restaurantName: string, admin: User) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             restaurantName,
-            adminName: admin.name,
+            adminName: `${admin.emp_Fname ?? ''}${admin.emp_Lname ? ` ${admin.emp_Lname}` : ''}`.trim() || admin.employeeId,
             adminEmployeeId: admin.employeeId,
             password: admin.password,
         }),
@@ -482,7 +484,30 @@ export const createRestaurant = async (restaurantName: string, admin: User) => {
     return deepClone(restaurant);
 };
 
-export const addEmployee = async (restaurantId: string, employee: User) => {
+export const addEmployee = async (restaurantId: string, employee: User, outletId: string, sendee_emp_id: string) => {
+    // Try persisting to backend first
+    try {
+        const resp = await backendCall('/restaurant/users', restaurantId, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Outlet-Id': outletId, 'X-Employee-Id': sendee_emp_id },
+            body: JSON.stringify(employee),
+        });
+
+        if (resp && resp.ok) {
+            const payload = await resp.json().catch(() => null) as any;
+            const created = payload?.user ?? null;
+            if (created) {
+                const restaurant = ensureLocalRestaurant(restaurantId);
+                restaurant.users.push(deepClone(created));
+                return { acknowledged: true };
+            }
+        }
+    } catch (err) {
+        // ignore and fall back to local store
+        console.warn('addEmployee_backend_failed', err);
+    }
+
+    // Fallback: update local in-memory store
     const restaurant = ensureLocalRestaurant(restaurantId);
     restaurant.users.push(deepClone(employee));
     return { acknowledged: true };
@@ -712,6 +737,97 @@ export const addOrder = async (restaurantId: string, order: Order) => {
     return { acknowledged: true };
 };
 
+export const createBill = async (
+    restaurantId: string,
+    bill: {
+        order_id: string;
+        total_amt: number;
+        emp_id?: string | null;
+        status?: number;
+        reason?: string | null;
+        tax_breakdown?: any;
+    },
+) => {
+    const response = await backendCall('/bills', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(bill),
+    });
+
+    if (!response) return null;
+    if (!response.ok) return null;
+    try {
+        return await response.json();
+    } catch {
+        return null;
+    }
+};
+
+export const replaceBill = async (
+    restaurantId: string,
+    payload: {
+        old_order_id: string;
+        reason?: string | null;
+        new_order: any;
+        new_bill: any;
+    },
+) => {
+    const response = await backendCall('/bills/replace', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+
+    if (!response) return null;
+    if (!response.ok) {
+        const msg = await readErrorMessage(response);
+        throw new Error(msg);
+    }
+
+    try { return await response.json(); } catch { return null; }
+};
+
+export const updateBillStatusByOrder = async (restaurantId: string, orderId: string, status: number) => {
+    const response = await backendCall(`/bills/order/${encodeURIComponent(orderId)}/status`, restaurantId, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status }),
+    });
+    return response?.ok ?? false;
+};
+
+export const getBillByOrder = async (restaurantId: string, orderId: string) => {
+    const response = await backendCall(`/bills/order/${encodeURIComponent(orderId)}`, restaurantId, { method: 'GET' });
+    if (!response || !response.ok) return null;
+    try { return await response.json(); } catch { return null; }
+};
+
+export const getRestaurantLogo = async (restaurantId: string): Promise<string | null> => {
+    const response = await backendCall('/restaurant/logo', restaurantId, { method: 'GET' });
+    if (!response || !response.ok) return null;
+    try { const data = await response.json(); return data?.logo_base64 ?? null; } catch { return null; }
+};
+
+export const getOutletDefaultTax = async (restaurantId: string): Promise<Record<string, number> | null> => {
+    const response = await backendCall('/outlets/default-tax', restaurantId, { method: 'GET' });
+    if (!response || !response.ok) return null;
+    try {
+        const data = await response.json();
+        return data?.default_tax ?? null;
+    } catch {
+        return null;
+    }
+};
+
+export const setOutletDefaultTax = async (restaurantId: string, defaultTax: Record<string, number>) => {
+    const response = await backendCall('/outlets/default-tax', restaurantId, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ default_tax: defaultTax }),
+    });
+    return response?.ok ?? false;
+};
+
 export const addTable = async (restaurantId: string, table: Omit<Table, 'id'>) => {
     const response = await backendCall('/add-table', restaurantId, {
         method: 'POST',
@@ -929,8 +1045,13 @@ export const getRestaurantUsers = async (
 
     if (Array.isArray(data?.users)) {
         const local = ensureLocalRestaurant(restaurantId);
-        local.users = data.users.map((entry) => ({ ...entry }));
-        return data.users;
+        const normalized = data.users.map((entry, idx) => {
+            const e: any = { ...entry } as any;
+            e.employeeId = e.employeeId ?? e.employee_id ?? e.id ?? String(Date.now()) + '-' + idx;
+            return e as User;
+        });
+        local.users = normalized.map((entry) => ({ ...entry }));
+        return normalized;
     }
 
     const local = ensureLocalRestaurant(restaurantId);
@@ -993,6 +1114,7 @@ export const removeRoleFromEmployee = async (
 
 export const getTableAssignments = async (
     restaurantId: string,
+    outletId: string,
     employeeId: string,
 ): Promise<TableAssignmentDefinition[]> => {
     const data = await backendJson<TableAssignmentDefinition[]>(
@@ -1002,6 +1124,7 @@ export const getTableAssignments = async (
             method: 'GET',
             headers: {
                 'X-Employee-Id': employeeId,
+                'X-Outlet-Id': outletId,
             },
         },
     );
@@ -1012,6 +1135,7 @@ export const getTableAssignments = async (
 export const assignTableToEmployee = async (
     restaurantId: string,
     employeeId: string,
+    outletId: string,
     tableName: string,
     assigneeEmployeeId: string,
 ): Promise<boolean> => {
@@ -1020,6 +1144,7 @@ export const assignTableToEmployee = async (
         headers: {
             'Content-Type': 'application/json',
             'X-Employee-Id': employeeId,
+            'X-Outlet-Id': outletId,
         },
         body: JSON.stringify({
             table_name: tableName,
@@ -1033,6 +1158,7 @@ export const assignTableToEmployee = async (
 export const unassignTableEmployee = async (
     restaurantId: string,
     employeeId: string,
+    outletId: string,
     tableName: string,
 ): Promise<boolean> => {
     const response = await backendCall('/table-assignments/unassign', restaurantId, {
@@ -1040,6 +1166,7 @@ export const unassignTableEmployee = async (
         headers: {
             'Content-Type': 'application/json',
             'X-Employee-Id': employeeId,
+            'X-Outlet-Id': outletId,
         },
         body: JSON.stringify({ table_name: tableName }),
     });

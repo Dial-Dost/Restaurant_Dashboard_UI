@@ -1,4 +1,3 @@
-
 "use client";
 
 import React, { useState, useEffect, useMemo } from "react";
@@ -42,10 +41,9 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuSubContent
 } from "@/components/ui/dropdown-menu";
-import { useRouter } from "next/navigation";
 import { Switch } from "@/components/ui/switch";
 import { Combobox } from "@/components/ui/combobox";
-import { getMenuItems, getOrders, addOrder, getMonthlyApcInsight, type MonthlyApcInsight } from "@/lib/db";
+import { getMenuItems, getOrders, addOrder, getMonthlyApcInsight, createBill, updateBillStatusByOrder, getTables, getOutletDefaultTax, setOutletDefaultTax, replaceBill, type MonthlyApcInsight } from "@/lib/db";
 import { useAuth } from "@/context/AuthContext";
 import { useCurrency } from "@/hooks/use-currency";
 import type { MenuItem } from "../menu/data";
@@ -59,7 +57,7 @@ type OrderItem = {
     orderedAt: string;
 };
 
-export type OrderStatus = "Preparing" | "Served" | "Paid";
+export type OrderStatus = "Preparing" | "Served" | "Bill Verification" | "Paid" | "Cancelled";
 
 type Tax = {
   id: string;
@@ -99,16 +97,33 @@ const calculateTotal = (order: Omit<Order, 'total'>) => {
     return order.subtotal + serviceCharge + totalTaxAmount;
 }
 
+const formatOrderedAt = (isoOrString?: string) => {
+  if (!isoOrString) return "";
+  const d = new Date(isoOrString);
+  if (Number.isNaN(d.getTime())) return String(isoOrString);
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const yy = String(d.getFullYear()).slice(-2);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  return `${dd}/${mm}/${yy} ${hh}:${min}`;
+}
+
 export default function OrdersPage() {
+  
   const { user } = useAuth();
   const { currencySymbol } = useCurrency();
   const [orders, setOrders] = useState<Order[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+  const [tables, setTables] = useState<{ id: number; name: string; capacity: number }[]>([]);
   const [monthlyApcInsight, setMonthlyApcInsight] = useState<MonthlyApcInsight | null>(null);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
+  const [isViewOpen, setIsViewOpen] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
+  const [defaultTax, setDefaultTax] = useState<Record<string, number> | null>(null);
+  const [isDefaultTaxDialogOpen, setIsDefaultTaxDialogOpen] = useState(false);
 
   const orderApcByOrderId = useMemo(() => {
     const map = new Map<string, MonthlyApcInsight["orders"][number]>();
@@ -143,6 +158,21 @@ export default function OrdersPage() {
         setOrders(Array.isArray(ordersData) ? ordersData : []);
         setMenuItems(Array.isArray(menuData) ? menuData : []);
         setMonthlyApcInsight(apcInsight ?? null);
+        try {
+          const dt = await getOutletDefaultTax(user.restaurantId);
+          setDefaultTax(dt ?? null);
+        } catch (e) {
+          console.warn('failed to load default tax', e);
+          setDefaultTax(null);
+        }
+        // load tables into cache for selector
+        try {
+          const t = await getTables(user.restaurantId);
+          setTables(Array.isArray(t) ? t : []);
+        } catch (e) {
+          console.warn('failed to load tables', e);
+          setTables([]);
+        }
       } catch (error) {
         console.error("Failed to load orders", error);
         if (!isActive) {
@@ -161,8 +191,28 @@ export default function OrdersPage() {
     };
   }, [user]);
 
+  // Refresh tables when realtime table events occur
+  useEffect(() => {
+    const handler = (e: any) => {
+      try {
+        const detail = e?.detail as { event: string } | undefined;
+        if (!detail) return;
+        if (detail.event === 'table:added' || detail.event === 'table:deleted' || detail.event === 'table:updated') {
+          if (user?.restaurantId) getTables(user.restaurantId).then(t => setTables(Array.isArray(t) ? t : [])).catch(() => {});
+        }
+      } catch (err) {
+        // ignore
+      }
+    };
+    window.addEventListener('realtime:event', handler as EventListener);
+    return () => window.removeEventListener('realtime:event', handler as EventListener);
+  }, [user]);
+
   const triggerPrint = (order: Order) => {
-    const calculatedTaxes = calculateTaxes(order.subtotal, order.taxes);
+    let calculatedTaxes = calculateTaxes(order.subtotal, order.taxes);
+    if ((!calculatedTaxes || calculatedTaxes.length === 0) && defaultTax) {
+      calculatedTaxes = Object.keys(defaultTax).map((name, i) => ({ id: `d${i}`, name, percentage: Number(defaultTax[name]), amount: order.subtotal * (Number(defaultTax[name]) / 100) }));
+    }
     const orderWithCalculatedCharges = {
         ...order,
         serviceCharge: calculateServiceCharge(order.subtotal, order.serviceChargePercentage, order.applyServiceCharge),
@@ -172,29 +222,27 @@ export default function OrdersPage() {
     const orderData = encodeURIComponent(JSON.stringify(orderWithCalculatedCharges));
     const url = `/dashboard/orders/print?order=${orderData}`;
     window.open(url, '_blank');
-    updateOrderStatus(order.id, "Paid");
   }
   
-  const handleAddOrder = async (newOrderData: Omit<Order, 'id' | 'status' | 'items' | 'subtotal' | 'total' | 'applyServiceCharge'> & { items: string, subtotal: string }) => {
+  const handleAddOrder = async (newOrderData: { tableId: number; customer: string; items: { id?: string; name: string; price: number; quantity?: number }[] }) => {
     if (!user?.restaurantId) return;
-    const subtotal = parseFloat(newOrderData.subtotal);
-    const selectedMenuItem = menuItems.find(item => item.name.toLowerCase() === newOrderData.items.toLowerCase());
-    
+    const items = newOrderData.items.map(it => ({
+      id: it.id ?? `i${Date.now()}${Math.random().toString(36).slice(2,5)}`,
+      name: it.name,
+      quantity: Math.max(1, Number(it.quantity ?? 1)),
+      price: Number(it.price ?? 0),
+      orderedAt: new Date().toISOString(),
+    }));
+    const subtotal = items.reduce((acc, it) => acc + it.price * it.quantity, 0);
     const newOrder: Order = {
-        id: (orders.length + 1).toString(),
-        table: newOrderData.table,
-        customer: newOrderData.customer,
-        status: "Preparing",
-        items: [{
-            id: `i${Date.now()}`,
-            name: selectedMenuItem ? selectedMenuItem.name : newOrderData.items,
-            quantity: 1,
-            price: selectedMenuItem ? selectedMenuItem.price : subtotal,
-            orderedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit'})
-        }],
-        subtotal: selectedMenuItem ? selectedMenuItem.price : subtotal,
-        total: selectedMenuItem ? selectedMenuItem.price : subtotal,
-        applyServiceCharge: true,
+      id: (orders.length + 1).toString(),
+      table: String(tables.find(t => t.id === newOrderData.tableId)?.name ?? ''),
+      customer: newOrderData.customer,
+      status: "Preparing",
+      items,
+      subtotal,
+      total: subtotal,
+      applyServiceCharge: true,
     };
     try {
       await addOrder(user.restaurantId, newOrder);
@@ -215,41 +263,53 @@ export default function OrdersPage() {
   }
 
   const handleAddItemToOrder = (orderId: string, itemName: string, itemPrice: number) => {
-    setOrders(orders.map(order => {
+    setOrders((prev) => {
+      const updated = prev.map(order => {
         if(order.id === orderId) {
-            const existingItem = order.items.find(item => item.name.toLowerCase() === itemName.toLowerCase());
+          const existingItem = order.items.find(item => item.name.toLowerCase() === itemName.toLowerCase());
 
-            let newItems;
-            if (existingItem) {
-                newItems = order.items.map(item => item.id === existingItem.id ? { ...item, quantity: item.quantity + 1 } : item);
-            } else {
-                newItems = [...order.items, {
-                    id: `i${Date.now()}`,
-                    name: itemName,
-                    quantity: 1,
-                    price: itemPrice,
-                    orderedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit'})
-                }];
-            }
-            
-            const newSubtotal = newItems.reduce((acc, item) => acc + item.price * item.quantity, 0);
-            const newTotal = calculateTotal({ ...order, items: newItems, subtotal: newSubtotal });
-            return { ...order, items: newItems, subtotal: newSubtotal, total: newTotal };
+          let newItems;
+          if (existingItem) {
+            newItems = order.items.map(item => item.id === existingItem.id ? { ...item, quantity: item.quantity + 1 } : item);
+          } else {
+            newItems = [...order.items, {
+              id: `i${Date.now()}`,
+              name: itemName,
+              quantity: 1,
+              price: itemPrice,
+              orderedAt: new Date().toISOString()
+            }];
+          }
+                
+          const newSubtotal = newItems.reduce((acc, item) => acc + item.price * item.quantity, 0);
+          const newTotal = calculateTotal({ ...order, items: newItems, subtotal: newSubtotal });
+          return { ...order, items: newItems, subtotal: newSubtotal, total: newTotal };
         }
         return order;
-    }));
+      });
+
+      const newSelected = selectedOrder ? updated.find(o => o.id === selectedOrder.id) ?? null : null;
+      if (selectedOrder && newSelected) setSelectedOrder(newSelected);
+      return updated;
+    });
   }
 
   const handleRemoveItemFromOrder = (orderId: string, itemId: string) => {
-     setOrders(orders.map(order => {
+    setOrders((prev) => {
+      const updated = prev.map(order => {
         if(order.id === orderId) {
-            const newItems = order.items.filter(item => item.id !== itemId);
-            const newSubtotal = newItems.reduce((acc, item) => acc + item.price * item.quantity, 0);
-            const newTotal = calculateTotal({ ...order, items: newItems, subtotal: newSubtotal });
-            return { ...order, items: newItems, subtotal: newSubtotal, total: newTotal };
+          const newItems = order.items.filter(item => item.id !== itemId);
+          const newSubtotal = newItems.reduce((acc, item) => acc + item.price * item.quantity, 0);
+          const newTotal = calculateTotal({ ...order, items: newItems, subtotal: newSubtotal });
+          return { ...order, items: newItems, subtotal: newSubtotal, total: newTotal };
         }
         return order;
-    }));
+      });
+
+      const newSelected = selectedOrder ? updated.find(o => o.id === selectedOrder.id) ?? null : null;
+      if (selectedOrder && newSelected) setSelectedOrder(newSelected);
+      return updated;
+    });
   }
 
 
@@ -258,6 +318,8 @@ export default function OrdersPage() {
       case "Preparing":
         return "secondary";
       case "Served":
+        return "default";
+      case "Bill Verification":
         return "default";
       case "Paid":
         return "outline";
@@ -268,11 +330,156 @@ export default function OrdersPage() {
   
   const handleRowClick = (order: Order) => {
     setSelectedOrder(order);
-    setIsDetailsOpen(true);
+    // open view-only dialog when clicking the row
+    setIsViewOpen(true);
   }
 
-  const updateOrderStatus = (orderId: string, status: OrderStatus) => {
+  const updateOrderStatus = async (orderId: string, status: OrderStatus) => {
+    // optimistic UI update
     setOrders(orders.map(order => order.id === orderId ? { ...order, status } : order));
+
+    if (!user?.restaurantId) return;
+
+    const current = orders.find(o => o.id === orderId);
+    if (!current) return;
+
+    const updatedOrder: Order = { ...current, status };
+
+    try {
+      // persist via AddOrder upsert endpoint
+      await addOrder(user.restaurantId, updatedOrder);
+      const refreshed = await getOrders(user.restaurantId);
+      setOrders(Array.isArray(refreshed) ? refreshed : []);
+    } catch (err) {
+      console.error('failed to persist order status', err);
+      // on error, revert optimistic update by reloading
+      try {
+        const refreshed = await getOrders(user.restaurantId);
+        setOrders(Array.isArray(refreshed) ? refreshed : []);
+      } catch (e) {
+        // ignore
+      }
+    }
+  };
+
+  const handleSetBillVerification = async (order: Order) => {
+    if (!user?.restaurantId) return;
+    const confirmed = window.confirm(
+      'Confirm move to Bill Verification? This action cannot be undone and you will not be able to revert to Preparing or Served.',
+    );
+    if (!confirmed) return;
+
+    try {
+      // decide which taxes to apply: prefer order.taxes if present, otherwise use defaultTax
+      let taxesToApply: Tax[] | undefined = order.taxes && order.taxes.length ? order.taxes : undefined;
+      if ((!taxesToApply || taxesToApply.length === 0) && defaultTax) {
+        taxesToApply = Object.keys(defaultTax).map((name, i) => ({ id: `d${i}` , name, percentage: Number(defaultTax[name]) }));
+      }
+
+      const serviceCharge = calculateServiceCharge(order.subtotal, order.serviceChargePercentage, order.applyServiceCharge);
+      const taxAmount = (taxesToApply ?? []).reduce((acc, t) => acc + order.subtotal * (t.percentage / 100), 0);
+      const totalAmt = Math.max(0, order.subtotal + serviceCharge + taxAmount);
+
+      const tax_breakdown = (taxesToApply ?? []).map(t => ({ name: t.name, percentage: t.percentage, amount: Number((order.subtotal * (t.percentage/100)).toFixed(2)) }));
+
+      // create bill in backend with status 1 and total including default taxes when applicable
+      const billResp = await createBill(user.restaurantId, {
+        order_id: order.id,
+        total_amt: totalAmt,
+        emp_id: user.employeeId ?? undefined,
+        status: 1,
+        tax_breakdown,
+      });
+      // update order status via upsert
+      const updatedOrder: Order = { ...order, status: 'Bill Verification' };
+      await addOrder(user.restaurantId, updatedOrder);
+      const updatedOrders = await getOrders(user.restaurantId);
+      setOrders(Array.isArray(updatedOrders) ? updatedOrders : []);
+    } catch (err) {
+      console.error('failed to set bill verification', err);
+      alert('Unable to create bill. Please try again.');
+    }
+  };
+
+  const handleReplaceBill = async (order: Order, replacement: { items: OrderItem[]; taxes: { id?: string; name: string; percentage: number }[]; serviceChargePercentage?: number | undefined; applyServiceCharge?: boolean; reason: string; }) => {
+    if (!user?.restaurantId) return;
+    if (!replacement.reason || !replacement.reason.trim()) {
+      alert('Reason is required');
+      return;
+    }
+
+    const confirmed = window.confirm('This will cancel the existing order and bill and create a new order and bill. Continue?');
+    if (!confirmed) return;
+
+    try {
+      const subtotal = replacement.items.reduce((s, it) => s + (Number(it.price) || 0) * (Number(it.quantity) || 0), 0);
+      const serviceCharge = replacement.applyServiceCharge && replacement.serviceChargePercentage ? subtotal * (replacement.serviceChargePercentage / 100) : 0;
+      const tax_breakdown = (replacement.taxes || []).map((t) => ({ name: t.name, percentage: t.percentage, amount: Number(((subtotal) * (t.percentage/100)).toFixed(2)) }));
+      const totalAmt = Math.max(0, subtotal + serviceCharge + tax_breakdown.reduce((acc, t) => acc + (Number(t.amount) || 0), 0));
+
+      const payload = {
+        old_order_id: order.id,
+        reason: replacement.reason,
+        new_order: {
+          table: order.table,
+          customer: order.customer,
+          items: replacement.items,
+          subtotal,
+          serviceChargePercentage: replacement.serviceChargePercentage ?? order.serviceChargePercentage,
+          applyServiceCharge: replacement.applyServiceCharge ?? order.applyServiceCharge,
+          taxes: replacement.taxes,
+        },
+        new_bill: {
+          total_amt: totalAmt,
+          emp_id: user.employeeId ?? null,
+          status: 1,
+          tax_breakdown,
+        },
+      } as const;
+
+      const result = await replaceBill(user.restaurantId, payload);
+      if (!result) throw new Error('Replace failed');
+
+      // refresh orders list to show cancelled + new order
+      const updatedOrders = await getOrders(user.restaurantId);
+      setOrders(Array.isArray(updatedOrders) ? updatedOrders : []);
+      // also poll once after a short delay in case backend propagation is slightly delayed
+      setTimeout(async () => {
+        try {
+          const later = await getOrders(user.restaurantId);
+          if (Array.isArray(later)) setOrders(later);
+        } catch (e) {
+          // ignore
+        }
+      }, 700);
+
+      setIsEditDialogOpen(false);
+      setSelectedOrder(null);
+    } catch (err) {
+      console.error('replace bill failed', err);
+      alert('Failed to replace bill: ' + String(err?.message ?? err));
+    }
+  };
+
+  const handleSetPaid = async (order: Order) => {
+    if (!user?.restaurantId) return;
+    const confirmed = window.confirm(
+      'Confirm mark as Paid? This action cannot be undone and you will not be able to revert to previous statuses.',
+    );
+    if (!confirmed) return;
+
+    try {
+      // update bill status by order to 2 (paid)
+      const ok = await updateBillStatusByOrder(user.restaurantId, order.id, 2);
+      if (!ok) throw new Error('Failed to update bill');
+      const updatedOrder: Order = { ...order, status: 'Paid' };
+      await addOrder(user.restaurantId, updatedOrder);
+      const updatedOrders = await getOrders(user.restaurantId);
+      setOrders(Array.isArray(updatedOrders) ? updatedOrders : []);
+    } catch (err) {
+      console.error('failed to mark paid', err);
+      alert('Unable to mark paid. Please try again.');
+    }
   };
 
   const getApcBadgeClass = (zone?: "red" | "yellow" | "green") => {
@@ -294,14 +501,15 @@ export default function OrdersPage() {
                 Add Order
             </Button>
           </DialogTrigger>
-          <DialogContent className="sm:max-w-[425px]">
+          <Button variant="outline" className="ml-2" onClick={() => setIsDefaultTaxDialogOpen(true)}>Modify Default Tax</Button>
+          <DialogContent className="sm:max-w-2xl w-full">
             <DialogHeader>
               <DialogTitle>Add New Order</DialogTitle>
               <DialogDescription>
                 Fill in the details for the new order.
               </DialogDescription>
             </DialogHeader>
-            <OrderForm onSubmit={handleAddOrder} menuItems={menuItems} />
+            <OrderForm onSubmit={handleAddOrder} menuItems={menuItems} tables={tables} />
           </DialogContent>
         </Dialog>
       </div>
@@ -390,14 +598,45 @@ export default function OrdersPage() {
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
                         <DropdownMenuLabel>Actions</DropdownMenuLabel>
-                        <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleRowClick(order)}}>View Details</DropdownMenuItem>
-                        <DropdownMenuItem onClick={(e) => { e.stopPropagation(); setSelectedOrder(order); setIsEditDialogOpen(true); }}>Edit Bill</DropdownMenuItem>
+                        <DropdownMenuItem
+                          disabled={order.status === 'Bill Verification' || order.status === 'Paid' || order.status === 'Cancelled'}
+                          onClick={(e) => { e.stopPropagation(); setSelectedOrder(order); setIsDetailsOpen(true); }}
+                        >
+                          Update Order
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          disabled={order.status !== 'Bill Verification'}
+                          onClick={(e) => { e.stopPropagation(); setSelectedOrder(order); setIsEditDialogOpen(true); }}
+                        >
+                          Edit Bill
+                        </DropdownMenuItem>
                         <DropdownMenuSub>
-                            <DropdownMenuSubTrigger>Update Status</DropdownMenuSubTrigger>
+                          <DropdownMenuSubTrigger onClick={(e) => {e.stopPropagation();}} >Update Status</DropdownMenuSubTrigger>
                             <DropdownMenuSubContent>
-                                <DropdownMenuItem onClick={(e) => {e.stopPropagation(); updateOrderStatus(order.id, 'Preparing')}}>Preparing</DropdownMenuItem>
-                                <DropdownMenuItem onClick={(e) => {e.stopPropagation(); updateOrderStatus(order.id, 'Served')}}>Served</DropdownMenuItem>
-                                <DropdownMenuItem onClick={(e) => {e.stopPropagation(); updateOrderStatus(order.id, 'Paid')}}>Paid</DropdownMenuItem>
+                                <DropdownMenuItem
+                                  onClick={(e) => {e.stopPropagation(); updateOrderStatus(order.id, 'Preparing')}}
+                                  disabled={order.status === 'Bill Verification' || order.status === 'Paid' || order.status === 'Cancelled'}
+                                >
+                                  Preparing
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  onClick={(e) => {e.stopPropagation(); updateOrderStatus(order.id, 'Served')}}
+                                  disabled={order.status === 'Bill Verification' || order.status === 'Paid' || order.status === 'Cancelled'}
+                                >
+                                  Served
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  onClick={(e) => {e.stopPropagation(); handleSetBillVerification(order)}}
+                                  disabled={order.status === 'Bill Verification' || order.status === 'Paid' || order.status === 'Cancelled'}
+                                >
+                                  Bill Verification
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  onClick={(e) => {e.stopPropagation(); handleSetPaid(order)}}
+                                  disabled={order.status !== 'Bill Verification'}
+                                >
+                                  Paid
+                                </DropdownMenuItem>
                             </DropdownMenuSubContent>
                         </DropdownMenuSub>
                         <DropdownMenuSeparator />
@@ -415,127 +654,285 @@ export default function OrdersPage() {
         </CardContent>
       </Card>
       
-      {selectedOrder && <OrderDetailsDialog 
-        order={selectedOrder} 
-        open={isDetailsOpen} 
-        onOpenChange={(isOpen) => { 
-          if (!isOpen) setSelectedOrder(null);
+      {selectedOrder && <OrderDetailsDialog
+        order={selectedOrder}
+        open={isDetailsOpen}
+        onOpenChange={(isOpen) => {
           setIsDetailsOpen(isOpen);
+          if (!isOpen) setSelectedOrder(null);
         }}
-        onAddItem={handleAddItemToOrder}
-        onRemoveItem={handleRemoveItemFromOrder}
+        onSave={async (updatedOrder) => {
+          if (!user?.restaurantId) return;
+          try {
+            await addOrder(user.restaurantId, updatedOrder);
+            const updatedOrders = await getOrders(user.restaurantId);
+            setOrders(Array.isArray(updatedOrders) ? updatedOrders : []);
+          } catch (err) {
+            console.error('Failed to save order', err);
+            alert('Unable to save order.');
+          } finally {
+            setSelectedOrder(null);
+            setIsDetailsOpen(false);
+          }
+        }}
         menuItems={menuItems}
       />}
 
-      {selectedOrder && <EditOrderDialog
-            key={selectedOrder.id}
-            order={selectedOrder} 
-            open={isEditDialogOpen}
-            onOpenChange={(isOpen) => {
-                if(!isOpen) setSelectedOrder(null);
-                setIsEditDialogOpen(isOpen);
-            }}
-            onSubmit={handleEditOrder}
+      {selectedOrder && <OrderViewDialog
+        order={selectedOrder}
+        open={isViewOpen}
+        onOpenChange={(isOpen) => {
+          setIsViewOpen(isOpen);
+          if (!isOpen) setSelectedOrder(null);
+        }}
+      />}
+
+        {selectedOrder && <EditOrderDialog
+          key={selectedOrder.id}
+          order={selectedOrder} 
+          open={isEditDialogOpen}
+          onOpenChange={(isOpen) => {
+            if(!isOpen) setSelectedOrder(null);
+            setIsEditDialogOpen(isOpen);
+          }}
+          onSubmit={handleEditOrder}
+          onReplace={handleReplaceBill}
+          defaultTax={defaultTax}
+          menuItems={menuItems}
         />}
+      <DefaultTaxDialog
+        open={isDefaultTaxDialogOpen}
+        onOpenChange={setIsDefaultTaxDialogOpen}
+        defaultTax={defaultTax}
+        onSaved={async (t) => {
+          if (user?.restaurantId) {
+            try {
+              await setOutletDefaultTax(user.restaurantId, t);
+            } catch (err) {
+              console.error('failed to save default tax', err);
+            }
+          }
+          setDefaultTax(t);
+        }}
+      />
     </div>
   );
 }
 
-function OrderForm({ onSubmit, menuItems }: { onSubmit: (data: Omit<Order, 'id' | 'status' | 'items' | 'subtotal' | 'total' | 'applyServiceCharge'> & { items: string, subtotal: string }) => Promise<void> | void, menuItems: MenuItem[] }) {
-    const [table, setTable] = useState("");
-    const [customer, setCustomer] = useState("");
-    const [items, setItems] = useState("");
-    const [subtotal, setSubtotal] = useState("");
+function OrderForm({ onSubmit, menuItems, tables }: { onSubmit: (data: { tableId: number; customer: string; items: { id?: string; name: string; price: number; quantity?: number }[] }) => Promise<void> | void; menuItems: MenuItem[]; tables: { id: number; name: string; capacity: number }[] }) {
+  const { currencySymbol } = useCurrency();
+  const [selectedTableId, setSelectedTableId] = useState<string>(tables?.[0]?.id?.toString() ?? '');
+  const [customer, setCustomer] = useState("");
+  const [selectedItemValue, setSelectedItemValue] = useState("");
+  const [selectedPrice, setSelectedPrice] = useState("");
+  const [selectedQuantity, setSelectedQuantity] = useState<number>(1);
+  const [itemsList, setItemsList] = useState<{ id?: string; name: string; price: number; quantity: number }[]>([]);
+
+  useEffect(() => {
+    if (tables && tables.length && !selectedTableId) {
+      setSelectedTableId(tables[0].id.toString());
+    }
+  }, [tables]);
+
+  const menuOptions = menuItems.map(item => ({ value: item.name.toLowerCase(), label: item.name }));
+  const tableOptions = tables.map(t => ({ value: String(t.id), label: t.name }));
+
+  const addItem = () => {
+    if (!selectedItemValue && !selectedPrice) return;
+    const name = selectedItemValue || '';
+    const price = Number(selectedPrice || 0);
+    setItemsList(prev => {
+      const existing = prev.find(p => p.name.toLowerCase() === name.toLowerCase());
+      if (existing) {
+        return prev.map(p => p.name.toLowerCase() === name.toLowerCase() ? { ...p, quantity: p.quantity + selectedQuantity } : p);
+      }
+      return [...prev, { id: undefined, name, price, quantity: selectedQuantity }];
+    });
+    setSelectedItemValue("");
+    setSelectedPrice("");
+    setSelectedQuantity(1);
+  };
+
+  const removeItem = (name: string) => {
+    setItemsList(prev => prev.filter(p => p.name !== name));
+  };
+
+  const subtotal = itemsList.reduce((acc, it) => acc + it.price * it.quantity, 0);
 
   const handleSubmit = () => {
-        if(table && customer && items && subtotal) {
-      void onSubmit({
-                table,
-                customer,
-                items,
-                subtotal
-            });
-        }
-    }
-    
-    const menuOptions = menuItems.map(item => ({ value: item.name.toLowerCase(), label: item.name }));
+    const tableIdNum = Number(selectedTableId);
+    if (!selectedTableId || Number.isNaN(tableIdNum) || !customer || itemsList.length === 0) return;
+    void onSubmit({ tableId: tableIdNum, customer, items: itemsList });
+  };
 
-    return (
-        <div className="grid gap-4 py-4">
-          <div className="grid grid-cols-4 items-center gap-4">
-            <Label htmlFor="table" className="text-right">Table</Label>
-            <Input id="table" value={table} onChange={(e) => setTable(e.target.value)} className="col-span-3" placeholder="e.g., T5" />
-          </div>
-          <div className="grid grid-cols-4 items-center gap-4">
-            <Label htmlFor="customer" className="text-right">Customer</Label>
-            <Input id="customer" value={customer} onChange={(e) => setCustomer(e.target.value)} className="col-span-3" placeholder="John Doe" />
-          </div>
-          <div className="grid grid-cols-4 items-center gap-4">
-            <Label htmlFor="items" className="text-right">Items</Label>
-            <div className="col-span-3">
-                 <Combobox
-                    options={menuOptions}
-                    value={items.toLowerCase()}
-                    onChange={(value) => {
-                        const selectedItem = menuItems.find(item => item.name.toLowerCase() === value);
-                        setItems(selectedItem?.name || "");
-                        setSubtotal(selectedItem?.price.toString() || "");
-                    }}
-                    placeholder="Select an item"
-                    searchPlaceholder="Search for an item..."
-                    emptyPlaceholder="No items found."
-                />
-            </div>
-          </div>
-          <div className="grid grid-cols-4 items-center gap-4">
-            <Label htmlFor="subtotal" className="text-right">Item Price</Label>
-            <Input id="subtotal" type="number" value={subtotal} onChange={(e) => setSubtotal(e.target.value)} className="col-span-3" placeholder="e.g., 14.00" disabled />
-          </div>
-          <DialogFooter>
-            <Button onClick={handleSubmit}>Save Order</Button>
-          </DialogFooter>
+  return (
+    <div className="grid gap-4 py-4">
+      <div className="grid grid-cols-4 items-center gap-4">
+      <Label htmlFor="table" className="text-right">Table</Label>
+      <div className="col-span-3">
+        <Combobox
+          options={tableOptions}
+          value={selectedTableId}
+          onChange={(value) => setSelectedTableId(String(value ?? ''))}
+          placeholder="Select a table"
+          searchPlaceholder="Search tables..."
+          emptyPlaceholder="No tables available"
+        />
+      </div>
+      </div>
+      <div className="grid grid-cols-4 items-center gap-4">
+      <Label htmlFor="customer" className="text-right">Customer</Label>
+      <Input id="customer" value={customer} onChange={(e) => setCustomer(e.target.value)} className="col-span-3" placeholder="John Doe" />
+      </div>
+
+      <div className="grid grid-cols-4 items-center gap-4">
+      <Label htmlFor="item" className="text-right">Add Item</Label>
+      <div className="col-span-3 grid grid-cols-12 gap-2">
+        <div className="col-span-6">
+          <Combobox
+            options={menuOptions}
+            value={selectedItemValue.toLowerCase()}
+            onChange={(value) => {
+              const selected = menuItems.find(m => m.name.toLowerCase() === value);
+              setSelectedItemValue(selected?.name ?? value ?? '');
+              setSelectedPrice(selected?.price?.toString() ?? '');
+            }}
+            placeholder="Select or type item"
+            searchPlaceholder="Search for an item..."
+            emptyPlaceholder="No items found."
+          />
         </div>
-    )
+        <Input placeholder="Price" type="number" value={selectedPrice} onChange={e => setSelectedPrice(e.target.value)} className="col-span-3" />
+        <Input placeholder="Qty" type="number" value={String(selectedQuantity)} onChange={e => setSelectedQuantity(Math.max(1, Number(e.target.value) || 1))} className="col-span-2" />
+        <Button onClick={addItem} className="col-span-1">Add</Button>
+      </div>
+      </div>
+
+      <div>
+      {itemsList.length === 0 ? (
+        <div className="text-sm text-muted-foreground">No items added.</div>
+      ) : (
+        <div className="space-y-2">
+          {itemsList.map(it => (
+            <div key={it.name} className="flex items-center justify-between">
+              <div>{it.quantity}x {it.name}</div>
+              <div className="flex items-center gap-2">
+                <div>{currencySymbol}{(it.price * it.quantity).toFixed(2)}</div>
+                <Button variant="ghost" size="icon" onClick={() => removeItem(it.name)}><X className="h-4 w-4"/></Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      </div>
+
+      <div className="flex justify-between text-sm border-t pt-2">
+        <div>Subtotal</div>
+        <div>{currencySymbol}{subtotal.toFixed(2)}</div>
+      </div>
+
+      <DialogFooter>
+      <Button onClick={handleSubmit}>Save Order</Button>
+      </DialogFooter>
+    </div>
+  )
 }
 
-const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit }: { order: Order, open: boolean, onOpenChange: (open: boolean) => void, onSubmit: (data: Omit<Order, 'total'>) => void}) => {
-    const { currencySymbol } = useCurrency();
-    const [serviceChargePerc, setServiceChargePerc] = useState(order.serviceChargePercentage?.toString() || "");
-    const [taxes, setTaxes] = useState<Tax[]>(order.taxes || []);
-    const [applyServiceCharge, setApplyServiceCharge] = useState(order.applyServiceCharge);
+const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit, onReplace, defaultTax, menuItems }: { order: Order, open: boolean, onOpenChange: (open: boolean) => void, onSubmit: (data: Omit<Order, 'total'>) => void, onReplace?: (order: Order, replacement: { items: OrderItem[]; taxes: { id?: string; name: string; percentage: number }[]; serviceChargePercentage?: number | undefined; applyServiceCharge?: boolean; reason: string; }) => Promise<void>, defaultTax?: Record<string, number> | null, menuItems?: MenuItem[] }) => {
+  const { currencySymbol } = useCurrency();
+  const [serviceChargePerc, setServiceChargePerc] = useState(order.serviceChargePercentage?.toString() || "");
+  const [taxes, setTaxes] = useState<Tax[]>(order.taxes || []);
+  const [applyServiceCharge, setApplyServiceCharge] = useState(order.applyServiceCharge);
+  const [localItems, setLocalItems] = useState<OrderItem[]>(order.items.map(i => ({ ...i })));
+  const [newItemName, setNewItemName] = useState("");
+  const [newItemPrice, setNewItemPrice] = useState("");
+  const menuOptions = (menuItems ?? []).map(item => ({ value: item.name.toLowerCase(), label: item.name, price: item.price } as any));
+  const [reason, setReason] = useState("");
     
-    useEffect(() => {
-        setServiceChargePerc(order.serviceChargePercentage?.toString() || "");
-        setTaxes(order.taxes || []);
-        setApplyServiceCharge(order.applyServiceCharge);
-    }, [order]);
+  useEffect(() => {
+    setServiceChargePerc(order.serviceChargePercentage?.toString() || "");
+    setApplyServiceCharge(order.applyServiceCharge);
+    setLocalItems(order.items.map(i => ({ ...i })));
+    setReason("");
+
+    // initialize taxes: prefer order.taxes, otherwise use outlet default taxes
+    if (Array.isArray(order.taxes) && order.taxes.length > 0) {
+      setTaxes(order.taxes as any);
+    } else if (defaultTax && typeof defaultTax === 'object') {
+      const taxesFromDefault: Tax[] = [];
+      for (const [k, v] of Object.entries(defaultTax)) {
+        if (!k) continue;
+        // if key indicates service charge, reflect as serviceChargePerc
+        if (/service ?charge/i.test(k) || /service ?charges/i.test(k)) {
+          if (Number(v) > 0) {
+            setServiceChargePerc(String(Number(v)));
+            setApplyServiceCharge(true);
+          }
+        } else {
+          taxesFromDefault.push({ id: `d-${k}`, name: k, percentage: Number(v) });
+        }
+      }
+      setTaxes(taxesFromDefault);
+    } else {
+      setTaxes([]);
+    }
+  }, [order, defaultTax]);
 
     const handleTaxChange = (id: string, field: 'name' | 'percentage', value: string) => {
         setTaxes(taxes.map(tax => tax.id === id ? { ...tax, [field]: field === 'percentage' ? (parseFloat(value) || 0) : value } : tax));
     }
 
     const addTax = () => {
-        setTaxes([...taxes, { id: `t${Date.now()}`, name: "", percentage: 0 }]);
+      setTaxes([...taxes, { id: `t${Date.now()}`, name: "", percentage: 0 }]);
     }
     
     const removeTax = (id: string) => {
         setTaxes(taxes.filter(tax => tax.id !== id));
     }
 
-    const handleSubmit = () => {
-        const updatedOrder = {
-            ...order,
-            serviceChargePercentage: serviceChargePerc ? parseFloat(serviceChargePerc) : undefined,
-            taxes: taxes.filter(t => t.name && t.percentage > 0),
-            applyServiceCharge,
-        };
-        onSubmit(updatedOrder);
+    const handleAddItem = () => {
+      if (!newItemName) return;
+      const priceNum = Number(newItemPrice) || 0;
+      setLocalItems(prev => {
+        const existing = prev.find(p => p.name.trim().toLowerCase() === newItemName.trim().toLowerCase());
+        if (existing) {
+          return prev.map(p => p === existing ? { ...p, quantity: p.quantity + 1, price: priceNum } : p);
+        }
+        return [...prev, { id: `i${Date.now()}`, name: newItemName, quantity: 1, price: priceNum, orderedAt: new Date().toISOString() }];
+      });
+      setNewItemName("");
+      setNewItemPrice("");
+    };
+
+    const handleRemoveItem = (id: string) => setLocalItems(prev => prev.filter(i => i.id !== id));
+
+    const handleSubmit = async () => {
+      const updatedOrder = {
+        ...order,
+        serviceChargePercentage: serviceChargePerc ? parseFloat(serviceChargePerc) : undefined,
+        taxes: taxes.filter(t => t.name && t.percentage > 0),
+        applyServiceCharge,
+        items: localItems,
+      };
+
+      if (onReplace) {
+        // require reason
+        if (!reason || !reason.trim()) {
+          alert('Reason is required to replace bill');
+          return;
+        }
+        await onReplace(order, { items: localItems, taxes: updatedOrder.taxes as any, serviceChargePercentage: updatedOrder.serviceChargePercentage, applyServiceCharge: updatedOrder.applyServiceCharge, reason: reason.trim() });
+        return;
+      }
+
+      onSubmit(updatedOrder);
     }
     
-    const serviceChargeAmount = calculateServiceCharge(order.subtotal, parseFloat(serviceChargePerc), applyServiceCharge);
-    const calculatedTaxesWithAmounts = calculateTaxes(order.subtotal, taxes);
+    const localSubtotal = localItems.reduce((acc, it) => acc + (Number(it.price) || 0) * (Number(it.quantity) || 0), 0);
+    const serviceChargeAmount = calculateServiceCharge(localSubtotal, parseFloat(serviceChargePerc), applyServiceCharge);
+    const calculatedTaxesWithAmounts = calculateTaxes(localSubtotal, taxes);
     const totalTaxAmount = calculatedTaxesWithAmounts.reduce((acc, tax) => acc + tax.amount, 0);
-    const totalAmount = order.subtotal + serviceChargeAmount + totalTaxAmount;
+    const totalAmount = localSubtotal + serviceChargeAmount + totalTaxAmount;
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
@@ -548,8 +945,8 @@ const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit }: { o
                 </DialogHeader>
                 <div className="grid gap-6 py-4">
                     <div className="grid grid-cols-3 items-center gap-4">
-                        <Label htmlFor="subtotal">Subtotal</Label>
-                        <Input id="subtotal" type="number" value={order.subtotal.toFixed(2)} className="col-span-2" disabled />
+                      <Label htmlFor="subtotal">Subtotal</Label>
+                      <Input id="subtotal" type="number" value={localSubtotal.toFixed(2)} className="col-span-2" disabled />
                     </div>
                     <div className="grid grid-cols-3 items-center gap-4">
                         <Label>Service Charge</Label>
@@ -561,6 +958,51 @@ const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit }: { o
                     <div className="grid grid-cols-3 items-center gap-4">
                         <Label htmlFor="serviceCharge">Percentage (%)</Label>
                         <Input id="serviceCharge" type="number" value={serviceChargePerc} onChange={(e) => setServiceChargePerc(e.target.value)} className="col-span-2" placeholder="e.g., 10" disabled={!applyServiceCharge}/>
+                    </div>
+    
+                    <div className="grid grid-cols-1 gap-y-2">
+                      <Label>Items</Label>
+                      <div className="max-h-40 overflow-y-auto mb-2">
+                        <Table>
+                          <TableBody>
+                            {localItems.map(item => (
+                              <TableRow key={item.id}>
+                                <TableCell className="font-medium">{item.name}</TableCell>
+                                <TableCell className="text-center">
+                                  <Input type="number" value={String(item.quantity)} onChange={(e) => setLocalItems(prev => prev.map(p => p.id === item.id ? { ...p, quantity: Math.max(1, Number(e.target.value) || 1) } : p))} className="w-16 mx-auto" />
+                                </TableCell>
+                                <TableCell className="text-right">
+                                  <Input type="number" value={String(item.price)} onChange={(e) => setLocalItems(prev => prev.map(p => p.id === item.id ? { ...p, price: Number(e.target.value) || 0 } : p))} className="w-24 ml-auto" />
+                                </TableCell>
+                                <TableCell className="text-right">
+                                  <Button variant="ghost" size="icon" onClick={() => handleRemoveItem(item.id)}>
+                                    <Trash2 className="h-4 w-4 text-destructive" />
+                                  </Button>
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+
+                      <div className="grid grid-cols-6 gap-2 my-2">
+                        <div className="col-span-3">
+                          <Combobox
+                            options={(menuItems ?? []).map(m => ({ value: m.name.toLowerCase(), label: m.name }))}
+                            value={newItemName.toLowerCase()}
+                            onChange={(value) => {
+                              const selected = (menuItems ?? []).find(m => m.name.toLowerCase() === value);
+                              setNewItemName(selected?.name ?? (value ?? ''));
+                              setNewItemPrice(selected ? String(selected.price) : '');
+                            }}
+                            placeholder="Select or type item"
+                            searchPlaceholder="Search for an item..."
+                            emptyPlaceholder="No items found."
+                          />
+                        </div>
+                        <Input placeholder="Price" type="number" value={newItemPrice} onChange={e => setNewItemPrice(e.target.value)} className="col-span-2" disabled={(menuItems ?? []).some(i => i.name.toLowerCase() === newItemName.toLowerCase())} />
+                        <Button onClick={handleAddItem} className="col-span-1">Add</Button>
+                      </div>
                     </div>
                     
                     <div className="grid grid-cols-1 gap-y-2">
@@ -593,6 +1035,11 @@ const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit }: { o
                             <span>{currencySymbol}{totalAmount.toFixed(2)}</span>
                         </div>
                     </div>
+
+                    <div className="mt-4">
+                      <Label>Reason for Edit (required)</Label>
+                      <textarea value={reason} onChange={e => setReason(e.target.value)} className="w-full border rounded p-2 mt-1" rows={3} />
+                    </div>
                 </div>
                 <DialogFooter>
                     <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
@@ -604,125 +1051,308 @@ const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit }: { o
 });
 EditOrderDialog.displayName = 'EditOrderDialog';
 
-const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onAddItem, onRemoveItem, menuItems }: { order: Order | null, open: boolean, onOpenChange: (open: boolean) => void, onAddItem: (orderId: string, name: string, price: number) => void, onRemoveItem: (orderId: string, itemId: string) => void, menuItems: MenuItem[] }) => {
-    const { currencySymbol } = useCurrency();
-    const [newItemName, setNewItemName] = useState("");
-    const [newItemPrice, setNewItemPrice] = useState("");
-    
-    useEffect(() => {
-        const selectedMenuItem = menuItems.find(item => item.name.toLowerCase() === newItemName.toLowerCase());
-        if (selectedMenuItem) {
-            setNewItemPrice(selectedMenuItem.price.toString());
-        } else {
-            setNewItemPrice("");
-        }
-    }, [newItemName, menuItems]);
+const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menuItems }: { order: Order | null, open: boolean, onOpenChange: (open: boolean) => void, onSave: (updated: Order) => Promise<void>, menuItems: MenuItem[] }) => {
+  const { currencySymbol } = useCurrency();
+  const [localItems, setLocalItems] = useState<OrderItem[]>([]);
+  const [newItemName, setNewItemName] = useState("");
+  const [newItemPrice, setNewItemPrice] = useState("");
 
-    if (!order) return null;
-
-    const handleAddItem = () => {
-        if(newItemName && newItemPrice) {
-            onAddItem(order.id, newItemName, parseFloat(newItemPrice));
-            setNewItemName("");
-            setNewItemPrice("");
-        }
+  useEffect(() => {
+    if (open && order) {
+      setLocalItems(order.items.map(i => ({ ...i })));
     }
+  }, [open, order]);
 
-    const serviceCharge = calculateServiceCharge(order.subtotal, order.serviceChargePercentage, order.applyServiceCharge);
-    const calculatedTaxes = calculateTaxes(order.subtotal, order.taxes);
-    const totalTaxAmount = calculatedTaxes.reduce((sum, tax) => sum + tax.amount, 0);
-    const total = order.subtotal + serviceCharge + totalTaxAmount;
-    
-    const menuOptions = menuItems.map(item => ({ value: item.name.toLowerCase(), label: item.name }));
+  useEffect(() => {
+    const selectedMenuItem = menuItems.find(item => item.name.toLowerCase() === newItemName.toLowerCase());
+    if (selectedMenuItem) {
+      setNewItemPrice(selectedMenuItem.price.toString());
+    } else {
+      setNewItemPrice("");
+    }
+  }, [newItemName, menuItems]);
 
+  if (!order) return null;
 
-    return (
-        <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="sm:max-w-2xl">
-                <DialogHeader>
-                    <DialogTitle>Order Details - {order.table}</DialogTitle>
-                     <DialogDescription>
-                        <span className="flex items-center gap-2">
-                            <span>Customer: {order.customer} | Status:</span>
-                            <Badge variant={order.status === 'Preparing' ? 'secondary' : order.status === 'Served' ? 'default' : 'outline'} className="text-xs">{order.status}</Badge>
-                        </span>
-                    </DialogDescription>
-                </DialogHeader>
-                <div className="p-4">
-                    <div className="max-h-[40vh] overflow-y-auto my-4">
-                        <Table>
-                            <TableHeader>
-                                <TableRow>
-                                    <TableHead>Item</TableHead>
-                                    <TableHead className="text-center">Qty</TableHead>
-                                    <TableHead className="text-center">Time</TableHead>
-                                    <TableHead className="text-right">Price</TableHead>
-                                    <TableHead className="text-right">Actions</TableHead>
-                                </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                                {order.items.map(item => (
-                                    <TableRow key={item.id}>
-                                        <TableCell className="font-medium">{item.name}</TableCell>
-                                        <TableCell className="text-center">{item.quantity}</TableCell>
-                                        <TableCell className="text-muted-foreground text-center">
-                                          <div className="flex items-center justify-center">
-                                            <Clock className="h-3 w-3 mr-1"/>
-                                            {item.orderedAt}
-                                          </div>
-                                        </TableCell>
-                                        <TableCell className="text-right">{currencySymbol}{(item.price * item.quantity).toFixed(2)}</TableCell>
-                                        <TableCell className="text-right">
-                                            <Button variant="ghost" size="icon" onClick={() => onRemoveItem(order.id, item.id)}>
-                                                <Trash2 className="h-4 w-4 text-destructive"/>
-                                            </Button>
-                                        </TableCell>
-                                    </TableRow>
-                                ))}
-                            </TableBody>
-                        </Table>
-                    </div>
-                    <div className="grid grid-cols-6 gap-2 my-4 border-t pt-4">
-                         <Combobox
-                            options={menuOptions}
-                            value={newItemName.toLowerCase()}
-                            onChange={(value) => {
-                                const selectedItem = menuItems.find(item => item.name.toLowerCase() === value);
-                                setNewItemName(selectedItem?.name || value);
-                            }}
-                            placeholder="Select or type item"
-                            searchPlaceholder="Search for an item..."
-                            emptyPlaceholder="No items found."
-                            className="col-span-3"
-                        />
-                        <Input placeholder="Price" type="number" value={newItemPrice} onChange={e => setNewItemPrice(e.target.value)} className="col-span-2" disabled={menuItems.some(i => i.name.toLowerCase() === newItemName.toLowerCase())}/>
-                        <Button onClick={handleAddItem} className="col-span-1">Add</Button>
-                    </div>
-                    <div className="space-y-2 text-sm">
-                        <div className="flex justify-between border-t pt-2">
-                            <span>Subtotal</span>
-                            <span>{currencySymbol}{order.subtotal.toFixed(2)}</span>
-                        </div>
-                         {order.serviceChargePercentage && (
-                            <div className="flex justify-between">
-                                <span>Service Charge ({order.serviceChargePercentage}%)</span>
-                                <span>{order.applyServiceCharge ? `${currencySymbol}${serviceCharge.toFixed(2)}` : 'Opted-out'}</span>
-                            </div>
-                        )}
-                        {calculatedTaxes.map(tax => (
-                            <div key={tax.id} className="flex justify-between">
-                                <span>{tax.name} ({tax.percentage}%)</span>
-                                <span>{currencySymbol}{tax.amount.toFixed(2)}</span>
-                            </div>
-                        ))}
-                         <div className="flex justify-between font-bold text-lg border-t pt-2 mt-2">
-                            <span>Total:</span>
-                            <span>{currencySymbol}{total.toFixed(2)}</span>
-                        </div>
-                    </div>
-                </div>
-            </DialogContent>
-        </Dialog>
-    )
+  const handleAddItem = () => {
+    if (newItemName && newItemPrice) {
+      const priceNum = parseFloat(newItemPrice);
+      setLocalItems(prev => {
+        const nameLower = newItemName.trim().toLowerCase();
+        const existing = prev.find(i => i.name.trim().toLowerCase() === nameLower);
+        if (existing) {
+          return prev.map(i => i.id === existing.id ? { ...i, quantity: i.quantity + 1, price: priceNum } : i);
+        }
+        const newItem: OrderItem = {
+          id: `i${Date.now()}`,
+          name: newItemName,
+          quantity: 1,
+          price: priceNum,
+          orderedAt: new Date().toISOString(),
+        };
+        return [...prev, newItem];
+      });
+      setNewItemName("");
+      setNewItemPrice("");
+    }
+  };
+
+  const handleRemove = (itemId: string) => {
+    setLocalItems(prev => prev.filter(i => i.id !== itemId));
+  };
+
+  const subtotal = localItems.reduce((acc, it) => acc + it.price * it.quantity, 0);
+  const serviceCharge = calculateServiceCharge(order.subtotal, order.serviceChargePercentage, order.applyServiceCharge);
+  const calculatedTaxes = calculateTaxes(order.subtotal, order.taxes);
+  const totalTaxAmount = calculatedTaxes.reduce((sum, tax) => sum + tax.amount, 0);
+  const total = subtotal + serviceCharge + totalTaxAmount;
+
+  const menuOptions = menuItems.map(item => ({ value: item.name.toLowerCase(), label: item.name }));
+
+  const handleSave = async () => {
+    const updatedOrder: Order = {
+      ...order,
+      items: localItems,
+      subtotal,
+      total,
+    };
+    await onSave(updatedOrder);
+  };
+
+  const handleCancel = () => {
+    // simply close without saving; parent will clear selectedOrder
+    onOpenChange(false);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Order Details - {order.table}</DialogTitle>
+           <DialogDescription>
+            <span className="flex items-center gap-2">
+              <span>Customer: {order.customer} | Status:</span>
+              <Badge variant={order.status === 'Preparing' ? 'secondary' : order.status === 'Served' ? 'default' : 'outline'} className="text-xs">{order.status}</Badge>
+            </span>
+          </DialogDescription>
+        </DialogHeader>
+        <div className="p-4">
+          <div className="max-h-[40vh] overflow-y-auto my-4">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Item</TableHead>
+                  <TableHead className="text-center">Qty</TableHead>
+                  <TableHead className="text-center">Time</TableHead>
+                  <TableHead className="text-right">Price</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {localItems.map(item => (
+                  <TableRow key={item.id}>
+                    <TableCell className="font-medium">{item.name}</TableCell>
+                    <TableCell className="text-center">{item.quantity}</TableCell>
+                    <TableCell className="text-muted-foreground text-center">
+                      <div className="flex items-center justify-center">
+                      <Clock className="h-3 w-3 mr-1"/>
+                      {formatOrderedAt(item.orderedAt)}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-right">{currencySymbol}{(item.price * item.quantity).toFixed(2)}</TableCell>
+                    <TableCell className="text-right">
+                      <Button variant="ghost" size="icon" onClick={() => handleRemove(item.id)}>
+                        <Trash2 className="h-4 w-4 text-destructive"/>
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+          <div className="grid grid-cols-6 gap-2 my-4 border-t pt-4">
+             <Combobox
+              options={menuOptions}
+              value={newItemName.toLowerCase()}
+              onChange={(value) => {
+                const selectedItem = menuItems.find(item => item.name.toLowerCase() === value);
+                setNewItemName(selectedItem?.name || value);
+              }}
+              placeholder="Select or type item"
+              searchPlaceholder="Search for an item..."
+              emptyPlaceholder="No items found."
+              className="col-span-3"
+            />
+            <Input placeholder="Price" type="number" value={newItemPrice} onChange={e => setNewItemPrice(e.target.value)} className="col-span-2" disabled={menuItems.some(i => i.name.toLowerCase() === newItemName.toLowerCase())}/>
+            <Button onClick={handleAddItem} className="col-span-1">Add</Button>
+          </div>
+          <div className="space-y-2 text-sm">
+            <div className="flex justify-between border-t pt-2">
+              <span>Subtotal</span>
+              <span>{currencySymbol}{subtotal.toFixed(2)}</span>
+            </div>
+             {order.serviceChargePercentage && (
+              <div className="flex justify-between">
+                <span>Service Charge ({order.serviceChargePercentage}%)</span>
+                <span>{order.applyServiceCharge ? `${currencySymbol}${serviceCharge.toFixed(2)}` : 'Opted-out'}</span>
+              </div>
+            )}
+            {calculatedTaxes.map(tax => (
+              <div key={tax.id} className="flex justify-between">
+                <span>{tax.name} ({tax.percentage}%)</span>
+                <span>{currencySymbol}{tax.amount.toFixed(2)}</span>
+              </div>
+            ))}
+             <div className="flex justify-between font-bold text-lg border-t pt-2 mt-2">
+              <span>Total:</span>
+              <span>{currencySymbol}{total.toFixed(2)}</span>
+            </div>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={handleCancel}>Cancel</Button>
+          <Button onClick={handleSave}>Save Changes</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
 });
 OrderDetailsDialog.displayName = 'OrderDetailsDialog';
+
+const OrderViewDialog = React.memo(({ order, open, onOpenChange }: { order: Order | null, open: boolean, onOpenChange: (open: boolean) => void }) => {
+  const { currencySymbol } = useCurrency();
+  if (!order) return null;
+
+  const calculatedTaxes = calculateTaxes(order.subtotal, order.taxes);
+  const serviceCharge = calculateServiceCharge(order.subtotal, order.serviceChargePercentage, order.applyServiceCharge);
+  const totalTaxAmount = calculatedTaxes.reduce((sum, t) => sum + t.amount, 0);
+  const total = order.subtotal + serviceCharge + totalTaxAmount;
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>View Order - {order.table}</DialogTitle>
+          <DialogDescription>
+            <span className="flex items-center gap-2">
+              <span>Customer: {order.customer} | Status:</span>
+              <Badge variant={order.status === 'Preparing' ? 'secondary' : order.status === 'Served' ? 'default' : 'outline'} className="text-xs">{order.status}</Badge>
+            </span>
+          </DialogDescription>
+        </DialogHeader>
+        <div className="p-4">
+          <div className="max-h-[40vh] overflow-y-auto my-4">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Item</TableHead>
+                  <TableHead className="text-center">Qty</TableHead>
+                  <TableHead className="text-center">Time</TableHead>
+                  <TableHead className="text-right">Price</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {order.items.map(item => (
+                  <TableRow key={item.id}>
+                    <TableCell className="font-medium">{item.name}</TableCell>
+                    <TableCell className="text-center">{item.quantity}</TableCell>
+                    <TableCell className="text-muted-foreground text-center">
+                      <div className="flex items-center justify-center">
+                        <Clock className="h-3 w-3 mr-1" />
+                        {formatOrderedAt(item.orderedAt)}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-right">{currencySymbol}{(item.price * item.quantity).toFixed(2)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+          <div className="space-y-2 text-sm">
+            <div className="flex justify-between border-t pt-2">
+              <span>Subtotal</span>
+              <span>{currencySymbol}{order.subtotal.toFixed(2)}</span>
+            </div>
+            {order.serviceChargePercentage && (
+              <div className="flex justify-between">
+                <span>Service Charge ({order.serviceChargePercentage}%)</span>
+                <span>{order.applyServiceCharge ? `${currencySymbol}${serviceCharge.toFixed(2)}` : 'Opted-out'}</span>
+              </div>
+            )}
+            {calculatedTaxes.map(tax => (
+              <div key={tax.id} className="flex justify-between">
+                <span>{tax.name} ({tax.percentage}%):</span>
+                <span>{currencySymbol}{tax.amount.toFixed(2)}</span>
+              </div>
+            ))}
+            <div className="flex justify-between font-bold text-lg border-t pt-2 mt-2">
+              <span>Total:</span>
+              <span>{currencySymbol}{total.toFixed(2)}</span>
+            </div>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button onClick={() => onOpenChange(false)}>Close</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+});
+OrderViewDialog.displayName = 'OrderViewDialog';
+
+const DefaultTaxDialog = React.memo(({ open, onOpenChange, defaultTax, onSaved }: { open: boolean; onOpenChange: (open: boolean) => void; defaultTax: Record<string, number> | null; onSaved: (t: Record<string, number>) => void }) => {
+  const [taxes, setTaxes] = useState<{ id: string; name: string; percentage: number }[]>([]);
+
+  useEffect(() => {
+    if (open) {
+      if (defaultTax && typeof defaultTax === 'object') {
+        setTaxes(Object.keys(defaultTax).map((k, i) => ({ id: `t${i}-${k}`, name: k, percentage: Number(defaultTax[k]) })));
+      } else {
+        setTaxes([]);
+      }
+    }
+  }, [open, defaultTax]);
+
+  const addTax = () => setTaxes(prev => [...prev, { id: `t${Date.now()}`, name: '', percentage: 0 }]);
+  const removeTax = (id: string) => setTaxes(prev => prev.filter(t => t.id !== id));
+  const updateTax = (id: string, field: 'name' | 'percentage', value: string) => {
+    setTaxes(prev => prev.map(t => t.id === id ? { ...t, [field]: field === 'percentage' ? (parseFloat(value) || 0) : value } : t));
+  };
+
+  const handleSave = async () => {
+    const payload: Record<string, number> = {};
+    for (const t of taxes) {
+      if (t.name && !Number.isNaN(t.percentage)) payload[t.name] = Number(t.percentage);
+    }
+    onSaved(payload);
+    onOpenChange(false);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Modify Default Tax</DialogTitle>
+          <DialogDescription>
+            These taxes will be applied when generating bills if Edit Bill is not used.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-4 py-4">
+          {taxes.map(t => (
+            <div key={t.id} className="grid grid-cols-12 gap-2 items-center">
+              <Input value={t.name} placeholder="Tax name" onChange={e => updateTax(t.id, 'name', e.target.value)} className="col-span-7" />
+              <Input value={String(t.percentage)} placeholder="%" type="number" onChange={e => updateTax(t.id, 'percentage', e.target.value)} className="col-span-3" />
+              <Button variant="ghost" size="icon" onClick={() => removeTax(t.id)} className="col-span-2"><X className="h-4 w-4"/></Button>
+            </div>
+          ))}
+          <Button variant="outline" onClick={addTax}>Add Tax</Button>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button onClick={handleSave}>Save Changes</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+});
+DefaultTaxDialog.displayName = 'DefaultTaxDialog';

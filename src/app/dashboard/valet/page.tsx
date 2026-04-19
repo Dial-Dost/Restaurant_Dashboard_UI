@@ -225,6 +225,7 @@ export default function ValetDashboardPage() {
         headers: {
           "X-Restaurant-Id": user.restaurantId,
           "X-Employee-Id": user.employeeId,
+          "X-Outlet-Id": user.outlet_id,
         },
       });
 
@@ -286,6 +287,7 @@ export default function ValetDashboardPage() {
         "Content-Type": "application/json",
         "X-Restaurant-Id": user.restaurantId,
         "X-Employee-Id": user.employeeId,
+        "X-Outlet-Id": user.outlet_id,
       },
       body: JSON.stringify({ booking_id: bookingId, state: stateCode }),
     });
@@ -309,6 +311,7 @@ export default function ValetDashboardPage() {
           "Content-Type": "application/json",
           "X-Restaurant-Id": user.restaurantId,
           "X-Employee-Id": user.employeeId,
+          "X-Outlet-Id": user.outlet_id,
         },
         body: JSON.stringify({ booking_id: bookingId }),
       });
@@ -327,6 +330,7 @@ export default function ValetDashboardPage() {
         "Content-Type": "application/json",
         "X-Restaurant-Id": user.restaurantId,
         "X-Employee-Id": user.employeeId,
+        "X-Outlet-Id": user.outlet_id,
       },
       // send bay_id (tableName may be a name or an id; caller should pass id when available)
       body: JSON.stringify({ booking_id: bookingId, bay_id: tableName }),
@@ -438,6 +442,7 @@ export default function ValetDashboardPage() {
                   "Content-Type": "application/json",
                   ...(user?.restaurantId ? { "X-Restaurant-Id": user.restaurantId } : {}),
                   ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
+                  ...(user?.outlet_id ? { "X-Outlet-Id": user.outlet_id } : {}),
                 },
                 body: JSON.stringify({ Bay_id: ub.Bay_id, current_capacity: newVal }),
               }).then(async (r) => {
@@ -612,6 +617,7 @@ export default function ValetDashboardPage() {
           "Content-Type": "application/json",
           "X-Restaurant-Id": user.restaurantId,
           "X-Employee-Id": user.employeeId,
+          "X-Outlet-Id": user.outlet_id,
         },
         body: JSON.stringify({
           number_plate: newVehiclePlate.trim().toUpperCase(),
@@ -717,6 +723,8 @@ export default function ValetDashboardPage() {
     const pickupCount = inProgressBookings.filter((booking) => isPickupStage(normalizeStage(booking.status))).length;
     // Yet to park specifically means stage 1 (Vehicle added)
     const yetToPark = inProgressBookings.filter((booking) => normalizeStage(booking.status) === "Vehicle added").length;
+    // Cars that customers have requested the valet to bring from the parking bay (stage 3)
+    const toBePickedByValet = inProgressBookings.filter((booking) => normalizeStage(booking.status) === "Request to bring car (from customer)").length;
     const activeCars = inProgressBookings.length;
 
     // Compute occupancy using bay capacities from server/local state
@@ -726,6 +734,7 @@ export default function ValetDashboardPage() {
 
     return {
       activeCars,
+      toBePickedByValet,
       parkedNow,
       pickupCount,
       yetToPark,
@@ -928,6 +937,7 @@ export default function ValetDashboardPage() {
             "Content-Type": "application/json",
             ...(user?.restaurantId ? { "X-Restaurant-Id": user.restaurantId } : {}),
             ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
+            ...(user?.outlet_id ? { "X-Outlet-Id": user.outlet_id} : {}),
           },
         });
 
@@ -951,6 +961,7 @@ export default function ValetDashboardPage() {
                 "Content-Type": "application/json",
                 ...(user?.restaurantId ? { "X-Restaurant-Id": user.restaurantId } : {}),
                 ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
+                ...(user?.outlet_id ? { "X-Outlet-Id": user.outlet_id } : {}),
               },
               body: JSON.stringify({ Bay_name: "Main", total_capacity: 5 }),
             });
@@ -1026,6 +1037,7 @@ export default function ValetDashboardPage() {
           "Content-Type": "application/json",
           ...(user?.restaurantId ? { "X-Restaurant-Id": user.restaurantId } : {}),
           ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
+          ...(user?.outlet_id ? { "X-Outlet-Id": user.outlet_id } : {}),
         },
         body: JSON.stringify({ Bay_name: normalized, total_capacity: capacity }),
       });
@@ -1099,6 +1111,7 @@ export default function ValetDashboardPage() {
           "Content-Type": "application/json",
           ...(user?.restaurantId ? { "X-Restaurant-Id": user.restaurantId } : {}),
           ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
+          ...(user?.outlet_id ? { "X-Outlet-Id": user.outlet_id } : {}),
         },
         body: JSON.stringify(payload),
       });
@@ -1235,16 +1248,19 @@ export default function ValetDashboardPage() {
       <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Active Cars</CardTitle>
+            <CardTitle className="text-sm font-medium">To be picked by Valet</CardTitle>
             <Package className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.activeCars}</div>
-            <p className="text-xs text-muted-foreground">Cars currently in valet workflow</p>
+            <div className="text-2xl font-bold">{stats.toBePickedByValet}</div>
+            <p className="text-xs text-muted-foreground">Cars customers have requested to be picked from bays</p>
             <div className="mt-2 flex flex-col gap-2 max-h-28 overflow-y-auto py-1">
-              {(inProgressBookings ?? []).slice(0, 12).map((b) => (
-                <Badge key={b.booking_id} variant="secondary" className="whitespace-nowrap">{extractVehiclePlate(b)}</Badge>
-              ))}
+              {(inProgressBookings ?? [])
+                .filter((b) => normalizeStage(b.status) === "Request to bring car (from customer)")
+                .slice(0, 12)
+                .map((b) => (
+                  <Badge key={b.booking_id} variant="secondary" className="whitespace-nowrap">{extractVehiclePlate(b)}</Badge>
+                ))}
             </div>
           </CardContent>
         </Card>
@@ -1393,6 +1409,7 @@ export default function ValetDashboardPage() {
                               "Content-Type": "application/json",
                               ...(user?.restaurantId ? { "X-Restaurant-Id": user.restaurantId } : {}),
                               ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
+                              ...(user?.outlet_id ? { "X-Outlet-Id": user.outlet_id } : {}),
                             },
                             body: JSON.stringify({ Bay_id: serverMatch.Bay_id, Bay_name: newName, total_capacity: cap }),
                           });
@@ -1408,6 +1425,7 @@ export default function ValetDashboardPage() {
                                     "Content-Type": "application/json",
                                     ...(user?.restaurantId ? { "X-Restaurant-Id": user.restaurantId } : {}),
                                     ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
+                                    ...(user?.outlet_id ? { "X-Outlet-Id": user.outlet_id } : {}),
                                   },
                                 });
                                 if (fetchBays.ok) {
@@ -1436,6 +1454,7 @@ export default function ValetDashboardPage() {
                               "Content-Type": "application/json",
                               ...(user?.restaurantId ? { "X-Restaurant-Id": user.restaurantId } : {}),
                               ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
+                              ...(user?.outlet_id ? { "X-Outlet-Id": user.outlet_id } : {}),
                             },
                             body: JSON.stringify({ Bay_name: newName, total_capacity: cap }),
                           });

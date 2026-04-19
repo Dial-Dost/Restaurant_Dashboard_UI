@@ -71,7 +71,7 @@ export function SettingsForm() {
   const [feedbackQrError, setFeedbackQrError] = useState<string>("")
 
   const feedbackFormUrl = useMemo(() => {
-    if (!user?.restaurantId || !user?.employeeId) {
+    if (!user?.restaurantId || !user?.employeeId || !user?.outlet_id) {
       return ""
     }
 
@@ -84,11 +84,12 @@ export function SettingsForm() {
     }
 
     const params = new URLSearchParams({
-      restaurantId: user.restaurantId,
-      employeeId: user.employeeId,
+      restaurantId: String(user?.restaurantId ?? ""),
+      employeeId: String(user?.employeeId ?? ""),
+      outletId: String(user?.outlet_id ?? ""),
     })
     return `${baseUrl}?${params.toString()}`
-  }, [user?.restaurantId, user?.employeeId])
+  }, [user?.restaurantId, user?.employeeId, user?.outlet_id])
 
   const form = useForm<SettingsFormValues>({
     resolver: zodResolver(settingsFormSchema),
@@ -177,7 +178,7 @@ export function SettingsForm() {
         <Card>
             <CardHeader>
                 <CardTitle>Restaurant Profile</CardTitle>
-                <CardDescription>Update your restaurant's public information here.</CardDescription>
+                <CardDescription>Update your restaurants public information here.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
                  <FormField

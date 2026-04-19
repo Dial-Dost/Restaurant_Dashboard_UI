@@ -98,7 +98,7 @@ export default function InventoryPage() {
     await addInventoryItem(user.restaurantId, newItem);
 
     await addAuditLogEntry(user.restaurantId, {
-      employee: user?.name || user?.employeeId || 'System',
+      employee: ( `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || user?.employeeUsername ) ?? user?.employeeId ?? "System",
       employeeId: user?.employeeId,
         action: 'Inventory Add',
         details: `Added new item: ${data.name} (${data.stock} ${data.unit})`,
@@ -153,7 +153,7 @@ export default function InventoryPage() {
         <CardHeader>
           <CardTitle>Inventory List</CardTitle>
           <CardDescription>
-            A list of all items in your restaurant's inventory.
+            A list of all items in your restaurant&apos;s inventory.
           </CardDescription>
         </CardHeader>
         <CardContent>
