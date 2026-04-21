@@ -78,7 +78,30 @@ export function SettingsForm() {
     const fallbackBase = typeof window !== "undefined"
       ? `${window.location.protocol}//${window.location.hostname}:9003`
       : ""
-    const baseUrl = (process.env.NEXT_PUBLIC_FEEDBACK_FORM_URL ?? fallbackBase).replace(/\/$/, "")
+
+    const configuredBase = (process.env.NEXT_PUBLIC_FEEDBACK_FORM_URL ?? "").trim()
+    let baseUrl = configuredBase || fallbackBase
+
+    if (typeof window !== "undefined" && baseUrl) {
+      try {
+        const parsed = new URL(baseUrl)
+        const configuredHost = parsed.hostname.toLowerCase()
+        const currentHost = window.location.hostname.toLowerCase()
+        const isConfiguredLocal = configuredHost === "localhost" || configuredHost === "127.0.0.1"
+        const isCurrentLocal = currentHost === "localhost" || currentHost === "127.0.0.1"
+
+        // Keep explicit public URLs as-is, but auto-fix local placeholders on deployed/forwarded hosts.
+        if (isConfiguredLocal && !isCurrentLocal) {
+          parsed.protocol = window.location.protocol
+          parsed.hostname = window.location.hostname
+          baseUrl = parsed.toString()
+        }
+      } catch {
+        // Ignore invalid env URL and continue with fallback behavior.
+      }
+    }
+
+    baseUrl = baseUrl.replace(/\/$/, "")
     if (!baseUrl) {
       return ""
     }

@@ -78,6 +78,16 @@ export type MonthlyApcInsight = {
     employee_incentives: EmployeeApcIncentive[];
 };
 
+export type PaymentMethod =
+    | 'Swiggy'
+    | 'Dine Out'
+    | 'Zomato Pay'
+    | 'Eazydiner'
+    | 'Cash'
+    | 'Upi'
+    | 'Card'
+    | 'Online Transfer';
+
 type RestaurantData = {
     profile: RestaurantProfile;
     bookings: Booking[];
@@ -320,6 +330,17 @@ const mapOrder = (item: any): Order => ({
     applyServiceCharge: Boolean(item.applyServiceCharge),
     total: Number(item.total ?? 0),
     status: (item.status as Order['status']) ?? 'Preparing',
+    payment_method: (item.payment_method as PaymentMethod | null | undefined) ?? null,
+    payment_waiter_confirmed_at:
+        typeof item.payment_waiter_confirmed_at === 'string' ? item.payment_waiter_confirmed_at : null,
+    payment_waiter_confirmed_by:
+        typeof item.payment_waiter_confirmed_by === 'string' ? item.payment_waiter_confirmed_by : null,
+    payment_admin_approved_at:
+        typeof item.payment_admin_approved_at === 'string' ? item.payment_admin_approved_at : null,
+    payment_admin_approved_by:
+        typeof item.payment_admin_approved_by === 'string' ? item.payment_admin_approved_by : null,
+    bill_closed_at: typeof item.bill_closed_at === 'string' ? item.bill_closed_at : null,
+    bill_closed_by: typeof item.bill_closed_by === 'string' ? item.bill_closed_by : null,
 });
 
 const readLocalField = async <T>(restaurantId: string, field: keyof RestaurantData): Promise<T> => {
@@ -794,6 +815,86 @@ export const updateBillStatusByOrder = async (restaurantId: string, orderId: str
         body: JSON.stringify({ status }),
     });
     return response?.ok ?? false;
+};
+
+export const confirmBillPaymentByWaiter = async (
+    restaurantId: string,
+    employeeId: string,
+    orderId: string,
+    payment_method: PaymentMethod,
+) => {
+    const response = await backendCall(`/bills/order/${encodeURIComponent(orderId)}/waiter-confirm-payment`, restaurantId, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-Employee-Id': employeeId,
+        },
+        body: JSON.stringify({ payment_method }),
+    });
+
+    if (!response) {
+        throw new Error('Unable to connect to backend.');
+    }
+    if (!response.ok) {
+        throw new Error(await readErrorMessage(response));
+    }
+    try {
+        return await response.json();
+    } catch {
+        return { success: true };
+    }
+};
+
+export const approveBillPaymentByAdmin = async (
+    restaurantId: string,
+    employeeId: string,
+    orderId: string,
+) => {
+    const response = await backendCall(`/bills/order/${encodeURIComponent(orderId)}/admin-approve-payment`, restaurantId, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-Employee-Id': employeeId,
+        },
+    });
+
+    if (!response) {
+        throw new Error('Unable to connect to backend.');
+    }
+    if (!response.ok) {
+        throw new Error(await readErrorMessage(response));
+    }
+    try {
+        return await response.json();
+    } catch {
+        return { success: true };
+    }
+};
+
+export const closeBillByOrder = async (
+    restaurantId: string,
+    employeeId: string,
+    orderId: string,
+) => {
+    const response = await backendCall(`/bills/order/${encodeURIComponent(orderId)}/close`, restaurantId, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-Employee-Id': employeeId,
+        },
+    });
+
+    if (!response) {
+        throw new Error('Unable to connect to backend.');
+    }
+    if (!response.ok) {
+        throw new Error(await readErrorMessage(response));
+    }
+    try {
+        return await response.json();
+    } catch {
+        return { success: true };
+    }
 };
 
 export const getBillByOrder = async (restaurantId: string, orderId: string) => {
