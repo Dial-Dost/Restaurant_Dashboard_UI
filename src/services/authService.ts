@@ -45,15 +45,15 @@ export const signUpRestaurant = async ({ restaurantName, adminName, adminEmploye
 }) => {
     try {
         const adminUser: User = {
-            employeeId: adminEmployeeId,
+            employee_id: adminEmployeeId,
             // store admin full name as first name for backwards-compatible signup UI
             emp_Fname: adminName,
             emp_Lname: null,
             password: password, // In a real app, hash this password
             role: 'admin' as const
         };
-    const newRestaurant = await createRestaurant(restaurantName, adminUser);
-    return { user: { uid: newRestaurant.id, ...adminUser } };
+        const newRestaurant = await createRestaurant(restaurantName, adminUser);
+        return { user: { uid: newRestaurant.id, ...adminUser } };
     } catch (error: any) {
         console.error("Registration failed:", error);
         throw error;
@@ -87,7 +87,7 @@ export const sendPasswordReset = async (restaurantName: string, employeeUsername
         console.log(`Password reset requested for non-existent restaurant: ${restaurantName}`);
         return;
     }
-    
+
     const user = await findUserInRestaurant(restaurant.id, employeeUsername);
     if (!user) {
         console.log(`Password reset requested for non-existent user: ${employeeUsername}`);
@@ -125,7 +125,7 @@ export const addEmployeeToRestaurant = async (restaurantId: string, outletId: st
 // Remove an employee from a restaurant
 export const removeEmployeeFromRestaurant = async (restaurantId: string, employeeId: string) => {
     const restaurant = await findRestaurantByName(getRestaurantId(restaurantId));
-     if (!restaurant) {
+    if (!restaurant) {
         throw new Error("Restaurant not found.");
     }
 
@@ -134,12 +134,12 @@ export const removeEmployeeFromRestaurant = async (restaurantId: string, employe
         throw new Error("Employee not found.");
     }
 
-    const adminUsers = restaurant.users.filter((u:User) => u.role === 'admin');
+    const adminUsers = restaurant.users.filter((u: User) => u.role === 'admin');
     if (userToRemove.role === 'admin' && adminUsers.length <= 1) {
         throw new Error("Cannot remove the only admin of the restaurant.");
     }
-    
+
     await removeEmployee(restaurantId, employeeId);
-    
+
     return true;
 };

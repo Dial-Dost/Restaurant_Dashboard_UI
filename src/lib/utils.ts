@@ -4,3 +4,9 @@ import { twMerge } from "tailwind-merge"
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
+
+export function toTitleCase(input: string): string {
+  return input
+    .toLowerCase()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}

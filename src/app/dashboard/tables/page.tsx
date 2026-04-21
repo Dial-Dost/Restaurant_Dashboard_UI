@@ -570,8 +570,8 @@ export default function TablesPage() {
                                         >
                                             <option value="">Select employee</option>
                                             {employees.map((employee) => (
-                                                <option key={`${table.name}-${employee.employeeId}`} value={employee.employeeId}>
-                                                    {((`${employee.emp_Fname ?? ''}${employee.emp_Lname ? ` ${employee.emp_Lname}` : ''}`.trim() || employee.employeeUsername) ?? employee.employeeId)} ({employee.employeeUsername ?? employee.employeeId})
+                                                <option key={`${table.name}-${employee.employee_id}`} value={employee.employee_id}>
+                                                    {((`${employee.emp_Fname ?? ''}${employee.emp_Lname ? ` ${employee.emp_Lname}` : ''}`.trim() || employee.employee_Username) ?? employee.employee_id)} ({employee.employee_Username ?? employee.employee_id})
                                                 </option>
                                             ))}
                                         </select>

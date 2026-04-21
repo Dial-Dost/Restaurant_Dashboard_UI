@@ -9,13 +9,17 @@ import { type Table } from '@/app/dashboard/tables/data';
 import { type AuditLog } from '@/app/dashboard/audit-logs/page';
 
 export type User = {
-    employeeId: string;
-    employeeUsername?: string;
-    emp_Fname?: string | null;
+    id: string;
+    res_id: string;
+    outlet_id: string;
+    employee_id: string;
+    employee_Username: string;
+    emp_Fname: string;
     emp_Lname?: string | null;
-    password?: string;
-    role: 'admin' | 'employee' | 'valet' | 'waiter';
+    password: string;
+    role: string;
     role_all?: string[];
+    action_list: string[];
 };
 
 export type RestaurantProfile = {
@@ -312,10 +316,10 @@ const mapOrder = (item: any): Order => ({
         item.serviceChargePercentage === undefined ? undefined : Number(item.serviceChargePercentage),
     taxes: Array.isArray(item.taxes)
         ? item.taxes.map((tax: any) => ({
-              id: String(tax.id ?? `${Date.now()}`),
-              name: String(tax.name ?? 'Tax'),
-              percentage: Number(tax.percentage ?? 0),
-          }))
+            id: String(tax.id ?? `${Date.now()}`),
+            name: String(tax.name ?? 'Tax'),
+            percentage: Number(tax.percentage ?? 0),
+        }))
         : undefined,
     applyServiceCharge: Boolean(item.applyServiceCharge),
     total: Number(item.total ?? 0),
@@ -357,10 +361,17 @@ const seedDefaultRestaurant = () => {
         name: 'CSR Organics',
         users: [
             {
-                employeeId: 'admin',
+                id: '12fa3af0-f13d-4dfc-9b79-a6d634aa07dc',
+                res_id: 'e47e69a8-fd5b-462e-bb33-92024b5ab347',
+                outlet_id: 'a5390f5a-f99c-4f8c-9916-ab5d6c4f8b99',
+                employee_id: '12fa3af0-f13d-4dfc-9b79-a6d634aa07dc',
+                employee_Username: 'admin',
                 emp_Fname: 'Admin',
+                emp_Lname: '-',
                 password: 'admin123',
                 role: 'admin',
+                role_all: ['admin'],
+                action_list: ['*'],
             },
         ],
         data: defaultRestaurantData('CSR Organics'),
@@ -404,7 +415,7 @@ export const findRestaurantByName = async (name: string) => {
 export const findUserInRestaurant = async (restaurantId: string, employeeId: string) => {
     const local = ensureLocalRestaurant(restaurantId);
     const matchedLocal =
-        local.users.find((u) => u.employeeId.toLowerCase() === employeeId.toLowerCase()) ?? null;
+        local.users.find((u) => u.employee_id.toLowerCase() === employeeId.toLowerCase()) ?? null;
     if (matchedLocal) {
         return deepClone(matchedLocal);
     }
@@ -427,7 +438,7 @@ export const findUserInRestaurant = async (restaurantId: string, employeeId: str
 
     local.users = usersResponse.users.map((user) => ({ ...user }));
     const matched =
-        local.users.find((u) => u.employeeId.toLowerCase() === employeeId.toLowerCase()) ?? null;
+        local.users.find((u) => u.employee_id.toLowerCase() === employeeId.toLowerCase()) ?? null;
     return matched ? deepClone(matched) : null;
 };
 
@@ -442,8 +453,8 @@ export const createRestaurant = async (restaurantName: string, admin: User) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             restaurantName,
-            adminName: `${admin.emp_Fname ?? ''}${admin.emp_Lname ? ` ${admin.emp_Lname}` : ''}`.trim() || admin.employeeId,
-            adminEmployeeId: admin.employeeId,
+            adminName: `${admin.emp_Fname ?? ''}${admin.emp_Lname ? ` ${admin.emp_Lname}` : ''}`.trim() || admin.employee_id,
+            adminEmployeeId: admin.employee_id,
             password: admin.password,
         }),
     });
@@ -458,9 +469,9 @@ export const createRestaurant = async (restaurantName: string, admin: User) => {
 
     const payload = (await response.json().catch(() => null)) as
         | {
-              restaurantId?: string;
-              restaurantName?: string;
-          }
+            restaurantId?: string;
+            restaurantName?: string;
+        }
         | null;
 
     const persistedId =
@@ -515,7 +526,7 @@ export const addEmployee = async (restaurantId: string, employee: User, outletId
 
 export const removeEmployee = async (restaurantId: string, employeeId: string) => {
     const restaurant = ensureLocalRestaurant(restaurantId);
-    restaurant.users = restaurant.users.filter((u) => u.employeeId !== employeeId);
+    restaurant.users = restaurant.users.filter((u) => u.employee_id !== employeeId);
     return { acknowledged: true };
 };
 
@@ -1028,6 +1039,51 @@ export const getRoles = async (restaurantId: string): Promise<RoleDefinition[]> 
     return Array.isArray(data) ? data : [];
 };
 
+export type ActionRow = {
+    id: string;
+    action_name: string;
+    action_desc?: string | null;
+    group?: string | null;
+};
+
+export type CoreRoleRow = {
+    role: string;
+    actions: string[]; // '*' indicates all actions
+};
+
+export const getActions = async (
+    restaurantId: string,
+): Promise<Array<{ group: string; actions: { id: string; name: string; desc?: string | null }[] }>> => {
+    const data = await backendJson<ActionRow[]>(
+        `/actions?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+
+    if (!Array.isArray(data)) return [];
+
+    const map: Record<string, { id: string; name: string; desc?: string | null }[]> = {};
+    for (const a of data) {
+        const g = (a.group ?? 'General').trim() || 'General';
+        map[g] = map[g] ?? [];
+        map[g].push({ id: a.id, name: a.action_name, desc: a.action_desc ?? null });
+    }
+
+    return Object.keys(map)
+        .sort()
+        .map((g) => ({ group: g, actions: map[g] }));
+};
+
+export const getCoreRoles = async (restaurantId: string): Promise<CoreRoleRow[]> => {
+    const data = await backendJson<CoreRoleRow[]>(
+        `/core-roles?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+
+    return Array.isArray(data) ? data : [];
+};
+
 export const getRestaurantUsers = async (
     restaurantId: string,
     employeeId: string,
@@ -1069,8 +1125,26 @@ export const createRole = async (
         body: JSON.stringify({ role_name: roleName, actions_performable: actions }),
     });
 
-    if (!response?.ok) {
+    if (!response) {
         return null;
+    }
+
+    if (!response.ok) {
+        // Try to surface structured errors from backend (e.g. invalidActionIds)
+        const body = await (async () => {
+            try {
+                return await response.json();
+            } catch {
+                return null;
+            }
+        })();
+
+        const errMsg = (body && typeof body.error === 'string') ? body.error : await readErrorMessage(response);
+        const e: any = new Error(errMsg);
+        if (body && Array.isArray(body.invalidActionIds)) {
+            e.invalidActionIds = body.invalidActionIds;
+        }
+        throw e;
     }
 
     return (await response.json()) as RoleDefinition;

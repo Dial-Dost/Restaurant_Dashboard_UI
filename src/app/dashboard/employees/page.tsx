@@ -58,60 +58,18 @@ import {
   RoleDefinition,
   getRestaurantUsers,
   getRoles,
+  getActions,
+  getCoreRoles,
   createRole,
   deleteRole,
   assignRoleToEmployee,
   removeRoleFromEmployee,
 } from "@/lib/db";
+import{ toTitleCase } from "@/lib/utils";
 
-const CORE_ROLES = ["admin", "employee", "valet"] as const;
+// core roles are loaded from server
 
-const ACCESS_CATALOG: Array<{ group: string; actions: string[] }> = [
-  {
-    group: "Dashboard",
-    actions: ["dashboard.view", "dashboard.analytics.view"],
-  },
-  {
-    group: "Bookings",
-    actions: ["bookings.view", "bookings.create", "bookings.edit", "bookings.cancel", "bookings.assign_table"],
-  },
-  {
-    group: "Customers",
-    actions: ["customers.view", "customers.create", "customers.edit"],
-  },
-  {
-    group: "Tables",
-    actions: ["tables.view", "tables.create", "tables.edit", "tables.delete", "tables.assign_employee"],
-  },
-  {
-    group: "Orders",
-    actions: ["orders.view", "orders.create", "orders.edit", "orders.status.update", "orders.apc.view"],
-  },
-  {
-    group: "Menu",
-    actions: ["menu.view", "menu.create", "menu.edit", "menu.delete"],
-  },
-  {
-    group: "Inventory",
-    actions: ["inventory.view", "inventory.create", "inventory.edit", "inventory.delete"],
-  },
-  {
-    group: "Valet",
-    actions: ["valet.view", "valet.create", "valet.edit", "valet.bays.manage"],
-  },
-  {
-    group: "Feedback",
-    actions: ["feedback.view", "feedback.summary.view", "feedback.stats.view"],
-  },
-  {
-    group: "Employees & Roles",
-    actions: ["employees.view", "employees.create", "employees.remove", "roles.create", "roles.delete", "roles.assign", "roles.remove"],
-  },
-  {
-    group: "System",
-    actions: ["settings.view", "settings.edit", "audit_logs.view"],
-  },
-];
+// Actions catalog is fetched from backend into `accessCatalog` state.
 
 const addEmployeeSchema = z.object({
   name: z.string().min(1, "Name is required."),
@@ -137,10 +95,31 @@ export default function EmployeesPage() {
   const [newRoleName, setNewRoleName] = useState("");
   const [newRoleActions, setNewRoleActions] = useState<string[]>([]);
 
+  const [accessCatalog, setAccessCatalog] = useState<
+    Array<{ group: string; actions: { id: string; name: string; desc?: string | null }[] }>
+  >([]);
+  const [selectedRoleToEdit, setSelectedRoleToEdit] = useState<RoleDefinition | null>(null);
+  const [isEditRoleDialogOpen, setIsEditRoleDialogOpen] = useState(false);
+  const [editRoleActions, setEditRoleActions] = useState<string[]>([]);
+  const [coreRoles, setCoreRoles] = useState<{ role: string; actions: string[] }[]>([]);
+  const [selectedCoreRoleToView, setSelectedCoreRoleToView] = useState<{ role: string; actions: string[] } | null>(null);
+  const [isViewCoreRoleDialogOpen, setIsViewCoreRoleDialogOpen] = useState(false);
+
   const allAssignableRoles = useMemo(() => {
     const custom = roleDefinitions.map((role) => role.role_name.trim().toLowerCase()).filter(Boolean);
-    return Array.from(new Set([...CORE_ROLES, ...custom]));
-  }, [roleDefinitions]);
+    const cores = coreRoles.map((c) => (typeof c.role === 'string' ? c.role.trim().toLowerCase() : '')).filter(Boolean);
+    return Array.from(new Set([...cores, ...custom]));
+  }, [roleDefinitions, coreRoles]);
+
+  const actionInfoMap = useMemo(() => {
+    const m: Record<string, { name: string; desc?: string | null }> = {};
+    for (const g of accessCatalog) {
+      for (const a of g.actions) {
+        m[a.id] = { name: a.name, desc: a.desc ?? null };
+      }
+    }
+    return m;
+  }, [accessCatalog]);
 
   const fetchEmployees = async () => {
     if (!user?.restaurantId || !user.employeeId) return;
@@ -167,6 +146,28 @@ export default function EmployeesPage() {
   useEffect(() => {
     void fetchEmployees();
     void fetchRoles();
+    const fetchCoreRoles = async () => {
+      if (!user?.restaurantId) return;
+      try {
+        const cores = await getCoreRoles(user.restaurantId);
+        setCoreRoles(Array.isArray(cores) ? cores : []);
+      } catch (err) {
+        console.error('fetch_core_roles_failed', err);
+        setCoreRoles([]);
+      }
+    };
+    void fetchCoreRoles();
+    const fetchActions = async () => {
+      if (!user?.restaurantId) return;
+      try {
+        const catalog = await getActions(user.restaurantId);
+        setAccessCatalog(Array.isArray(catalog) ? catalog : []);
+      } catch (err) {
+        console.error("fetch_actions_failed", err);
+        setAccessCatalog([]);
+      }
+    };
+    void fetchActions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.restaurantId, user?.employeeId]);
 
@@ -248,20 +249,49 @@ export default function EmployeesPage() {
       return;
     }
 
-    const ok = await removeRoleFromEmployee(user.restaurantId, employee.employeeId, normalized);
+    const ok = await removeRoleFromEmployee(user.restaurantId, employee.employee_id, normalized);
     if (!ok) {
       toast({ title: "Error", description: "Unable to remove role.", variant: "destructive" });
       return;
     }
 
     await fetchEmployees();
-    toast({ title: "Role Removed", description: `Removed ${normalized} from ${employee.employeeId}.` });
+    toast({ title: "Role Removed", description: `Removed ${normalized} from ${employee.employee_id}.` });
   };
 
   const toggleNewRoleAction = (action: string) => {
     setNewRoleActions((prev) =>
       prev.includes(action) ? prev.filter((entry) => entry !== action) : [...prev, action],
     );
+  };
+
+  const toggleEditRoleAction = (action: string) => {
+    setEditRoleActions((prev) => (prev.includes(action) ? prev.filter((entry) => entry !== action) : [...prev, action]));
+  };
+
+  const openEditRole = (role: RoleDefinition) => {
+    setSelectedRoleToEdit(role);
+    setEditRoleActions(Array.isArray(role.actions_performable) ? role.actions_performable.slice() : []);
+    setIsEditRoleDialogOpen(true);
+  };
+
+  const openViewCoreRole = (role: { role: string; actions: string[] }) => {
+    setSelectedCoreRoleToView(role);
+    setIsViewCoreRoleDialogOpen(true);
+  };
+
+  const handleSaveRoleChanges = async () => {
+    if (!user?.restaurantId || !selectedRoleToEdit) return;
+    try {
+      await createRole(user.restaurantId, selectedRoleToEdit.role_name, editRoleActions);
+      await fetchRoles();
+      setIsEditRoleDialogOpen(false);
+      setSelectedRoleToEdit(null);
+      setEditRoleActions([]);
+      toast({ title: 'Role Updated', description: `Role '${selectedRoleToEdit.role_name}' updated.` });
+    } catch (error: any) {
+      toast({ title: 'Error', description: error?.message ?? 'Unable to update role', variant: 'destructive' });
+    }
   };
 
   const handleCreateCustomRole = async () => {
@@ -273,18 +303,23 @@ export default function EmployeesPage() {
       return;
     }
 
-    if (CORE_ROLES.includes(normalizedName as (typeof CORE_ROLES)[number])) {
+    if (coreRoles.some((c) => c.role.trim().toLowerCase() === normalizedName)) {
       toast({ title: "Protected Role", description: "Core roles cannot be recreated as custom roles.", variant: "destructive" });
       return;
     }
 
-    const created = await createRole(user.restaurantId, normalizedName, newRoleActions);
-    if (!created) {
-      toast({ title: "Error", description: "Unable to create role.", variant: "destructive" });
+    try {
+      const created = await createRole(user.restaurantId, normalizedName, newRoleActions);
+      if (!created) {
+        toast({ title: "Error", description: "Unable to create role.", variant: "destructive" });
+        return;
+      }
+
+      await fetchRoles();
+    } catch (error: any) {
+      toast({ title: "Error", description: error?.message ?? "Unable to create role", variant: "destructive" });
       return;
     }
-
-    await fetchRoles();
     setNewRoleName("");
     setNewRoleActions([]);
     setIsCreateRoleDialogOpen(false);
@@ -294,7 +329,7 @@ export default function EmployeesPage() {
   const handleDeleteCustomRole = async (role: RoleDefinition) => {
     if (!user?.restaurantId) return;
 
-    if (CORE_ROLES.includes(role.role_name as (typeof CORE_ROLES)[number])) {
+    if (coreRoles.some((c) => c.role.trim().toLowerCase() === role.role_name.trim().toLowerCase())) {
       toast({ title: "Protected Role", description: "Core roles cannot be deleted.", variant: "destructive" });
       return;
     }
@@ -348,7 +383,7 @@ export default function EmployeesPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>Name</TableHead>
-                <TableHead>Employee ID</TableHead>
+                <TableHead>Employee Username</TableHead>
                 <TableHead>Roles</TableHead>
                 <TableHead>
                   <span className="sr-only">Actions</span>
@@ -363,14 +398,14 @@ export default function EmployeesPage() {
                 const removable = normalizedRoles.filter((entry) => entry !== employee.role);
 
                 return (
-                  <TableRow key={employee.employeeId ?? employee.employeeUsername ?? `emp-${idx}`}>
-                    <TableCell className="font-medium">{`${employee.emp_Fname ?? ''}${employee.emp_Lname ? ` ${employee.emp_Lname}` : ''}`.trim() || employee.employeeId}</TableCell>
-                    <TableCell>{employee.employeeId}</TableCell>
+                  <TableRow key={employee.employee_id ?? employee.employee_Username ?? `emp-${idx}`}>
+                    <TableCell className="font-medium">{`${employee.emp_Fname ?? ''}${employee.emp_Lname ? ` ${employee.emp_Lname}` : ''}`.trim() || employee.employee_id}</TableCell>
+                    <TableCell>{employee.employee_Username ?? employee.employee_id}</TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1">
                         {employeeRoles.map((role) => (
-                          <Badge key={`${employee.employeeId}-${role}`} variant={role === "admin" ? "default" : "secondary"}>
-                            {role}
+                          <Badge key={`${employee.employee_id}-${role}`} variant={role === "admin" ? "default" : "secondary"}>
+                            {toTitleCase(role)}
                           </Badge>
                         ))}
                       </div>
@@ -394,10 +429,10 @@ export default function EmployeesPage() {
                               ) : (
                                 assignable.map((roleName) => (
                                   <DropdownMenuItem
-                                    key={`${employee.employeeId}-assign-${roleName}`}
-                                    onClick={() => void handleAssignRole(employee.employeeId, roleName)}
+                                    key={`${employee.employee_id}-assign-${roleName}`}
+                                    onClick={() => void handleAssignRole(employee.employee_id, roleName)}
                                   >
-                                    {roleName}
+                                    {toTitleCase(roleName)}
                                   </DropdownMenuItem>
                                 ))
                               )}
@@ -412,10 +447,10 @@ export default function EmployeesPage() {
                               ) : (
                                 removable.map((roleName) => (
                                   <DropdownMenuItem
-                                    key={`${employee.employeeId}-remove-${roleName}`}
+                                    key={`${employee.employee_id}-remove-${roleName}`}
                                     onClick={() => void handleRemoveRole(employee, roleName)}
                                   >
-                                    {roleName}
+                                    {toTitleCase(roleName)}
                                   </DropdownMenuItem>
                                 ))
                               )}
@@ -423,7 +458,7 @@ export default function EmployeesPage() {
                           </DropdownMenuSub>
 
                           <DropdownMenuItem
-                            onClick={() => void handleRemoveEmployee(employee.employeeId)}
+                            onClick={() => void handleRemoveEmployee(employee.employee_id)}
                             className="text-destructive"
                           >
                             <Trash2 className="mr-2 h-4 w-4" />
@@ -472,26 +507,30 @@ export default function EmployeesPage() {
                 </div>
 
                 <div className="max-h-[360px] overflow-y-auto rounded-md border p-3">
-                  {ACCESS_CATALOG.map((group) => (
-                    <div key={group.group} className="mb-3">
-                      <p className="mb-1 text-sm font-semibold">{group.group}</p>
-                      <div className="grid gap-1 sm:grid-cols-2">
-                        {group.actions.map((action) => {
-                          const checked = newRoleActions.includes(action);
-                          return (
-                            <label key={action} className="flex items-center gap-2 rounded px-2 py-1 hover:bg-muted/40">
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                onChange={() => toggleNewRoleAction(action)}
-                              />
-                              <span className="text-sm">{action}</span>
-                            </label>
-                          );
-                        })}
+                  {accessCatalog.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No actions available.</p>
+                  ) : (
+                    accessCatalog.map((group) => (
+                      <div key={group.group} className="mb-3">
+                        <p className="mb-1 text-sm font-semibold">{group.group}</p>
+                        <div className="grid gap-1 sm:grid-cols-2">
+                          {group.actions.map((action) => {
+                            const checked = newRoleActions.includes(action.id);
+                            return (
+                              <label key={action.id} className="flex items-center gap-2 rounded px-2 py-1 hover:bg-muted/40">
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => toggleNewRoleAction(action.id)}
+                                />
+                                <span className="text-sm" title={action.desc ?? ''} aria-label={action.desc ?? ''}>{action.name}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    ))
+                  )}
                 </div>
               </div>
 
@@ -500,14 +539,92 @@ export default function EmployeesPage() {
               </DialogFooter>
             </DialogContent>
           </Dialog>
+          <Dialog open={isEditRoleDialogOpen} onOpenChange={setIsEditRoleDialogOpen}>
+            <DialogContent className="sm:max-w-[740px]">
+              <DialogHeader>
+                <DialogTitle>Edit Role</DialogTitle>
+                <DialogDescription>
+                  Modify the actions linked to this role.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="grid gap-3">
+                <div className="grid gap-1">
+                  <Label>Role Name</Label>
+                  <Input value={selectedRoleToEdit?.role_name ?? ''} readOnly />
+                </div>
+
+                <div className="max-h-[360px] overflow-y-auto rounded-md border p-3">
+                  {accessCatalog.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No actions available.</p>
+                  ) : (
+                    accessCatalog.map((group) => (
+                      <div key={group.group} className="mb-3">
+                        <p className="mb-1 text-sm font-semibold">{group.group}</p>
+                        <div className="grid gap-1 sm:grid-cols-2">
+                          {group.actions.map((action) => {
+                            const checked = editRoleActions.includes(action.id);
+                            return (
+                              <label key={action.id} className="flex items-center gap-2 rounded px-2 py-1 hover:bg-muted/40">
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => toggleEditRoleAction(action.id)}
+                                />
+                                <span className="text-sm" title={action.desc ?? ''} aria-label={action.desc ?? ''}>{action.name}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              <DialogFooter>
+                <Button onClick={() => void handleSaveRoleChanges()}>Save Changes</Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+          <Dialog open={isViewCoreRoleDialogOpen} onOpenChange={setIsViewCoreRoleDialogOpen}>
+            <DialogContent className="sm:max-w-[560px]">
+              <DialogHeader>
+                <DialogTitle>Core Role: {selectedCoreRoleToView?.role}</DialogTitle>
+                <DialogDescription>Actions granted to this core role.</DialogDescription>
+              </DialogHeader>
+              <div className="p-3">
+                {selectedCoreRoleToView?.actions?.length ? (
+                  <div className="grid gap-2">
+                    {selectedCoreRoleToView.actions.map((aid) => (
+                      <div key={aid} className="text-sm" title={aid === '*' ? 'All actions' : actionInfoMap[aid]?.desc ?? ''}>
+                        {aid === '*' ? 'All actions' : actionInfoMap[aid]?.name ?? aid}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">No actions configured for this core role.</p>
+                )}
+              </div>
+              <DialogFooter>
+                <Button onClick={() => setIsViewCoreRoleDialogOpen(false)}>Close</Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </CardHeader>
 
         <CardContent>
           <div className="space-y-2">
             <div className="flex flex-wrap gap-2">
-              {CORE_ROLES.map((role) => (
-                <Badge key={`core-${role}`} variant="default">{role} (core)</Badge>
-              ))}
+              {coreRoles.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No core roles available</p>
+              ) : (
+                coreRoles.map((r) => (
+                  <Button key={`core-${r.role}`} variant="ghost" size="sm" onClick={() => openViewCoreRole(r)}>
+                    {toTitleCase(r.role)} (core)
+                  </Button>
+                ))
+              )}
             </div>
 
             {roleDefinitions.length === 0 ? (
@@ -515,24 +632,26 @@ export default function EmployeesPage() {
             ) : (
               <div className="space-y-2">
                 {roleDefinitions.map((role) => (
-                  <div key={role.id} className="flex items-center justify-between rounded-md border p-2">
-                    <div>
-                      <p className="font-medium">{role.role_name}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {role.actions_performable.length} access rules configured
-                      </p>
-                    </div>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="text-destructive"
-                      onClick={() => void handleDeleteCustomRole(role)}
-                    >
-                      <Trash2 className="mr-1 h-4 w-4" />
-                      Delete
-                    </Button>
-                  </div>
-                ))}
+                      <div key={role.id} className="flex items-center justify-between rounded-md border p-2">
+                        <button type="button" onClick={() => openEditRole(role)} className="text-left">
+                          <p className="font-medium">{toTitleCase(role.role_name)}</p>
+                          <p className="text-xs text-muted-foreground break-words">
+                            {(Array.isArray(role.actions_performable) && role.actions_performable.length > 0)
+                              ? role.actions_performable.map((id) => actionInfoMap[id]?.name ?? id).join(', ')
+                              : 'No actions configured'}
+                          </p>
+                        </button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-destructive"
+                          onClick={() => void handleDeleteCustomRole(role)}
+                        >
+                          <Trash2 className="mr-1 h-4 w-4" />
+                          Delete
+                        </Button>
+                      </div>
+                    ))}
               </div>
             )}
           </div>
