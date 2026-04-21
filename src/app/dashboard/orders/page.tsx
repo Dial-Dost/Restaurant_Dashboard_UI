@@ -43,7 +43,23 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Switch } from "@/components/ui/switch";
 import { Combobox } from "@/components/ui/combobox";
-import { getMenuItems, getOrders, addOrder, getMonthlyApcInsight, createBill, updateBillStatusByOrder, getTables, getOutletDefaultTax, setOutletDefaultTax, replaceBill, type MonthlyApcInsight } from "@/lib/db";
+import {
+  getMenuItems,
+  getOrders,
+  addOrder,
+  getMonthlyApcInsight,
+  createBill,
+  getTables,
+  getOutletDefaultTax,
+  setOutletDefaultTax,
+  replaceBill,
+  confirmBillPaymentByWaiter,
+  approveBillPaymentByAdmin,
+  closeBillByOrder,
+  addAuditLogEntry,
+  type MonthlyApcInsight,
+  type PaymentMethod,
+} from "@/lib/db";
 import { useAuth } from "@/context/AuthContext";
 import { useCurrency } from "@/hooks/use-currency";
 import type { MenuItem } from "../menu/data";
@@ -57,7 +73,14 @@ type OrderItem = {
     orderedAt: string;
 };
 
-export type OrderStatus = "Preparing" | "Served" | "Bill Verification" | "Paid" | "Cancelled";
+export type OrderStatus =
+  | "Preparing"
+  | "Served"
+  | "Bill Verification"
+  | "Payment Pending Approval"
+  | "Paid"
+  | "Closed"
+  | "Cancelled";
 
 type Tax = {
   id: string;
@@ -76,7 +99,25 @@ export type Order = {
   applyServiceCharge: boolean;
   total: number;
   status: OrderStatus;
+  payment_method?: PaymentMethod | null;
+  payment_waiter_confirmed_at?: string | null;
+  payment_waiter_confirmed_by?: string | null;
+  payment_admin_approved_at?: string | null;
+  payment_admin_approved_by?: string | null;
+  bill_closed_at?: string | null;
+  bill_closed_by?: string | null;
 };
+
+const PAYMENT_METHOD_OPTIONS: PaymentMethod[] = [
+  "Swiggy",
+  "Dine Out",
+  "Zomato Pay",
+  "Eazydiner",
+  "Cash",
+  "Upi",
+  "Card",
+  "Online Transfer",
+];
 
 const calculateServiceCharge = (subtotal: number, percentage?: number, apply?: boolean) => {
   if (!apply || !percentage) return 0;
@@ -113,6 +154,11 @@ export default function OrdersPage() {
   
   const { user } = useAuth();
   const { currencySymbol } = useCurrency();
+  const hasRole = (role: "admin" | "employee" | "valet" | "waiter") => {
+    if (!user) return false;
+    if (user.role === role) return true;
+    return Array.isArray(user.role_all) ? user.role_all.includes(role) : false;
+  };
   const [orders, setOrders] = useState<Order[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [tables, setTables] = useState<{ id: number; name: string; capacity: number }[]>([]);
@@ -321,7 +367,11 @@ export default function OrdersPage() {
         return "default";
       case "Bill Verification":
         return "default";
+      case "Payment Pending Approval":
+        return "secondary";
       case "Paid":
+        return "outline";
+      case "Closed":
         return "outline";
       default:
         return "outline";
@@ -455,30 +505,87 @@ export default function OrdersPage() {
 
       setIsEditDialogOpen(false);
       setSelectedOrder(null);
-    } catch (err) {
+    } catch (err: any) {
       console.error('replace bill failed', err);
       alert('Failed to replace bill: ' + String(err?.message ?? err));
     }
   };
 
-  const handleSetPaid = async (order: Order) => {
-    if (!user?.restaurantId) return;
+  const handleWaiterConfirmPayment = async (order: Order, paymentMethod: PaymentMethod) => {
+    if (!user?.restaurantId || !user.employeeId) return;
     const confirmed = window.confirm(
-      'Confirm mark as Paid? This action cannot be undone and you will not be able to revert to previous statuses.',
+      `Confirm payment by ${paymentMethod}? This sends the bill for admin approval.`,
     );
     if (!confirmed) return;
 
     try {
-      // update bill status by order to 2 (paid)
-      const ok = await updateBillStatusByOrder(user.restaurantId, order.id, 2);
-      if (!ok) throw new Error('Failed to update bill');
-      const updatedOrder: Order = { ...order, status: 'Paid' };
-      await addOrder(user.restaurantId, updatedOrder);
+      await confirmBillPaymentByWaiter(user.restaurantId, user.employeeId, order.id, paymentMethod);
+      const actorName = user.employeeUsername
+        || `${user.emp_Fname ?? ''} ${user.emp_Lname ?? ''}`.trim()
+        || user.employeeId
+        || 'System';
+      await addAuditLogEntry(user.restaurantId, {
+        employee: actorName,
+        employeeId: user.employeeId,
+        action: 'Bill Payment Confirmed',
+        details: `Waiter confirmed payment for order ${order.id} via ${paymentMethod}`,
+      });
       const updatedOrders = await getOrders(user.restaurantId);
       setOrders(Array.isArray(updatedOrders) ? updatedOrders : []);
-    } catch (err) {
-      console.error('failed to mark paid', err);
-      alert('Unable to mark paid. Please try again.');
+      alert('Payment confirmation submitted. Awaiting admin approval.');
+    } catch (err: any) {
+      console.error('failed to confirm payment', err);
+      alert(String(err?.message ?? 'Unable to confirm payment.'));
+    }
+  };
+
+  const handleAdminApprovePayment = async (order: Order) => {
+    if (!user?.restaurantId || !user.employeeId) return;
+    const confirmed = window.confirm('Approve this waiter-confirmed payment?');
+    if (!confirmed) return;
+
+    try {
+      await approveBillPaymentByAdmin(user.restaurantId, user.employeeId, order.id);
+      const actorName = user.employeeUsername
+        || `${user.emp_Fname ?? ''} ${user.emp_Lname ?? ''}`.trim()
+        || user.employeeId
+        || 'System';
+      await addAuditLogEntry(user.restaurantId, {
+        employee: actorName,
+        employeeId: user.employeeId,
+        action: 'Bill Payment Approved',
+        details: `Admin approved payment for order ${order.id}`,
+      });
+      const updatedOrders = await getOrders(user.restaurantId);
+      setOrders(Array.isArray(updatedOrders) ? updatedOrders : []);
+    } catch (err: any) {
+      console.error('failed to approve payment', err);
+      alert(String(err?.message ?? 'Unable to approve payment.'));
+    }
+  };
+
+  const handleCloseBill = async (order: Order) => {
+    if (!user?.restaurantId || !user.employeeId) return;
+    const confirmed = window.confirm('Close this bill? This finalizes the order.');
+    if (!confirmed) return;
+
+    try {
+      await closeBillByOrder(user.restaurantId, user.employeeId, order.id);
+      const actorName = user.employeeUsername
+        || `${user.emp_Fname ?? ''} ${user.emp_Lname ?? ''}`.trim()
+        || user.employeeId
+        || 'System';
+      await addAuditLogEntry(user.restaurantId, {
+        employee: actorName,
+        employeeId: user.employeeId,
+        action: 'Bill Closed',
+        details: `Admin closed bill for order ${order.id}`,
+      });
+      const updatedOrders = await getOrders(user.restaurantId);
+      setOrders(Array.isArray(updatedOrders) ? updatedOrders : []);
+    } catch (err: any) {
+      console.error('failed to close bill', err);
+      alert(String(err?.message ?? 'Unable to close bill.'));
     }
   };
 
@@ -572,6 +679,11 @@ export default function OrdersPage() {
                   </TableCell>
                   <TableCell>
                     <div className="font-medium">{order.items.map(i => `${i.quantity}x ${i.name}`).join(', ')}</div>
+                    {order.payment_method ? (
+                      <div className="text-xs text-muted-foreground">
+                        Payment Method: {order.payment_method}
+                      </div>
+                    ) : null}
                   </TableCell>
                   <TableCell className="hidden md:table-cell text-right">{currencySymbol}{order.total.toFixed(2)}</TableCell>
                   <TableCell className="hidden md:table-cell">
@@ -599,7 +711,13 @@ export default function OrdersPage() {
                       <DropdownMenuContent align="end">
                         <DropdownMenuLabel>Actions</DropdownMenuLabel>
                         <DropdownMenuItem
-                          disabled={order.status === 'Bill Verification' || order.status === 'Paid' || order.status === 'Cancelled'}
+                          disabled={
+                            order.status === 'Bill Verification'
+                            || order.status === 'Payment Pending Approval'
+                            || order.status === 'Paid'
+                            || order.status === 'Closed'
+                            || order.status === 'Cancelled'
+                          }
                           onClick={(e) => { e.stopPropagation(); setSelectedOrder(order); setIsDetailsOpen(true); }}
                         >
                           Update Order
@@ -615,30 +733,76 @@ export default function OrdersPage() {
                             <DropdownMenuSubContent>
                                 <DropdownMenuItem
                                   onClick={(e) => {e.stopPropagation(); updateOrderStatus(order.id, 'Preparing')}}
-                                  disabled={order.status === 'Bill Verification' || order.status === 'Paid' || order.status === 'Cancelled'}
+                                  disabled={
+                                    order.status === 'Bill Verification'
+                                    || order.status === 'Payment Pending Approval'
+                                    || order.status === 'Paid'
+                                    || order.status === 'Closed'
+                                    || order.status === 'Cancelled'
+                                  }
                                 >
                                   Preparing
                                 </DropdownMenuItem>
                                 <DropdownMenuItem
                                   onClick={(e) => {e.stopPropagation(); updateOrderStatus(order.id, 'Served')}}
-                                  disabled={order.status === 'Bill Verification' || order.status === 'Paid' || order.status === 'Cancelled'}
+                                  disabled={
+                                    order.status === 'Bill Verification'
+                                    || order.status === 'Payment Pending Approval'
+                                    || order.status === 'Paid'
+                                    || order.status === 'Closed'
+                                    || order.status === 'Cancelled'
+                                  }
                                 >
                                   Served
                                 </DropdownMenuItem>
                                 <DropdownMenuItem
                                   onClick={(e) => {e.stopPropagation(); handleSetBillVerification(order)}}
-                                  disabled={order.status === 'Bill Verification' || order.status === 'Paid' || order.status === 'Cancelled'}
+                                  disabled={
+                                    order.status === 'Bill Verification'
+                                    || order.status === 'Payment Pending Approval'
+                                    || order.status === 'Paid'
+                                    || order.status === 'Closed'
+                                    || order.status === 'Cancelled'
+                                  }
                                 >
                                   Bill Verification
                                 </DropdownMenuItem>
-                                <DropdownMenuItem
-                                  onClick={(e) => {e.stopPropagation(); handleSetPaid(order)}}
-                                  disabled={order.status !== 'Bill Verification'}
-                                >
-                                  Paid
-                                </DropdownMenuItem>
                             </DropdownMenuSubContent>
                         </DropdownMenuSub>
+                        <DropdownMenuSub>
+                          <DropdownMenuSubTrigger
+                            onClick={(e) => { e.stopPropagation(); }}
+                            disabled={!hasRole('waiter') || order.status !== 'Bill Verification'}
+                          >
+                            Confirm Payment (Waiter)
+                          </DropdownMenuSubTrigger>
+                          <DropdownMenuSubContent>
+                            {PAYMENT_METHOD_OPTIONS.map((method) => (
+                              <DropdownMenuItem
+                                key={method}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void handleWaiterConfirmPayment(order, method);
+                                }}
+                                disabled={!hasRole('waiter') || order.status !== 'Bill Verification'}
+                              >
+                                {method}
+                              </DropdownMenuItem>
+                            ))}
+                          </DropdownMenuSubContent>
+                        </DropdownMenuSub>
+                        <DropdownMenuItem
+                          onClick={(e) => { e.stopPropagation(); void handleAdminApprovePayment(order); }}
+                          disabled={!hasRole('admin') || order.status !== 'Payment Pending Approval'}
+                        >
+                          Approve Payment (Admin)
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={(e) => { e.stopPropagation(); void handleCloseBill(order); }}
+                          disabled={!hasRole('admin') || order.status !== 'Paid'}
+                        >
+                          Close Bill (Admin)
+                        </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem onClick={(e) => { e.stopPropagation(); triggerPrint(order); }}>
                             <Printer className="mr-2 h-4 w-4" />
@@ -1038,7 +1202,14 @@ const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit, onRep
 
                     <div className="mt-4">
                       <Label>Reason for Edit (required)</Label>
-                      <textarea value={reason} onChange={e => setReason(e.target.value)} className="w-full border rounded p-2 mt-1" rows={3} />
+                      <textarea
+                        aria-label="Reason for bill replacement"
+                        placeholder="Write the reason for replacement"
+                        value={reason}
+                        onChange={e => setReason(e.target.value)}
+                        className="w-full border rounded p-2 mt-1"
+                        rows={3}
+                      />
                     </div>
                 </div>
                 <DialogFooter>
