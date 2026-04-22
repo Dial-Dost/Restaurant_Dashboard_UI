@@ -69,6 +69,7 @@ export function SettingsForm() {
   const { currency, setCurrency, currencyOptions } = useCurrency();
   const [feedbackQrDataUrl, setFeedbackQrDataUrl] = useState<string>("")
   const [feedbackQrError, setFeedbackQrError] = useState<string>("")
+  const [currentProfile, setCurrentProfile] = useState<RestaurantProfile | null>(null)
 
   const feedbackFormUrl = useMemo(() => {
     if (!user?.res_id || !user?.employeeId || !user?.outlet_id) {
@@ -130,6 +131,7 @@ export function SettingsForm() {
     if (user?.restaurantId) {
         const fetchProfile = async () => {
           const profile = await getRestaurantProfile(user.restaurantId, user.employeeId);
+          setCurrentProfile(profile);
           form.reset({
               name: profile.restaurant_name || "",
               address: profile.outlet_add || "",
@@ -187,6 +189,12 @@ export function SettingsForm() {
         outlet_phone: data.phone,
         email: data.email,
         outlet_hours: data.hours,
+        res_id: currentProfile?.res_id ?? user.res_id ?? user.restaurantId,
+        restaurant_username: currentProfile?.restaurant_username ?? data.name,
+        restaurant_main_office_add: currentProfile?.restaurant_main_office_add ?? data.address,
+        restaurant_logo_url: currentProfile?.restaurant_logo_url ?? null,
+        outlet_id: currentProfile?.outlet_id ?? user.outlet_id ?? "main",
+        outlet_name: currentProfile?.outlet_name ?? data.name,
     };
     await updateRestaurantProfile(user.restaurantId, user.employeeId, profileData);
     setCurrency(data.currency);

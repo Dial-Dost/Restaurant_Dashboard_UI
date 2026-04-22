@@ -117,7 +117,7 @@ function PrintPageContents() {
                 }
             `}</style>
             
-            <Card className="mx-auto shadow-none border-black receipt-card" style={{width: 420}}>
+            <Card className="mx-auto w-[420px] max-w-full shadow-none border-black receipt-card">
                 <div className="mb-3 text-right">
                     <div className="flex gap-2 justify-end no-print">
                         <button
@@ -150,15 +150,15 @@ function PrintPageContents() {
                 </CardHeader>
                 <CardContent className="p-6">
                     <div className="mb-4 text-sm" > 
-                        <div style={{width: '100%'}}>
+                        <div className="w-full">
                             <p><strong>Customer Name:</strong> {order.customer}</p>
                         </div>
-                        <div className='border-t border-black pt-2' style={{width: '100%', textAlign: 'center', display: 'flex', justifyContent: 'space-between'}}>
+                        <div className="border-t border-black pt-2 w-full text-center flex justify-between">
                             <p><strong>Date:</strong> {new Date().toLocaleString()}</p>
                             <p><strong>Dine In:</strong> {order.table}</p>
                            
                         </div>
-                        <div style={{width: '100%', 'display': 'flex', justifyContent: 'space-between'}}>
+                        <div className="w-full flex justify-between">
                              <p><strong>Bill No.:</strong> {billNo.slice(0, 10) || order.id}</p>
                             <p><strong>Cashier:</strong> {cashierName}</p>
                         </div>
@@ -222,7 +222,7 @@ function PrintPageContents() {
                     <div className="text-center mt-4 text-xs text-gray-600">
                         <p>For calling Valet kindly scan the below QR code</p>
                         {qrDataUrl ? (
-                          <img src={qrDataUrl} alt="valet-qr" className="mx-auto mt-2" style={{width: 150, height: 150}} />
+                          <img src={qrDataUrl} alt="valet-qr" className="mx-auto mt-2 w-[150px] h-[150px]" />
                         ) : (
                           <p className="text-xs text-muted-foreground">Loading QR...</p>
                         )}

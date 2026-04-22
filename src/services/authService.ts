@@ -44,13 +44,19 @@ export const signUpRestaurant = async ({ restaurantName, adminName, adminEmploye
     password: string
 }) => {
     try {
+        const restaurantId = getRestaurantId(restaurantName);
         const adminUser: User = {
+            id: adminEmployeeId,
+            res_id: restaurantId,
+            outlet_id: 'main',
             employee_id: adminEmployeeId,
+            employee_Username: adminEmployeeId,
             // store admin full name as first name for backwards-compatible signup UI
             emp_Fname: adminName,
             emp_Lname: null,
             password: password, // In a real app, hash this password
-            role: 'admin' as const
+            role: 'admin' as const,
+            action_list: [],
         };
         const newRestaurant = await createRestaurant(restaurantName, adminUser);
         return { user: { uid: newRestaurant.id, ...adminUser } };
