@@ -129,9 +129,43 @@ function PrintPageContents() {
                                 const esc = await generateEscPos(user, profile, cashierName);
                                 if (!esc) return;
 
-                                // Convert ESC/POS → readable text preview
+                                // Convert ESC/POS > readable text preview
                                 const decoded = new TextDecoder().decode(esc);
                                 setPreviewText(decoded);
+
+                                // Convert to base64 and send to backend to publish to subscribed printing apps
+                                const toBase64 = (bytes: Uint8Array) => {
+                                    if (typeof window !== 'undefined' && typeof window.btoa === 'function') {
+                                        let binary = '';
+                                        const len = bytes.byteLength;
+                                        for (let i = 0; i < len; i++) binary += String.fromCharCode(bytes[i]);
+                                        return window.btoa(binary);
+                                    }
+                                    // fallback (node)
+                                    return Buffer.from(bytes).toString('base64');
+                                };
+
+                                const b64 = toBase64(esc);
+                                const backend = (process.env.NEXT_PUBLIC_API_URL ?? `${window.location.protocol}//${window.location.hostname}:3000`).replace(/\/$/, '');
+
+                                try {
+                                    const resp = await fetch(`${backend}/publish/bill`, {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ restaurantId: user?.res_id, outletId: user?.outlet_id, billId: billNo || String(Date.now()), escBase64: b64 }),
+                                    });
+
+                                    if (!resp.ok) {
+                                        const txt = await resp.text();
+                                        alert('Failed to publish bill: ' + txt);
+                                        return;
+                                    }
+
+                                    alert('Bill published to backend for printing');
+                                } catch (err) {
+                                    console.error(err);
+                                    alert('Unable to send bill to backend');
+                                }
                             }}
                             className="px-3 py-1 border rounded text-sm"
                         >
