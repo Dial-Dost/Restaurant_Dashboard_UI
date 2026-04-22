@@ -7,7 +7,7 @@ export default function SettingsPage() {
       <div>
         <h3 className="text-lg font-medium">Settings</h3>
         <p className="text-sm text-muted-foreground">
-          Manage your restaurant's profile and settings.
+          Manage your restaurant&apos;s profile and settings.
         </p>
       </div>
       <Separator />

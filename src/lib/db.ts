@@ -23,11 +23,19 @@ export type User = {
 };
 
 export type RestaurantProfile = {
-    name: string;
-    address: string;
-    phone: string;
+    restaurant_name: string;
+    outlet_add: string;
+    outlet_phone: string;
     email: string;
-    hours: string;
+    outlet_hours: string;
+
+    res_id: string;
+    restaurant_username: string;
+    restaurant_main_office_add: string | null;
+    restaurant_logo_url: string | null;
+
+    outlet_id: string;
+    outlet_name: string;
 };
 
 export type RoleDefinition = {
@@ -123,7 +131,19 @@ const deepClone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 const getRestaurantId = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, '');
 
 const defaultRestaurantData = (restaurantName: string): RestaurantData => ({
-    profile: { name: restaurantName, address: '', phone: '', email: '', hours: '' },
+    profile: { 
+        res_id: 'test-res-id',
+        restaurant_name: restaurantName,
+        restaurant_username: restaurantName.toLowerCase().replace(/\s+/g, '_'),
+        restaurant_main_office_add: null,
+        restaurant_logo_url: null,
+        outlet_id: 'test-outlet-id',
+        outlet_name: 'Main Outlet',
+        outlet_add: '', 
+        outlet_phone: '', 
+        email: '', 
+        outlet_hours: '' 
+    },
     bookings: [],
     customers: [],
     inventory: [],
@@ -679,11 +699,11 @@ export const getAuditLogs = async (restaurantId: string, limit = 100): Promise<A
     return readLocalField<AuditLog[]>(restaurantId, 'auditLogs');
 };
 
-export const getRestaurantProfile = async (restaurantId: string): Promise<RestaurantProfile> => {
+export const getRestaurantProfile = async (restaurantId: string, employeeId: string): Promise<RestaurantProfile> => {
     const data = await backendJson<RestaurantProfile>(
         `/restaurant/profile?restaurantId=${encodeURIComponent(restaurantId)}`,
         restaurantId,
-        { method: 'GET' },
+        { method: 'GET', headers: { 'Content-Type': 'application/json', 'X-Employee-Id': employeeId } },
     );
 
     if (data) {
@@ -1030,20 +1050,21 @@ export const updateTableStatus = async (
     return { acknowledged: true };
 };
 
-export const updateRestaurantProfile = async (restaurantId: string, profile: RestaurantProfile) => {
+//important: need to update this function based on the updated RestaurantProfile class
+export const updateRestaurantProfile = async (restaurantId: string, employeeId: string, profile: RestaurantProfile) => {
     const response = await backendCall('/restaurant/profile', restaurantId, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Employee-Id': employeeId },
         body: JSON.stringify(profile),
     });
 
     if (response?.ok) {
-        await getRestaurantProfile(restaurantId);
+        await getRestaurantProfile(restaurantId, employeeId);
         return { acknowledged: true };
     }
 
     const restaurant = ensureLocalRestaurant(restaurantId);
-    restaurant.name = profile.name;
+    restaurant.name = profile.restaurant_name;
     restaurant.data.profile = deepClone(profile);
     return { acknowledged: true };
 };

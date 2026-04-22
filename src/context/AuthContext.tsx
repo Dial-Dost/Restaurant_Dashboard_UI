@@ -13,9 +13,9 @@ type AuthUser = {
   role_all?: string[];
   restaurantId: string;
   restaurantName: string;
-  // res_id?: string;
+  res_id: string;
   outlet_id: string;
-  emp_Fname?: string | null;
+  emp_Fname: string | null;
   emp_Lname?: string | null;
 }
 

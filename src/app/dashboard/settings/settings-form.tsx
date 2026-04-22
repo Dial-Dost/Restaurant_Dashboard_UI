@@ -71,7 +71,7 @@ export function SettingsForm() {
   const [feedbackQrError, setFeedbackQrError] = useState<string>("")
 
   const feedbackFormUrl = useMemo(() => {
-    if (!user?.restaurantId || !user?.employeeId || !user?.outlet_id) {
+    if (!user?.res_id || !user?.employeeId || !user?.outlet_id) {
       return ""
     }
 
@@ -107,12 +107,12 @@ export function SettingsForm() {
     }
 
     const params = new URLSearchParams({
-      restaurantId: String(user?.restaurantId ?? ""),
+      restaurantId: String(user?.res_id ?? ""),
       employeeId: String(user?.employeeId ?? ""),
       outletId: String(user?.outlet_id ?? ""),
     })
     return `${baseUrl}?${params.toString()}`
-  }, [user?.restaurantId, user?.employeeId, user?.outlet_id])
+  }, [user?.res_id, user?.employeeId, user?.outlet_id])
 
   const form = useForm<SettingsFormValues>({
     resolver: zodResolver(settingsFormSchema),
@@ -129,13 +129,13 @@ export function SettingsForm() {
   useEffect(() => {
     if (user?.restaurantId) {
         const fetchProfile = async () => {
-          const profile = await getRestaurantProfile(user.restaurantId);
+          const profile = await getRestaurantProfile(user.restaurantId, user.employeeId);
           form.reset({
-              name: profile.name || "",
-              address: profile.address || "",
-              phone: profile.phone || "",
+              name: profile.restaurant_name || "",
+              address: profile.outlet_add || "",
+              phone: profile.outlet_phone || "",
               email: profile.email || "",
-              hours: profile.hours || "",
+              hours: profile.outlet_hours || "",
               currency: currency
           });
         }
@@ -177,17 +177,18 @@ export function SettingsForm() {
     }
   }, [feedbackFormUrl])
 
+  // important: need to update this function according to the new RestaurantProfileRecord class
   async function onSubmit(data: SettingsFormValues) {
     if(!user?.restaurantId) return;
 
     const profileData: RestaurantProfile = {
-        name: data.name,
-        address: data.address,
-        phone: data.phone,
+        restaurant_name: data.name,
+        outlet_add: data.address,
+        outlet_phone: data.phone,
         email: data.email,
-        hours: data.hours,
+        outlet_hours: data.hours,
     };
-    await updateRestaurantProfile(user.restaurantId, profileData);
+    await updateRestaurantProfile(user.restaurantId, user.employeeId, profileData);
     setCurrency(data.currency);
     toast({
       title: "Settings saved!",

@@ -5,9 +5,11 @@ import { useEffect, Suspense, useState } from 'react';
 import QRCode from 'qrcode';
 import { useSearchParams } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
-import { getRestaurantProfile, getRestaurantLogo, getBillByOrder } from '@/lib/db';
+import { getRestaurantProfile, getRestaurantLogo, getBillByOrder, RestaurantProfile } from '@/lib/db';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+
+// Dynamically import the encoder inside the function to avoid bundler/constructor issues
 
 type OrderItem = {
     id: string;
@@ -45,38 +47,39 @@ function PrintPageContents() {
     const { user } = useAuth();
     const [logoBase64, setLogoBase64] = useState<string | null>(null);
     const [bill, setBill] = useState<any | null>(null);
-    const [profile, setProfile] = useState<any | null>(null);
+    const [profile, setProfile] = useState<RestaurantProfile | null>(null);
     const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+    const [previewText, setPreviewText] = useState<string | null>(null);
 
     useEffect(() => {
         if (!orderData) return;
         // fetch restaurant profile, logo and bill info
         (async () => {
             try {
-                                const parsed = JSON.parse(decodeURIComponent(orderData));
-                                const restaurantId = user?.restaurantId ?? parsed.res_id ?? null;
-                                if (restaurantId) {
-                                        const prof = await getRestaurantProfile(restaurantId).catch(() => null);
-                                        setProfile(prof ?? null);
-                                        const logo = await getRestaurantLogo(restaurantId).catch(() => null);
-                                        setLogoBase64(logo ?? null);
-                                        const billResp = await getBillByOrder(restaurantId, parsed.id).catch(() => null);
-                                        setBill(billResp ?? null);
+                const parsed = JSON.parse(decodeURIComponent(orderData));
+                const restaurantId = user?.restaurantId ?? parsed.res_id ?? null;
+                if (restaurantId) {
+                        const prof = await getRestaurantProfile(restaurantId, user?.employeeId ?? '').catch(() => null);
+                        setProfile(prof ?? null);
+                        const logo = await getRestaurantLogo(restaurantId).catch(() => null);
+                        setLogoBase64(logo ?? null);
+                        const billResp = await getBillByOrder(restaurantId, parsed.id).catch(() => null);
+                        setBill(billResp ?? null);
 
-                                        // Build feedback URL like settings and generate QR data URL client-side
-                                        try {
-                                            const fallbackBase = typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:9003` : '';
-                                            const baseUrl = (process.env.NEXT_PUBLIC_FEEDBACK_FORM_URL ?? fallbackBase).replace(/\/$/, '');
-                                            if (baseUrl && user?.restaurantId && user?.employeeId) {
-                                                const params = new URLSearchParams({ restaurantId: user.restaurantId, employeeId: user.employeeId });
-                                                const feedbackUrl = `${baseUrl}?${params.toString()}`;
-                                                const dataUrl = await QRCode.toDataURL(feedbackUrl, { width: 260, margin: 1 });
-                                                setQrDataUrl(dataUrl);
-                                            }
-                                        } catch (err) {
-                                            // ignore QR generation errors
-                                        }
-                                }
+                        // Build feedback URL like settings and generate QR data URL client-side
+                        try {
+                            const fallbackBase = typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:9003` : '';
+                            const baseUrl = (process.env.NEXT_PUBLIC_FEEDBACK_FORM_URL ?? fallbackBase).replace(/\/$/, '');
+                            if (baseUrl && user?.res_id && user?.employeeId && user?.outlet_id) {
+                                const params = new URLSearchParams({ restaurantId: user.res_id, employeeId: user.employeeId, outletId: user.outlet_id });
+                                const feedbackUrl = `${baseUrl}?${params.toString()}`;
+                                const dataUrl = await QRCode.toDataURL(feedbackUrl, { width: 260, margin: 1 });
+                                setQrDataUrl(dataUrl);
+                            }
+                        } catch (err) {
+                            // ignore QR generation errors
+                        }
+                }
             } catch (err) {
                 // ignore
             }
@@ -116,36 +119,34 @@ function PrintPageContents() {
             
             <Card className="mx-auto shadow-none border-black receipt-card" style={{width: 420}}>
                 <div className="mb-3 text-right">
-                                                <div className="flex gap-2 justify-end no-print">
-                                                    <button
-                                                        onClick={() => { window.print(); }}
-                                                        className="px-3 py-1 border rounded text-sm"
-                                                    >Print</button>
-                                                    {/* <button
-                                                        onClick={async () => {
-                                                            const esc = await generateEscPos();
-                                                            if (!esc) return;
-                                                            const blob = new Blob([esc], { type: 'application/octet-stream' });
-                                                            const url = URL.createObjectURL(blob);
-                                                            const a = document.createElement('a');
-                                                            a.href = url;
-                                                            a.download = `bill-${billNo || order.id}.bin`;
-                                                            document.body.appendChild(a);
-                                                            a.click();
-                                                            a.remove();
-                                                            URL.revokeObjectURL(url);
-                                                        }}
-                                                        className="px-3 py-1 border rounded text-sm"
-                                                    >Download ESC/POS</button> */}
-                                                </div>
+                    <div className="flex gap-2 justify-end no-print">
+                        <button
+                            onClick={() => { window.print(); }}
+                            className="px-3 py-1 border rounded text-sm"
+                        >Print</button>
+                        <button
+                            onClick={async () => {
+                                const esc = await generateEscPos(user, profile, cashierName);
+                                if (!esc) return;
+
+                                // Convert ESC/POS → readable text preview
+                                const decoded = new TextDecoder().decode(esc);
+                                setPreviewText(decoded);
+                            }}
+                            className="px-3 py-1 border rounded text-sm"
+                        >
+                            Preview ESC/POS
+                        </button>
+                    </div>
                 </div>
                 <CardHeader className="text-center border-b border-black pb-4">
                     {logoBase64 ? (
                         <img src={`data:image/png;base64,${logoBase64}`} alt="logo" className="mx-auto h-16 object-contain" />
                     ) : (
-                        <CardTitle className="text-2xl font-bold">{profile?.outlet_name ?? profile?.res_name ?? 'CuisineFlow'}</CardTitle>
+                        <p> Logo Not Found </p>
                     )}
-                    <CardDescription className="text-sm">{profile?.outlet_add ?? profile?.res_address ?? 'Address not configured'}</CardDescription>
+                    <CardTitle className="text-2xl font-bold">{profile?.outlet_name ?? 'Not found'}</CardTitle>
+                    <CardDescription className="text-sm">{profile?.outlet_add ?? 'Address not configured'}</CardDescription>
                 </CardHeader>
                 <CardContent className="p-6">
                     <div className="mb-4 text-sm" > 
@@ -228,6 +229,12 @@ function PrintPageContents() {
                     </div>
                 </CardContent>
             </Card>
+            {previewText && (
+                <div className="mt-6 p-4 border bg-gray-100 text-xs whitespace-pre-wrap">
+                    <h3 className="font-bold mb-2">ESC/POS Preview:</h3>
+                    <pre>{previewText}</pre>
+                </div>
+            )}
         </div>
     );
 }
@@ -240,134 +247,105 @@ export default function PrintPage() {
     );
 }
 
-async function generateEscPos(): Promise<Uint8Array | null> {
+
+async function generateEscPos(user: any, profile: RestaurantProfile | null, cashierName: string): Promise<Uint8Array | null> {
     try {
-        // dynamically import same helpers used above by re-parsing the open window state
         const searchParams = new URLSearchParams(window.location.search);
         const orderData = searchParams.get('order');
         if (!orderData) return null;
+
         const order = JSON.parse(decodeURIComponent(orderData));
 
-        const authModule = await import('@/context/AuthContext');
-        const user = authModule.useAuth().user;
-
-        const encoder = new TextEncoder();
-        const out: number[] = [];
-        const ESC = 0x1b;
-        const GS = 0x1d;
-        const LF = 0x0a;
-
-        const push = (arr: number[] | Uint8Array) => { for (const b of arr) out.push(b); };
-        const text = (s: string) => push(Array.from(encoder.encode(s)));
-        const nl = () => push([LF]);
-
-        // init
-        push([ESC, 0x40]);
-
-        // header center
-        push([ESC, 0x61, 0x01]); // center
-        push([ESC, 0x45, 0x01]); // bold on
-        text(order?.profile?.outlet_name ?? 'CuisineFlow'); nl();
-        push([ESC, 0x45, 0x00]); // bold off
-        if (order?.profile?.outlet_add) { text(order.profile.outlet_add); nl(); }
-        nl();
-
-        // left align meta
-        push([ESC, 0x61, 0x00]);
-        // try fetch server-side escpos logo bytes (to prepend later)
-        let logoPrefix: Uint8Array | null = null;
-        try {
-            const resp = await fetch(`/restaurant/logo/escpos`, { headers: { 'X-Restaurant-Id': user?.restaurantId ?? '' } });
-            if (resp.ok) {
-                logoPrefix = new Uint8Array(await resp.arrayBuffer());
-            }
-        } catch (err) {
-            // ignore logo fetch fail
-        }
-        text(`Name: ${order.customer}`); nl();
-        text(`Bill No: ${order.id}`); nl();
-        text(`Dine In: ${order.table}`); nl();
-        text(`Cashier: ${((user?.emp_Fname ?? '') + (user?.emp_Lname ? ` ${user.emp_Lname}` : '')).trim()}`); nl();
-        text(`Date: ${new Date().toLocaleString()}`); nl(); nl();
-
-        // items header
-        text('Item                Qty   Price   Amt'); nl();
-        push([ESC, 0x2d, 0x01]); // underline on
-        nl();
-        for (const it of order.items) {
-            const name = (it.name || '').slice(0,16).padEnd(16, ' ');
-            const qty = String(it.quantity).padStart(3, ' ');
-            const price = (Number(it.price) || 0).toFixed(2).padStart(7, ' ');
-            const amt = (Number(it.price) * Number(it.quantity) || 0).toFixed(2).padStart(7, ' ');
-            text(`${name}${qty}${price}${amt}`); nl();
-        }
-        push([ESC, 0x2d, 0x00]); // underline off
-        nl();
-
-        // totals
-        const subtotal = Number(order.subtotal || 0);
-        const totalQty = order.items.reduce((s: number, it: any) => s + (Number(it.quantity)||0), 0);
-        text(`Total Qty: ${totalQty}`); nl();
-        text(`Subtotal: ${subtotal.toFixed(2)}`); nl();
-        if (order.serviceCharge && order.serviceChargePercentage) {
-            text(`Service ${order.serviceChargePercentage}%: ${Number(order.serviceCharge).toFixed(2)}`); nl();
-        }
-        if (order.calculatedTaxes && Array.isArray(order.calculatedTaxes)) {
-            for (const t of order.calculatedTaxes) {
-                text(`${t.name} ${t.percentage}%: ${Number(t.amount).toFixed(2)}`); nl();
-            }
-        }
-        const roundOff = Math.round(order.total) - order.total;
-        text(`Round off: ${roundOff.toFixed(2)}`); nl();
-        push([ESC, 0x61, 0x02]); // right align
-        push([ESC, 0x45, 0x01]); // bold
-        text(`Grand Total: ${(Number(order.total)||0).toFixed(2)}`); nl();
-        push([ESC, 0x45, 0x00]); // bold off
-        push([ESC, 0x61, 0x00]); // back to left
-        nl(); nl();
-
-        // Thanks
-        push([ESC, 0x61, 0x01]);
-        text('Thanks'); nl(); nl();
-
-        // QR: try ESC/POS QR sequence (store, set size, print)
-        try {
-            const fallbackBase = typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:9003` : '';
-            const baseUrl = (process.env.NEXT_PUBLIC_FEEDBACK_FORM_URL ?? fallbackBase).replace(/\/$/, '');
-            if (baseUrl && user?.restaurantId && user?.employeeId) {
-                const params = new URLSearchParams({ restaurantId: user.restaurantId, employeeId: user.employeeId });
-                const feedbackUrl = `${baseUrl}?${params.toString()}`;
-                const data = Array.from(new TextEncoder().encode(feedbackUrl));
-                const length = data.length + 3;
-                const pL = length & 0xff;
-                const pH = (length >> 8) & 0xff;
-                // store
-                push([GS, 0x28, 0x6b, pL, pH, 0x31, 0x50, 0x30, ...data]);
-                // set size (module size 6)
-                push([GS, 0x28, 0x6b, 0x03, 0x00, 0x31, 0x43, 0x06]);
-                // set error correction level (48 = L)
-                push([GS, 0x28, 0x6b, 0x03, 0x00, 0x31, 0x45, 0x30]);
-                // print
-                push([GS, 0x28, 0x6b, 0x03, 0x00, 0x31, 0x51, 0x30]);
-                nl(); nl();
-            }
-        } catch (err) {
-            // ignore QR failures
+        // dynamically import the package and resolve the constructor across CJS/ESM shapes
+        const pkg = await import('@point-of-sale/receipt-printer-encoder');
+        const EncoderClass = pkg?.default ?? pkg?.ReceiptPrinterEncoder ?? pkg;
+        if (typeof EncoderClass !== 'function') {
+            console.error('ReceiptPrinterEncoder is not a constructor', EncoderClass);
+            return null;
         }
 
-        // cut
-        push([GS, 0x56, 0x00]);
+        const encoder = new EncoderClass({ language: 'esc-pos' });
+        // some builds expose initialize as optional
+        if (typeof (encoder as any).initialize === 'function') (encoder as any).initialize();
 
-        const body = new Uint8Array(out);
-        if (logoPrefix && logoPrefix.length > 0) {
-            const combined = new Uint8Array(logoPrefix.length + body.length);
-            combined.set(logoPrefix, 0);
-            combined.set(body, logoPrefix.length);
-            return combined;
+        // Header
+        encoder
+            .align('center')
+            .bold(true)
+            .line(profile?.outlet_name ?? 'CuisineFlow')
+            .bold(false)
+            .line(profile?.outlet_add ?? '')
+            .newline();
+
+        // Meta info
+        encoder
+            .align('left')
+            .line(`Customer: ${order.customer}`)
+            .line(`Bill No: ${order.id}`)
+            .line(`Table: ${order.table}`)
+            .line(`Date: ${new Date().toLocaleString()}`)
+            .line(`Cashier: ${cashierName}`)
+            .newline();
+
+        // Items
+        encoder.line('Item           Qty   Price   Amt');
+        encoder.line('--------------------------------');
+
+        order.items.forEach((it: any) => {
+            const name = it.name.slice(0, 14).padEnd(14);
+            const qty = String(it.quantity).padStart(3);
+            const price = it.price.toFixed(2).padStart(7);
+            const amt = (it.price * it.quantity).toFixed(2).padStart(7);
+
+            encoder.line(`${name}${qty}${price}${amt}`);
+        });
+
+        encoder.newline();
+
+        // Totals
+        const totalQty = order.items.reduce((s: number, it: any) => s + it.quantity, 0);
+
+        encoder
+            .line(`Total Qty: ${totalQty}`)
+            .line(`Subtotal: ${order.subtotal.toFixed(2)}`);
+
+        if (order.calculatedTaxes) {
+            order.calculatedTaxes.forEach((t: any) => {
+                encoder.line(`${t.name} (${t.percentage}%): ${t.amount.toFixed(2)}`);
+            });
         }
-        return body;
+
+        encoder
+            .newline()
+            .bold(true)
+            .align('right')
+            .line(`TOTAL: ${order.total.toFixed(2)}`)
+            .bold(false)
+            .align('center')
+            .newline()
+            .line('Thank you!')
+            .newline()
+            .line('For calling Valet kindly scan the below QR code')
+            .newline();
+
+        // QR
+        const fallbackBase = typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:9003` : '';
+        const baseUrl = (process.env.NEXT_PUBLIC_FEEDBACK_FORM_URL ?? fallbackBase).replace(/\/$/, '');
+        if (baseUrl && user?.res_id && user?.employeeId && user?.outlet_id) {
+            const params = new URLSearchParams({ restaurantId: user.res_id, employeeId: user.employeeId, outletId: user.outlet_id });
+            const feedbackUrl = `${baseUrl}?${params.toString()}`;
+            encoder.qrcode(feedbackUrl, 6, 'L');
+        }
+
+        encoder.newline().newline();
+
+        // Cut
+        encoder.cut();
+
+        return encoder.encode();
+
     } catch (err) {
-        console.error('ESC/POS generation failed', err);
+        console.error(err);
         return null;
     }
 }

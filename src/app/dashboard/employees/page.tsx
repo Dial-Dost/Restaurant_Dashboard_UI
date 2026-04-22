@@ -106,7 +106,8 @@ export default function EmployeesPage() {
   const [isViewCoreRoleDialogOpen, setIsViewCoreRoleDialogOpen] = useState(false);
 
   const allAssignableRoles = useMemo(() => {
-    const custom = roleDefinitions.map((role) => role.role_name.trim().toLowerCase()).filter(Boolean);
+    // Represent custom roles by their IDs (so assignment stores IDs). Core roles remain names.
+    const custom = roleDefinitions.map((role) => role.id).filter(Boolean);
     const cores = coreRoles.map((c) => (typeof c.role === 'string' ? c.role.trim().toLowerCase() : '')).filter(Boolean);
     return Array.from(new Set([...cores, ...custom]));
   }, [roleDefinitions, coreRoles]);
@@ -120,6 +121,18 @@ export default function EmployeesPage() {
     }
     return m;
   }, [accessCatalog]);
+
+  const roleIdToName = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const r of roleDefinitions) {
+      if (r.id) m[r.id] = r.role_name;
+    }
+    return m;
+  }, [roleDefinitions]);
+
+  function isUuid(val?: string) {
+    return typeof val === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(val);
+  }
 
   const fetchEmployees = async () => {
     if (!user?.restaurantId || !user.employeeId) return;
@@ -393,9 +406,15 @@ export default function EmployeesPage() {
             <TableBody>
               {employees.map((employee, idx) => {
                 const employeeRoles = Array.from(new Set(employee.role_all ?? [employee.role]));
-                const normalizedRoles = employeeRoles.map((entry) => entry.trim().toLowerCase());
-                const assignable = allAssignableRoles.filter((entry) => !normalizedRoles.includes(entry));
-                const removable = normalizedRoles.filter((entry) => entry !== employee.role);
+                // normalizedRoles set should include raw ids and lowercase names for comparison
+                const normalizedRolesSet = new Set<string>(
+                  employeeRoles.map((entry) => (isUuid(entry) ? entry : entry.trim().toLowerCase())),
+                );
+                const assignable = allAssignableRoles.filter((entry) => !normalizedRolesSet.has(entry));
+                const removable = Array.from(employeeRoles).filter((entry) => {
+                  const key = isUuid(entry) ? entry : entry.trim().toLowerCase();
+                  return key !== employee.role;
+                });
 
                 return (
                   <TableRow key={employee.employee_id ?? employee.employee_Username ?? `emp-${idx}`}>
@@ -403,11 +422,15 @@ export default function EmployeesPage() {
                     <TableCell>{employee.employee_Username ?? employee.employee_id}</TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1">
-                        {employeeRoles.map((role) => (
-                          <Badge key={`${employee.employee_id}-${role}`} variant={role === "admin" ? "default" : "secondary"}>
-                            {toTitleCase(role)}
-                          </Badge>
-                        ))}
+                        {employeeRoles.map((role) => {
+                          const display = isUuid(role) ? (roleIdToName[role] ?? role) : role;
+                          const key = `${employee.employee_id}-${role}`;
+                          return (
+                            <Badge key={key} variant={display === "admin" ? "default" : "secondary"}>
+                              {toTitleCase(display)}
+                            </Badge>
+                          );
+                        })}
                       </div>
                     </TableCell>
                     <TableCell className="text-right">
@@ -427,12 +450,12 @@ export default function EmployeesPage() {
                               {assignable.length === 0 ? (
                                 <DropdownMenuItem disabled>No roles available</DropdownMenuItem>
                               ) : (
-                                assignable.map((roleName) => (
+                                assignable.map((roleKey) => (
                                   <DropdownMenuItem
-                                    key={`${employee.employee_id}-assign-${roleName}`}
-                                    onClick={() => void handleAssignRole(employee.employee_id, roleName)}
+                                    key={`${employee.employee_id}-assign-${roleKey}`}
+                                    onClick={() => void handleAssignRole(employee.employee_id, roleKey)}
                                   >
-                                    {toTitleCase(roleName)}
+                                    {toTitleCase(isUuid(roleKey) ? (roleIdToName[roleKey] ?? roleKey) : roleKey)}
                                   </DropdownMenuItem>
                                 ))
                               )}
@@ -445,12 +468,12 @@ export default function EmployeesPage() {
                               {removable.length === 0 ? (
                                 <DropdownMenuItem disabled>No removable roles</DropdownMenuItem>
                               ) : (
-                                removable.map((roleName) => (
+                                removable.map((roleKey) => (
                                   <DropdownMenuItem
-                                    key={`${employee.employee_id}-remove-${roleName}`}
-                                    onClick={() => void handleRemoveRole(employee, roleName)}
+                                    key={`${employee.employee_id}-remove-${roleKey}`}
+                                    onClick={() => void handleRemoveRole(employee, roleKey)}
                                   >
-                                    {toTitleCase(roleName)}
+                                    {toTitleCase(isUuid(roleKey) ? (roleIdToName[roleKey] ?? roleKey) : roleKey)}
                                   </DropdownMenuItem>
                                 ))
                               )}
