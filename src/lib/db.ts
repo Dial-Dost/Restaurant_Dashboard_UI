@@ -340,6 +340,12 @@ const mapOrder = (item: any): Order => ({
     id: String(item.id ?? `${Date.now()}`),
     table: String(item.table ?? ''),
     customer: String(item.customer ?? 'Guest'),
+    taken_by_employee_id:
+        typeof item.taken_by_employee_id === 'string' ? item.taken_by_employee_id : null,
+    taken_by_employee_name:
+        typeof item.taken_by_employee_name === 'string' ? item.taken_by_employee_name : null,
+    taken_by_employee_role:
+        typeof item.taken_by_employee_role === 'string' ? item.taken_by_employee_role : null,
     items: Array.isArray(item.items) ? item.items.map(mapOrderItem) : [],
     subtotal: Number(item.subtotal ?? 0),
     serviceChargePercentage:
@@ -433,6 +439,7 @@ export const findRestaurantByName = async (name: string) => {
             local.id,
             { method: 'GET' },
         );
+        console.log(verify);
         if (verify?.ok) {
             return deepClone(local);
         }

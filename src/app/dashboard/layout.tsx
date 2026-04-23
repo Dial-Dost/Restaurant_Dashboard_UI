@@ -47,8 +47,15 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
   const { t, setLanguage } = useTranslation();
   const { user, logout } = useAuth();
 
-  const isValet = user?.role === 'valet';
-  const canAccessValet = user?.role === 'valet' || user?.role === 'admin';
+  const hasRole = (role: 'admin' | 'employee' | 'valet' | 'waiter') => {
+    if (!user) return false;
+    if (user.role === role) return true;
+    return Array.isArray(user.role_all) ? user.role_all.includes(role) : false;
+  };
+
+  const isValet = hasRole('valet') && !hasRole('admin');
+  const isWaiterOnly = hasRole('waiter') && !hasRole('admin');
+  const canAccessValet = hasRole('valet') || hasRole('admin');
 
   useEffect(() => {
     if (!user) {
@@ -56,20 +63,30 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
     }
 
     const valetAllowedPaths = new Set(['/dashboard/valet', '/dashboard/settings']);
+    const waiterAllowedPaths = new Set(['/dashboard/orders', '/dashboard/settings']);
 
     if (isValet && !valetAllowedPaths.has(pathname)) {
       router.replace('/dashboard/valet');
       return;
     }
 
+    if (isWaiterOnly && !waiterAllowedPaths.has(pathname)) {
+      router.replace('/dashboard/orders');
+      return;
+    }
+
     if (!canAccessValet && pathname.startsWith('/dashboard/valet')) {
       router.replace('/dashboard');
     }
-  }, [user, isValet, canAccessValet, pathname, router]);
+  }, [user, isValet, isWaiterOnly, canAccessValet, pathname, router]);
 
   const navItems = isValet
     ? [
         { href: '/dashboard/valet', label: 'Valet Dashboard', icon: <Activity className="h-6 w-6" />, exact: true },
+      ]
+    : isWaiterOnly
+    ? [
+        { href: '/dashboard/orders', label: t('orders'), icon: <ListOrdered className="h-6 w-6" />, exact: true },
       ]
     : [
         { href: '/dashboard', label: t('dashboard'), icon: <Home className="h-6 w-6" />, exact: true },
@@ -110,7 +127,7 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
   return (
       <div className={`${inter.className} flex min-h-screen w-full flex-col`}>
         <header className="sticky top-0 flex h-14 items-center gap-4 border-b bg-background px-4 lg:h-[60px] lg:px-6 z-40">
-            <Link href={isValet ? "/dashboard/valet" : "/dashboard"} className="flex items-center gap-2 font-semibold">
+        <Link href={isValet ? "/dashboard/valet" : isWaiterOnly ? "/dashboard/orders" : "/dashboard"} className="flex items-center gap-2 font-semibold">
                 <Package className="h-6 w-6" />
                 <span>CuisineFlow</span>
             </Link>

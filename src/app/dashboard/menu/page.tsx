@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Card,
   CardContent,
@@ -41,7 +41,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { PlusCircle, MoreVertical, Trash2, Utensils, GripVertical } from "lucide-react";
+import { PlusCircle, MoreVertical, Trash2, Utensils, GripVertical, Upload } from "lucide-react";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -67,18 +67,13 @@ type MenuItemFormData = z.infer<typeof menuItemSchema>;
 type CategoryFormData = z.infer<typeof categorySchema>;
 
 function SortableMenuItem({ item, onRemoveItem, isDragging }: { item: MenuItem, onRemoveItem: (id: string) => void, isDragging?: boolean }) {
-    const { attributes, listeners, setNodeRef, transform, transition } = useSortable({
+    const { attributes, listeners, setNodeRef } = useSortable({
         id: item.id,
         data: { category: item.category },
     });
 
-    const style = {
-        transform: transform ? `translate3d(${transform.x}px, ${transform.y}px, 0)` : undefined,
-        transition,
-    };
-
     return (
-        <li ref={setNodeRef} style={style} className={cn("flex items-center justify-between rounded-md border p-3 bg-background touch-none", isDragging && "opacity-50")}>
+        <li ref={setNodeRef} className={cn("flex items-center justify-between rounded-md border p-3 bg-background touch-none", isDragging && "opacity-50")}>
             <div className="flex items-center gap-2">
                  <button {...listeners} {...attributes} className="cursor-grab p-1">
                     <GripVertical className="h-5 w-5 text-muted-foreground" />
@@ -144,6 +139,8 @@ export default function MenuPage() {
   const [isItemDialogOpen, setIsItemDialogOpen] = useState(false);
   const [isCategoryDialogOpen, setIsCategoryDialogOpen] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
+    const [isImporting, setIsImporting] = useState(false);
+    const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (user) {
@@ -192,6 +189,122 @@ export default function MenuPage() {
     const newItems = menuItems.filter(item => item.id !== itemId);
     updateMenuItems(newItems);
   }
+
+    const normalizeColumn = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+    const handleImportMenuFile = async (file: File) => {
+        if (!user?.restaurantId) return;
+
+        setIsImporting(true);
+        try {
+            const XLSX = await import("xlsx");
+            const buffer = await file.arrayBuffer();
+            const workbook = XLSX.read(buffer, { type: "array" });
+            const firstSheetName = workbook.SheetNames[0];
+            if (!firstSheetName) {
+                throw new Error("No sheet found in the uploaded file.");
+            }
+
+            const worksheet = workbook.Sheets[firstSheetName];
+            const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(worksheet, {
+                defval: "",
+                raw: false,
+            });
+            if (!rows.length) {
+                throw new Error("The uploaded file is empty.");
+            }
+
+            const keys = Object.keys(rows[0] ?? {});
+            const columnMap = new Map<string, string>();
+            for (const key of keys) {
+                columnMap.set(normalizeColumn(key), key);
+            }
+
+            const nameKey =
+                columnMap.get("name")
+                || columnMap.get("item")
+                || columnMap.get("itemname")
+                || columnMap.get("menuitem")
+                || columnMap.get("menuitemname");
+            const priceKey =
+                columnMap.get("price")
+                || columnMap.get("amount")
+                || columnMap.get("rate")
+                || columnMap.get("mrp");
+            const categoryKey =
+                columnMap.get("category")
+                || columnMap.get("type")
+                || columnMap.get("section")
+                || columnMap.get("group");
+
+            if (!nameKey || !priceKey) {
+                throw new Error("Required columns not found. Include at least name/item and price columns.");
+            }
+
+            const importedItems: MenuItem[] = [];
+            for (const row of rows) {
+                const itemName = String(row[nameKey] ?? "").trim();
+                if (!itemName) continue;
+
+                const rawPrice = Number(String(row[priceKey] ?? "").replace(/,/g, "").trim());
+                if (!Number.isFinite(rawPrice) || rawPrice <= 0) continue;
+
+                const categoryRaw = categoryKey ? String(row[categoryKey] ?? "").trim() : "";
+                const category = categoryRaw || "General";
+
+                importedItems.push({
+                    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                    name: itemName,
+                    price: Number(rawPrice.toFixed(2)),
+                    category,
+                });
+            }
+
+            if (!importedItems.length) {
+                throw new Error("No valid rows found. Ensure each row has a name and a positive price.");
+            }
+
+            const existingByKey = new Map<string, MenuItem>();
+            for (const item of menuItems) {
+                existingByKey.set(`${item.category.toLowerCase()}::${item.name.toLowerCase()}`, item);
+            }
+
+            const mergedItems = [...menuItems];
+            for (const imported of importedItems) {
+                const key = `${imported.category.toLowerCase()}::${imported.name.toLowerCase()}`;
+                const existing = existingByKey.get(key);
+                if (existing) {
+                    const idx = mergedItems.findIndex((entry) => entry.id === existing.id);
+                    if (idx >= 0) {
+                        mergedItems[idx] = { ...mergedItems[idx], price: imported.price };
+                    }
+                } else {
+                    mergedItems.push(imported);
+                }
+            }
+
+            const mergedCategories = Array.from(new Set([...categories, ...mergedItems.map((item) => item.category)]));
+
+            await Promise.all(
+                mergedCategories
+                    .filter((category) => !categories.some((existing) => existing.toLowerCase() === category.toLowerCase()))
+                    .map((category) => addMenuCategory(user.restaurantId, category)),
+            );
+            await saveMenuItems(user.restaurantId, mergedItems);
+
+            setMenuItems(mergedItems);
+            setCategories(mergedCategories);
+            window.alert(`Imported ${importedItems.length} menu items from ${file.name}.`);
+        } catch (error: any) {
+            console.error("menu_import_failed", error);
+            window.alert(String(error?.message ?? "Unable to import menu file."));
+        } finally {
+            setIsImporting(false);
+            if (fileInputRef.current) {
+                fileInputRef.current.value = "";
+            }
+        }
+    };
   
   const handleDragStart = (event: DragStartEvent) => {
     setActiveId(event.active.id.toString());
@@ -244,6 +357,31 @@ export default function MenuPage() {
         <div className="flex items-center justify-between">
             <h1 className="text-lg font-semibold md:text-2xl">Menu Management</h1>
             <div className="flex gap-2">
+                                <Label htmlFor="import-menu-file" className="sr-only">
+                                    Import menu file
+                                </Label>
+                                <input
+                                    id="import-menu-file"
+                                    ref={fileInputRef}
+                                    type="file"
+                                    accept=".xlsx,.xls,.csv"
+                                    className="hidden"
+                                    title="Import menu file"
+                                    aria-label="Import menu file"
+                                    onChange={(event) => {
+                                        const file = event.target.files?.[0];
+                                        if (!file) return;
+                                        void handleImportMenuFile(file);
+                                    }}
+                                />
+                                <Button
+                                    variant="outline"
+                                    onClick={() => fileInputRef.current?.click()}
+                                    disabled={isImporting}
+                                >
+                                    <Upload className="mr-2 h-4 w-4" />
+                                    {isImporting ? "Importing..." : "Import Excel"}
+                                </Button>
                 <Dialog open={isCategoryDialogOpen} onOpenChange={setIsCategoryDialogOpen}>
                     <DialogTrigger asChild><Button variant="outline">Add Category</Button></DialogTrigger>
                     <DialogContent className="sm:max-w-[425px]">

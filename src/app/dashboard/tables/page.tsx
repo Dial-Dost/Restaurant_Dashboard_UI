@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -39,14 +39,6 @@ import { type Table } from "./data";
 import {
     addAuditLogEntry,
     getTables,
-    getRestaurantUsers,
-    getTableAssignments,
-    assignTableToEmployee,
-    unassignTableEmployee,
-    getMonthlyApcInsight,
-    type User,
-    type TableAssignmentDefinition,
-    type ApcZone,
 } from "@/lib/db";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/hooks/use-toast";
@@ -56,23 +48,12 @@ import { SortableContext, useSortable, arrayMove } from "@dnd-kit/sortable";
 const API_BASE_URL = process.env.NEXT_PUBLIC_RECEPTION_API_URL ?? "http://localhost:3000";
 
 
-function getZoneBadgeClass(zone?: ApcZone) {
-    if (zone === "green") return "bg-green-100 text-green-800 border-green-200";
-    if (zone === "yellow") return "bg-yellow-100 text-yellow-900 border-yellow-200";
-    if (zone === "red") return "bg-red-100 text-red-800 border-red-200";
-    return "";
-}
-
 function SortableTable({
     table,
     onRemove,
-    assignedEmployeeName,
-    incentiveZone,
 }: {
     table: Table;
     onRemove: (tableId: number) => void;
-    assignedEmployeeName?: string;
-    incentiveZone?: ApcZone;
 }) {
     const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: table.id });
 
@@ -139,16 +120,6 @@ function SortableTable({
                     >
                         {table.status}
                     </Badge>
-                    {assignedEmployeeName ? (
-                        <Badge variant="outline" className="text-[10px] sm:text-xs">
-                            {assignedEmployeeName}
-                        </Badge>
-                    ) : null}
-                    {incentiveZone ? (
-                        <Badge variant="outline" className={`text-[10px] sm:text-xs ${getZoneBadgeClass(incentiveZone)}`}>
-                            {incentiveZone.toUpperCase()}
-                        </Badge>
-                    ) : null}
                 </div>
                 <div className="flex items-center text-muted-foreground">
                     <Users className="h-3 w-3 mr-1" />
@@ -162,10 +133,6 @@ function SortableTable({
 export default function TablesPage() {
   const { user } = useAuth();
   const [tablesData, setTablesData] = useState<Table[]>([]);
-    const [employees, setEmployees] = useState<User[]>([]);
-    const [assignments, setAssignments] = useState<TableAssignmentDefinition[]>([]);
-    const [employeeIncentiveZone, setEmployeeIncentiveZone] = useState<Record<string, ApcZone>>({});
-    const [assignmentDrafts, setAssignmentDrafts] = useState<Record<string, string>>({});
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [newTableName, setNewTableName] = useState("");
   const [newTableCapacity, setNewTableCapacity] = useState("");
@@ -189,53 +156,10 @@ export default function TablesPage() {
         }
     };
 
-    const loadAssignmentsAndIncentives = async () => {
-        if (!user?.restaurantUsername || !user.employeeId) {
-            setEmployees([]);
-            setAssignments([]);
-            setEmployeeIncentiveZone({});
-            return;
-        }
-
-        try {
-            const [userList, assignmentList, apcInsight] = await Promise.all([
-                getRestaurantUsers(user.restaurantUsername, user.employeeId),
-                getTableAssignments(user.restaurantUsername, user.employeeId, user.outlet_id),
-                getMonthlyApcInsight(user.restaurantUsername),
-            ]);
-
-            setEmployees(Array.isArray(userList) ? userList : []);
-            setAssignments(Array.isArray(assignmentList) ? assignmentList : []);
-
-            const zoneByEmployee: Record<string, ApcZone> = {};
-            for (const entry of apcInsight?.employee_incentives ?? []) {
-                zoneByEmployee[entry.employee_id] = entry.zone;
-            }
-            setEmployeeIncentiveZone(zoneByEmployee);
-        } catch (error) {
-            console.error("Failed to load assignments/incentives", error);
-            setEmployees([]);
-            setAssignments([]);
-            setEmployeeIncentiveZone({});
-        }
-    };
-
-    const loadDashboardData = async () => {
-        await Promise.all([loadTables(), loadAssignmentsAndIncentives()]);
-    };
-
   useEffect(() => {
-        void loadDashboardData();
+        void loadTables();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [user?.restaurantUsername, user?.employeeId]);
-
-  const assignmentByTable = useMemo(() => {
-    const map = new Map<string, TableAssignmentDefinition>();
-    for (const item of assignments) {
-        map.set(item.table_name.toLowerCase(), item);
-    }
-    return map;
-  }, [assignments]);
+    }, [user?.restaurantUsername]);
 
   const handleAddTable = async () => {
     if (newTableName && newTableCapacity && user?.restaurantUsername) {
@@ -280,7 +204,7 @@ export default function TablesPage() {
                 details: `Created table ${trimmedName}${payload.table.capacity ? ` (capacity ${payload.table.capacity})` : ""}`,
             });
 
-            await loadDashboardData();
+            await loadTables();
       setNewTableName("");
       setNewTableCapacity("");
       setIsDialogOpen(false);
@@ -310,77 +234,12 @@ export default function TablesPage() {
             details: `Deleted table ${removed.name}`,
         });
 
-        await loadDashboardData();
+        await loadTables();
         toast({
             title: "Table Removed",
             description: "The table has been successfully deleted.",
         });
     };
-
-  const handleAssignTable = async (tableName: string) => {
-    if (!user?.restaurantUsername || !user.employeeId) return;
-
-    const selectedEmployeeId = assignmentDrafts[tableName];
-    if (!selectedEmployeeId) {
-        toast({
-            title: "Select Employee",
-            description: `Choose an employee to assign for ${tableName}.`,
-            variant: "destructive",
-        });
-        return;
-    }
-
-    const ok = await assignTableToEmployee(user.restaurantUsername, user.employeeId, user.outlet_id, tableName, selectedEmployeeId);
-    if (!ok) {
-        toast({
-            title: "Assignment Failed",
-            description: `Could not assign ${tableName}.`,
-            variant: "destructive",
-        });
-        return;
-    }
-
-    await addAuditLogEntry(user.restaurantUsername, {
-        employee: ( `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || user?.employeeUsername ) ?? user?.employeeId ?? "System",
-        employeeId: user?.employeeId,
-        action: "Table Assigned",
-        details: `Assigned ${tableName} to employee ${selectedEmployeeId}`,
-    });
-
-    await loadAssignmentsAndIncentives();
-    toast({
-        title: "Table Assigned",
-        description: `${tableName} was assigned successfully.`,
-    });
-  };
-
-  const handleUnassignTable = async (tableName: string) => {
-    if (!user?.restaurantUsername || !user.employeeId) return;
-
-    const ok = await unassignTableEmployee(user.restaurantUsername, user.employeeId, user.outlet_id, tableName);
-    if (!ok) {
-        toast({
-            title: "Unassign Failed",
-            description: `Could not unassign ${tableName}.`,
-            variant: "destructive",
-        });
-        return;
-    }
-
-    await addAuditLogEntry(user.restaurantUsername, {
-        employee: ( `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || user?.employeeUsername ) ?? user?.employeeId ?? "System",
-        employeeId: user?.employeeId,
-        action: "Table Unassigned",
-        details: `Removed employee assignment from ${tableName}`,
-    });
-
-    setAssignmentDrafts((prev) => ({ ...prev, [tableName]: "" }));
-    await loadAssignmentsAndIncentives();
-    toast({
-        title: "Table Unassigned",
-        description: `${tableName} is now unassigned.`,
-    });
-  };
 
   const handleDragStart = (event: DragStartEvent) => {
         setActiveId(Number(event.active.id));
@@ -512,11 +371,6 @@ export default function TablesPage() {
                                         key={table.id}
                                         table={table}
                                         onRemove={handleRemoveTable}
-                                        assignedEmployeeName={assignmentByTable.get(table.name.toLowerCase())?.employee_name}
-                                        incentiveZone={(() => {
-                                            const assignment = assignmentByTable.get(table.name.toLowerCase());
-                                            return assignment ? employeeIncentiveZone[assignment.employee_id] : undefined;
-                                        })()}
                                     />
                                 ))}
                             </div>
@@ -530,86 +384,6 @@ export default function TablesPage() {
                     </div>
                 )}
              </SortableContext>
-            </CardContent>
-        </Card>
-
-        <Card>
-            <CardHeader>
-                <CardTitle>Table Assignments And Incentives</CardTitle>
-                <CardDescription>
-                    Assign each table to an employee. Incentive zone is based on assigned employee mean APC versus monthly APC.
-                </CardDescription>
-            </CardHeader>
-            <CardContent>
-                {tablesData.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">Add tables first to configure assignments.</p>
-                ) : (
-                    <div className="space-y-2">
-                        {tablesData.map((table) => {
-                            const assignment = assignmentByTable.get(table.name.toLowerCase());
-                            const selectedEmployeeId = assignmentDrafts[table.name] ?? assignment?.employee_id ?? "";
-                            const zone = assignment ? employeeIncentiveZone[assignment.employee_id] : undefined;
-
-                            return (
-                                <div key={`assignment-${table.id}`} className="grid gap-2 rounded-md border p-3 md:grid-cols-[1fr_1fr_1fr_auto] md:items-center">
-                                    <div>
-                                        <p className="font-medium">{table.name}</p>
-                                        <p className="text-xs text-muted-foreground">Capacity {table.capacity}</p>
-                                    </div>
-                                    <div>
-                                        <select
-                                            aria-label={`Assign employee for ${table.name}`}
-                                            value={selectedEmployeeId}
-                                            onChange={(event) =>
-                                                setAssignmentDrafts((prev) => ({
-                                                    ...prev,
-                                                    [table.name]: event.target.value,
-                                                }))
-                                            }
-                                            className="h-9 w-full rounded-md border bg-background px-3 text-sm"
-                                        >
-                                            <option value="">Select employee</option>
-                                            {employees.map((employee) => (
-                                                <option key={`${table.name}-${employee.employee_id}`} value={employee.employee_id}>
-                                                    {((`${employee.emp_Fname ?? ''}${employee.emp_Lname ? ` ${employee.emp_Lname}` : ''}`.trim() || employee.employee_Username) ?? employee.employee_id)} ({employee.employee_Username ?? employee.employee_id})
-                                                </option>
-                                            ))}
-                                        </select>
-                                    </div>
-                                    <div className="flex flex-wrap gap-2">
-                                        {assignment ? (
-                                            <Badge variant="secondary">Assigned: {assignment.employee_name}</Badge>
-                                        ) : (
-                                            <Badge variant="outline">Unassigned</Badge>
-                                        )}
-                                        {zone ? (
-                                            <Badge variant="outline" className={getZoneBadgeClass(zone)}>
-                                                Incentive: {zone.toUpperCase()}
-                                            </Badge>
-                                        ) : null}
-                                    </div>
-                                    <div className="flex justify-end gap-2">
-                                        <Button
-                                            size="sm"
-                                            onClick={() => void handleAssignTable(table.name)}
-                                            disabled={!selectedEmployeeId}
-                                        >
-                                            Assign
-                                        </Button>
-                                        <Button
-                                            size="sm"
-                                            variant="outline"
-                                            onClick={() => void handleUnassignTable(table.name)}
-                                            disabled={!assignment}
-                                        >
-                                            Unassign
-                                        </Button>
-                                    </div>
-                                </div>
-                            );
-                        })}
-                    </div>
-                )}
             </CardContent>
         </Card>
         </div>

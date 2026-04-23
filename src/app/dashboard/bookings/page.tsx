@@ -52,7 +52,7 @@ import {
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { addAuditLogEntry } from "@/lib/db";
+import { addAuditLogEntry, getBookings as getBookingsData, getTables as getTablesData } from "@/lib/db";
 import { useAuth } from "@/context/AuthContext";
 import { type Booking } from "./data";
 import { type Table as TableType } from "../tables/data";
@@ -70,20 +70,6 @@ const bookingSchema = z.object({
 type BookingFormData = z.infer<typeof bookingSchema>;
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_RECEPTION_API_URL ?? "http://localhost:3000";
-
-const formatBookingTime = (isoString: string) => {
-  const dt = new Date(isoString);
-  if (Number.isNaN(dt.getTime())) {
-    return isoString;
-  }
-  return dt.toLocaleString(undefined, {
-    month: "short",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: true,
-  });
-};
 
 const createBookingId = (value: unknown) => {
   if (value !== null && value !== undefined) {
@@ -122,28 +108,10 @@ export default function BookingsPage() {
     }
 
     try {
-      const response = await fetch(
-        `${API_BASE_URL}/get-bookings?restaurantId=${encodeURIComponent(user.restaurantUsername)}`,
-        {
-          cache: "no-store",
-          headers: {
-            "X-Restaurant-Id": user.restaurantUsername,
-          },
-        },
-      );
-      if (!response.ok) {
-        throw new Error("Failed to fetch bookings");
-      }
-      const data = await response.json();
-      const mapped: Booking[] = data.map((item: any) => ({
-        id: createBookingId(item.booking_id),
-        customer: item.customer_name ?? "Guest",
-        time: formatBookingTime(item.booking_date_time),
-        guests: item.number_of_people ?? 0,
-        table: item.table_name ?? "",
-        source: item.source ?? "Unknown",
-        status: item.status ?? (item.active ? "Arrived" : "Confirmed"),
-        notes: item.notes ?? item.additional_information ?? "",
+      const data = await getBookingsData(user.restaurantUsername);
+      const mapped: Booking[] = (Array.isArray(data) ? data : []).map((item: Booking) => ({
+        ...item,
+        id: createBookingId(item.id),
       }));
       setBookings(mapped);
     } catch (error) {
@@ -157,35 +125,8 @@ export default function BookingsPage() {
     }
 
     try {
-      const response = await fetch(
-        `${API_BASE_URL}/get-tables?restaurantId=${encodeURIComponent(user.restaurantUsername)}`,
-        {
-          cache: "no-store",
-          headers: {
-            "X-Restaurant-Id": user.restaurantUsername,
-          },
-        },
-      );
-      if (!response.ok) {
-        throw new Error("Failed to fetch tables");
-      }
-      const data = await response.json();
-      const mapped: TableType[] = data.map((table: any, index: number) => {
-      const isBooked = Boolean(table.booked);
-      const isReserved = Boolean(table.reserved);
-      const status: TableType["status"] = isBooked
-        ? "Occupied"
-        : isReserved
-        ? "Reserved"
-        : "Available";
-      return {
-        id: index + 1,
-        name: table.table_name ?? `Table-${index + 1}`,
-        capacity: table.capacity ?? 0,
-        status,
-      };
-      });
-      setTables(mapped);
+      const data = await getTablesData(user.restaurantUsername);
+      setTables(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error("Failed to load tables", error);
     }
