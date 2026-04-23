@@ -11,12 +11,13 @@ type AuthUser = {
   employeeUsername?: string;
   role: 'admin' | 'employee' | 'valet' | 'waiter';
   role_all?: string[];
-  restaurantId: string;
+  restaurantUsername: string;
   restaurantName: string;
   res_id: string;
   outlet_id: string;
   emp_Fname: string | null;
   emp_Lname?: string | null;
+  actions_set: string[];
 }
 
 interface AuthContextType {

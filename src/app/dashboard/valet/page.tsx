@@ -213,7 +213,7 @@ export default function ValetDashboardPage() {
   const canViewValet = user?.role === "valet" || user?.role === "admin";
 
   const fetchValetInfo = async () => {
-    if (!user?.restaurantId || !user.employeeId) {
+    if (!user?.restaurantUsername || !user.employeeId) {
       return;
     }
 
@@ -223,7 +223,7 @@ export default function ValetDashboardPage() {
     try {
       const response = await fetch(`${API_BASE_URL}/valet-info`, {
         headers: {
-          "X-Restaurant-Id": user.restaurantId,
+          "X-Restaurant-Id": user.restaurantUsername,
           "X-Employee-Id": user.employeeId,
           "X-Outlet-Id": user.outlet_id,
         },
@@ -247,7 +247,7 @@ export default function ValetDashboardPage() {
   useEffect(() => {
     fetchValetInfo();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.restaurantId, user?.employeeId]);
+  }, [user?.restaurantUsername, user?.employeeId]);
 
   // React to realtime events and refresh data when valet records or bays change
   const { lastEvent } = useRealtime();
@@ -275,7 +275,7 @@ export default function ValetDashboardPage() {
   }, [lastEvent]);
 
   const patchBookingStatus = async (bookingId: string, status: ValetStage) => {
-    if (!user?.restaurantId) {
+    if (!user?.restaurantUsername) {
       return;
     }
 
@@ -285,7 +285,7 @@ export default function ValetDashboardPage() {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Restaurant-Id": user.restaurantId,
+        "X-Restaurant-Id": user.restaurantUsername,
         "X-Employee-Id": user.employeeId,
         "X-Outlet-Id": user.outlet_id,
       },
@@ -299,7 +299,7 @@ export default function ValetDashboardPage() {
   };
 
   const patchBookingTable = async (bookingId: string, tableName: string | null) => {
-    if (!user?.restaurantId) {
+    if (!user?.restaurantUsername) {
       return;
     }
 
@@ -309,7 +309,7 @@ export default function ValetDashboardPage() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Restaurant-Id": user.restaurantId,
+          "X-Restaurant-Id": user.restaurantUsername,
           "X-Employee-Id": user.employeeId,
           "X-Outlet-Id": user.outlet_id,
         },
@@ -328,7 +328,7 @@ export default function ValetDashboardPage() {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Restaurant-Id": user.restaurantId,
+        "X-Restaurant-Id": user.restaurantUsername,
         "X-Employee-Id": user.employeeId,
         "X-Outlet-Id": user.outlet_id,
       },
@@ -440,7 +440,7 @@ export default function ValetDashboardPage() {
                 method: "POST",
                 headers: {
                   "Content-Type": "application/json",
-                  ...(user?.restaurantId ? { "X-Restaurant-Id": user.restaurantId } : {}),
+                  ...(user?.restaurantUsername ? { "X-Restaurant-Id": user.restaurantUsername } : {}),
                   ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
                   ...(user?.outlet_id ? { "X-Outlet-Id": user.outlet_id } : {}),
                 },
@@ -586,7 +586,7 @@ export default function ValetDashboardPage() {
   };
 
   const createValetRecord = async () => {
-    if (!user?.restaurantId) {
+    if (!user?.restaurantUsername) {
       return;
     }
 
@@ -615,7 +615,7 @@ export default function ValetDashboardPage() {
         method: 'POST',
         headers: {
           "Content-Type": "application/json",
-          "X-Restaurant-Id": user.restaurantId,
+          "X-Restaurant-Id": user.restaurantUsername,
           "X-Employee-Id": user.employeeId,
           "X-Outlet-Id": user.outlet_id,
         },
@@ -896,10 +896,10 @@ export default function ValetDashboardPage() {
   }, [data?.bays, managedBays]);
 
   useEffect(() => {
-    if (!user?.restaurantId) return;
-    if (baysInitializedForRestaurant === user.restaurantId) return;
+    if (!user?.restaurantUsername) return;
+    if (baysInitializedForRestaurant === user.restaurantUsername) return;
 
-    const bayKey = `valet-bays:${user.restaurantId}`;
+    const bayKey = `valet-bays:${user.restaurantUsername}`;
     const savedBaysRaw = window.localStorage.getItem(bayKey);
 
     // Fast path: use localStorage for immediate UI responsiveness
@@ -935,14 +935,14 @@ export default function ValetDashboardPage() {
           method: "GET",
           headers: {
             "Content-Type": "application/json",
-            ...(user?.restaurantId ? { "X-Restaurant-Id": user.restaurantId } : {}),
+            ...(user?.restaurantUsername ? { "X-Restaurant-Id": user.restaurantUsername } : {}),
             ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
             ...(user?.outlet_id ? { "X-Outlet-Id": user.outlet_id} : {}),
           },
         });
 
         if (!resp.ok) {
-          setBaysInitializedForRestaurant(user.restaurantId);
+          setBaysInitializedForRestaurant(user.restaurantUsername);
           setBaysLoading(false);
           return;
         }
@@ -959,7 +959,7 @@ export default function ValetDashboardPage() {
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
-                ...(user?.restaurantId ? { "X-Restaurant-Id": user.restaurantId } : {}),
+                ...(user?.restaurantUsername ? { "X-Restaurant-Id": user.restaurantUsername } : {}),
                 ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
                 ...(user?.outlet_id ? { "X-Outlet-Id": user.outlet_id } : {}),
               },
@@ -967,7 +967,7 @@ export default function ValetDashboardPage() {
             });
             if (addResp.ok) {
               const addedJson = await addResp.json().catch(() => ({}));
-              finalServerBays = [{ name: "Main", total_capacity: 5, Bay_id: addedJson?.Bay_id, restaurant_id: user?.restaurantId }, ...serverBays];
+              finalServerBays = [{ name: "Main", total_capacity: 5, Bay_id: addedJson?.Bay_id, restaurant_id: user?.restaurantUsername }, ...serverBays];
             }
           } catch {
             // ignore
@@ -990,24 +990,24 @@ export default function ValetDashboardPage() {
       } catch (e) {
         // network error: keep localStorage values
       } finally {
-        setBaysInitializedForRestaurant(user.restaurantId);
+        setBaysInitializedForRestaurant(user.restaurantUsername);
         setBaysLoading(false);
       }
     })();
-  }, [user?.restaurantId, data?.bays, baysInitializedForRestaurant]);
+  }, [user?.restaurantUsername, data?.bays, baysInitializedForRestaurant]);
 
   useEffect(() => {
-    if (!user?.restaurantId) {
+    if (!user?.restaurantUsername) {
       return;
     }
 
-    if (baysInitializedForRestaurant !== user.restaurantId) {
+    if (baysInitializedForRestaurant !== user.restaurantUsername) {
       return;
     }
 
-    const bayKey = `valet-bays:${user.restaurantId}`;
+    const bayKey = `valet-bays:${user.restaurantUsername}`;
     window.localStorage.setItem(bayKey, JSON.stringify(managedBays));
-  }, [user?.restaurantId, baysInitializedForRestaurant, bayOptions]);
+  }, [user?.restaurantUsername, baysInitializedForRestaurant, bayOptions]);
 
   const addBay = async () => {
     const normalized = newBayName.trim();
@@ -1035,7 +1035,7 @@ export default function ValetDashboardPage() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(user?.restaurantId ? { "X-Restaurant-Id": user.restaurantId } : {}),
+          ...(user?.restaurantUsername ? { "X-Restaurant-Id": user.restaurantUsername } : {}),
           ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
           ...(user?.outlet_id ? { "X-Outlet-Id": user.outlet_id } : {}),
         },
@@ -1049,7 +1049,7 @@ export default function ValetDashboardPage() {
           Bay_name: normalized,
           total_capacity: capacity,
           current_capacity: json?.current_capacity ?? 0,
-          restaurant_id: user?.restaurantId,
+          restaurant_id: user?.restaurantUsername,
         } as ValetBays;
 
         // update managedBays and data.bays
@@ -1065,8 +1065,8 @@ export default function ValetDashboardPage() {
         setNewBayName("");
         setNewBayCapacity(5);
         try {
-          if (user?.restaurantId) {
-            const bayKey = `valet-bays:${user.restaurantId}`;
+          if (user?.restaurantUsername) {
+            const bayKey = `valet-bays:${user.restaurantUsername}`;
             const raw = window.localStorage.getItem(bayKey);
             let arr: Array<{ name: string; total_capacity: number }> = [];
             if (raw) {
@@ -1109,7 +1109,7 @@ export default function ValetDashboardPage() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(user?.restaurantId ? { "X-Restaurant-Id": user.restaurantId } : {}),
+          ...(user?.restaurantUsername ? { "X-Restaurant-Id": user.restaurantUsername } : {}),
           ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
           ...(user?.outlet_id ? { "X-Outlet-Id": user.outlet_id } : {}),
         },
@@ -1136,8 +1136,8 @@ export default function ValetDashboardPage() {
 
       // Clear any localStorage valet entries for this restaurant if present (best-effort)
       try {
-        if (user?.restaurantId) {
-          const key = `valet-records:${user.restaurantId}`;
+        if (user?.restaurantUsername) {
+          const key = `valet-records:${user.restaurantUsername}`;
           const raw = window.localStorage.getItem(key);
           if (raw) {
             try {
@@ -1165,16 +1165,16 @@ export default function ValetDashboardPage() {
   };
 
   useEffect(() => {
-    if (!user?.restaurantId) {
+    if (!user?.restaurantUsername) {
       return;
     }
 
-    if (spaceInitializedForRestaurant === user.restaurantId) {
+    if (spaceInitializedForRestaurant === user.restaurantUsername) {
       return;
     }
 
-    const spaceKey = `valet-space-available:${user.restaurantId}`;
-    const maxKey = `valet-max-bays:${user.restaurantId}`;
+    const spaceKey = `valet-space-available:${user.restaurantUsername}`;
+    const maxKey = `valet-max-bays:${user.restaurantUsername}`;
 
     const savedSpaceValue = window.localStorage.getItem(spaceKey);
     const savedMaxValue = window.localStorage.getItem(maxKey);
@@ -1192,31 +1192,31 @@ export default function ValetDashboardPage() {
 
     window.localStorage.setItem(maxKey, String(initialMax));
     window.localStorage.setItem(spaceKey, String(initialSpace));
-    setSpaceInitializedForRestaurant(user.restaurantId);
-  }, [user?.restaurantId, stats.spaceAvailable, stats.totalBays, spaceInitializedForRestaurant]);
+    setSpaceInitializedForRestaurant(user.restaurantUsername);
+  }, [user?.restaurantUsername, stats.spaceAvailable, stats.totalBays, spaceInitializedForRestaurant]);
 
   // Keep the visible space available in sync when server-side capacities change.
   useEffect(() => {
-    if (!user?.restaurantId) return;
-    if (spaceInitializedForRestaurant !== user.restaurantId) return;
+    if (!user?.restaurantUsername) return;
+    if (spaceInitializedForRestaurant !== user.restaurantUsername) return;
     setSpaceAvailableDisplay(Math.max(0, stats.spaceAvailable));
-  }, [user?.restaurantId, stats.spaceAvailable, spaceInitializedForRestaurant]);
+  }, [user?.restaurantUsername, stats.spaceAvailable, spaceInitializedForRestaurant]);
 
   useEffect(() => {
-    if (!user?.restaurantId) {
+    if (!user?.restaurantUsername) {
       return;
     }
 
-    if (spaceInitializedForRestaurant !== user.restaurantId) {
+    if (spaceInitializedForRestaurant !== user.restaurantUsername) {
       return;
     }
 
-    const spaceKey = `valet-space-available:${user.restaurantId}`;
-    const maxKey = `valet-max-bays:${user.restaurantId}`;
+    const spaceKey = `valet-space-available:${user.restaurantUsername}`;
+    const maxKey = `valet-max-bays:${user.restaurantUsername}`;
 
     window.localStorage.setItem(spaceKey, String(Math.max(0, spaceAvailableDisplay)));
     window.localStorage.setItem(maxKey, String(Math.max(0, maxBaysDisplay)));
-  }, [user?.restaurantId, spaceAvailableDisplay, maxBaysDisplay, spaceInitializedForRestaurant]);
+  }, [user?.restaurantUsername, spaceAvailableDisplay, maxBaysDisplay, spaceInitializedForRestaurant]);
 
   if (user?.role && !canViewValet) {
     return (
@@ -1407,7 +1407,7 @@ export default function ValetDashboardPage() {
                             method: "POST",
                             headers: {
                               "Content-Type": "application/json",
-                              ...(user?.restaurantId ? { "X-Restaurant-Id": user.restaurantId } : {}),
+                              ...(user?.restaurantUsername ? { "X-Restaurant-Id": user.restaurantUsername } : {}),
                               ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
                               ...(user?.outlet_id ? { "X-Outlet-Id": user.outlet_id } : {}),
                             },
@@ -1423,7 +1423,7 @@ export default function ValetDashboardPage() {
                                   method: "GET",
                                   headers: {
                                     "Content-Type": "application/json",
-                                    ...(user?.restaurantId ? { "X-Restaurant-Id": user.restaurantId } : {}),
+                                    ...(user?.restaurantUsername ? { "X-Restaurant-Id": user.restaurantUsername } : {}),
                                     ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
                                     ...(user?.outlet_id ? { "X-Outlet-Id": user.outlet_id } : {}),
                                   },
@@ -1442,7 +1442,7 @@ export default function ValetDashboardPage() {
                             setManagedBays((prev) => prev.map((p) => (p.name === bay.name ? { name: newName, total_capacity: cap } : p)));
                             setData((prev) => {
                               if (!prev) return prev;
-                              const updated = { Bay_id: json?.Bay_id ?? serverMatch.Bay_id, Bay_name: json?.Bay_name ?? newName, total_capacity: json?.total_capacity ?? cap, current_capacity: serverCurrent, restaurant_id: user?.restaurantId } as ValetBays;
+                              const updated = { Bay_id: json?.Bay_id ?? serverMatch.Bay_id, Bay_name: json?.Bay_name ?? newName, total_capacity: json?.total_capacity ?? cap, current_capacity: serverCurrent, restaurant_id: user?.restaurantUsername } as ValetBays;
                               const filtered = (prev.bays ?? []).filter((b) => String(b.Bay_id) !== updated.Bay_id);
                               return { ...prev, bays: [updated, ...filtered] };
                             });
@@ -1452,7 +1452,7 @@ export default function ValetDashboardPage() {
                             method: "POST",
                             headers: {
                               "Content-Type": "application/json",
-                              ...(user?.restaurantId ? { "X-Restaurant-Id": user.restaurantId } : {}),
+                              ...(user?.restaurantUsername ? { "X-Restaurant-Id": user.restaurantUsername } : {}),
                               ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
                               ...(user?.outlet_id ? { "X-Outlet-Id": user.outlet_id } : {}),
                             },
@@ -1460,7 +1460,7 @@ export default function ValetDashboardPage() {
                           });
                           const json = await resp.json().catch(() => ({}));
                           if (resp.ok) {
-                            const added = { Bay_id: json?.Bay_id ?? undefined, Bay_name: newName, total_capacity: cap, current_capacity: json?.current_capacity ?? 0, restaurant_id: user?.restaurantId } as ValetBays;
+                            const added = { Bay_id: json?.Bay_id ?? undefined, Bay_name: newName, total_capacity: cap, current_capacity: json?.current_capacity ?? 0, restaurant_id: user?.restaurantUsername } as ValetBays;
                             setManagedBays((prev) => [...prev, { name: added.Bay_name, total_capacity: added.total_capacity }]);
                             setData((prev) => {
                               if (!prev) return prev;

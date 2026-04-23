@@ -127,9 +127,9 @@ export function SettingsForm() {
   })
 
   useEffect(() => {
-    if (user?.restaurantId) {
+    if (user?.restaurantUsername) {
         const fetchProfile = async () => {
-          const profile = await getRestaurantProfile(user.restaurantId, user.employeeId);
+          const profile = await getRestaurantProfile(user.restaurantUsername, user.employeeId);
           form.reset({
               name: profile.restaurant_name || "",
               address: profile.outlet_add || "",
@@ -179,7 +179,7 @@ export function SettingsForm() {
 
   // important: need to update this function according to the new RestaurantProfileRecord class
   async function onSubmit(data: SettingsFormValues) {
-    if(!user?.restaurantId) return;
+    if(!user?.restaurantUsername) return;
 
     const profileData: RestaurantProfile = {
         restaurant_name: data.name,
@@ -188,7 +188,7 @@ export function SettingsForm() {
         email: data.email,
         outlet_hours: data.hours,
     };
-    await updateRestaurantProfile(user.restaurantId, user.employeeId, profileData);
+    await updateRestaurantProfile(user.restaurantUsername, user.employeeId, profileData);
     setCurrency(data.currency);
     toast({
       title: "Settings saved!",

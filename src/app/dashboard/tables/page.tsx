@@ -175,13 +175,13 @@ export default function TablesPage() {
   const sensors = useSensors(useSensor(PointerSensor));
 
     const loadTables = async () => {
-        if (!user?.restaurantId) {
+        if (!user?.restaurantUsername) {
             setTablesData([]);
             return;
         }
 
         try {
-            const data = await getTables(user.restaurantId);
+            const data = await getTables(user.restaurantUsername);
             setTablesData(Array.isArray(data) ? data : []);
         } catch (error) {
             console.error("Failed to load tables", error);
@@ -190,7 +190,7 @@ export default function TablesPage() {
     };
 
     const loadAssignmentsAndIncentives = async () => {
-        if (!user?.restaurantId || !user.employeeId) {
+        if (!user?.restaurantUsername || !user.employeeId) {
             setEmployees([]);
             setAssignments([]);
             setEmployeeIncentiveZone({});
@@ -199,9 +199,9 @@ export default function TablesPage() {
 
         try {
             const [userList, assignmentList, apcInsight] = await Promise.all([
-                getRestaurantUsers(user.restaurantId, user.employeeId),
-                getTableAssignments(user.restaurantId, user.employeeId, user.outlet_id),
-                getMonthlyApcInsight(user.restaurantId),
+                getRestaurantUsers(user.restaurantUsername, user.employeeId),
+                getTableAssignments(user.restaurantUsername, user.employeeId, user.outlet_id),
+                getMonthlyApcInsight(user.restaurantUsername),
             ]);
 
             setEmployees(Array.isArray(userList) ? userList : []);
@@ -227,7 +227,7 @@ export default function TablesPage() {
   useEffect(() => {
         void loadDashboardData();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [user?.restaurantId, user?.employeeId]);
+    }, [user?.restaurantUsername, user?.employeeId]);
 
   const assignmentByTable = useMemo(() => {
     const map = new Map<string, TableAssignmentDefinition>();
@@ -238,7 +238,7 @@ export default function TablesPage() {
   }, [assignments]);
 
   const handleAddTable = async () => {
-    if (newTableName && newTableCapacity && user?.restaurantId) {
+    if (newTableName && newTableCapacity && user?.restaurantUsername) {
       const trimmedName = newTableName.trim();
       const existingTable = tablesData.find(
         (table) => table.name.toLowerCase() === trimmedName.toLowerCase()
@@ -264,7 +264,7 @@ export default function TablesPage() {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
-                    "X-Restaurant-Id": user.restaurantId,
+                    "X-Restaurant-Id": user.restaurantUsername,
                 },
                 body: JSON.stringify(payload),
             });
@@ -273,7 +273,7 @@ export default function TablesPage() {
                 throw new Error("Failed to create table");
             }
 
-            await addAuditLogEntry(user.restaurantId, {
+            await addAuditLogEntry(user.restaurantUsername, {
                 employee: ( `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || user?.employeeUsername ) ?? user?.employeeId ?? "System",
                 employeeId: user?.employeeId,
                 action: "Table Added",
@@ -288,14 +288,14 @@ export default function TablesPage() {
   };
 
     const handleRemoveTable = async (tableId: number) => {
-        if (!user?.restaurantId) return;
+        if (!user?.restaurantUsername) return;
         const removed = tablesData.find(t => t.id === tableId);
         if (!removed) return;
 
         const response = await fetch(`${API_BASE_URL}/table/${encodeURIComponent(removed.name)}`, {
             method: "DELETE",
             headers: {
-                "X-Restaurant-Id": user.restaurantId,
+                "X-Restaurant-Id": user.restaurantUsername,
             },
         });
 
@@ -303,7 +303,7 @@ export default function TablesPage() {
             throw new Error("Failed to delete table");
         }
 
-        await addAuditLogEntry(user.restaurantId, {
+        await addAuditLogEntry(user.restaurantUsername, {
             employee: ( `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || user?.employeeUsername ) ?? user?.employeeId ?? "System",
             employeeId: user?.employeeId,
             action: "Table Removed",
@@ -318,7 +318,7 @@ export default function TablesPage() {
     };
 
   const handleAssignTable = async (tableName: string) => {
-    if (!user?.restaurantId || !user.employeeId) return;
+    if (!user?.restaurantUsername || !user.employeeId) return;
 
     const selectedEmployeeId = assignmentDrafts[tableName];
     if (!selectedEmployeeId) {
@@ -330,7 +330,7 @@ export default function TablesPage() {
         return;
     }
 
-    const ok = await assignTableToEmployee(user.restaurantId, user.employeeId, user.outlet_id, tableName, selectedEmployeeId);
+    const ok = await assignTableToEmployee(user.restaurantUsername, user.employeeId, user.outlet_id, tableName, selectedEmployeeId);
     if (!ok) {
         toast({
             title: "Assignment Failed",
@@ -340,7 +340,7 @@ export default function TablesPage() {
         return;
     }
 
-    await addAuditLogEntry(user.restaurantId, {
+    await addAuditLogEntry(user.restaurantUsername, {
         employee: ( `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || user?.employeeUsername ) ?? user?.employeeId ?? "System",
         employeeId: user?.employeeId,
         action: "Table Assigned",
@@ -355,9 +355,9 @@ export default function TablesPage() {
   };
 
   const handleUnassignTable = async (tableName: string) => {
-    if (!user?.restaurantId || !user.employeeId) return;
+    if (!user?.restaurantUsername || !user.employeeId) return;
 
-    const ok = await unassignTableEmployee(user.restaurantId, user.employeeId, user.outlet_id, tableName);
+    const ok = await unassignTableEmployee(user.restaurantUsername, user.employeeId, user.outlet_id, tableName);
     if (!ok) {
         toast({
             title: "Unassign Failed",
@@ -367,7 +367,7 @@ export default function TablesPage() {
         return;
     }
 
-    await addAuditLogEntry(user.restaurantId, {
+    await addAuditLogEntry(user.restaurantUsername, {
         employee: ( `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || user?.employeeUsername ) ?? user?.employeeId ?? "System",
         employeeId: user?.employeeId,
         action: "Table Unassigned",

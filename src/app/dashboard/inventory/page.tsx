@@ -78,14 +78,14 @@ export default function InventoryPage() {
   useEffect(() => {
     if (user) {
         const fetchInventory = async () => {
-          setInventory(await getInventory(user.restaurantId));
+          setInventory(await getInventory(user.restaurantUsername));
         }
         fetchInventory();
     }
   }, [user]);
   
   const handleAddItem = async (data: InventoryFormData) => {
-    if (!user || !user.restaurantId) return;
+    if (!user || !user.restaurantUsername) return;
     let status: InventoryItem['status'] = "In Stock";
     if (data.stock === 0) status = "Out of Stock";
     else if (data.stock < 10) status = "Low Stock";
@@ -95,23 +95,23 @@ export default function InventoryPage() {
         ...data,
         status,
     };
-    await addInventoryItem(user.restaurantId, newItem);
+    await addInventoryItem(user.restaurantUsername, newItem);
 
-    await addAuditLogEntry(user.restaurantId, {
+    await addAuditLogEntry(user.restaurantUsername, {
       employee: ( `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || user?.employeeUsername ) ?? user?.employeeId ?? "System",
       employeeId: user?.employeeId,
         action: 'Inventory Add',
         details: `Added new item: ${data.name} (${data.stock} ${data.unit})`,
     });
     
-    setInventory(await getInventory(user.restaurantId));
+    setInventory(await getInventory(user.restaurantUsername));
     setIsDialogOpen(false);
   }
 
   const handleRemoveItem = async (itemId: string) => {
-    if (!user || !user.restaurantId) return;
-    await removeInventoryItem(user.restaurantId, itemId);
-    setInventory(await getInventory(user.restaurantId));
+    if (!user || !user.restaurantUsername) return;
+    await removeInventoryItem(user.restaurantUsername, itemId);
+    setInventory(await getInventory(user.restaurantUsername));
   }
 
   const getStatusVariant = (status: string) => {

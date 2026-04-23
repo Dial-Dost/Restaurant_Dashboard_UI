@@ -210,7 +210,7 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   const { user } = useAuth();
-  const restaurantId = user?.restaurantId ?? "";
+  const restaurantId = user?.restaurantUsername ?? "";
 
   if (!restaurantId) {
     return <LayoutContent>{children}</LayoutContent>;

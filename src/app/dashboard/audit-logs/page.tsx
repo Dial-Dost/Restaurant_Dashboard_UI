@@ -23,7 +23,7 @@ export default function AuditLogsPage() {
   useEffect(() => {
     if (user) {
       const fetchLogs = async () => {
-        setLogs(await getAuditLogs(user.restaurantId));
+        setLogs(await getAuditLogs(user.restaurantUsername));
       }
       fetchLogs();
     }

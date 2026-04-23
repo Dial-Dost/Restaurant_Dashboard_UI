@@ -180,7 +180,7 @@ export default function OrdersPage() {
   }, [monthlyApcInsight]);
 
   useEffect(() => {
-    if (!user?.restaurantId) {
+    if (!user?.restaurantUsername) {
       setOrders([]);
       setMenuItems([]);
       setMonthlyApcInsight(null);
@@ -192,9 +192,9 @@ export default function OrdersPage() {
     const loadData = async () => {
       try {
         const [ordersData, menuData, apcInsight] = await Promise.all([
-          getOrders(user.restaurantId),
-          getMenuItems(user.restaurantId),
-          getMonthlyApcInsight(user.restaurantId),
+          getOrders(user.restaurantUsername),
+          getMenuItems(user.restaurantUsername),
+          getMonthlyApcInsight(user.restaurantUsername),
         ]);
 
         if (!isActive) {
@@ -205,7 +205,7 @@ export default function OrdersPage() {
         setMenuItems(Array.isArray(menuData) ? menuData : []);
         setMonthlyApcInsight(apcInsight ?? null);
         try {
-          const dt = await getOutletDefaultTax(user.restaurantId);
+          const dt = await getOutletDefaultTax(user.restaurantUsername);
           setDefaultTax(dt ?? null);
         } catch (e) {
           console.warn('failed to load default tax', e);
@@ -213,7 +213,7 @@ export default function OrdersPage() {
         }
         // load tables into cache for selector
         try {
-          const t = await getTables(user.restaurantId);
+          const t = await getTables(user.restaurantUsername);
           setTables(Array.isArray(t) ? t : []);
         } catch (e) {
           console.warn('failed to load tables', e);
@@ -244,7 +244,7 @@ export default function OrdersPage() {
         const detail = e?.detail as { event: string } | undefined;
         if (!detail) return;
         if (detail.event === 'table:added' || detail.event === 'table:deleted' || detail.event === 'table:updated') {
-          if (user?.restaurantId) getTables(user.restaurantId).then(t => setTables(Array.isArray(t) ? t : [])).catch(() => {});
+          if (user?.restaurantUsername) getTables(user.restaurantUsername).then(t => setTables(Array.isArray(t) ? t : [])).catch(() => {});
         }
       } catch (err) {
         // ignore
@@ -271,7 +271,7 @@ export default function OrdersPage() {
   }
   
   const handleAddOrder = async (newOrderData: { tableId: number; customer: string; items: { id?: string; name: string; price: number; quantity?: number }[] }) => {
-    if (!user?.restaurantId) return;
+    if (!user?.restaurantUsername) return;
     const items = newOrderData.items.map(it => ({
       id: it.id ?? `i${Date.now()}${Math.random().toString(36).slice(2,5)}`,
       name: it.name,
@@ -291,8 +291,8 @@ export default function OrdersPage() {
       applyServiceCharge: true,
     };
     try {
-      await addOrder(user.restaurantId, newOrder);
-      const updatedOrders = await getOrders(user.restaurantId);
+      await addOrder(user.restaurantUsername, newOrder);
+      const updatedOrders = await getOrders(user.restaurantUsername);
       setOrders(Array.isArray(updatedOrders) ? updatedOrders : []);
       setIsAddDialogOpen(false);
     } catch (error) {
@@ -388,7 +388,7 @@ export default function OrdersPage() {
     // optimistic UI update
     setOrders(orders.map(order => order.id === orderId ? { ...order, status } : order));
 
-    if (!user?.restaurantId) return;
+    if (!user?.restaurantUsername) return;
 
     const current = orders.find(o => o.id === orderId);
     if (!current) return;
@@ -397,14 +397,14 @@ export default function OrdersPage() {
 
     try {
       // persist via AddOrder upsert endpoint
-      await addOrder(user.restaurantId, updatedOrder);
-      const refreshed = await getOrders(user.restaurantId);
+      await addOrder(user.restaurantUsername, updatedOrder);
+      const refreshed = await getOrders(user.restaurantUsername);
       setOrders(Array.isArray(refreshed) ? refreshed : []);
     } catch (err) {
       console.error('failed to persist order status', err);
       // on error, revert optimistic update by reloading
       try {
-        const refreshed = await getOrders(user.restaurantId);
+        const refreshed = await getOrders(user.restaurantUsername);
         setOrders(Array.isArray(refreshed) ? refreshed : []);
       } catch (e) {
         // ignore
@@ -413,7 +413,7 @@ export default function OrdersPage() {
   };
 
   const handleSetBillVerification = async (order: Order) => {
-    if (!user?.restaurantId) return;
+    if (!user?.restaurantUsername) return;
     const confirmed = window.confirm(
       'Confirm move to Bill Verification? This action cannot be undone and you will not be able to revert to Preparing or Served.',
     );
@@ -433,7 +433,7 @@ export default function OrdersPage() {
       const tax_breakdown = (taxesToApply ?? []).map(t => ({ name: t.name, percentage: t.percentage, amount: Number((order.subtotal * (t.percentage/100)).toFixed(2)) }));
 
       // create bill in backend with status 1 and total including default taxes when applicable
-      const billResp = await createBill(user.restaurantId, {
+      const billResp = await createBill(user.restaurantUsername, {
         order_id: order.id,
         total_amt: totalAmt,
         emp_id: user.employeeId ?? undefined,
@@ -442,8 +442,8 @@ export default function OrdersPage() {
       });
       // update order status via upsert
       const updatedOrder: Order = { ...order, status: 'Bill Verification' };
-      await addOrder(user.restaurantId, updatedOrder);
-      const updatedOrders = await getOrders(user.restaurantId);
+      await addOrder(user.restaurantUsername, updatedOrder);
+      const updatedOrders = await getOrders(user.restaurantUsername);
       setOrders(Array.isArray(updatedOrders) ? updatedOrders : []);
     } catch (err) {
       console.error('failed to set bill verification', err);
@@ -452,7 +452,7 @@ export default function OrdersPage() {
   };
 
   const handleReplaceBill = async (order: Order, replacement: { items: OrderItem[]; taxes: { id?: string; name: string; percentage: number }[]; serviceChargePercentage?: number | undefined; applyServiceCharge?: boolean; reason: string; }) => {
-    if (!user?.restaurantId) return;
+    if (!user?.restaurantUsername) return;
     if (!replacement.reason || !replacement.reason.trim()) {
       alert('Reason is required');
       return;
@@ -487,16 +487,16 @@ export default function OrdersPage() {
         },
       } as const;
 
-      const result = await replaceBill(user.restaurantId, payload);
+      const result = await replaceBill(user.restaurantUsername, payload);
       if (!result) throw new Error('Replace failed');
 
       // refresh orders list to show cancelled + new order
-      const updatedOrders = await getOrders(user.restaurantId);
+      const updatedOrders = await getOrders(user.restaurantUsername);
       setOrders(Array.isArray(updatedOrders) ? updatedOrders : []);
       // also poll once after a short delay in case backend propagation is slightly delayed
       setTimeout(async () => {
         try {
-          const later = await getOrders(user.restaurantId);
+          const later = await getOrders(user.restaurantUsername);
           if (Array.isArray(later)) setOrders(later);
         } catch (e) {
           // ignore
@@ -512,25 +512,25 @@ export default function OrdersPage() {
   };
 
   const handleWaiterConfirmPayment = async (order: Order, paymentMethod: PaymentMethod) => {
-    if (!user?.restaurantId || !user.employeeId) return;
+    if (!user?.restaurantUsername || !user.employeeId) return;
     const confirmed = window.confirm(
       `Confirm payment by ${paymentMethod}? This sends the bill for admin approval.`,
     );
     if (!confirmed) return;
 
     try {
-      await confirmBillPaymentByWaiter(user.restaurantId, user.employeeId, order.id, paymentMethod);
+      await confirmBillPaymentByWaiter(user.restaurantUsername, user.employeeId, order.id, paymentMethod);
       const actorName = user.employeeUsername
         || `${user.emp_Fname ?? ''} ${user.emp_Lname ?? ''}`.trim()
         || user.employeeId
         || 'System';
-      await addAuditLogEntry(user.restaurantId, {
+      await addAuditLogEntry(user.restaurantUsername, {
         employee: actorName,
         employeeId: user.employeeId,
         action: 'Bill Payment Confirmed',
         details: `Waiter confirmed payment for order ${order.id} via ${paymentMethod}`,
       });
-      const updatedOrders = await getOrders(user.restaurantId);
+      const updatedOrders = await getOrders(user.restaurantUsername);
       setOrders(Array.isArray(updatedOrders) ? updatedOrders : []);
       alert('Payment confirmation submitted. Awaiting admin approval.');
     } catch (err: any) {
@@ -540,23 +540,23 @@ export default function OrdersPage() {
   };
 
   const handleAdminApprovePayment = async (order: Order) => {
-    if (!user?.restaurantId || !user.employeeId) return;
+    if (!user?.restaurantUsername || !user.employeeId) return;
     const confirmed = window.confirm('Approve this waiter-confirmed payment?');
     if (!confirmed) return;
 
     try {
-      await approveBillPaymentByAdmin(user.restaurantId, user.employeeId, order.id);
+      await approveBillPaymentByAdmin(user.restaurantUsername, user.employeeId, order.id);
       const actorName = user.employeeUsername
         || `${user.emp_Fname ?? ''} ${user.emp_Lname ?? ''}`.trim()
         || user.employeeId
         || 'System';
-      await addAuditLogEntry(user.restaurantId, {
+      await addAuditLogEntry(user.restaurantUsername, {
         employee: actorName,
         employeeId: user.employeeId,
         action: 'Bill Payment Approved',
         details: `Admin approved payment for order ${order.id}`,
       });
-      const updatedOrders = await getOrders(user.restaurantId);
+      const updatedOrders = await getOrders(user.restaurantUsername);
       setOrders(Array.isArray(updatedOrders) ? updatedOrders : []);
     } catch (err: any) {
       console.error('failed to approve payment', err);
@@ -565,23 +565,23 @@ export default function OrdersPage() {
   };
 
   const handleCloseBill = async (order: Order) => {
-    if (!user?.restaurantId || !user.employeeId) return;
+    if (!user?.restaurantUsername || !user.employeeId) return;
     const confirmed = window.confirm('Close this bill? This finalizes the order.');
     if (!confirmed) return;
 
     try {
-      await closeBillByOrder(user.restaurantId, user.employeeId, order.id);
+      await closeBillByOrder(user.restaurantUsername, user.employeeId, order.id);
       const actorName = user.employeeUsername
         || `${user.emp_Fname ?? ''} ${user.emp_Lname ?? ''}`.trim()
         || user.employeeId
         || 'System';
-      await addAuditLogEntry(user.restaurantId, {
+      await addAuditLogEntry(user.restaurantUsername, {
         employee: actorName,
         employeeId: user.employeeId,
         action: 'Bill Closed',
         details: `Admin closed bill for order ${order.id}`,
       });
-      const updatedOrders = await getOrders(user.restaurantId);
+      const updatedOrders = await getOrders(user.restaurantUsername);
       setOrders(Array.isArray(updatedOrders) ? updatedOrders : []);
     } catch (err: any) {
       console.error('failed to close bill', err);
@@ -826,10 +826,10 @@ export default function OrdersPage() {
           if (!isOpen) setSelectedOrder(null);
         }}
         onSave={async (updatedOrder) => {
-          if (!user?.restaurantId) return;
+          if (!user?.restaurantUsername) return;
           try {
-            await addOrder(user.restaurantId, updatedOrder);
-            const updatedOrders = await getOrders(user.restaurantId);
+            await addOrder(user.restaurantUsername, updatedOrder);
+            const updatedOrders = await getOrders(user.restaurantUsername);
             setOrders(Array.isArray(updatedOrders) ? updatedOrders : []);
           } catch (err) {
             console.error('Failed to save order', err);
@@ -869,9 +869,9 @@ export default function OrdersPage() {
         onOpenChange={setIsDefaultTaxDialogOpen}
         defaultTax={defaultTax}
         onSaved={async (t) => {
-          if (user?.restaurantId) {
+          if (user?.restaurantUsername) {
             try {
-              await setOutletDefaultTax(user.restaurantId, t);
+              await setOutletDefaultTax(user.restaurantUsername, t);
             } catch (err) {
               console.error('failed to save default tax', err);
             }

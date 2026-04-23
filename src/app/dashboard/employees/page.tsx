@@ -135,9 +135,9 @@ export default function EmployeesPage() {
   }
 
   const fetchEmployees = async () => {
-    if (!user?.restaurantId || !user.employeeId) return;
+    if (!user?.restaurantUsername || !user.employeeId) return;
     try {
-      const data = await getRestaurantUsers(user.restaurantId, user.employeeId);
+      const data = await getRestaurantUsers(user.restaurantUsername, user.employeeId);
       setEmployees(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error("fetch_employees_failed", error);
@@ -146,9 +146,9 @@ export default function EmployeesPage() {
   };
 
   const fetchRoles = async () => {
-    if (!user?.restaurantId) return;
+    if (!user?.restaurantUsername) return;
     try {
-      const data = await getRoles(user.restaurantId);
+      const data = await getRoles(user.restaurantUsername);
       setRoleDefinitions(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error("fetch_roles_failed", error);
@@ -160,9 +160,9 @@ export default function EmployeesPage() {
     void fetchEmployees();
     void fetchRoles();
     const fetchCoreRoles = async () => {
-      if (!user?.restaurantId) return;
+      if (!user?.restaurantUsername) return;
       try {
-        const cores = await getCoreRoles(user.restaurantId);
+        const cores = await getCoreRoles(user.restaurantUsername);
         setCoreRoles(Array.isArray(cores) ? cores : []);
       } catch (err) {
         console.error('fetch_core_roles_failed', err);
@@ -171,9 +171,9 @@ export default function EmployeesPage() {
     };
     void fetchCoreRoles();
     const fetchActions = async () => {
-      if (!user?.restaurantId) return;
+      if (!user?.restaurantUsername) return;
       try {
-        const catalog = await getActions(user.restaurantId);
+        const catalog = await getActions(user.restaurantUsername, user.actions_set);
         setAccessCatalog(Array.isArray(catalog) ? catalog : []);
       } catch (err) {
         console.error("fetch_actions_failed", err);
@@ -182,7 +182,7 @@ export default function EmployeesPage() {
     };
     void fetchActions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.restaurantId, user?.employeeId]);
+  }, [user?.restaurantUsername, user?.employeeId]);
 
   const handleAddEmployee = async (data: AddEmployeeFormData) => {
     if (!user) return;
@@ -204,7 +204,7 @@ export default function EmployeesPage() {
         password: data.password,
       } as any;
 
-      await addEmployeeToRestaurant(user.restaurantId, user.outlet_id, payload, user.employeeId);
+      await addEmployeeToRestaurant(user.restaurantUsername, user.outlet_id, payload, user.employeeId);
       await fetchEmployees();
       toast({
         title: "Employee Added",
@@ -223,7 +223,7 @@ export default function EmployeesPage() {
   const handleRemoveEmployee = async (employeeId: string) => {
     if (!user) return;
     try {
-      await removeEmployeeFromRestaurant(user.restaurantId, employeeId);
+      await removeEmployeeFromRestaurant(user.restaurantUsername, employeeId);
       await fetchEmployees();
       toast({
         title: "Employee Removed",
@@ -239,8 +239,8 @@ export default function EmployeesPage() {
   };
 
   const handleAssignRole = async (employeeId: string, roleName: string) => {
-    if (!user?.restaurantId) return;
-    const ok = await assignRoleToEmployee(user.restaurantId, employeeId, roleName);
+    if (!user?.restaurantUsername) return;
+    const ok = await assignRoleToEmployee(user.restaurantUsername, employeeId, roleName);
     if (!ok) {
       toast({ title: "Error", description: "Unable to assign role.", variant: "destructive" });
       return;
@@ -251,7 +251,7 @@ export default function EmployeesPage() {
   };
 
   const handleRemoveRole = async (employee: User, roleName: string) => {
-    if (!user?.restaurantId) return;
+    if (!user?.restaurantUsername) return;
     const normalized = roleName.trim().toLowerCase();
     if (normalized === employee.role) {
       toast({
@@ -262,7 +262,7 @@ export default function EmployeesPage() {
       return;
     }
 
-    const ok = await removeRoleFromEmployee(user.restaurantId, employee.employee_id, normalized);
+    const ok = await removeRoleFromEmployee(user.restaurantUsername, employee.employee_id, normalized);
     if (!ok) {
       toast({ title: "Error", description: "Unable to remove role.", variant: "destructive" });
       return;
@@ -294,9 +294,9 @@ export default function EmployeesPage() {
   };
 
   const handleSaveRoleChanges = async () => {
-    if (!user?.restaurantId || !selectedRoleToEdit) return;
+    if (!user?.restaurantUsername || !selectedRoleToEdit) return;
     try {
-      await createRole(user.restaurantId, selectedRoleToEdit.role_name, editRoleActions);
+      await createRole(user.restaurantUsername, selectedRoleToEdit.role_name, editRoleActions);
       await fetchRoles();
       setIsEditRoleDialogOpen(false);
       setSelectedRoleToEdit(null);
@@ -308,7 +308,7 @@ export default function EmployeesPage() {
   };
 
   const handleCreateCustomRole = async () => {
-    if (!user?.restaurantId) return;
+    if (!user?.restaurantUsername) return;
 
     const normalizedName = newRoleName.trim().toLowerCase();
     if (!normalizedName) {
@@ -322,7 +322,7 @@ export default function EmployeesPage() {
     }
 
     try {
-      const created = await createRole(user.restaurantId, normalizedName, newRoleActions);
+      const created = await createRole(user.restaurantUsername, normalizedName, newRoleActions);
       if (!created) {
         toast({ title: "Error", description: "Unable to create role.", variant: "destructive" });
         return;
@@ -340,14 +340,14 @@ export default function EmployeesPage() {
   };
 
   const handleDeleteCustomRole = async (role: RoleDefinition) => {
-    if (!user?.restaurantId) return;
+    if (!user?.restaurantUsername) return;
 
     if (coreRoles.some((c) => c.role.trim().toLowerCase() === role.role_name.trim().toLowerCase())) {
       toast({ title: "Protected Role", description: "Core roles cannot be deleted.", variant: "destructive" });
       return;
     }
 
-    const ok = await deleteRole(user.restaurantId, role.id);
+    const ok = await deleteRole(user.restaurantUsername, role.id);
     if (!ok) {
       toast({ title: "Error", description: "Unable to delete role.", variant: "destructive" });
       return;

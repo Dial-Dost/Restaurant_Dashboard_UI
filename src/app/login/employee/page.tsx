@@ -68,12 +68,13 @@ function EmployeeLoginContent() {
         employeeUsername: user.employeeUsername as string,
         role: user.role,
         role_all: user.role_all ?? undefined,
-        restaurantId: user.restaurantId as string,
+        restaurantUsername: user.restaurantUsername as string,
         restaurantName: user.restaurantName as string,
         res_id: user.res_id as string,
         outlet_id: user.outlet_id as string,
         emp_Fname: user.emp_Fname as string ?? (user.name ?? null) as string | null,
         emp_Lname: user.emp_Lname ?? null as string | null,
+        actions_set: user.actions_set as string[],
       };
       login(authUser);
       router.push("/dashboard");

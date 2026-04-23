@@ -102,10 +102,10 @@ export default function BookingsPage() {
   const [tables, setTables] = useState<TableType[]>([]);
 
   const recordAuditEntry = async (action: string, details: string) => {
-    if (!user?.restaurantId) return;
+    if (!user?.restaurantUsername) return;
 
       try {
-        await addAuditLogEntry(user.restaurantId, {
+        await addAuditLogEntry(user.restaurantUsername, {
         employee: ( `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || user?.employeeUsername ) ?? user?.employeeId ?? "System",
         employeeId: user?.employeeId,
         action,
@@ -117,17 +117,17 @@ export default function BookingsPage() {
   };
 
   const loadBookings = async () => {
-    if (!user?.restaurantId) {
+    if (!user?.restaurantUsername) {
       return;
     }
 
     try {
       const response = await fetch(
-        `${API_BASE_URL}/get-bookings?restaurantId=${encodeURIComponent(user.restaurantId)}`,
+        `${API_BASE_URL}/get-bookings?restaurantId=${encodeURIComponent(user.restaurantUsername)}`,
         {
           cache: "no-store",
           headers: {
-            "X-Restaurant-Id": user.restaurantId,
+            "X-Restaurant-Id": user.restaurantUsername,
           },
         },
       );
@@ -152,17 +152,17 @@ export default function BookingsPage() {
   };
 
   const loadTables = async () => {
-    if (!user?.restaurantId) {
+    if (!user?.restaurantUsername) {
       return;
     }
 
     try {
       const response = await fetch(
-        `${API_BASE_URL}/get-tables?restaurantId=${encodeURIComponent(user.restaurantId)}`,
+        `${API_BASE_URL}/get-tables?restaurantId=${encodeURIComponent(user.restaurantUsername)}`,
         {
           cache: "no-store",
           headers: {
-            "X-Restaurant-Id": user.restaurantId,
+            "X-Restaurant-Id": user.restaurantUsername,
           },
         },
       );
@@ -201,7 +201,7 @@ export default function BookingsPage() {
   }, [user]);
 
   const handleAddBooking = async (data: BookingFormData) => {
-    if (!user || !user.restaurantId) return;
+    if (!user || !user.restaurantUsername) return;
 
     const sanitizedContact = data.contact.replace(/[^0-9+]/g, "").trim() || data.contact;
     const reservationDate = new Date();
@@ -215,10 +215,10 @@ export default function BookingsPage() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Restaurant-Id": user.restaurantId,
+          "X-Restaurant-Id": user.restaurantUsername,
         },
         body: JSON.stringify({
-          restaurantId: user.restaurantId,
+          restaurantId: user.restaurantUsername,
           customer: {
             name: data.customer,
             number: sanitizedContact,
@@ -252,13 +252,13 @@ export default function BookingsPage() {
   }
 
   const handleCancelBooking = async (booking: Booking) => {
-    if (!user || !user.restaurantId) return;
+    if (!user || !user.restaurantUsername) return;
 
     try {
       await fetch(`${API_BASE_URL}/booking/${booking.id}`, {
         method: "DELETE",
         headers: {
-          "X-Restaurant-Id": user.restaurantId,
+          "X-Restaurant-Id": user.restaurantUsername,
         },
       });
 
@@ -275,14 +275,14 @@ export default function BookingsPage() {
   }
 
   const handleStatusChange = async (booking: Booking, status: Booking['status']) => {
-    if (!user || !user.restaurantId) return;
+    if (!user || !user.restaurantUsername) return;
 
     try {
       await fetch(`${API_BASE_URL}/booking/${booking.id}/status`, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
-          "X-Restaurant-Id": user.restaurantId,
+          "X-Restaurant-Id": user.restaurantUsername,
         },
         body: JSON.stringify({ status }),
       });

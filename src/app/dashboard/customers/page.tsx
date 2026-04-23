@@ -67,7 +67,7 @@ export default function CustomersPage() {
   useEffect(() => {
     if (user) {
         const fetchCustomers = async () => {
-          setCustomers(await getCustomers(user.restaurantId));
+          setCustomers(await getCustomers(user.restaurantUsername));
         }
         fetchCustomers();
     }
@@ -80,8 +80,8 @@ export default function CustomersPage() {
       totalBookings: 1,
       status: 'In-house',
     };
-    await addCustomer(user.restaurantId, newCustomer);
-    setCustomers(await getCustomers(user.restaurantId));
+    await addCustomer(user.restaurantUsername, newCustomer);
+    setCustomers(await getCustomers(user.restaurantUsername));
     setIsDialogOpen(false);
   }
 
