@@ -145,8 +145,8 @@ export default function MenuPage() {
   useEffect(() => {
     if (user) {
         const fetchData = async () => {
-          setMenuItems(await getMenuItems(user.restaurantId));
-          setCategories(await getMenuCategories(user.restaurantId));
+          setMenuItems(await getMenuItems(user.restaurantUsername));
+          setCategories(await getMenuCategories(user.restaurantUsername));
         }
         fetchData();
     }
@@ -162,7 +162,7 @@ export default function MenuPage() {
   const updateMenuItems = async (updatedItems: MenuItem[]) => {
     if (!user) return;
     setMenuItems(updatedItems);
-    await saveMenuItems(user.restaurantId, updatedItems);
+    await saveMenuItems(user.restaurantUsername, updatedItems);
   }
 
   const handleAddItem = async (data: MenuItemFormData) => {
@@ -171,7 +171,7 @@ export default function MenuPage() {
       id: (menuItems.length + 1).toString() + Date.now(),
       ...data,
     };
-    await addMenuItem(user.restaurantId, newItem);
+    await addMenuItem(user.restaurantUsername, newItem);
     setMenuItems([...menuItems, newItem]);
     setIsItemDialogOpen(false);
   };
@@ -179,7 +179,7 @@ export default function MenuPage() {
   const handleAddCategory = async (data: CategoryFormData) => {
     if (!user) return;
     if (!categories.find(c => c.toLowerCase() === data.name.toLowerCase())) {
-        await addMenuCategory(user.restaurantId, data.name);
+        await addMenuCategory(user.restaurantUsername, data.name);
         setCategories([...categories, data.name]);
     }
     setIsCategoryDialogOpen(false);

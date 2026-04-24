@@ -1181,11 +1181,12 @@ export type CoreRoleRow = {
 
 export const getActions = async (
     restaurantId: string,
+    actionList: string[]
 ): Promise<Array<{ group: string; actions: { id: string; name: string; desc?: string | null }[] }>> => {
     const data = await backendJson<ActionRow[]>(
         `/actions?restaurantId=${encodeURIComponent(restaurantId)}`,
         restaurantId,
-        { method: 'GET' },
+        { method: 'GET', headers: { 'Content-Type': 'application/json', 'X-Action-List': actionList.join(',') } },
     );
 
     if (!Array.isArray(data)) return [];

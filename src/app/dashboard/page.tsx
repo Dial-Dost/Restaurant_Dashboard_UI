@@ -36,15 +36,15 @@ export default function Dashboard() {
   const [employeeApcLoading, setEmployeeApcLoading] = useState<boolean>(false);
 
   useEffect(() => {
-    if (user && user.restaurantId) {
+    if (user && user.restaurantUsername) {
       const fetchData = async () => {
         setEmployeeApcLoading(true);
         try {
           const [bookingData, customerData, tableData, apcInsight] = await Promise.all([
-            getBookings(user.restaurantId),
-            getCustomers(user.restaurantId),
-            getTables(user.restaurantId),
-            getMonthlyApcInsight(user.restaurantId, {
+            getBookings(user.restaurantUsername),
+            getCustomers(user.restaurantUsername),
+            getTables(user.restaurantUsername),
+            getMonthlyApcInsight(user.restaurantUsername, {
               period: apcRange,
               employeeId: user.employeeId,
             }),

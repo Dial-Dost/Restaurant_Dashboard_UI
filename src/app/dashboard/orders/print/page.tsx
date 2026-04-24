@@ -57,7 +57,7 @@ function PrintPageContents() {
         (async () => {
             try {
                 const parsed = JSON.parse(decodeURIComponent(orderData));
-                const restaurantId = user?.restaurantId ?? parsed.res_id ?? null;
+                const restaurantId = user?.restaurantUsername ?? parsed.res_id ?? null;
                 if (restaurantId) {
                         const prof = await getRestaurantProfile(restaurantId, user?.employeeId ?? '').catch(() => null);
                         setProfile(prof ?? null);

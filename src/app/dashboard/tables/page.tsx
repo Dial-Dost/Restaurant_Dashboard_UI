@@ -142,13 +142,13 @@ export default function TablesPage() {
   const sensors = useSensors(useSensor(PointerSensor));
 
     const loadTables = async () => {
-        if (!user?.restaurantId) {
+        if (!user?.restaurantUsername) {
             setTablesData([]);
             return;
         }
 
         try {
-            const data = await getTables(user.restaurantId);
+            const data = await getTables(user.restaurantUsername);
             setTablesData(Array.isArray(data) ? data : []);
         } catch (error) {
             console.error("Failed to load tables", error);
@@ -159,10 +159,10 @@ export default function TablesPage() {
   useEffect(() => {
         void loadTables();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [user?.restaurantId]);
+    }, [user?.restaurantUsername]);
 
   const handleAddTable = async () => {
-    if (newTableName && newTableCapacity && user?.restaurantId) {
+    if (newTableName && newTableCapacity && user?.restaurantUsername) {
       const trimmedName = newTableName.trim();
       const existingTable = tablesData.find(
         (table) => table.name.toLowerCase() === trimmedName.toLowerCase()
@@ -188,7 +188,7 @@ export default function TablesPage() {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
-                    "X-Restaurant-Id": user.restaurantId,
+                    "X-Restaurant-Id": user.restaurantUsername,
                 },
                 body: JSON.stringify(payload),
             });
@@ -197,7 +197,7 @@ export default function TablesPage() {
                 throw new Error("Failed to create table");
             }
 
-            await addAuditLogEntry(user.restaurantId, {
+            await addAuditLogEntry(user.restaurantUsername, {
                 employee: ( `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || user?.employeeUsername ) ?? user?.employeeId ?? "System",
                 employeeId: user?.employeeId,
                 action: "Table Added",
@@ -212,14 +212,14 @@ export default function TablesPage() {
   };
 
     const handleRemoveTable = async (tableId: number) => {
-        if (!user?.restaurantId) return;
+        if (!user?.restaurantUsername) return;
         const removed = tablesData.find(t => t.id === tableId);
         if (!removed) return;
 
         const response = await fetch(`${API_BASE_URL}/table/${encodeURIComponent(removed.name)}`, {
             method: "DELETE",
             headers: {
-                "X-Restaurant-Id": user.restaurantId,
+                "X-Restaurant-Id": user.restaurantUsername,
             },
         });
 
@@ -227,7 +227,7 @@ export default function TablesPage() {
             throw new Error("Failed to delete table");
         }
 
-        await addAuditLogEntry(user.restaurantId, {
+        await addAuditLogEntry(user.restaurantUsername, {
             employee: ( `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || user?.employeeUsername ) ?? user?.employeeId ?? "System",
             employeeId: user?.employeeId,
             action: "Table Removed",
