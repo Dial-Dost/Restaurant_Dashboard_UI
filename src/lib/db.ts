@@ -544,31 +544,30 @@ export const createRestaurant = async (restaurantName: string, admin: User) => {
 };
 
 export const addEmployee = async (restaurantId: string, employee: User, outletId: string, sendee_emp_id: string) => {
-    // Try persisting to backend first
-    try {
-        const resp = await backendCall('/restaurant/users', restaurantId, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Outlet-Id': outletId, 'X-Employee-Id': sendee_emp_id },
-            body: JSON.stringify(employee),
-        });
+    const resp = await backendCall('/restaurant/users', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Outlet-Id': outletId, 'X-Employee-Id': sendee_emp_id },
+        body: JSON.stringify(employee),
+    });
 
-        if (resp && resp.ok) {
-            const payload = await resp.json().catch(() => null) as any;
-            const created = payload?.user ?? null;
-            if (created) {
-                const restaurant = ensureLocalRestaurant(restaurantId);
-                restaurant.users.push(deepClone(created));
-                return { acknowledged: true };
-            }
-        }
-    } catch (err) {
-        // ignore and fall back to local store
-        console.warn('addEmployee_backend_failed', err);
+    // If backend is unreachable, preserve prior offline behavior.
+    if (!resp) {
+        const restaurant = ensureLocalRestaurant(restaurantId);
+        restaurant.users.push(deepClone(employee));
+        return { acknowledged: true };
     }
 
-    // Fallback: update local in-memory store
-    const restaurant = ensureLocalRestaurant(restaurantId);
-    restaurant.users.push(deepClone(employee));
+    if (!resp.ok) {
+        throw new Error(await readErrorMessage(resp));
+    }
+
+    const payload = await resp.json().catch(() => null) as any;
+    const created = payload?.user ?? null;
+    if (created) {
+        const restaurant = ensureLocalRestaurant(restaurantId);
+        restaurant.users.push(deepClone(created));
+    }
+
     return { acknowledged: true };
 };
 

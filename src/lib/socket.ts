@@ -1,23 +1,30 @@
 import { io, Socket } from "socket.io-client";
 
 let socket: Socket | null = null;
+let hasLoggedConnectError = false;
 
 export function initSocket({ url, restaurantId, token }: { url?: string; restaurantId: string; token?: string }) {
   if (socket) return socket;
 
-  // Prefer explicit url, then env var, then assume backend on port 3000 (dev fallback)
+  // Prefer explicit URL, then shared backend env vars, then localhost:3000 dev fallback.
   const serverUrl =
-    url ?? (typeof window !== 'undefined' ? (process.env.NEXT_PUBLIC_API_URL ?? `${window.location.protocol}//${window.location.hostname}:3000`) : process.env.NEXT_PUBLIC_API_URL ?? "/");
+    url ??
+    process.env.NEXT_PUBLIC_RECEPTION_API_URL ??
+    process.env.NEXT_PUBLIC_BACKEND_URL ??
+    process.env.NEXT_PUBLIC_API_URL ??
+    (typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:3000` : "/");
 
   const opts: any = {
     path: "/socket.io",
-    // prefer websocket transport to avoid polling/xhr issues in some environments
-    transports: ["websocket", "polling"],
+    // Start with polling then upgrade to websocket; more resilient across local/proxy/dev setups.
+    transports: ["polling", "websocket"],
+    upgrade: true,
+    timeout: 5000,
     auth: { restaurantId },
     transportOptions: {
       polling: { extraHeaders: {} },
     },
-    reconnectionAttempts: 5,
+    reconnectionAttempts: 3,
     reconnectionDelay: 1000,
   };
 
@@ -26,7 +33,10 @@ export function initSocket({ url, restaurantId, token }: { url?: string; restaur
   socket = io(serverUrl, opts);
 
   socket.on("connect_error", (err) => {
-    console.error("socket connect_error", err?.message ?? err);
+    if (!hasLoggedConnectError) {
+      hasLoggedConnectError = true;
+      console.warn("socket connect_error", err?.message ?? err, "url:", serverUrl);
+    }
   });
 
   socket.on("error", (err) => {
@@ -42,6 +52,7 @@ export function initSocket({ url, restaurantId, token }: { url?: string; restaur
   });
 
   socket.on("connect", () => {
+    hasLoggedConnectError = false;
     console.log("socket connected", socket?.id, "to", serverUrl);
   });
 

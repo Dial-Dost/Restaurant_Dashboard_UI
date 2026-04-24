@@ -49,7 +49,14 @@ export default function FeaturesSection() {
           {features.map((item) => (
             <Card key={item.name} className="flex flex-col text-center items-center overflow-hidden transition-all duration-300 hover:shadow-2xl hover:-translate-y-2">
               <div className="w-full h-40 relative">
-                 <Image src={item.image} alt={item.name} layout="fill" objectFit="cover" data-ai-hint={item.aiHint} />
+                  <Image
+                   src={item.image}
+                   alt={item.name}
+                   fill
+                   className="object-cover"
+                   sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 25vw"
+                   data-ai-hint={item.aiHint}
+                  />
               </div>
               <CardHeader className="flex-grow">
                  {item.icon}
