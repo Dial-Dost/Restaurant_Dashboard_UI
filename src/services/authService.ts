@@ -129,13 +129,13 @@ export const addEmployeeToRestaurant = async (restaurantId: string, outletId: st
 };
 
 // Remove an employee from a restaurant
-export const removeEmployeeFromRestaurant = async (restaurantId: string, employeeId: string) => {
-    const restaurant = await findRestaurantByName(getRestaurantId(restaurantId));
+export const removeEmployeeFromRestaurant = async (restaurantUsername: string, employeeIdToRemove: string, restaurantID: string, requestingEmployeeID: string, outletId: string) => {
+    const restaurant = await findRestaurantByName(getRestaurantId(restaurantUsername));
     if (!restaurant) {
         throw new Error("Restaurant not found.");
     }
 
-    const userToRemove = await findUserInRestaurant(restaurantId, employeeId);
+    const userToRemove = await findUserInRestaurant(restaurantUsername, employeeIdToRemove);
     if (!userToRemove) {
         throw new Error("Employee not found.");
     }
@@ -145,7 +145,7 @@ export const removeEmployeeFromRestaurant = async (restaurantId: string, employe
         throw new Error("Cannot remove the only admin of the restaurant.");
     }
 
-    await removeEmployee(restaurantId, employeeId);
+    await removeEmployee(restaurantUsername, restaurantID, employeeIdToRemove, requestingEmployeeID, outletId);
 
     return true;
 };

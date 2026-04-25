@@ -88,7 +88,7 @@ export default function FeedbackPage() {
       }
 
       const base =
-        process.env.NEXT_PUBLIC_API_URL ?? (typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:3000` : '');
+        process.env.NEXT_PUBLIC_BACKEND_URL ?? (typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:3000` : '');
       try {
         const [itemsRes, summaryRes] = await Promise.all([
           fetch(`${base}/feedback?limit=100`, { headers: { 'X-Restaurant-Id': user.restaurantUsername, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id } }),
@@ -151,7 +151,7 @@ export default function FeedbackPage() {
       (async () => {
         setLoading(true);
         const base =
-          process.env.NEXT_PUBLIC_API_URL ?? (typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:3000` : '');
+          process.env.NEXT_PUBLIC_BACKEND_URL ?? (typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:3000` : '');
         try {
           const itemsRes = await fetch(`${base}/feedback?limit=100`, { headers: { 'X-Restaurant-Id': user.restaurantUsername, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id } });
           const summaryRes = await fetch(`${base}/feedback/summary`, { headers: { 'X-Restaurant-Id': user.restaurantUsername, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id } });

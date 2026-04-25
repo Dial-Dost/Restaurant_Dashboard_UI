@@ -11,7 +11,6 @@ export function initSocket({ url, restaurantId, token }: { url?: string; restaur
     url ??
     process.env.NEXT_PUBLIC_RECEPTION_API_URL ??
     process.env.NEXT_PUBLIC_BACKEND_URL ??
-    process.env.NEXT_PUBLIC_API_URL ??
     (typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:3000` : "/");
 
   const opts: any = {

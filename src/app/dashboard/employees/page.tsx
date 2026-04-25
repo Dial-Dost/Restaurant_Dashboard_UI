@@ -74,7 +74,15 @@ import{ toTitleCase } from "@/lib/utils";
 const addEmployeeSchema = z.object({
   name: z.string().min(1, "Name is required."),
   username: z.string().min(1, "Username is required."),
-  email: z.string().email("Invalid email").optional(),
+  // Allow empty string or undefined, but validate non-empty values as email
+  email: z
+    .string()
+    .trim()
+    .optional()
+    .refine((val) => {
+      if (!val) return true;
+      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val);
+    }, { message: "Invalid email" }),
   phone: z.string().optional(),
   address: z.string().optional(),
   role: z.enum(["employee", "admin", "valet"]),
@@ -197,7 +205,7 @@ export default function EmployeesPage() {
         emp_Lname: last,
         employeeId: typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : String(Date.now()) + '-' + Math.random().toString(36).slice(2,8),
         username: data.username,
-        email: data.email ?? null,
+        email: data.email && data.email.trim() ? data.email.trim() : null,
         ph: data.phone ?? null,
         add: data.address ?? null,
         role: data.role,
@@ -223,7 +231,7 @@ export default function EmployeesPage() {
   const handleRemoveEmployee = async (employeeId: string) => {
     if (!user) return;
     try {
-      await removeEmployeeFromRestaurant(user.restaurantUsername, employeeId);
+      await removeEmployeeFromRestaurant(user.restaurantUsername, employeeId, user.res_id, user.employeeId, user.outlet_id);
       await fetchEmployees();
       toast({
         title: "Employee Removed",

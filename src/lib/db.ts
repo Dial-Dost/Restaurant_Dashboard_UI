@@ -131,7 +131,7 @@ const deepClone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 const getRestaurantId = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, '');
 
 const defaultRestaurantData = (restaurantName: string): RestaurantData => ({
-    profile: { 
+    profile: {
         res_id: 'test-res-id',
         restaurant_name: restaurantName,
         restaurant_username: restaurantName.toLowerCase().replace(/\s+/g, '_'),
@@ -139,10 +139,10 @@ const defaultRestaurantData = (restaurantName: string): RestaurantData => ({
         restaurant_logo_url: null,
         outlet_id: 'test-outlet-id',
         outlet_name: 'Main Outlet',
-        outlet_add: '', 
-        outlet_phone: '', 
-        email: '', 
-        outlet_hours: '' 
+        outlet_add: '',
+        outlet_phone: '',
+        email: '',
+        outlet_hours: ''
     },
     bookings: [],
     customers: [],
@@ -571,9 +571,51 @@ export const addEmployee = async (restaurantId: string, employee: User, outletId
     return { acknowledged: true };
 };
 
-export const removeEmployee = async (restaurantId: string, employeeId: string) => {
-    const restaurant = ensureLocalRestaurant(restaurantId);
-    restaurant.users = restaurant.users.filter((u) => u.employee_id !== employeeId);
+export const removeEmployee = async (restaurantUsername: string, restaurantId: string, employeeIdToremove: string, requestingEmployeeID: string, outletID: string) => {
+    // Ask backend to remove the employee. Backend expects the restaurant id via header
+    const resp = await backendCall('/restaurant/users', restaurantId, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json', 'X-Employee-Id': requestingEmployeeID, 'X-Outlet-Id': outletID },
+        body: JSON.stringify({ employeeId: employeeIdToremove }),
+    });
+
+    // If backend unreachable, fall back to local-only removal so UI remains consistent offline.
+    const restaurant = ensureLocalRestaurant(restaurantUsername, restaurantUsername);
+    const removeLocal = () => {
+        restaurant.users = restaurant.users.filter((u) => u.employee_id !== employeeIdToremove);
+
+        // Remove references in local orders (taken_by_employee_id/name)
+        if (Array.isArray(restaurant.data.orders)) {
+            restaurant.data.orders = restaurant.data.orders.map((o) => {
+                if ((o as any).taken_by_employee_id === employeeIdToremove) {
+                    return {
+                        ...o,
+                        taken_by_employee_id: null,
+                        taken_by_employee_name: null,
+                        taken_by_employee_role: null,
+                    } as any;
+                }
+                return o;
+            });
+        }
+    };
+
+    if (!resp) {
+        removeLocal();
+        return { acknowledged: true };
+    }
+
+    if (!resp.ok) {
+        throw new Error(await readErrorMessage(resp));
+    }
+
+    // On success, update local store to reflect deletion
+    try {
+        removeLocal();
+    } catch (e) {
+        // ignore local-update errors
+    }
+
     return { acknowledged: true };
 };
 

@@ -146,7 +146,7 @@ function PrintPageContents() {
                                 };
 
                                 const b64 = toBase64(esc);
-                                const backend = (process.env.NEXT_PUBLIC_API_URL ?? `${window.location.protocol}//${window.location.hostname}:3000`).replace(/\/$/, '');
+                                const backend = (process.env.NEXT_PUBLIC_BACKEND_URL ?? `${window.location.protocol}//${window.location.hostname}:3000`).replace(/\/$/, '');
 
                                 try {
                                     const resp = await fetch(`${backend}/publish/bill`, {
