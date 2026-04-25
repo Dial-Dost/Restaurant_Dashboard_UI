@@ -39,14 +39,12 @@ import { type Table } from "./data";
 import {
     addAuditLogEntry,
     getTables,
+    requestBackend,
 } from "@/lib/db";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import { DndContext, closestCenter, useSensor, useSensors, PointerSensor, DragEndEvent, DragOverlay, DragStartEvent } from "@dnd-kit/core";
 import { SortableContext, useSortable, arrayMove } from "@dnd-kit/sortable";
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_RECEPTION_API_URL ?? "http://localhost:3000";
-
 
 function SortableTable({
     table,
@@ -184,13 +182,11 @@ export default function TablesPage() {
                 },
             };
 
-            const response = await fetch(`${API_BASE_URL}/add-table`, {
+            const response = await requestBackend({
+                path: "/add-table",
                 method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "X-Restaurant-Id": user.restaurantUsername,
-                },
-                body: JSON.stringify(payload),
+                restaurantId: user.restaurantUsername,
+                body: payload,
             });
 
             if (!response.ok) {
@@ -216,11 +212,10 @@ export default function TablesPage() {
         const removed = tablesData.find(t => t.id === tableId);
         if (!removed) return;
 
-        const response = await fetch(`${API_BASE_URL}/table/${encodeURIComponent(removed.name)}`, {
+        const response = await requestBackend({
+            path: `/table/${encodeURIComponent(removed.name)}`,
             method: "DELETE",
-            headers: {
-                "X-Restaurant-Id": user.restaurantUsername,
-            },
+            restaurantId: user.restaurantUsername,
         });
 
         if (!response.ok && response.status !== 204) {

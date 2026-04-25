@@ -42,8 +42,11 @@ function EmployeeLoginContent() {
 
   useEffect(() => {
     const name = searchParams.get('restaurant');
-    setRestaurantName(name);
-    setIsReady(true);
+    const id = setTimeout(() => {
+      setRestaurantName(name);
+      setIsReady(true);
+    }, 0);
+    return () => clearTimeout(id);
   }, [searchParams]);
 
   const { register, handleSubmit, formState: { errors } } = useForm<LoginFormFields>({
@@ -77,8 +80,20 @@ function EmployeeLoginContent() {
         actions_set: user.actions_set as string[],
         action_names: (user.action_names ?? []) as string[],
       };
+      console.log("Login successful, user data:", authUser);
       login(authUser);
-      router.push("/dashboard");
+      try {
+        // Persist session on server so server-side helpers can read outlet/actions via cookies
+        await fetch('/api/session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ authUser }),
+          cache: 'no-store',
+        });
+      } catch (err) {
+        console.warn('Unable to persist session cookie', err);
+      }
+      router.push('/dashboard');
     } catch (error: any) {
       toast({
         title: "Login Failed",
@@ -87,7 +102,6 @@ function EmployeeLoginContent() {
       });
     }
   };
-  
   const descriptionText = isReady 
     ? `Enter your credentials for ${restaurantName || "your restaurant"}.`
     : "Loading restaurant...";

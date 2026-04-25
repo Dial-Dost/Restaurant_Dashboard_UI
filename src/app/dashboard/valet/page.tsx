@@ -16,6 +16,7 @@ import {
 import { useAuth } from "@/context/AuthContext";
 import { useRealtime } from "@/context/RealtimeContext";
 import { useToast } from "@/hooks/use-toast";
+import { requestBackend } from "@/lib/db";
 import { Activity, RefreshCw, Clock, Package, Users, ArrowUpDown } from "lucide-react";
 
 type ValetBays = {
@@ -46,8 +47,6 @@ type ValetInfoResponse = {
   bays: ValetBays[];
   bookings: ValetBooking[];
 };
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_RECEPTION_API_URL ?? "http://localhost:3000";
 
 const VALET_STAGES = [
   "Vehicle added",
@@ -96,28 +95,6 @@ function isParkedLikeStage(stage: ValetStage): boolean {
 
 function isPickupStage(stage: ValetStage): boolean {
   return stage === "Car arrived at entrance";
-}
-
-async function readErrorMessage(response: Response): Promise<string> {
-  try {
-    const payload = await response.json();
-    if (typeof payload?.error === "string") {
-      return payload.error;
-    }
-  } catch {
-    // Ignore JSON parse errors and fall back to text.
-  }
-
-  try {
-    const text = await response.text();
-    if (text.trim().length > 0) {
-      return text;
-    }
-  } catch {
-    // Ignore text read errors.
-  }
-
-  return "Unknown server error.";
 }
 
 function formatTime(value?: string): string {
@@ -221,20 +198,19 @@ export default function ValetDashboardPage() {
     setError(null);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/valet-info`, {
-        headers: {
-          "X-Restaurant-Id": user.restaurantUsername,
-          "X-Employee-Id": user.employeeId,
-          "X-Outlet-Id": user.outlet_id,
-        },
+      const response = await requestBackend<ValetInfoResponse>({
+        path: "/valet-info",
+        method: "GET",
+        restaurantId: user.restaurantUsername,
+        employeeId: user.employeeId,
+        outletId: user.outlet_id,
       });
 
       if (!response.ok) {
-        const body = await response.text();
-        throw new Error(body || "Unable to load valet dashboard data.");
+        throw new Error(response.text || "Unable to load valet dashboard data.");
       }
 
-      const payload = (await response.json()) as ValetInfoResponse;
+      const payload = (response.data ?? null) as ValetInfoResponse;
       setData(payload);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Unable to load valet dashboard data.";
@@ -281,19 +257,17 @@ export default function ValetDashboardPage() {
 
     const stateCode = getStageIndex(status) + 1;
 
-    const response = await fetch(`${API_BASE_URL}/update_valet_state`, {
+    const response = await requestBackend<{ error?: string }>({
+      path: "/update_valet_state",
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Restaurant-Id": user.restaurantUsername,
-        "X-Employee-Id": user.employeeId,
-        "X-Outlet-Id": user.outlet_id,
-      },
-      body: JSON.stringify({ booking_id: bookingId, state: stateCode }),
+      restaurantId: user.restaurantUsername,
+      employeeId: user.employeeId,
+      outletId: user.outlet_id,
+      body: { booking_id: bookingId, state: stateCode },
     });
 
     if (!response.ok) {
-      const message = await readErrorMessage(response);
+      const message = response.data?.error ?? response.text;
       throw new Error(message || "Failed to update stage.");
     }
   };
@@ -305,42 +279,38 @@ export default function ValetDashboardPage() {
 
     // If caller wants to unassign bay (tableName === null), call dedicated unassign endpoint
     if (tableName === null) {
-      const resp = await fetch(`${API_BASE_URL}/unassign-valet-bay`, {
+      const resp = await requestBackend<{ error?: string }>({
+        path: "/unassign-valet-bay",
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Restaurant-Id": user.restaurantUsername,
-          "X-Employee-Id": user.employeeId,
-          "X-Outlet-Id": user.outlet_id,
-        },
-        body: JSON.stringify({ booking_id: bookingId }),
+        restaurantId: user.restaurantUsername,
+        employeeId: user.employeeId,
+        outletId: user.outlet_id,
+        body: { booking_id: bookingId },
       });
 
       if (!resp.ok) {
-        const message = await readErrorMessage(resp);
+        const message = resp.data?.error ?? resp.text;
         throw new Error(message || "Failed to unassign bay.");
       }
 
-      return await resp.json().catch(() => ({}));
+      return resp.data ?? {};
     }
 
-    const response = await fetch(`${API_BASE_URL}/update_valet_bay`, {
+    const response = await requestBackend<{ error?: string }>({
+      path: "/update_valet_bay",
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Restaurant-Id": user.restaurantUsername,
-        "X-Employee-Id": user.employeeId,
-        "X-Outlet-Id": user.outlet_id,
-      },
+      restaurantId: user.restaurantUsername,
+      employeeId: user.employeeId,
+      outletId: user.outlet_id,
       // send bay_id (tableName may be a name or an id; caller should pass id when available)
-      body: JSON.stringify({ booking_id: bookingId, bay_id: tableName }),
+      body: { booking_id: bookingId, bay_id: tableName },
     });
 
     if (!response.ok) {
-      const message = await readErrorMessage(response);
+      const message = response.data?.error ?? response.text;
       throw new Error(message || "Failed to update bay.");
     }
-    return await response.json().catch(() => ({}));
+    return response.data ?? {};
   };
 
   const handleUpdate = async (
@@ -436,21 +406,18 @@ export default function ValetDashboardPage() {
           const newVal = Number(ub.current_capacity ?? 0);
           if (String(ub.Bay_id) && newVal !== prevVal) {
             adjustments.push(
-              fetch(`${API_BASE_URL}/set-valet-bay-current`, {
+              requestBackend({
+                path: "/set-valet-bay-current",
                 method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                  ...(user?.restaurantUsername ? { "X-Restaurant-Id": user.restaurantUsername } : {}),
-                  ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
-                  ...(user?.outlet_id ? { "X-Outlet-Id": user.outlet_id } : {}),
-                },
-                body: JSON.stringify({ Bay_id: ub.Bay_id, current_capacity: newVal }),
+                restaurantId: user?.restaurantUsername,
+                employeeId: user?.employeeId,
+                outletId: user?.outlet_id,
+                body: { Bay_id: ub.Bay_id, current_capacity: newVal },
               }).then(async (r) => {
                 if (!r.ok) {
-                  const txt = await r.text().catch(() => "");
-                  throw new Error(`Failed to set bay current: ${r.status} ${txt}`);
+                  throw new Error(`Failed to set bay current: ${r.status} ${r.text}`);
                 }
-                return r.json().catch(() => null);
+                return r.data;
               }),
             );
           }
@@ -611,28 +578,26 @@ export default function ValetDashboardPage() {
       const selectedBayIdentifier =
         newRecordBayValue === "__default_main__" ? "Main" : newRecordBayValue;
 
-      const response = await fetch(`${API_BASE_URL}/create_valet_record`, {
-        method: 'POST',
-        headers: {
-          "Content-Type": "application/json",
-          "X-Restaurant-Id": user.restaurantUsername,
-          "X-Employee-Id": user.employeeId,
-          "X-Outlet-Id": user.outlet_id,
-        },
-        body: JSON.stringify({
+      const response = await requestBackend<{ message: string; booking_id?: string; entry_time?: string; bay_id?: string; number_plate?: string; customer_name?: string; error?: string }>({
+        path: "/create_valet_record",
+        method: "POST",
+        restaurantId: user.restaurantUsername,
+        employeeId: user.employeeId,
+        outletId: user.outlet_id,
+        body: {
           number_plate: newVehiclePlate.trim().toUpperCase(),
           customer_name: newGuestName.trim() || undefined,
           booking_date_time: date.toISOString(),
           bay_id: selectedBayIdentifier,
-        }),
-      });  
+        },
+      });
 
       if (!response.ok) {
-        const message = await readErrorMessage(response);
+        const message = response.data?.error ?? response.text;
         throw new Error(message || "Unable to create valet record.");
       }
 
-      const created = (await response.json()) as {
+      const created = (response.data ?? {}) as {
         message: string;
         booking_id?: string;
         entry_time?: string;
@@ -931,14 +896,12 @@ export default function ValetDashboardPage() {
     (async () => {
       setBaysLoading(true);
       try {
-        const resp = await fetch(`${API_BASE_URL}/valet-bays`, {
+        const resp = await requestBackend<any[]>({
+          path: "/valet-bays",
           method: "GET",
-          headers: {
-            "Content-Type": "application/json",
-            ...(user?.restaurantUsername ? { "X-Restaurant-Id": user.restaurantUsername } : {}),
-            ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
-            ...(user?.outlet_id ? { "X-Outlet-Id": user.outlet_id} : {}),
-          },
+          restaurantId: user?.restaurantUsername,
+          employeeId: user?.employeeId,
+          outletId: user?.outlet_id,
         });
 
         if (!resp.ok) {
@@ -947,7 +910,7 @@ export default function ValetDashboardPage() {
           return;
         }
 
-        const server = (await resp.json()) as any[];
+        const server = Array.isArray(resp.data) ? resp.data : [];
         const serverBays = server.map((b) => ({ name: b.Bay_name, total_capacity: Number(b.total_capacity) || 0, Bay_id: b.Bay_id, restaurant_id: b.restaurant_id }));
 
         // If server has no Main, create it in DB
@@ -955,18 +918,16 @@ export default function ValetDashboardPage() {
         let finalServerBays = serverBays;
         if (!hasMain) {
           try {
-            const addResp = await fetch(`${API_BASE_URL}/add-valet-bay`, {
+            const addResp = await requestBackend<{ Bay_id?: string }>({
+              path: "/add-valet-bay",
               method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                ...(user?.restaurantUsername ? { "X-Restaurant-Id": user.restaurantUsername } : {}),
-                ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
-                ...(user?.outlet_id ? { "X-Outlet-Id": user.outlet_id } : {}),
-              },
-              body: JSON.stringify({ Bay_name: "Main", total_capacity: 5 }),
+              restaurantId: user?.restaurantUsername,
+              employeeId: user?.employeeId,
+              outletId: user?.outlet_id,
+              body: { Bay_name: "Main", total_capacity: 5 },
             });
             if (addResp.ok) {
-              const addedJson = await addResp.json().catch(() => ({}));
+              const addedJson = addResp.data ?? {};
               finalServerBays = [{ name: "Main", total_capacity: 5, Bay_id: addedJson?.Bay_id, restaurant_id: user?.restaurantUsername }, ...serverBays];
             }
           } catch {
@@ -1031,18 +992,16 @@ export default function ValetDashboardPage() {
 
     // Persist to server and update data.bays and managedBays only on success
     try {
-      const resp = await fetch(`${API_BASE_URL}/add-valet-bay`, {
+      const resp = await requestBackend<{ Bay_id?: string; current_capacity?: number; error?: string }>({
+        path: "/add-valet-bay",
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(user?.restaurantUsername ? { "X-Restaurant-Id": user.restaurantUsername } : {}),
-          ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
-          ...(user?.outlet_id ? { "X-Outlet-Id": user.outlet_id } : {}),
-        },
-        body: JSON.stringify({ Bay_name: normalized, total_capacity: capacity }),
+        restaurantId: user?.restaurantUsername,
+        employeeId: user?.employeeId,
+        outletId: user?.outlet_id,
+        body: { Bay_name: normalized, total_capacity: capacity },
       });
 
-      const json = await resp.json().catch(() => ({}));
+      const json = resp.data ?? {};
       if (resp.ok) {
         const added = {
           Bay_id: json?.Bay_id ?? undefined,
@@ -1079,7 +1038,7 @@ export default function ValetDashboardPage() {
           // ignore
         }
       } else {
-        const err = (json?.error && String(json.error)) || "Failed to add bay";
+        const err = (json?.error && String(json.error)) || resp.text || "Failed to add bay";
         toast({ title: "Add Bay Failed", description: err, variant: "destructive" });
       }
     } catch (e) {
@@ -1105,20 +1064,18 @@ export default function ValetDashboardPage() {
       if (serverMatch && serverMatch.Bay_id) payload.Bay_id = serverMatch.Bay_id;
       else payload.Bay_name = bayName;
 
-      const resp = await fetch(`${API_BASE_URL}/delete-valet-bay`, {
+      const resp = await requestBackend<{ error?: string }>({
+        path: "/delete-valet-bay",
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(user?.restaurantUsername ? { "X-Restaurant-Id": user.restaurantUsername } : {}),
-          ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
-          ...(user?.outlet_id ? { "X-Outlet-Id": user.outlet_id } : {}),
-        },
-        body: JSON.stringify(payload),
+        restaurantId: user?.restaurantUsername,
+        employeeId: user?.employeeId,
+        outletId: user?.outlet_id,
+        body: payload,
       });
 
-      const json = await resp.json().catch(() => ({}));
+      const json = resp.data ?? {};
       if (!resp.ok) {
-        const err = (typeof json?.error === "string" ? json.error : "Unable to delete bay on server");
+        const err = (typeof json?.error === "string" ? json.error : resp.text || "Unable to delete bay on server");
         toast({ title: "Delete Failed", description: err, variant: "destructive" });
         return;
       }
@@ -1403,33 +1360,29 @@ export default function ValetDashboardPage() {
                         // If there is a server record for this bay, call update; else create new
                         const serverMatch = (data?.bays ?? []).find((sb) => String(sb.Bay_name) === bay.name || String(sb.Bay_id) === bay.name);
                         if (serverMatch && serverMatch.Bay_id) {
-                          const resp = await fetch(`${API_BASE_URL}/update-valet-bay`, {
+                          const resp = await requestBackend<{ Bay_id?: string; Bay_name?: string; total_capacity?: number; current_capacity?: number }>({
+                            path: "/update-valet-bay",
                             method: "POST",
-                            headers: {
-                              "Content-Type": "application/json",
-                              ...(user?.restaurantUsername ? { "X-Restaurant-Id": user.restaurantUsername } : {}),
-                              ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
-                              ...(user?.outlet_id ? { "X-Outlet-Id": user.outlet_id } : {}),
-                            },
-                            body: JSON.stringify({ Bay_id: serverMatch.Bay_id, Bay_name: newName, total_capacity: cap }),
+                            restaurantId: user?.restaurantUsername,
+                            employeeId: user?.employeeId,
+                            outletId: user?.outlet_id,
+                            body: { Bay_id: serverMatch.Bay_id, Bay_name: newName, total_capacity: cap },
                           });
-                          const json = await resp.json().catch(() => ({}));
+                          const json = resp.data ?? {};
                           if (resp.ok) {
                             // If server didn't include current_capacity, refetch authoritative bay list
                             let serverCurrent = json?.current_capacity;
                             if (serverCurrent === undefined && serverMatch.Bay_id) {
                               try {
-                                const fetchBays = await fetch(`${API_BASE_URL}/valet-bays`, {
+                                const fetchBays = await requestBackend<any[]>({
+                                  path: "/valet-bays",
                                   method: "GET",
-                                  headers: {
-                                    "Content-Type": "application/json",
-                                    ...(user?.restaurantUsername ? { "X-Restaurant-Id": user.restaurantUsername } : {}),
-                                    ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
-                                    ...(user?.outlet_id ? { "X-Outlet-Id": user.outlet_id } : {}),
-                                  },
+                                  restaurantId: user?.restaurantUsername,
+                                  employeeId: user?.employeeId,
+                                  outletId: user?.outlet_id,
                                 });
                                 if (fetchBays.ok) {
-                                  const all = await fetchBays.json().catch(() => []);
+                                  const all = Array.isArray(fetchBays.data) ? fetchBays.data : [];
                                   const found = (Array.isArray(all) ? all : []).find((b: any) => String(b.Bay_id) === String(serverMatch.Bay_id));
                                   serverCurrent = found?.current_capacity ?? serverMatch.current_capacity ?? 0;
                                 }
@@ -1448,17 +1401,15 @@ export default function ValetDashboardPage() {
                             });
                           }
                         } else {
-                          const resp = await fetch(`${API_BASE_URL}/add-valet-bay`, {
+                          const resp = await requestBackend<{ Bay_id?: string; current_capacity?: number }>({
+                            path: "/add-valet-bay",
                             method: "POST",
-                            headers: {
-                              "Content-Type": "application/json",
-                              ...(user?.restaurantUsername ? { "X-Restaurant-Id": user.restaurantUsername } : {}),
-                              ...(user?.employeeId ? { "X-Employee-Id": user.employeeId } : {}),
-                              ...(user?.outlet_id ? { "X-Outlet-Id": user.outlet_id } : {}),
-                            },
-                            body: JSON.stringify({ Bay_name: newName, total_capacity: cap }),
+                            restaurantId: user?.restaurantUsername,
+                            employeeId: user?.employeeId,
+                            outletId: user?.outlet_id,
+                            body: { Bay_name: newName, total_capacity: cap },
                           });
-                          const json = await resp.json().catch(() => ({}));
+                          const json = resp.data ?? {};
                           if (resp.ok) {
                             const added = { Bay_id: json?.Bay_id ?? undefined, Bay_name: newName, total_capacity: cap, current_capacity: json?.current_capacity ?? 0, restaurant_id: user?.restaurantUsername } as ValetBays;
                             setManagedBays((prev) => [...prev, { name: added.Bay_name, total_capacity: added.total_capacity }]);

@@ -52,7 +52,7 @@ import {
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { addAuditLogEntry, getBookings as getBookingsData, getTables as getTablesData } from "@/lib/db";
+import { addAuditLogEntry, getBookings as getBookingsData, getTables as getTablesData, requestBackend } from "@/lib/db";
 import { useAuth } from "@/context/AuthContext";
 import { type Booking } from "./data";
 import { type Table as TableType } from "../tables/data";
@@ -68,8 +68,6 @@ const bookingSchema = z.object({
 });
 
 type BookingFormData = z.infer<typeof bookingSchema>;
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_RECEPTION_API_URL ?? "http://localhost:3000";
 
 const createBookingId = (value: unknown) => {
   if (value !== null && value !== undefined) {
@@ -152,13 +150,11 @@ export default function BookingsPage() {
     const requestedTable = data.table?.trim() || undefined;
 
     try {
-      await fetch(`${API_BASE_URL}/add-booking`, {
+      const response = await requestBackend({
+        path: "/add-booking",
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Restaurant-Id": user.restaurantUsername,
-        },
-        body: JSON.stringify({
+        restaurantId: user.restaurantUsername,
+        body: {
           restaurantId: user.restaurantUsername,
           customer: {
             name: data.customer,
@@ -174,8 +170,12 @@ export default function BookingsPage() {
             from: "dashboard",
             notes: data.notes?.trim() || undefined,
           },
-        }),
+        },
       });
+
+      if (!response.ok) {
+        throw new Error(response.text || "Failed to create booking");
+      }
 
       await recordAuditEntry(
         "Booking Create",
@@ -196,12 +196,15 @@ export default function BookingsPage() {
     if (!user || !user.restaurantUsername) return;
 
     try {
-      await fetch(`${API_BASE_URL}/booking/${booking.id}`, {
+      const response = await requestBackend({
+        path: `/booking/${encodeURIComponent(booking.id)}`,
         method: "DELETE",
-        headers: {
-          "X-Restaurant-Id": user.restaurantUsername,
-        },
+        restaurantId: user.restaurantUsername,
       });
+
+      if (!response.ok) {
+        throw new Error(response.text || "Failed to cancel booking");
+      }
 
       await recordAuditEntry(
         "Booking Cancel",
@@ -219,14 +222,16 @@ export default function BookingsPage() {
     if (!user || !user.restaurantUsername) return;
 
     try {
-      await fetch(`${API_BASE_URL}/booking/${booking.id}/status`, {
+      const response = await requestBackend({
+        path: `/booking/${encodeURIComponent(booking.id)}/status`,
         method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Restaurant-Id": user.restaurantUsername,
-        },
-        body: JSON.stringify({ status }),
+        restaurantId: user.restaurantUsername,
+        body: { status },
       });
+
+      if (!response.ok) {
+        throw new Error(response.text || "Failed to update booking status");
+      }
 
       await recordAuditEntry(
         "Booking Status",

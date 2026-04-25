@@ -31,7 +31,7 @@ export default function LoginPage() {
     const restaurant = await findRestaurantByName(restaurantName);
 
     if (restaurant) {
-      router.push(`/login/employee?restaurant=${encodeURIComponent(restaurant.name)}`);
+      router.push(`/login/employee?restaurant=${encodeURIComponent(restaurant.Restaurant_name)}`);
     } else {
        toast({
         title: "Restaurant Not Found",

@@ -1,4 +1,9 @@
-'use server';
+"use server";
+
+// When executing in a server context we can read incoming request cookies
+// via Next.js helpers so the server-side request helpers can pick up
+// the `authUser` cookie set by the client after login.
+import { cookies as nextCookies } from 'next/headers';
 
 import { type Booking } from '@/app/dashboard/bookings/data';
 import { type Customer } from '@/app/dashboard/customers/page';
@@ -100,8 +105,18 @@ export type PaymentMethod =
     | 'Card'
     | 'Online Transfer';
 
+type OutletData = {
+    outlet_add: string;
+    outlet_phone: string;
+    email: string;
+    outlet_hours: string;
+    outlet_id: string;
+    outlet_name: string;
+};
+
 type RestaurantData = {
     profile: RestaurantProfile;
+    outlet: OutletData;
     bookings: Booking[];
     customers: Customer[];
     inventory: InventoryItem[];
@@ -109,12 +124,13 @@ type RestaurantData = {
     menuCategories: string[];
     orders: Order[];
     tables: Table[];
-    auditLogs: AuditLog[];
+    auditLogs: AuditLog[]
 };
 
 type RestaurantRecord = {
-    id: string;
-    name: string;
+    res_id: string;
+    res_username: string;
+    Restaurant_name: string;
     users: User[];
     data: RestaurantData;
 };
@@ -125,13 +141,38 @@ const API_BASE_URL = (
     'http://localhost:3000'
 ).replace(/\/$/, '');
 
+const RECEPTION_SERVER_BASE_URL = (
+    process.env.NEXT_PUBLIC_RECEPTION_SERVER_URL ??
+    API_BASE_URL
+).replace(/\/$/, '');
+
+export type BackendRequestParams = {
+    path: string;
+    method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+    restaurantId?: string;
+    employeeId?: string;
+    outletId?: string;
+    actionList?: string[];
+    headers?: HeadersInit;
+    body?: unknown;
+    baseUrl?: string;
+    parseJson?: boolean;
+};
+
+export type BackendRequestResult<T = unknown> = {
+    ok: boolean;
+    status: number;
+    data: T | null;
+    text: string;
+};
+
 const restaurantStore = new Map<string, RestaurantRecord>();
 
 const deepClone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
-const getRestaurantId = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, '');
+const getRestaurantUsernameFromName = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, '');
 
 const defaultRestaurantData = (restaurantName: string): RestaurantData => ({
-    profile: { 
+    profile: {
         res_id: 'test-res-id',
         restaurant_name: restaurantName,
         restaurant_username: restaurantName.toLowerCase().replace(/\s+/g, '_'),
@@ -139,10 +180,18 @@ const defaultRestaurantData = (restaurantName: string): RestaurantData => ({
         restaurant_logo_url: null,
         outlet_id: 'test-outlet-id',
         outlet_name: 'Main Outlet',
-        outlet_add: '', 
-        outlet_phone: '', 
-        email: '', 
-        outlet_hours: '' 
+        outlet_add: '',
+        outlet_phone: '',
+        email: '',
+        outlet_hours: ''
+    },
+    outlet: {
+        outlet_add: "",
+        outlet_phone: "",
+        email: "",
+        outlet_hours: "",
+        outlet_id: "test-outlet-id",
+        outlet_name: "test-outlet"
     },
     bookings: [],
     customers: [],
@@ -154,20 +203,25 @@ const defaultRestaurantData = (restaurantName: string): RestaurantData => ({
     auditLogs: [],
 });
 
-const ensureLocalRestaurant = (restaurantId: string, restaurantName?: string): RestaurantRecord => {
-    const existing = restaurantStore.get(restaurantId);
+const ensureLocalRestaurant = (restaurant_username: string, restaurantName?: string, restaurantId?: string): RestaurantRecord => {
+    const existing = restaurantStore.get(restaurant_username);
     if (existing) {
         return existing;
     }
 
-    const name = restaurantName ?? restaurantId;
+    if (!restaurantName || !restaurantId) {
+        throw new Error("Missing restaurant_username or restaurantName for new restaurant");
+    }
+
+    const name = restaurantName;
     const created: RestaurantRecord = {
-        id: restaurantId,
-        name,
+        res_id: restaurantId,
+        res_username: restaurant_username,
+        Restaurant_name: name,
         users: [],
         data: defaultRestaurantData(name),
     };
-    restaurantStore.set(restaurantId, created);
+    restaurantStore.set(restaurant_username, created);
     return created;
 };
 
@@ -204,10 +258,165 @@ const toTableStatus = (booked: unknown, reserved: unknown): Table['status'] => {
     return 'Available';
 };
 
-const headersForRestaurant = (restaurantId: string, headers?: HeadersInit): Headers => {
+type FrontendAuthContext = {
+    outletId: string | null;
+    actionList: string[];
+};
+
+const getPathWithoutQuery = (path: string): string => {
+    const index = path.indexOf('?');
+    return index >= 0 ? path.slice(0, index) : path;
+};
+
+const isRestaurantLoginPath = (path: string): boolean => {
+    const normalized = getPathWithoutQuery(path).toLowerCase();
+    return (
+        normalized === '/auth/restaurant-login' ||
+        normalized === '/auth/login-restaurant' ||
+        normalized === '/auth/signin-restaurant'
+    );
+};
+
+const isEmployeeLoginPath = (path: string): boolean => {
+    const normalized = getPathWithoutQuery(path).toLowerCase();
+    return normalized === '/auth/employee-login';
+};
+
+const getFrontendAuthContext = async (): Promise<FrontendAuthContext> => {
+    // If running on server, attempt to read cookie set by client.
+    if (typeof window === 'undefined') {
+        try {
+            // nextCookies() may be a Promise; await it just in case.
+            const ckAny: any = await nextCookies();
+            const cookie = (typeof ckAny.get === 'function' ? ckAny.get('authUser') : ckAny?.cookies?.get?.('authUser'))?.value ?? null;
+            if (!cookie) return { outletId: null, actionList: [] };
+            const parsed = JSON.parse(decodeURIComponent(cookie)) as {
+                outlet_id?: unknown;
+                outletId?: unknown;
+                actions_set?: unknown;
+                action_list?: unknown;
+            };
+
+            const outletFromCookie =
+                typeof parsed?.outlet_id === 'string'
+                    ? parsed.outlet_id
+                    : typeof parsed?.outletId === 'string'
+                        ? parsed.outletId
+                        : null;
+
+            const rawActions = Array.isArray(parsed?.actions_set)
+                ? parsed.actions_set
+                : Array.isArray(parsed?.action_list)
+                    ? parsed.action_list
+                    : [];
+
+            const actionList = rawActions
+                .filter((entry): entry is string => typeof entry === 'string')
+                .map((entry) => entry.trim())
+                .filter((entry) => entry.length > 0);
+
+            return {
+                outletId: outletFromCookie && outletFromCookie.trim().length > 0 ? outletFromCookie.trim() : null,
+                actionList,
+            };
+        } catch {
+            return { outletId: null, actionList: [] };
+        }
+    }
+
+    // Fallback to reading from localStorage in client context.
+    try {
+        const raw = window.localStorage.getItem('authUser');
+        if (!raw) {
+            return { outletId: null, actionList: [] };
+        }
+
+        const parsed = JSON.parse(raw) as {
+            outlet_id?: unknown;
+            outletId?: unknown;
+            actions_set?: unknown;
+            action_list?: unknown;
+        };
+
+        const outletFromStorage =
+            typeof parsed?.outlet_id === 'string'
+                ? parsed.outlet_id
+                : typeof parsed?.outletId === 'string'
+                    ? parsed.outletId
+                    : null;
+
+        const rawActions = Array.isArray(parsed?.actions_set)
+            ? parsed.actions_set
+            : Array.isArray(parsed?.action_list)
+                ? parsed.action_list
+                : [];
+
+        const actionList = rawActions
+            .filter((entry): entry is string => typeof entry === 'string')
+            .map((entry) => entry.trim())
+            .filter((entry) => entry.length > 0);
+
+        return {
+            outletId: outletFromStorage && outletFromStorage.trim().length > 0 ? outletFromStorage.trim() : null,
+            actionList,
+        };
+    } catch {
+        return { outletId: null, actionList: [] };
+    }
+};
+
+const applyEmployeeContextHeaders = async (
+    path: string,
+    headers: Headers,
+    explicitOutletId?: string,
+    explicitActionList?: string[],
+): Promise<Headers> => {
+    const restaurantLogin = isRestaurantLoginPath(path);
+    const employeeLogin = isEmployeeLoginPath(path);
+    if (restaurantLogin) {
+        return headers;
+    }
+
+    const fromFrontend = await getFrontendAuthContext();
+    const finalOutletId =
+        (typeof explicitOutletId === 'string' && explicitOutletId.trim().length > 0
+            ? explicitOutletId.trim()
+            : fromFrontend.outletId) ?? null;
+
+    if (finalOutletId) {
+        headers.set('X-Outlet-Id', finalOutletId);
+    }
+
+    if (employeeLogin) {
+        return headers;
+    }
+
+    const finalActionList = Array.isArray(explicitActionList) && explicitActionList.length > 0
+        ? explicitActionList
+        : fromFrontend.actionList;
+
+    const compactActions = finalActionList
+        .filter((entry): entry is string => typeof entry === 'string')
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0);
+
+    if (compactActions.length > 0) {
+        headers.set('X-Action-List', compactActions.join(','));
+    }
+
+    return headers;
+};
+
+const headersForRestaurant = async (
+    path: string,
+    restaurantId: string,
+    headers?: HeadersInit,
+    outletId?: string,
+    actionList?: string[],
+): Promise<Headers> => {
     const merged = new Headers(headers);
     merged.set('X-Restaurant-Id', restaurantId);
-    return merged;
+    return applyEmployeeContextHeaders(path, merged, outletId, actionList);
 };
 
 const backendJson = async <T>(
@@ -216,10 +425,11 @@ const backendJson = async <T>(
     init?: RequestInit,
 ): Promise<T | null> => {
     try {
+        const hdrs = await headersForRestaurant(path, restaurantId, init?.headers);
         const response = await fetch(`${API_BASE_URL}${path}`, {
             ...init,
             cache: 'no-store',
-            headers: headersForRestaurant(restaurantId, init?.headers),
+            headers: hdrs,
         });
 
         if (!response.ok) {
@@ -239,15 +449,120 @@ const backendCall = async (
     init?: RequestInit,
 ): Promise<Response | null> => {
     try {
+        const hdrs = await headersForRestaurant(path, restaurantId, init?.headers);
         const response = await fetch(`${API_BASE_URL}${path}`, {
             ...init,
-            headers: headersForRestaurant(restaurantId, init?.headers),
+            headers: hdrs,
         });
         return response;
     } catch (error) {
         console.warn(`Backend request failed for ${path}`, error);
         return null;
     }
+};
+
+const parseBodyText = async (response: Response): Promise<string> => {
+    try {
+        return await response.text();
+    } catch {
+        return '';
+    }
+};
+
+export const requestBackend = async <T = unknown>(
+    params: BackendRequestParams,
+): Promise<BackendRequestResult<T>> => {
+    const {
+        path,
+        method,
+        restaurantId,
+        employeeId,
+        outletId,
+        actionList,
+        headers,
+        body,
+        baseUrl,
+        parseJson = true,
+    } = params;
+
+    const finalBaseUrl = (baseUrl ?? API_BASE_URL).replace(/\/$/, '');
+    const mergedHeaders = new Headers(headers);
+
+    if (restaurantId) mergedHeaders.set('X-Restaurant-Id', restaurantId);
+    if (employeeId) mergedHeaders.set('X-Employee-Id', employeeId);
+
+    // applyEmployeeContextHeaders is async now
+    await applyEmployeeContextHeaders(path, mergedHeaders, outletId, actionList);
+
+    const hasBody = body !== undefined;
+    if (hasBody && !mergedHeaders.has('Content-Type')) {
+        mergedHeaders.set('Content-Type', 'application/json');
+    }
+
+    const finalMethod = method ?? (hasBody ? 'POST' : 'GET');
+    const requestInit: RequestInit = {
+        method: finalMethod,
+        headers: mergedHeaders,
+    };
+
+    if (hasBody) {
+        requestInit.body = typeof body === 'string' ? body : JSON.stringify(body);
+    }
+
+    try {
+        const response = await fetch(`${finalBaseUrl}${path}`, requestInit);
+        const text = await parseBodyText(response);
+
+        if (!parseJson) {
+            return {
+                ok: response.ok,
+                status: response.status,
+                data: null,
+                text,
+            };
+        }
+
+        if (!text.trim()) {
+            return {
+                ok: response.ok,
+                status: response.status,
+                data: null,
+                text,
+            };
+        }
+
+        try {
+            return {
+                ok: response.ok,
+                status: response.status,
+                data: JSON.parse(text) as T,
+                text,
+            };
+        } catch {
+            return {
+                ok: response.ok,
+                status: response.status,
+                data: null,
+                text,
+            };
+        }
+    } catch {
+        return {
+            ok: false,
+            status: 0,
+            data: null,
+            text: '',
+        };
+    }
+};
+
+export const requestReceptionBackend = async <T = unknown>(
+    params: Omit<BackendRequestParams, 'baseUrl'>,
+): Promise<BackendRequestResult<T>> => {
+    return requestBackend<T>({
+        ...params,
+        baseUrl: RECEPTION_SERVER_BASE_URL,
+    });
 };
 
 const readErrorMessage = async (response: Response): Promise<string> => {
@@ -407,11 +722,12 @@ const addToLocalField = async (
 };
 
 const seedDefaultRestaurant = () => {
-    const id = getRestaurantId('CSR Organics');
+    const id = getRestaurantUsernameFromName('CSR Organics');
     if (restaurantStore.has(id)) return;
     restaurantStore.set(id, {
-        id,
-        name: 'CSR Organics',
+        res_id: '12fa3af0-f13d-4dfc-9b79-a6d634aa07dc',
+        res_username: id,
+        Restaurant_name: 'CSR Organics',
         users: [
             {
                 id: '12fa3af0-f13d-4dfc-9b79-a6d634aa07dc',
@@ -435,34 +751,36 @@ seedDefaultRestaurant();
 
 // --- User and Restaurant Management ---
 export const findRestaurantByName = async (name: string) => {
-    const normalized = getRestaurantId(name);
+    const normalized = getRestaurantUsernameFromName(name);
     const direct = name.trim().toLowerCase();
 
     const local = restaurantStore.get(normalized) ?? restaurantStore.get(direct);
     if (local) {
         const verify = await backendCall(
-            `/get-customers?restaurantId=${encodeURIComponent(local.id)}`,
-            local.id,
-            { method: 'GET' },
+            "/auth/restaurant-login",
+            "",
+            { method: 'GET', headers: {'X-Restaurant-Username': local.data.profile.restaurant_username} },
         );
-        console.log(verify);
         if (verify?.ok) {
             return deepClone(local);
         }
 
         // Remove stale local-only entries that do not exist in backend.
-        restaurantStore.delete(local.id);
+        restaurantStore.delete(normalized);
     }
 
-    const probe = await backendCall(`/get-customers?restaurantId=${encodeURIComponent(normalized)}`, normalized, {
+    const probe = await backendCall("/auth/restaurant-login", normalized, {
         method: 'GET',
+        headers: {"X-Restaurant-Username": normalized, "content-type": "application/json"},
     });
 
     if (!probe || !probe.ok) {
         return null;
     }
 
-    const created = ensureLocalRestaurant(normalized, name);
+    const resp = await probe.json().catch(() => null);
+
+    const created = ensureLocalRestaurant(normalized, name, resp.res_id);
     return deepClone(created);
 };
 
@@ -496,8 +814,9 @@ export const findUserInRestaurant = async (restaurantId: string, employeeId: str
     return matched ? deepClone(matched) : null;
 };
 
+// Important: This function is not updated to latest changes
 export const createRestaurant = async (restaurantName: string, admin: User) => {
-    const id = getRestaurantId(restaurantName);
+    const id = getRestaurantUsernameFromName(restaurantName);
     if (!admin.password) {
         throw new Error('Admin password is required.');
     }
@@ -525,6 +844,7 @@ export const createRestaurant = async (restaurantName: string, admin: User) => {
         | {
             restaurantId?: string;
             restaurantName?: string;
+            restaurantUsername?: string;
         }
         | null;
 
@@ -537,9 +857,15 @@ export const createRestaurant = async (restaurantName: string, admin: User) => {
             ? payload.restaurantName
             : restaurantName;
 
+    const persistedUsername = 
+        typeof payload?.restaurantUsername === 'string' && payload.restaurantUsername.trim().length > 0
+            ? payload.restaurantUsername
+            : getRestaurantUsernameFromName(persistedName);
+
     const restaurant: RestaurantRecord = {
-        id: persistedId,
-        name: persistedName,
+        res_id: persistedId,
+        res_username: persistedUsername,
+        Restaurant_name: persistedName,
         users: [admin],
         data: defaultRestaurantData(persistedName),
     };
@@ -577,9 +903,51 @@ export const addEmployee = async (restaurantId: string, employee: User, outletId
     return { acknowledged: true };
 };
 
-export const removeEmployee = async (restaurantId: string, employeeId: string) => {
-    const restaurant = ensureLocalRestaurant(restaurantId);
-    restaurant.users = restaurant.users.filter((u) => u.employee_id !== employeeId);
+export const removeEmployee = async (restaurantUsername: string, restaurantId: string, employeeIdToremove: string, requestingEmployeeID: string, outletID: string) => {
+    // Ask backend to remove the employee. Backend expects the restaurant id via header
+    const resp = await backendCall('/restaurant/users', restaurantId, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json', 'X-Employee-Id': requestingEmployeeID, 'X-Outlet-Id': outletID },
+        body: JSON.stringify({ employeeId: employeeIdToremove }),
+    });
+
+    // If backend unreachable, fall back to local-only removal so UI remains consistent offline.
+    const restaurant = ensureLocalRestaurant(restaurantUsername, restaurantUsername);
+    const removeLocal = () => {
+        restaurant.users = restaurant.users.filter((u) => u.employee_id !== employeeIdToremove);
+
+        // Remove references in local orders (taken_by_employee_id/name)
+        if (Array.isArray(restaurant.data.orders)) {
+            restaurant.data.orders = restaurant.data.orders.map((o) => {
+                if ((o as any).taken_by_employee_id === employeeIdToremove) {
+                    return {
+                        ...o,
+                        taken_by_employee_id: null,
+                        taken_by_employee_name: null,
+                        taken_by_employee_role: null,
+                    } as any;
+                }
+                return o;
+            });
+        }
+    };
+
+    if (!resp) {
+        removeLocal();
+        return { acknowledged: true };
+    }
+
+    if (!resp.ok) {
+        throw new Error(await readErrorMessage(resp));
+    }
+
+    // On success, update local store to reflect deletion
+    try {
+        removeLocal();
+    } catch (e) {
+        // ignore local-update errors
+    }
+
     return { acknowledged: true };
 };
 
@@ -1080,7 +1448,7 @@ export const updateRestaurantProfile = async (restaurantId: string, employeeId: 
     }
 
     const restaurant = ensureLocalRestaurant(restaurantId);
-    restaurant.name = profile.restaurant_name;
+    restaurant.Restaurant_name = profile.restaurant_name;
     restaurant.data.profile = deepClone(profile);
     return { acknowledged: true };
 };
@@ -1213,11 +1581,11 @@ export const getActions = async (
         .map((g) => ({ group: g, actions: map[g] }));
 };
 
-export const getCoreRoles = async (restaurantId: string): Promise<CoreRoleRow[]> => {
+export const getCoreRoles = async (restaurantId: string, actionList: string[]): Promise<CoreRoleRow[]> => {
     const data = await backendJson<CoreRoleRow[]>(
         `/core-roles?restaurantId=${encodeURIComponent(restaurantId)}`,
         restaurantId,
-        { method: 'GET' },
+        { method: 'GET', headers: { 'Content-Type': 'application/json', 'X-Action-List': actionList.join(',') } },
     );
 
     return Array.isArray(data) ? data : [];

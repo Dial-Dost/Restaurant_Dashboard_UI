@@ -14,6 +14,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { useAuth } from "@/context/AuthContext";
 import { useRealtime } from "@/context/RealtimeContext";
+import { requestBackend } from "@/lib/db";
 
 type FeedbackCategoryRating = {
   key: string;
@@ -88,19 +89,37 @@ export default function FeedbackPage() {
       }
 
       const base =
-        process.env.NEXT_PUBLIC_API_URL ?? (typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:3000` : '');
+        process.env.NEXT_PUBLIC_BACKEND_URL ?? (typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:3000` : '');
       try {
         const [itemsRes, summaryRes] = await Promise.all([
-          fetch(`${base}/feedback?limit=100`, { headers: { 'X-Restaurant-Id': user.restaurantUsername, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id } }),
-          fetch(`${base}/feedback/summary`, { headers: { 'X-Restaurant-Id': user.restaurantUsername, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id } }),
+          requestBackend<{ items?: FeedbackEntry[] }>({
+            baseUrl: base,
+            path: `/feedback?limit=100`,
+            restaurantId: user.restaurantUsername,
+            employeeId: user.employeeId,
+            outletId: user.outlet_id,
+          }),
+          requestBackend<FeedbackSummary>({
+            baseUrl: base,
+            path: `/feedback/summary`,
+            restaurantId: user.restaurantUsername,
+            employeeId: user.employeeId,
+            outletId: user.outlet_id,
+          }),
         ]);
 
         console.log("Fetched feedback data", { itemsRes, summaryRes });
 
-        const feedbackRows = itemsRes.ok ? (await itemsRes.json()).items ?? [] : [];
-        const feedbackSummary = summaryRes.ok ? (await summaryRes.json()) : null;
-        const usersRes = await fetch(`${base}/restaurant/users`, { headers: { 'X-Restaurant-Id': user.restaurantUsername, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id} });
-        const usersPayload = usersRes.ok ? (await usersRes.json()) : { users: [] };
+        const feedbackRows = itemsRes.ok ? itemsRes.data?.items ?? [] : [];
+        const feedbackSummary = summaryRes.ok ? summaryRes.data : null;
+        const usersRes = await requestBackend<{ users?: any[] }>({
+          baseUrl: base,
+          path: `/restaurant/users`,
+          restaurantId: user.restaurantUsername,
+          employeeId: user.employeeId,
+          outletId: user.outlet_id,
+        });
+        const usersPayload = usersRes.ok ? usersRes.data : { users: [] };
         const usersList = Array.isArray(usersPayload?.users) ? usersPayload.users : [];
         const map: Record<string, { name: string; role?: string }> = {};
         for (const u of usersList) {
@@ -126,10 +145,38 @@ export default function FeedbackPage() {
 
         setEntries(feedbackRows as FeedbackEntry[]);
         setSummary(feedbackSummary as FeedbackSummary | null);
-        const statsDaily = await (await fetch(`${base}/feedback/stats?mode=daily&date=${dailyDate}`, { headers: { 'X-Restaurant-Id': user.restaurantUsername, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id } })).json().catch(() => null);
-        const statsWeekly = await (await fetch(`${base}/feedback/stats?mode=weekly&weekStart=${weeklyStart}`, { headers: { 'X-Restaurant-Id': user.restaurantUsername, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id } })).json().catch(() => null);
-        const statsMonthly = await (await fetch(`${base}/feedback/stats?mode=monthly&start=${monthlyStart}`, { headers: { 'X-Restaurant-Id': user.restaurantUsername, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id } })).json().catch(() => null);
-        const statsYearly = await (await fetch(`${base}/feedback/stats?mode=yearly&year=${yearlyYear}`, { headers: { 'X-Restaurant-Id': user.restaurantUsername, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id } })).json().catch(() => null);
+        const statsDailyRes = await requestBackend<any>({
+          baseUrl: base,
+          path: `/feedback/stats?mode=daily&date=${dailyDate}`,
+          restaurantId: user.restaurantUsername,
+          employeeId: user.employeeId,
+          outletId: user.outlet_id,
+        });
+        const statsWeeklyRes = await requestBackend<any>({
+          baseUrl: base,
+          path: `/feedback/stats?mode=weekly&weekStart=${weeklyStart}`,
+          restaurantId: user.restaurantUsername,
+          employeeId: user.employeeId,
+          outletId: user.outlet_id,
+        });
+        const statsMonthlyRes = await requestBackend<any>({
+          baseUrl: base,
+          path: `/feedback/stats?mode=monthly&start=${monthlyStart}`,
+          restaurantId: user.restaurantUsername,
+          employeeId: user.employeeId,
+          outletId: user.outlet_id,
+        });
+        const statsYearlyRes = await requestBackend<any>({
+          baseUrl: base,
+          path: `/feedback/stats?mode=yearly&year=${yearlyYear}`,
+          restaurantId: user.restaurantUsername,
+          employeeId: user.employeeId,
+          outletId: user.outlet_id,
+        });
+        const statsDaily = statsDailyRes.ok ? statsDailyRes.data : null;
+        const statsWeekly = statsWeeklyRes.ok ? statsWeeklyRes.data : null;
+        const statsMonthly = statsMonthlyRes.ok ? statsMonthlyRes.data : null;
+        const statsYearly = statsYearlyRes.ok ? statsYearlyRes.data : null;
         setStats({ daily: statsDaily, weekly: statsWeekly, monthly: statsMonthly, yearly: statsYearly });
       } finally {
         if (active) setLoading(false);
@@ -151,24 +198,70 @@ export default function FeedbackPage() {
       (async () => {
         setLoading(true);
         const base =
-          process.env.NEXT_PUBLIC_API_URL ?? (typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:3000` : '');
+          process.env.NEXT_PUBLIC_BACKEND_URL ?? (typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:3000` : '');
         try {
-          const itemsRes = await fetch(`${base}/feedback?limit=100`, { headers: { 'X-Restaurant-Id': user.restaurantUsername, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id } });
-          const summaryRes = await fetch(`${base}/feedback/summary`, { headers: { 'X-Restaurant-Id': user.restaurantUsername, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id } });
-          const feedbackRows = itemsRes.ok ? (await itemsRes.json()).items ?? [] : [];
-          const feedbackSummary = summaryRes.ok ? (await summaryRes.json()) : null;
+          const itemsRes = await requestBackend<{ items?: FeedbackEntry[] }>({
+            baseUrl: base,
+            path: `/feedback?limit=100`,
+            restaurantId: user.restaurantUsername,
+            employeeId: user.employeeId,
+            outletId: user.outlet_id,
+          });
+          const summaryRes = await requestBackend<FeedbackSummary>({
+            baseUrl: base,
+            path: `/feedback/summary`,
+            restaurantId: user.restaurantUsername,
+            employeeId: user.employeeId,
+            outletId: user.outlet_id,
+          });
+          const feedbackRows = itemsRes.ok ? itemsRes.data?.items ?? [] : [];
+          const feedbackSummary = summaryRes.ok ? summaryRes.data : null;
           // re-fetch stats windows
-          const statsDaily = await (await fetch(`${base}/feedback/stats?mode=daily&date=${dailyDate}`, { headers: { 'X-Restaurant-Id': user.restaurantUsername, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id } })).json().catch(() => null);
-          const statsWeekly = await (await fetch(`${base}/feedback/stats?mode=weekly&weekStart=${weeklyStart}`, { headers: { 'X-Restaurant-Id': user.restaurantUsername, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id } })).json().catch(() => null);
-          const statsMonthly = await (await fetch(`${base}/feedback/stats?mode=monthly&start=${monthlyStart}`, { headers: { 'X-Restaurant-Id': user.restaurantUsername, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id } })).json().catch(() => null);
-          const statsYearly = await (await fetch(`${base}/feedback/stats?mode=yearly&year=${yearlyYear}`, { headers: { 'X-Restaurant-Id': user.restaurantUsername, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id } })).json().catch(() => null);
+          const statsDailyRes = await requestBackend<any>({
+            baseUrl: base,
+            path: `/feedback/stats?mode=daily&date=${dailyDate}`,
+            restaurantId: user.restaurantUsername,
+            employeeId: user.employeeId,
+            outletId: user.outlet_id,
+          });
+          const statsWeeklyRes = await requestBackend<any>({
+            baseUrl: base,
+            path: `/feedback/stats?mode=weekly&weekStart=${weeklyStart}`,
+            restaurantId: user.restaurantUsername,
+            employeeId: user.employeeId,
+            outletId: user.outlet_id,
+          });
+          const statsMonthlyRes = await requestBackend<any>({
+            baseUrl: base,
+            path: `/feedback/stats?mode=monthly&start=${monthlyStart}`,
+            restaurantId: user.restaurantUsername,
+            employeeId: user.employeeId,
+            outletId: user.outlet_id,
+          });
+          const statsYearlyRes = await requestBackend<any>({
+            baseUrl: base,
+            path: `/feedback/stats?mode=yearly&year=${yearlyYear}`,
+            restaurantId: user.restaurantUsername,
+            employeeId: user.employeeId,
+            outletId: user.outlet_id,
+          });
+          const statsDaily = statsDailyRes.ok ? statsDailyRes.data : null;
+          const statsWeekly = statsWeeklyRes.ok ? statsWeeklyRes.data : null;
+          const statsMonthly = statsMonthlyRes.ok ? statsMonthlyRes.data : null;
+          const statsYearly = statsYearlyRes.ok ? statsYearlyRes.data : null;
           setEntries(feedbackRows as FeedbackEntry[]);
           setSummary(feedbackSummary as FeedbackSummary | null);
           setStats({ daily: statsDaily, weekly: statsWeekly, monthly: statsMonthly, yearly: statsYearly });
           // refresh employee list
           try {
-            const usersRes = await fetch(`${base}/restaurant/users`, { headers: { 'X-Restaurant-Id': user.restaurantUsername, "X-Employee-Id": user.employeeId, "X-Outlet-Id": user.outlet_id} });
-            const usersPayload = usersRes.ok ? (await usersRes.json()) : { users: [] };
+            const usersRes = await requestBackend<{ users?: any[] }>({
+              baseUrl: base,
+              path: `/restaurant/users`,
+              restaurantId: user.restaurantUsername,
+              employeeId: user.employeeId,
+              outletId: user.outlet_id,
+            });
+            const usersPayload = usersRes.ok ? usersRes.data : { users: [] };
             const usersList = Array.isArray(usersPayload?.users) ? usersPayload.users : [];
             const map: Record<string, { name: string; role?: string }> = {};
             for (const u of usersList) {

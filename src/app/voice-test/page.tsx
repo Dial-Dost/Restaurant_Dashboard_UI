@@ -9,6 +9,7 @@ import {
   utils,
 } from "@openai/agents/realtime";
 import type { RealtimeItem } from "@openai/agents/realtime";
+import { requestReceptionBackend } from "@/lib/db";
 
 type RestaurantInfoEntry = {
   field: string;
@@ -28,16 +29,15 @@ type ConversationMessage = {
   text: string;
 };
 
-const SERVER_BASE_URL =
-  process.env.NEXT_PUBLIC_RECEPTION_SERVER_URL ?? "http://localhost:3000";
-
 async function fetchKnowledge(): Promise<RestaurantKnowledge> {
-  const response = await fetch(`${SERVER_BASE_URL}/reception/info`);
-  if (!response.ok) {
+  const response = await requestReceptionBackend<RestaurantKnowledge>({
+    path: "/reception/info",
+    method: "GET",
+  });
+  if (!response.ok || !response.data) {
     throw new Error("Failed to load restaurant information");
   }
-  const data = (await response.json()) as RestaurantKnowledge;
-  return data;
+  return response.data;
 }
 
 type AvailabilityRequest = {
@@ -70,19 +70,19 @@ type ReservationResult = {
 };
 
 async function postJSON<TInput, TOutput>(
-  url: string,
+  path: string,
   payload: TInput,
 ): Promise<TOutput> {
-  const response = await fetch(url, {
+  const response = await requestReceptionBackend<TOutput | { error?: string }>({
+    path,
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: payload,
   });
-  const data = (await response.json()) as TOutput;
-  if (!response.ok) {
-    throw new Error((data as { error?: string }).error ?? "Request failed");
+  if (!response.ok || !response.data) {
+    const maybeError = response.data as { error?: string } | null;
+    throw new Error(maybeError?.error ?? response.text ?? "Request failed");
   }
-  return data;
+  return response.data as TOutput;
 }
 
 function buildPersona(knowledge: RestaurantKnowledge): string {
@@ -191,7 +191,7 @@ function buildAvailabilityTool() {
     }),
     execute: async ({ reservationDate, reservationTime, partySize }) => {
       return postJSON<AvailabilityRequest, AvailabilityResult>(
-        `${SERVER_BASE_URL}/reception/check-availability`,
+        "/reception/check-availability",
         {
           reservationDate,
           reservationTime,
@@ -239,7 +239,7 @@ function buildReservationTool() {
     }),
     execute: async (payload) => {
       return postJSON<ReservationRequest, ReservationResult>(
-        `${SERVER_BASE_URL}/reception/create-reservation`,
+        "/reception/create-reservation",
         payload,
       );
     },
@@ -370,14 +370,15 @@ export default function VoiceTestPage() {
         setError(err instanceof Error ? err.message : "Realtime session error");
       });
 
-      const ephemeral = await fetch(`${SERVER_BASE_URL}/realtime/session`, {
+      const ephemeral = await requestReceptionBackend<{ client_secret?: { value?: string } | null; error?: string }>({
+        path: "/realtime/session",
         method: "POST",
       });
-      if (!ephemeral.ok) {
-        const info = await ephemeral.json();
-        throw new Error(info?.error ?? "Unable to create realtime session");
+      if (!ephemeral.ok || !ephemeral.data) {
+        const info = ephemeral.data;
+        throw new Error(info?.error ?? ephemeral.text ?? "Unable to create realtime session");
       }
-      const ephemeralData = await ephemeral.json();
+      const ephemeralData = ephemeral.data;
       const apiKey: string | undefined = ephemeralData?.client_secret?.value;
       if (!apiKey) {
         throw new Error("Realtime session token missing client_secret");
