@@ -170,7 +170,7 @@ export default function EmployeesPage() {
     const fetchCoreRoles = async () => {
       if (!user?.restaurantUsername) return;
       try {
-        const cores = await getCoreRoles(user.restaurantUsername);
+        const cores = await getCoreRoles(user.restaurantUsername, user.actions_set);
         setCoreRoles(Array.isArray(cores) ? cores : []);
       } catch (err) {
         console.error('fetch_core_roles_failed', err);

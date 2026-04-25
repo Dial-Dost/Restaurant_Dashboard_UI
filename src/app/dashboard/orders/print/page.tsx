@@ -5,7 +5,7 @@ import { useEffect, Suspense, useState } from 'react';
 import QRCode from 'qrcode';
 import { useSearchParams } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
-import { getRestaurantProfile, getRestaurantLogo, getBillByOrder, RestaurantProfile } from '@/lib/db';
+import { getRestaurantProfile, getRestaurantLogo, getBillByOrder, RestaurantProfile, requestBackend } from '@/lib/db';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 
@@ -149,15 +149,15 @@ function PrintPageContents() {
                                 const backend = (process.env.NEXT_PUBLIC_BACKEND_URL ?? `${window.location.protocol}//${window.location.hostname}:3000`).replace(/\/$/, '');
 
                                 try {
-                                    const resp = await fetch(`${backend}/publish/bill`, {
+                                    const resp = await requestBackend({
+                                        baseUrl: backend,
+                                        path: '/publish/bill',
                                         method: 'POST',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({ restaurantId: user?.res_id, outletId: user?.outlet_id, billId: billNo || String(Date.now()), escBase64: b64 }),
+                                        body: { restaurantId: user?.res_id, outletId: user?.outlet_id, billId: billNo || String(Date.now()), escBase64: b64 },
                                     });
 
                                     if (!resp.ok) {
-                                        const txt = await resp.text();
-                                        alert('Failed to publish bill: ' + txt);
+                                        alert('Failed to publish bill: ' + resp.text);
                                         return;
                                     }
 

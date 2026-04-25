@@ -59,7 +59,7 @@ export const signUpRestaurant = async ({ restaurantName, adminName, adminEmploye
             action_list: [],
         };
         const newRestaurant = await createRestaurant(restaurantName, adminUser);
-        return { user: { uid: newRestaurant.id, ...adminUser } };
+        return { user: { uid: newRestaurant.res_id, ...adminUser } };
     } catch (error: any) {
         console.error("Registration failed:", error);
         throw error;
@@ -94,7 +94,7 @@ export const sendPasswordReset = async (restaurantName: string, employeeUsername
         return;
     }
 
-    const user = await findUserInRestaurant(restaurant.id, employeeUsername);
+    const user = await findUserInRestaurant(restaurant.res_username, employeeUsername);
     if (!user) {
         console.log(`Password reset requested for non-existent user: ${employeeUsername}`);
         return;
