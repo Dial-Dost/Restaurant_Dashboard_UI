@@ -103,6 +103,7 @@ export type Order = {
   total: number;
   status: OrderStatus;
   payment_method?: PaymentMethod | null;
+  payment_proof_screenshot_url?: string | null;
   payment_waiter_confirmed_at?: string | null;
   payment_waiter_confirmed_by?: string | null;
   payment_admin_approved_at?: string | null;
@@ -121,6 +122,33 @@ const PAYMENT_METHOD_OPTIONS: PaymentMethod[] = [
   "Card",
   "Online Transfer",
 ];
+
+const PROOF_REQUIRED_METHODS = new Set<PaymentMethod>(["Swiggy", "Zomato Pay"]);
+
+const pickPaymentProofScreenshot = async (): Promise<string | null> => {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (!file) {
+        resolve(null);
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = () => {
+        resolve(typeof reader.result === "string" ? reader.result : null);
+      };
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(file);
+    };
+
+    input.click();
+  });
+};
 
 const calculateServiceCharge = (subtotal: number, percentage?: number, apply?: boolean) => {
   if (!apply || !percentage) return 0;
@@ -528,13 +556,30 @@ export default function OrdersPage() {
 
   const handleWaiterConfirmPayment = async (order: Order, paymentMethod: PaymentMethod) => {
     if (!user?.restaurantUsername || !user.employeeId) return;
+
+    let proofScreenshotUrl: string | null = null;
+    if (PROOF_REQUIRED_METHODS.has(paymentMethod)) {
+      alert(`Please upload the payment screenshot for ${paymentMethod}.`);
+      proofScreenshotUrl = await pickPaymentProofScreenshot();
+      if (!proofScreenshotUrl) {
+        alert(`Payment screenshot is required for ${paymentMethod}.`);
+        return;
+      }
+    }
+
     const confirmed = window.confirm(
       `Confirm payment by ${paymentMethod}? This sends the bill for admin approval.`,
     );
     if (!confirmed) return;
 
     try {
-      await confirmBillPaymentByWaiter(user.restaurantUsername, user.employeeId, order.id, paymentMethod);
+      await confirmBillPaymentByWaiter(
+        user.restaurantUsername,
+        user.employeeId,
+        order.id,
+        paymentMethod,
+        proofScreenshotUrl,
+      );
       const actorName = user.employeeUsername
         || `${user.emp_Fname ?? ''} ${user.emp_Lname ?? ''}`.trim()
         || user.employeeId
@@ -556,6 +601,20 @@ export default function OrdersPage() {
 
   const handleAdminApprovePayment = async (order: Order) => {
     if (!user?.restaurantUsername || !user.employeeId) return;
+
+    if (PROOF_REQUIRED_METHODS.has(order.payment_method ?? "Cash")) {
+      if (!order.payment_proof_screenshot_url) {
+        alert("Payment screenshot is missing for this order.");
+        return;
+      }
+
+      const previewWindow = window.open(order.payment_proof_screenshot_url, "_blank", "noopener,noreferrer");
+      if (!previewWindow) {
+        alert("Unable to open screenshot preview. Please allow pop-ups and try again.");
+        return;
+      }
+    }
+
     const confirmed = window.confirm('Approve this waiter-confirmed payment?');
     if (!confirmed) return;
 
@@ -701,6 +760,18 @@ export default function OrdersPage() {
                       <div className="text-xs text-muted-foreground">
                         Payment Method: {order.payment_method}
                       </div>
+                    ) : null}
+                    {order.payment_proof_screenshot_url ? (
+                      <button
+                        type="button"
+                        className="text-xs text-primary underline"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          window.open(order.payment_proof_screenshot_url ?? "", "_blank", "noopener,noreferrer");
+                        }}
+                      >
+                        View payment screenshot
+                      </button>
                     ) : null}
                   </TableCell>
                   <TableCell className="hidden md:table-cell text-right">{currencySymbol}{order.total.toFixed(2)}</TableCell>

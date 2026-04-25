@@ -193,7 +193,7 @@ export default function MenuPage() {
     const normalizeColumn = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, "");
 
     const handleImportMenuFile = async (file: File) => {
-        if (!user?.restaurantId) return;
+        if (!user?.restaurantUsername) return;
 
         setIsImporting(true);
         try {
@@ -288,9 +288,9 @@ export default function MenuPage() {
             await Promise.all(
                 mergedCategories
                     .filter((category) => !categories.some((existing) => existing.toLowerCase() === category.toLowerCase()))
-                    .map((category) => addMenuCategory(user.restaurantId, category)),
+                    .map((category) => addMenuCategory(user.restaurantUsername, category)),
             );
-            await saveMenuItems(user.restaurantId, mergedItems);
+            await saveMenuItems(user.restaurantUsername, mergedItems);
 
             setMenuItems(mergedItems);
             setCategories(mergedCategories);

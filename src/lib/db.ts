@@ -251,6 +251,10 @@ const backendCall = async (
 };
 
 const readErrorMessage = async (response: Response): Promise<string> => {
+    if (response.status === 403) {
+        return 'Action forbidden';
+    }
+
     try {
         const payload = await response.json();
         if (typeof payload?.error === 'string' && payload.error.trim().length > 0) {
@@ -361,6 +365,8 @@ const mapOrder = (item: any): Order => ({
     total: Number(item.total ?? 0),
     status: (item.status as Order['status']) ?? 'Preparing',
     payment_method: (item.payment_method as PaymentMethod | null | undefined) ?? null,
+    payment_proof_screenshot_url:
+        typeof item.payment_proof_screenshot_url === 'string' ? item.payment_proof_screenshot_url : null,
     payment_waiter_confirmed_at:
         typeof item.payment_waiter_confirmed_at === 'string' ? item.payment_waiter_confirmed_at : null,
     payment_waiter_confirmed_by:
@@ -859,6 +865,7 @@ export const confirmBillPaymentByWaiter = async (
     employeeId: string,
     orderId: string,
     payment_method: PaymentMethod,
+    payment_proof_screenshot_url?: string | null,
 ) => {
     const response = await backendCall(`/bills/order/${encodeURIComponent(orderId)}/waiter-confirm-payment`, restaurantId, {
         method: 'POST',
@@ -866,7 +873,10 @@ export const confirmBillPaymentByWaiter = async (
             'Content-Type': 'application/json',
             'X-Employee-Id': employeeId,
         },
-        body: JSON.stringify({ payment_method }),
+        body: JSON.stringify({
+            payment_method,
+            payment_proof_screenshot_url: payment_proof_screenshot_url ?? null,
+        }),
     });
 
     if (!response) {

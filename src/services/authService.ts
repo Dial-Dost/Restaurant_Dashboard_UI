@@ -15,6 +15,10 @@ const API_BASE_URL = (
 ).replace(/\/$/, '');
 
 const readErrorMessage = async (response: Response): Promise<string> => {
+    if (response.status === 403) {
+        return 'Action forbidden';
+    }
+
     try {
         const payload = await response.json();
         if (typeof payload?.error === 'string' && payload.error.trim().length > 0) {

@@ -18,6 +18,7 @@ type AuthUser = {
   emp_Fname: string | null;
   emp_Lname?: string | null;
   actions_set: string[];
+  action_names?: string[];
 }
 
 interface AuthContextType {

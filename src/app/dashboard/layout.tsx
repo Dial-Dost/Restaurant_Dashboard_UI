@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { Inter } from 'next/font/google';
 import {
   Home,
@@ -41,6 +41,18 @@ import '@/components/ui/Dock.css';
 
 const inter = Inter({ subsets: ['latin'] });
 
+const normalizeActionName = (value: string) => value.trim().toLowerCase();
+
+const hasKeywordAction = (actionNames: Set<string>, keywords: string[]) => {
+  if (keywords.length === 0) return true;
+  for (const actionName of actionNames) {
+    if (keywords.some((keyword) => actionName.includes(keyword.toLowerCase()))) {
+      return true;
+    }
+  }
+  return false;
+};
+
 function LayoutContent({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -57,6 +69,39 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
   const isWaiterOnly = hasRole('waiter') && !hasRole('admin');
   const canAccessValet = hasRole('valet') || hasRole('admin');
 
+  const actionNames = useMemo(
+    () => new Set((user?.action_names ?? []).map(normalizeActionName).filter((name) => name.length > 0)),
+    [user?.action_names],
+  );
+
+  const hasAllActions = Array.isArray(user?.actions_set) && user.actions_set.includes('*');
+  const canAccessByAction = (keywords: string[]) => {
+    if (hasAllActions) return true;
+    if (actionNames.size === 0) return true;
+    return hasKeywordAction(actionNames, keywords);
+  };
+
+  const fullNavItems = [
+    { href: '/dashboard', label: t('dashboard'), icon: <Home className="h-6 w-6" />, exact: true, actionKeywords: [] as string[] },
+    { href: '/dashboard/bookings', label: t('bookings'), icon: <ShoppingCart className="h-6 w-6" />, actionKeywords: ['booking'] },
+    { href: '/dashboard/orders', label: t('orders'), icon: <ListOrdered className="h-6 w-6" />, actionKeywords: ['order', 'bill', 'payment'] },
+    { href: '/dashboard/menu', label: 'Menu', icon: <BookOpen className="h-6 w-6" />, actionKeywords: ['menu'] },
+    { href: '/dashboard/tables', label: t('tables'), icon: <Package className="h-6 w-6" />, actionKeywords: ['table'] },
+    { href: '/dashboard/inventory', label: t('inventory'), icon: <ClipboardList className="h-6 w-6" />, actionKeywords: ['inventory', 'stock'] },
+    { href: '/dashboard/customers', label: t('customers'), icon: <Users className="h-6 w-6" />, actionKeywords: ['customer'] },
+    { href: '/dashboard/feedback', label: 'Feedback', icon: <FileText className="h-6 w-6" />, actionKeywords: ['feedback'] },
+    { href: '/dashboard/analytics', label: t('analytics'), icon: <LineChart className="h-6 w-6" />, actionKeywords: ['analytics', 'apc', 'report'] },
+    ...(hasRole('admin')
+      ? [{ href: '/dashboard/valet', label: 'Valet Dashboard', icon: <Activity className="h-6 w-6" />, actionKeywords: ['valet', 'parking'] }]
+      : []),
+  ].filter((item) => canAccessByAction(item.actionKeywords));
+
+  const navItems = isValet
+    ? [{ href: '/dashboard/valet', label: 'Valet Dashboard', icon: <Activity className="h-6 w-6" />, exact: true }]
+    : isWaiterOnly
+      ? [{ href: '/dashboard/orders', label: t('orders'), icon: <ListOrdered className="h-6 w-6" />, exact: true }]
+      : fullNavItems;
+
   useEffect(() => {
     if (!user) {
       return;
@@ -64,6 +109,10 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
 
     const valetAllowedPaths = new Set(['/dashboard/valet', '/dashboard/settings']);
     const waiterAllowedPaths = new Set(['/dashboard/orders', '/dashboard/settings']);
+    const roleAwareAllowedPaths = new Set([
+      ...navItems.map((item) => item.href),
+      '/dashboard/settings',
+    ]);
 
     if (isValet && !valetAllowedPaths.has(pathname)) {
       router.replace('/dashboard/valet');
@@ -77,31 +126,18 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
 
     if (!canAccessValet && pathname.startsWith('/dashboard/valet')) {
       router.replace('/dashboard');
+      return;
     }
-  }, [user, isValet, isWaiterOnly, canAccessValet, pathname, router]);
 
-  const navItems = isValet
-    ? [
-        { href: '/dashboard/valet', label: 'Valet Dashboard', icon: <Activity className="h-6 w-6" />, exact: true },
-      ]
-    : isWaiterOnly
-    ? [
-        { href: '/dashboard/orders', label: t('orders'), icon: <ListOrdered className="h-6 w-6" />, exact: true },
-      ]
-    : [
-        { href: '/dashboard', label: t('dashboard'), icon: <Home className="h-6 w-6" />, exact: true },
-        { href: '/dashboard/bookings', label: t('bookings'), icon: <ShoppingCart className="h-6 w-6" /> },
-        { href: '/dashboard/orders', label: t('orders'), icon: <ListOrdered className="h-6 w-6" /> },
-        { href: '/dashboard/menu', label: 'Menu', icon: <BookOpen className="h-6 w-6" /> },
-        { href: '/dashboard/tables', label: t('tables'), icon: <Package className="h-6 w-6" /> },
-        { href: '/dashboard/inventory', label: t('inventory'), icon: <ClipboardList className="h-6 w-6" /> },
-        { href: '/dashboard/customers', label: t('customers'), icon: <Users className="h-6 w-6" /> },
-        { href: '/dashboard/feedback', label: 'Feedback', icon: <FileText className="h-6 w-6" /> },
-        { href: '/dashboard/analytics', label: t('analytics'), icon: <LineChart className="h-6 w-6" /> },
-        ...(user?.role === 'admin'
-          ? [{ href: '/dashboard/valet', label: 'Valet Dashboard', icon: <Activity className="h-6 w-6" /> }]
-          : []),
-      ];
+    const canAccessCurrentPath = Array.from(roleAwareAllowedPaths).some(
+      (allowedPath) => pathname === allowedPath || pathname.startsWith(`${allowedPath}/`),
+    );
+
+    if (!canAccessCurrentPath) {
+      const firstAllowed = navItems[0]?.href ?? '/dashboard/settings';
+      router.replace(firstAllowed);
+    }
+  }, [user, isValet, isWaiterOnly, canAccessValet, pathname, navItems, router]);
 
   const dockItems = navItems.map(item => ({
     icon: item.icon,
@@ -123,6 +159,9 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
     logout();
     router.push('/login');
   }
+
+  const canViewEmployees = hasRole('admin') && canAccessByAction(['employee', 'role']);
+  const canViewAuditLogs = hasRole('admin') && canAccessByAction(['audit', 'log']);
 
   return (
       <div className={`${inter.className} flex min-h-screen w-full flex-col`}>
@@ -177,20 +216,24 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
                   {t('settings')}
                 </Link>
               </DropdownMenuItem>
-               {user?.role === 'admin' && (
+               {(canViewEmployees || canViewAuditLogs) && (
                 <>
-                  <DropdownMenuItem asChild>
-                    <Link href="/dashboard/employees">
-                      <Users className="mr-2 h-4 w-4" />
-                      Employee List
-                    </Link>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem asChild>
-                    <Link href="/dashboard/audit-logs">
-                      <FileText className="mr-2 h-4 w-4" />
-                      Audit Logs
-                    </Link>
-                  </DropdownMenuItem>
+                  {canViewEmployees && (
+                    <DropdownMenuItem asChild>
+                      <Link href="/dashboard/employees">
+                        <Users className="mr-2 h-4 w-4" />
+                        Employee List
+                      </Link>
+                    </DropdownMenuItem>
+                  )}
+                  {canViewAuditLogs && (
+                    <DropdownMenuItem asChild>
+                      <Link href="/dashboard/audit-logs">
+                        <FileText className="mr-2 h-4 w-4" />
+                        Audit Logs
+                      </Link>
+                    </DropdownMenuItem>
+                  )}
                 </>
               )}
               {!isValet && (

@@ -75,6 +75,7 @@ function EmployeeLoginContent() {
         emp_Fname: user.emp_Fname as string ?? (user.name ?? null) as string | null,
         emp_Lname: user.emp_Lname ?? null as string | null,
         actions_set: user.actions_set as string[],
+        action_names: (user.action_names ?? []) as string[],
       };
       login(authUser);
       router.push("/dashboard");
