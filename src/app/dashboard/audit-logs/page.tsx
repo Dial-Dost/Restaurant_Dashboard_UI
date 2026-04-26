@@ -7,6 +7,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { useAuth } from '@/context/AuthContext';
 import { getAuditLogs } from '@/lib/db';
+import { useToast } from "@/hooks/use-toast";
 
 export type AuditLog = {
   id: string;
@@ -18,7 +19,9 @@ export type AuditLog = {
 
 export default function AuditLogsPage() {
   const { user } = useAuth();
+  const { toast } = useToast();
   const [logs, setLogs] = useState<AuditLog[]>([]);
+  const [hasShownAccessToast, setHasShownAccessToast] = useState(false);
 
   useEffect(() => {
     if (user) {
@@ -29,10 +32,23 @@ export default function AuditLogsPage() {
     }
   }, [user]);
 
+  useEffect(() => {
+    if (!user || user.role === 'admin' || hasShownAccessToast) {
+      return;
+    }
+
+    toast({
+      title: 'Access denied',
+      description: 'You do not have the required role for this page. Required role: admin.',
+      variant: 'destructive',
+    });
+    setHasShownAccessToast(true);
+  }, [user, hasShownAccessToast, toast]);
+
   if (user?.role !== 'admin') {
     return (
         <div className="p-4">
-            <p>You do not have permission to view this page.</p>
+            <p>You do not have permission to view this page. Required role: admin.</p>
         </div>
     );
   }

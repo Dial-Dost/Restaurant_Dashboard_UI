@@ -94,6 +94,7 @@ type AddEmployeeFormData = z.infer<typeof addEmployeeSchema>;
 export default function EmployeesPage() {
   const { user } = useAuth();
   const { toast } = useToast();
+  const [hasShownAccessToast, setHasShownAccessToast] = useState(false);
 
   const [employees, setEmployees] = useState<User[]>([]);
   const [roleDefinitions, setRoleDefinitions] = useState<RoleDefinition[]>([]);
@@ -365,10 +366,23 @@ export default function EmployeesPage() {
     toast({ title: "Role Deleted", description: `Role '${role.role_name}' has been removed.` });
   };
 
+  useEffect(() => {
+    if (!user || user.role === "admin" || hasShownAccessToast) {
+      return;
+    }
+
+    toast({
+      title: "Access denied",
+      description: "You do not have the required role for this page. Required role: admin.",
+      variant: "destructive",
+    });
+    setHasShownAccessToast(true);
+  }, [user, hasShownAccessToast, toast]);
+
   if (!user || user.role !== "admin") {
     return (
       <div className="p-4">
-        <p>You do not have permission to view this page.</p>
+        <p>You do not have permission to view this page. Required role: admin.</p>
       </div>
     );
   }

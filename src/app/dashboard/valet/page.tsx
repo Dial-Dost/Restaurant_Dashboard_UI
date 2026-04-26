@@ -186,6 +186,7 @@ export default function ValetDashboardPage() {
   const [newDateTime, setNewDateTime] = useState<string>(() => getCurrentLocalDateTimeValue());
   const [newRecordBayValue, setNewRecordBayValue] = useState<string>("__default_main__");
   const [creating, setCreating] = useState(false);
+  const [hasShownAccessToast, setHasShownAccessToast] = useState(false);
 
   const canViewValet = user?.role === "valet" || user?.role === "admin";
 
@@ -1175,10 +1176,23 @@ export default function ValetDashboardPage() {
     window.localStorage.setItem(maxKey, String(Math.max(0, maxBaysDisplay)));
   }, [user?.restaurantUsername, spaceAvailableDisplay, maxBaysDisplay, spaceInitializedForRestaurant]);
 
+  useEffect(() => {
+    if (!user?.role || canViewValet || hasShownAccessToast) {
+      return;
+    }
+
+    toast({
+      title: "Access denied",
+      description: "You do not have the required role for this page. Required role: valet or admin.",
+      variant: "destructive",
+    });
+    setHasShownAccessToast(true);
+  }, [user?.role, canViewValet, hasShownAccessToast, toast]);
+
   if (user?.role && !canViewValet) {
     return (
       <div className="p-4">
-        <p>You do not have permission to view this page.</p>
+        <p>You do not have permission to view this page. Required role: valet or admin.</p>
       </div>
     );
   }

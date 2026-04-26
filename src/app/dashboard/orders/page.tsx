@@ -62,6 +62,7 @@ import {
 } from "@/lib/db";
 import { useAuth } from "@/context/AuthContext";
 import { useCurrency } from "@/hooks/use-currency";
+import { useToast } from "@/hooks/use-toast";
 import type { MenuItem } from "../menu/data";
 
 
@@ -185,6 +186,7 @@ export default function OrdersPage() {
   
   const { user } = useAuth();
   const { currencySymbol } = useCurrency();
+  const { toast } = useToast();
   const hasRole = (role: "admin" | "employee" | "valet" | "waiter") => {
     if (!user) return false;
     if (user.role === role) return true;
@@ -192,6 +194,23 @@ export default function OrdersPage() {
   };
   const isAdmin = hasRole("admin");
   const isWaiterOnly = hasRole("waiter") && !isAdmin;
+
+  const showRoleRequiredToast = (requiredRole: string) => {
+    toast({
+      title: "Access denied",
+      description: `You do not have the required role for this action. Required role: ${requiredRole}.`,
+      variant: "destructive",
+    });
+  };
+
+  const runAdminAction = (action: () => void) => {
+    if (!isAdmin) {
+      showRoleRequiredToast("admin");
+      return;
+    }
+    action();
+  };
+
   const [orders, setOrders] = useState<Order[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [tables, setTables] = useState<{ id: number; name: string; capacity: number }[]>([]);
@@ -556,6 +575,10 @@ export default function OrdersPage() {
 
   const handleWaiterConfirmPayment = async (order: Order, paymentMethod: PaymentMethod) => {
     if (!user?.restaurantUsername || !user.employeeId) return;
+    if (!(hasRole("waiter") || hasRole("admin"))) {
+      showRoleRequiredToast("waiter or admin");
+      return;
+    }
 
     let proofScreenshotUrl: string | null = null;
     if (PROOF_REQUIRED_METHODS.has(paymentMethod)) {
@@ -601,6 +624,10 @@ export default function OrdersPage() {
 
   const handleAdminApprovePayment = async (order: Order) => {
     if (!user?.restaurantUsername || !user.employeeId) return;
+    if (!hasRole('admin')) {
+      showRoleRequiredToast('admin');
+      return;
+    }
 
     if (PROOF_REQUIRED_METHODS.has(order.payment_method ?? "Cash")) {
       if (!order.payment_proof_screenshot_url) {
@@ -640,6 +667,10 @@ export default function OrdersPage() {
 
   const handleCloseBill = async (order: Order) => {
     if (!user?.restaurantUsername || !user.employeeId) return;
+    if (!hasRole('admin')) {
+      showRoleRequiredToast('admin');
+      return;
+    }
     const confirmed = window.confirm('Close this bill? This finalizes the order.');
     if (!confirmed) return;
 
@@ -802,32 +833,43 @@ export default function OrdersPage() {
                         <DropdownMenuLabel>Actions</DropdownMenuLabel>
                         <DropdownMenuItem
                           disabled={
-                            !isAdmin
-                            ||
                             order.status === 'Bill Verification'
                             || order.status === 'Payment Pending Approval'
                             || order.status === 'Paid'
                             || order.status === 'Closed'
                             || order.status === 'Cancelled'
                           }
-                          onClick={(e) => { e.stopPropagation(); setSelectedOrder(order); setIsDetailsOpen(true); }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            runAdminAction(() => {
+                              setSelectedOrder(order);
+                              setIsDetailsOpen(true);
+                            });
+                          }}
                         >
                           Update Order
                         </DropdownMenuItem>
                         <DropdownMenuItem
-                          disabled={!isAdmin || order.status !== 'Bill Verification'}
-                          onClick={(e) => { e.stopPropagation(); setSelectedOrder(order); setIsEditDialogOpen(true); }}
+                          disabled={order.status !== 'Bill Verification'}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            runAdminAction(() => {
+                              setSelectedOrder(order);
+                              setIsEditDialogOpen(true);
+                            });
+                          }}
                         >
                           Edit Bill
                         </DropdownMenuItem>
                         <DropdownMenuSub>
-                          <DropdownMenuSubTrigger onClick={(e) => {e.stopPropagation();}} disabled={!isAdmin}>Update Status</DropdownMenuSubTrigger>
+                          <DropdownMenuSubTrigger onClick={(e) => {e.stopPropagation();}}>Update Status</DropdownMenuSubTrigger>
                             <DropdownMenuSubContent>
                                 <DropdownMenuItem
-                                  onClick={(e) => {e.stopPropagation(); updateOrderStatus(order.id, 'Preparing')}}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    runAdminAction(() => { void updateOrderStatus(order.id, 'Preparing'); });
+                                  }}
                                   disabled={
-                                    !isAdmin
-                                    ||
                                     order.status === 'Bill Verification'
                                     || order.status === 'Payment Pending Approval'
                                     || order.status === 'Paid'
@@ -838,10 +880,11 @@ export default function OrdersPage() {
                                   Preparing
                                 </DropdownMenuItem>
                                 <DropdownMenuItem
-                                  onClick={(e) => {e.stopPropagation(); updateOrderStatus(order.id, 'Served')}}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    runAdminAction(() => { void updateOrderStatus(order.id, 'Served'); });
+                                  }}
                                   disabled={
-                                    !isAdmin
-                                    ||
                                     order.status === 'Bill Verification'
                                     || order.status === 'Payment Pending Approval'
                                     || order.status === 'Paid'
@@ -852,10 +895,11 @@ export default function OrdersPage() {
                                   Served
                                 </DropdownMenuItem>
                                 <DropdownMenuItem
-                                  onClick={(e) => {e.stopPropagation(); handleSetBillVerification(order)}}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    runAdminAction(() => { void handleSetBillVerification(order); });
+                                  }}
                                   disabled={
-                                    !isAdmin
-                                    ||
                                     order.status === 'Bill Verification'
                                     || order.status === 'Payment Pending Approval'
                                     || order.status === 'Paid'
@@ -870,7 +914,7 @@ export default function OrdersPage() {
                         <DropdownMenuSub>
                           <DropdownMenuSubTrigger
                             onClick={(e) => { e.stopPropagation(); }}
-                            disabled={!(hasRole('waiter') || hasRole('admin')) || order.status !== 'Bill Verification'}
+                            disabled={order.status !== 'Bill Verification'}
                           >
                             Confirm Payment (Waiter)
                           </DropdownMenuSubTrigger>
@@ -882,7 +926,7 @@ export default function OrdersPage() {
                                   e.stopPropagation();
                                   void handleWaiterConfirmPayment(order, method);
                                 }}
-                                disabled={!(hasRole('waiter') || hasRole('admin')) || order.status !== 'Bill Verification'}
+                                disabled={order.status !== 'Bill Verification'}
                               >
                                 {method}
                               </DropdownMenuItem>
@@ -891,13 +935,13 @@ export default function OrdersPage() {
                         </DropdownMenuSub>
                         <DropdownMenuItem
                           onClick={(e) => { e.stopPropagation(); void handleAdminApprovePayment(order); }}
-                          disabled={!hasRole('admin') || order.status !== 'Payment Pending Approval'}
+                          disabled={order.status !== 'Payment Pending Approval'}
                         >
                           Approve Payment (Admin)
                         </DropdownMenuItem>
                         <DropdownMenuItem
                           onClick={(e) => { e.stopPropagation(); void handleCloseBill(order); }}
-                          disabled={!hasRole('admin') || order.status !== 'Paid'}
+                          disabled={order.status !== 'Paid'}
                         >
                           Close Bill (Admin)
                         </DropdownMenuItem>

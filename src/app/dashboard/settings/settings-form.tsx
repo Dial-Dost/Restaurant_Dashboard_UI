@@ -71,6 +71,12 @@ export function SettingsForm() {
   const [feedbackQrError, setFeedbackQrError] = useState<string>("")
   const [currentProfile, setCurrentProfile] = useState<RestaurantProfile | null>(null)
 
+  const hasRole = (role: "admin" | "employee" | "valet" | "waiter") => {
+    if (!user) return false
+    if (user.role === role) return true
+    return Array.isArray(user.role_all) ? user.role_all.includes(role) : false
+  }
+
   const feedbackFormUrl = useMemo(() => {
     if (!user?.res_id || !user?.employeeId || !user?.outlet_id) {
       return ""
@@ -182,6 +188,14 @@ export function SettingsForm() {
   // important: need to update this function according to the new RestaurantProfileRecord class
   async function onSubmit(data: SettingsFormValues) {
     if(!user?.restaurantUsername) return;
+    if (!hasRole("admin")) {
+      toast({
+        title: "Access denied",
+        description: "You do not have the required role for this action. Required role: admin.",
+        variant: "destructive",
+      })
+      return
+    }
 
     const profileData: RestaurantProfile = {
         restaurant_name: data.name,

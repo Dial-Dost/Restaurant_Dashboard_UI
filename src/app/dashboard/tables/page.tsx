@@ -137,6 +137,24 @@ export default function TablesPage() {
     const [activeId, setActiveId] = useState<number | null>(null);
   const { toast } = useToast();
 
+    const hasRole = (role: "admin" | "employee" | "valet" | "waiter") => {
+        if (!user) return false;
+        if (user.role === role) return true;
+        return Array.isArray(user.role_all) ? user.role_all.includes(role) : false;
+    };
+
+    const ensureAdmin = () => {
+        if (hasRole("admin")) {
+            return true;
+        }
+        toast({
+            title: "Access denied",
+            description: "You do not have the required role for this action. Required role: admin.",
+            variant: "destructive",
+        });
+        return false;
+    };
+
   const sensors = useSensors(useSensor(PointerSensor));
 
     const loadTables = async () => {
@@ -160,6 +178,8 @@ export default function TablesPage() {
     }, [user?.restaurantUsername]);
 
   const handleAddTable = async () => {
+        if (!ensureAdmin()) return;
+
     if (newTableName && newTableCapacity && user?.restaurantUsername) {
       const trimmedName = newTableName.trim();
       const existingTable = tablesData.find(
@@ -208,6 +228,8 @@ export default function TablesPage() {
   };
 
     const handleRemoveTable = async (tableId: number) => {
+        if (!ensureAdmin()) return;
+
         if (!user?.restaurantUsername) return;
         const removed = tablesData.find(t => t.id === tableId);
         if (!removed) return;
@@ -241,6 +263,11 @@ export default function TablesPage() {
   };
   
   const handleDragEnd = async (event: DragEndEvent) => {
+        if (!ensureAdmin()) {
+            setActiveId(null);
+            return;
+        }
+
     setActiveId(null);
     const { active, over } = event;
 
