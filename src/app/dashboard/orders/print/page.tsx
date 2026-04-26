@@ -169,7 +169,7 @@ function PrintPageContents() {
                             }}
                             className="px-3 py-1 border rounded text-sm"
                         >
-                            Preview ESC/POS
+                            Print ESC/POS
                         </button>
                     </div>
                 </div>
@@ -177,7 +177,7 @@ function PrintPageContents() {
                     {logoBase64 ? (
                         <img src={`data:image/png;base64,${logoBase64}`} alt="logo" className="mx-auto h-16 object-contain" />
                     ) : (
-                        <p> Logo Not Found </p>
+                        <p> Loading Logo ... </p>
                     )}
                     <CardTitle className="text-2xl font-bold">{profile?.outlet_name ?? 'Not found'}</CardTitle>
                     <CardDescription className="text-sm">{profile?.outlet_add ?? 'Address not configured'}</CardDescription>
