@@ -9,7 +9,6 @@ export function initSocket({ url, restaurantId, token }: { url?: string; restaur
   // Prefer explicit URL, then shared backend env vars, then localhost:3000 dev fallback.
   const serverUrl =
     url ??
-    process.env.NEXT_PUBLIC_RECEPTION_API_URL ??
     process.env.NEXT_PUBLIC_BACKEND_URL ??
     (typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:3000` : "/");
 

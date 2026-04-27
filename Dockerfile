@@ -18,6 +18,13 @@ RUN npm install --legacy-peer-deps
 
 COPY . .
 
+# 1. Accept the build argument from Railway
+ARG NEXT_PUBLIC_BACKEND_URL
+ARG NEXT_PUBLIC_FEEDBACK_FORM_URL
+# 2. Make it available as an environment variable for Next.js to bake into the JS
+ENV NEXT_PUBLIC_BACKEND_URL=$NEXT_PUBLIC_BACKEND_URL
+ENV NEXT_PUBLIC_FEEDBACK_FORM_URL=$NEXT_PUBLIC_FEEDBACK_FORM_URL
+
 # Because output: 'standalone' is in next.config.js, this build command 
 # automatically creates a minimal server containing only required dependencies.
 RUN npm run build
