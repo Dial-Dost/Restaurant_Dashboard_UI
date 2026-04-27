@@ -569,6 +569,9 @@ const readErrorMessage = async (response: Response): Promise<string> => {
     if (response.status === 403) {
         return 'Action forbidden';
     }
+    if (response.status === 413) {
+        return 'Uploaded screenshot is too large. Please use a smaller image.';
+    }
 
     try {
         const payload = await response.json();
@@ -653,6 +656,7 @@ const mapOrderItem = (item: any) => ({
     quantity: Math.max(1, Number(item.quantity ?? 1)),
     price: Number(item.price ?? 0),
     orderedAt: String(item.orderedAt ?? new Date().toISOString()),
+    note: typeof item.note === 'string' ? item.note : null,
 });
 
 const mapOrder = (item: any): Order => ({

@@ -72,6 +72,7 @@ type OrderItem = {
     quantity: number;
     price: number;
     orderedAt: string;
+  note?: string | null;
 };
 
 export type OrderStatus =
@@ -125,6 +126,69 @@ const PAYMENT_METHOD_OPTIONS: PaymentMethod[] = [
 ];
 
 const PROOF_REQUIRED_METHODS = new Set<PaymentMethod>(["Swiggy", "Zomato Pay"]);
+const MAX_PROOF_UPLOAD_BYTES = 400 * 1024;
+
+const normalizeProofPreviewUrl = (value?: string | null): string | null => {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  if (/^https?:\/\//i.test(raw)) return raw;
+  if (/^data:image\//i.test(raw)) return raw;
+  return null;
+};
+
+const getDataUrlSizeBytes = (dataUrl: string) => {
+  const base64 = dataUrl.split(",")[1] ?? "";
+  return Math.ceil((base64.length * 3) / 4);
+};
+
+const compressProofImage = async (file: File): Promise<string | null> => {
+  if (!file.type.startsWith("image/")) {
+    return null;
+  }
+
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("Unable to load image"));
+      img.src = objectUrl;
+    });
+
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d");
+    if (!context) {
+      return null;
+    }
+
+    let width = image.naturalWidth;
+    let height = image.naturalHeight;
+    const maxDimension = 1600;
+    if (width > maxDimension || height > maxDimension) {
+      const scale = Math.min(maxDimension / width, maxDimension / height);
+      width = Math.max(1, Math.round(width * scale));
+      height = Math.max(1, Math.round(height * scale));
+    }
+
+    canvas.width = width;
+    canvas.height = height;
+    context.drawImage(image, 0, 0, width, height);
+
+    const qualities = [0.82, 0.72, 0.62, 0.52, 0.45, 0.38];
+    for (const quality of qualities) {
+      const dataUrl = canvas.toDataURL("image/jpeg", quality);
+      if (getDataUrlSizeBytes(dataUrl) <= MAX_PROOF_UPLOAD_BYTES) {
+        return dataUrl;
+      }
+    }
+
+    return canvas.toDataURL("image/jpeg", 0.35);
+  } catch {
+    return null;
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+};
 
 const pickPaymentProofScreenshot = async (): Promise<string | null> => {
   return new Promise((resolve) => {
@@ -139,12 +203,9 @@ const pickPaymentProofScreenshot = async (): Promise<string | null> => {
         return;
       }
 
-      const reader = new FileReader();
-      reader.onload = () => {
-        resolve(typeof reader.result === "string" ? reader.result : null);
-      };
-      reader.onerror = () => resolve(null);
-      reader.readAsDataURL(file);
+      void compressProofImage(file)
+        .then((dataUrl) => resolve(dataUrl))
+        .catch(() => resolve(null));
     };
 
     input.click();
@@ -170,6 +231,35 @@ const calculateTotal = (order: Omit<Order, 'total'>) => {
     return order.subtotal + serviceCharge + totalTaxAmount;
 }
 
+const deriveDefaultsForCharges = (defaultTax: Record<string, number> | null): {
+  serviceChargePercentage?: number;
+  applyServiceCharge: boolean;
+  taxes: Tax[];
+} => {
+  if (!defaultTax || typeof defaultTax !== "object") {
+    return { applyServiceCharge: false, taxes: [] };
+  }
+
+  const taxes: Tax[] = [];
+  let serviceChargePercentage: number | undefined;
+  let applyServiceCharge = false;
+
+  for (const [name, rawValue] of Object.entries(defaultTax)) {
+    const value = Number(rawValue);
+    if (!Number.isFinite(value) || value <= 0) continue;
+
+    if (/service ?charge/i.test(name) || /service ?charges/i.test(name)) {
+      serviceChargePercentage = value;
+      applyServiceCharge = true;
+      continue;
+    }
+
+    taxes.push({ id: `d-${name}`, name, percentage: value });
+  }
+
+  return { serviceChargePercentage, applyServiceCharge, taxes };
+};
+
 const formatOrderedAt = (isoOrString?: string) => {
   if (!isoOrString) return "";
   const d = new Date(isoOrString);
@@ -181,6 +271,14 @@ const formatOrderedAt = (isoOrString?: string) => {
   const min = String(d.getMinutes()).padStart(2, '0');
   return `${dd}/${mm}/${yy} ${hh}:${min}`;
 }
+
+const dedupeOrdersById = (items: Order[]) => {
+  const seen = new Map<string, Order>();
+  for (const item of items) {
+    seen.set(item.id, item);
+  }
+  return Array.from(seen.values());
+};
 
 export default function OrdersPage() {
   
@@ -222,6 +320,10 @@ export default function OrdersPage() {
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [defaultTax, setDefaultTax] = useState<Record<string, number> | null>(null);
   const [isDefaultTaxDialogOpen, setIsDefaultTaxDialogOpen] = useState(false);
+  const [isProofPreviewOpen, setIsProofPreviewOpen] = useState(false);
+  const [proofPreviewUrl, setProofPreviewUrl] = useState<string | null>(null);
+
+  const displayOrders = useMemo(() => dedupeOrdersById(orders), [orders]);
 
   const orderApcByOrderId = useMemo(() => {
     const map = new Map<string, MonthlyApcInsight["orders"][number]>();
@@ -253,7 +355,7 @@ export default function OrdersPage() {
           return;
         }
 
-        setOrders(Array.isArray(ordersData) ? ordersData : []);
+        setOrders(Array.isArray(ordersData) ? dedupeOrdersById(ordersData) : []);
         setMenuItems(Array.isArray(menuData) ? menuData : []);
         setMonthlyApcInsight(apcInsight ?? null);
         try {
@@ -322,7 +424,7 @@ export default function OrdersPage() {
     window.open(url, '_blank');
   }
   
-  const handleAddOrder = async (newOrderData: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number }[] }) => {
+  const handleAddOrder = async (newOrderData: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null }[] }) => {
     if (!user?.restaurantUsername) return;
     const items = newOrderData.items.map(it => ({
       id: it.id ?? `i${Date.now()}${Math.random().toString(36).slice(2,5)}`,
@@ -330,9 +432,11 @@ export default function OrdersPage() {
       quantity: Math.max(1, Number(it.quantity ?? 1)),
       price: Number(it.price ?? 0),
       orderedAt: new Date().toISOString(),
+      note: typeof it.note === "string" && it.note.trim().length > 0 ? it.note.trim() : null,
     }));
     const subtotal = items.reduce((acc, it) => acc + it.price * it.quantity, 0);
-    const newOrder: Order = {
+    const defaults = deriveDefaultsForCharges(defaultTax);
+    const baseOrder: Omit<Order, "total"> = {
       id: (orders.length + 1).toString(),
       table: String(tables.find(t => t.id === newOrderData.tableId)?.name ?? ''),
       customer: "Guest",
@@ -346,13 +450,15 @@ export default function OrdersPage() {
       status: "Preparing",
       items,
       subtotal,
-      total: subtotal,
-      applyServiceCharge: true,
+      serviceChargePercentage: defaults.serviceChargePercentage,
+      taxes: defaults.taxes,
+      applyServiceCharge: defaults.applyServiceCharge,
     };
+    const newOrder: Order = { ...baseOrder, total: calculateTotal(baseOrder) };
     try {
       await addOrder(user.restaurantUsername, newOrder);
       const updatedOrders = await getOrders(user.restaurantUsername);
-      setOrders(Array.isArray(updatedOrders) ? updatedOrders : []);
+      setOrders(Array.isArray(updatedOrders) ? dedupeOrdersById(updatedOrders) : []);
       setIsAddDialogOpen(false);
     } catch (error) {
       console.error("Failed to add order", error);
@@ -503,7 +609,7 @@ export default function OrdersPage() {
       const updatedOrder: Order = { ...order, status: 'Bill Verification' };
       await addOrder(user.restaurantUsername, updatedOrder);
       const updatedOrders = await getOrders(user.restaurantUsername);
-      setOrders(Array.isArray(updatedOrders) ? updatedOrders : []);
+      setOrders(Array.isArray(updatedOrders) ? dedupeOrdersById(updatedOrders) : []);
     } catch (err) {
       console.error('failed to set bill verification', err);
       alert('Unable to create bill. Please try again.');
@@ -559,7 +665,7 @@ export default function OrdersPage() {
       setTimeout(async () => {
         try {
           const later = await getOrders(user.restaurantUsername);
-          if (Array.isArray(later)) setOrders(later);
+          if (Array.isArray(later)) setOrders(dedupeOrdersById(later));
         } catch (e) {
           // ignore
         }
@@ -614,7 +720,7 @@ export default function OrdersPage() {
         details: `Waiter confirmed payment for order ${order.id} via ${paymentMethod}`,
       });
       const updatedOrders = await getOrders(user.restaurantUsername);
-      setOrders(Array.isArray(updatedOrders) ? updatedOrders : []);
+      setOrders(Array.isArray(updatedOrders) ? dedupeOrdersById(updatedOrders) : []);
       alert('Payment confirmation submitted. Awaiting admin approval.');
     } catch (err: any) {
       console.error('failed to confirm payment', err);
@@ -630,14 +736,9 @@ export default function OrdersPage() {
     }
 
     if (PROOF_REQUIRED_METHODS.has(order.payment_method ?? "Cash")) {
-      if (!order.payment_proof_screenshot_url) {
+      const proofUrl = normalizeProofPreviewUrl(order.payment_proof_screenshot_url);
+      if (!proofUrl) {
         alert("Payment screenshot is missing for this order.");
-        return;
-      }
-
-      const previewWindow = window.open(order.payment_proof_screenshot_url, "_blank", "noopener,noreferrer");
-      if (!previewWindow) {
-        alert("Unable to open screenshot preview. Please allow pop-ups and try again.");
         return;
       }
     }
@@ -658,7 +759,7 @@ export default function OrdersPage() {
         details: `Admin approved payment for order ${order.id}`,
       });
       const updatedOrders = await getOrders(user.restaurantUsername);
-      setOrders(Array.isArray(updatedOrders) ? updatedOrders : []);
+      setOrders(Array.isArray(updatedOrders) ? dedupeOrdersById(updatedOrders) : []);
     } catch (err: any) {
       console.error('failed to approve payment', err);
       alert(String(err?.message ?? 'Unable to approve payment.'));
@@ -687,7 +788,7 @@ export default function OrdersPage() {
         details: `Admin closed bill for order ${order.id}`,
       });
       const updatedOrders = await getOrders(user.restaurantUsername);
-      setOrders(Array.isArray(updatedOrders) ? updatedOrders : []);
+      setOrders(Array.isArray(updatedOrders) ? dedupeOrdersById(updatedOrders) : []);
     } catch (err: any) {
       console.error('failed to close bill', err);
       alert(String(err?.message ?? 'Unable to close bill.'));
@@ -778,7 +879,7 @@ export default function OrdersPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {orders.map((order) => {
+              {displayOrders.map((order) => {
                 const apcInsight = orderApcByOrderId.get(String(order.id));
                 return (
                 <TableRow key={order.id} onClick={() => handleRowClick(order)} className="cursor-pointer">
@@ -786,7 +887,7 @@ export default function OrdersPage() {
                     <div>{order.table}</div>
                   </TableCell>
                   <TableCell>
-                    <div className="font-medium">{order.items.map(i => `${i.quantity}x ${i.name}`).join(', ')}</div>
+                    <div className="font-medium">{order.items.map(i => `${i.quantity}x ${i.name}${i.note ? ` (${i.note})` : ""}`).join(', ')}</div>
                     {order.payment_method ? (
                       <div className="text-xs text-muted-foreground">
                         Payment Method: {order.payment_method}
@@ -798,7 +899,13 @@ export default function OrdersPage() {
                         className="text-xs text-primary underline"
                         onClick={(e) => {
                           e.stopPropagation();
-                          window.open(order.payment_proof_screenshot_url ?? "", "_blank", "noopener,noreferrer");
+                          const proofUrl = normalizeProofPreviewUrl(order.payment_proof_screenshot_url);
+                          if (!proofUrl) {
+                            alert("Payment screenshot URL is invalid.");
+                            return;
+                          }
+                          setProofPreviewUrl(proofUrl);
+                          setIsProofPreviewOpen(true);
                         }}
                       >
                         View payment screenshot
@@ -974,7 +1081,7 @@ export default function OrdersPage() {
           try {
             await addOrder(user.restaurantUsername, updatedOrder);
             const updatedOrders = await getOrders(user.restaurantUsername);
-            setOrders(Array.isArray(updatedOrders) ? updatedOrders : []);
+            setOrders(Array.isArray(updatedOrders) ? dedupeOrdersById(updatedOrders) : []);
           } catch (err) {
             console.error('Failed to save order', err);
             alert('Unable to save order.');
@@ -1024,16 +1131,48 @@ export default function OrdersPage() {
           setDefaultTax(t);
         }}
       />
+
+      <Dialog
+        open={isProofPreviewOpen}
+        onOpenChange={(open) => {
+          setIsProofPreviewOpen(open);
+          if (!open) setProofPreviewUrl(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-2xl w-full">
+          <DialogHeader>
+            <DialogTitle>Payment Screenshot</DialogTitle>
+            <DialogDescription>
+              Preview the uploaded payment proof before approval.
+            </DialogDescription>
+          </DialogHeader>
+          {proofPreviewUrl ? (
+            <div className="max-h-[70vh] overflow-auto rounded-md border p-2">
+              <img
+                src={proofPreviewUrl}
+                alt="Payment proof screenshot"
+                className="h-auto w-full rounded-md object-contain"
+              />
+            </div>
+          ) : (
+            <div className="text-sm text-muted-foreground">No screenshot available.</div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsProofPreviewOpen(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
-function OrderForm({ onSubmit, menuItems, tables }: { onSubmit: (data: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number }[] }) => Promise<void> | void; menuItems: MenuItem[]; tables: { id: number; name: string; capacity: number }[] }) {
+function OrderForm({ onSubmit, menuItems, tables }: { onSubmit: (data: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null }[] }) => Promise<void> | void; menuItems: MenuItem[]; tables: { id: number; name: string; capacity: number }[] }) {
   const { currencySymbol } = useCurrency();
   const [selectedTableId, setSelectedTableId] = useState<string>(tables?.[0]?.id?.toString() ?? '');
   const [selectedItemValue, setSelectedItemValue] = useState("");
   const [selectedQuantity, setSelectedQuantity] = useState<number>(1);
-  const [itemsList, setItemsList] = useState<{ id?: string; name: string; price: number; quantity: number }[]>([]);
+  const [selectedNote, setSelectedNote] = useState("");
+  const [itemsList, setItemsList] = useState<{ id?: string; name: string; price: number; quantity: number; note?: string | null }[]>([]);
 
   useEffect(() => {
     if (tables && tables.length && !selectedTableId) {
@@ -1049,19 +1188,27 @@ function OrderForm({ onSubmit, menuItems, tables }: { onSubmit: (data: { tableId
     const selectedMenuItem = menuItems.find((m) => m.name.toLowerCase() === name.toLowerCase());
     if (!selectedMenuItem) return;
     const price = Number(selectedMenuItem.price || 0);
+    const note = selectedNote.trim();
     setItemsList(prev => {
-      const existing = prev.find(p => p.name.toLowerCase() === name.toLowerCase());
+      const existing = prev.find(
+        p => p.name.toLowerCase() === name.toLowerCase() && String(p.note ?? "") === note,
+      );
       if (existing) {
-        return prev.map(p => p.name.toLowerCase() === name.toLowerCase() ? { ...p, quantity: p.quantity + selectedQuantity } : p);
+        return prev.map(p =>
+          p.name.toLowerCase() === name.toLowerCase() && String(p.note ?? "") === note
+            ? { ...p, quantity: p.quantity + selectedQuantity }
+            : p,
+        );
       }
-      return [...prev, { id: undefined, name, price, quantity: selectedQuantity }];
+      return [...prev, { id: undefined, name, price, quantity: selectedQuantity, note: note || null }];
     });
     setSelectedItemValue("");
     setSelectedQuantity(1);
+    setSelectedNote("");
   };
 
-  const removeItem = (name: string) => {
-    setItemsList(prev => prev.filter(p => p.name !== name));
+  const removeItem = (name: string, note?: string | null) => {
+    setItemsList(prev => prev.filter(p => !(p.name === name && String(p.note ?? "") === String(note ?? ""))));
   };
 
   const subtotal = itemsList.reduce((acc, it) => acc + it.price * it.quantity, 0);
@@ -1107,6 +1254,16 @@ function OrderForm({ onSubmit, menuItems, tables }: { onSubmit: (data: { tableId
         <Button onClick={addItem} className="col-span-2">Add</Button>
       </div>
       </div>
+      <div className="grid grid-cols-4 items-center gap-4">
+        <Label htmlFor="item-note" className="text-right">Note</Label>
+        <Input
+          id="item-note"
+          placeholder="No onion, extra spicy, etc."
+          value={selectedNote}
+          onChange={(e) => setSelectedNote(e.target.value)}
+          className="col-span-3"
+        />
+      </div>
 
       <div>
       {itemsList.length === 0 ? (
@@ -1114,11 +1271,14 @@ function OrderForm({ onSubmit, menuItems, tables }: { onSubmit: (data: { tableId
       ) : (
         <div className="space-y-2">
           {itemsList.map(it => (
-            <div key={it.name} className="flex items-center justify-between">
-              <div>{it.quantity}x {it.name}</div>
+            <div key={`${it.name}-${String(it.note ?? "")}`} className="flex items-center justify-between">
+              <div>
+                <div>{it.quantity}x {it.name}</div>
+                {it.note ? <div className="text-xs text-muted-foreground">Note: {it.note}</div> : null}
+              </div>
               <div className="flex items-center gap-2">
                 <div>{currencySymbol}{(it.price * it.quantity).toFixed(2)}</div>
-                <Button variant="ghost" size="icon" onClick={() => removeItem(it.name)}><X className="h-4 w-4"/></Button>
+                <Button variant="ghost" size="icon" onClick={() => removeItem(it.name, it.note)}><X className="h-4 w-4"/></Button>
               </div>
             </div>
           ))}
@@ -1146,6 +1306,7 @@ const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit, onRep
   const [localItems, setLocalItems] = useState<OrderItem[]>(order.items.map(i => ({ ...i })));
   const [newItemName, setNewItemName] = useState("");
   const [newItemQuantity, setNewItemQuantity] = useState<number>(1);
+  const [newItemNote, setNewItemNote] = useState("");
   const [reason, setReason] = useState("");
 
   useEffect(() => {
@@ -1155,6 +1316,7 @@ const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit, onRep
     setReason("");
     setNewItemName("");
     setNewItemQuantity(1);
+    setNewItemNote("");
 
     if (Array.isArray(order.taxes) && order.taxes.length > 0) {
       setTaxes(order.taxes as any);
@@ -1193,9 +1355,12 @@ const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit, onRep
     const itemName = newItemName.trim();
     const selectedMenuItem = (menuItems ?? []).find(m => m.name.toLowerCase() === itemName.toLowerCase());
     if (!selectedMenuItem) return;
+    const normalizedNote = newItemNote.trim();
 
     setLocalItems(prev => {
-      const existing = prev.find(p => p.name.trim().toLowerCase() === itemName.toLowerCase());
+      const existing = prev.find(
+        p => p.name.trim().toLowerCase() === itemName.toLowerCase() && String(p.note ?? "") === normalizedNote,
+      );
       if (existing) {
         return prev.map(p => p.id === existing.id ? { ...p, quantity: p.quantity + newItemQuantity } : p);
       }
@@ -1205,11 +1370,13 @@ const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit, onRep
         quantity: newItemQuantity,
         price: Number(selectedMenuItem.price) || 0,
         orderedAt: new Date().toISOString(),
+        note: normalizedNote || null,
       }];
     });
 
     setNewItemName("");
     setNewItemQuantity(1);
+    setNewItemNote("");
   };
 
   const handleRemoveItem = (id: string) => setLocalItems(prev => prev.filter(i => i.id !== id));
@@ -1281,7 +1448,10 @@ const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit, onRep
                 <TableBody>
                   {localItems.map(item => (
                     <TableRow key={item.id}>
-                      <TableCell className="font-medium">{item.name}</TableCell>
+                      <TableCell className="font-medium">
+                        <div>{item.name}</div>
+                        {item.note ? <div className="text-xs text-muted-foreground">Note: {item.note}</div> : null}
+                      </TableCell>
                       <TableCell className="text-center">
                         <Input type="number" value={String(item.quantity)} onChange={(e) => setLocalItems(prev => prev.map(p => p.id === item.id ? { ...p, quantity: Math.max(1, Number(e.target.value) || 1) } : p))} className="w-16 mx-auto" />
                       </TableCell>
@@ -1297,8 +1467,8 @@ const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit, onRep
               </Table>
             </div>
 
-            <div className="grid grid-cols-6 gap-2 my-2">
-              <div className="col-span-3">
+            <div className="grid grid-cols-12 gap-2 my-2">
+              <div className="col-span-5">
                 <Combobox
                   options={(menuItems ?? []).map(m => ({ value: m.name.toLowerCase(), label: m.name }))}
                   value={newItemName.toLowerCase()}
@@ -1311,6 +1481,12 @@ const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit, onRep
                   emptyPlaceholder="No items found."
                 />
               </div>
+              <Input
+                placeholder="Note"
+                value={newItemNote}
+                onChange={(e) => setNewItemNote(e.target.value)}
+                className="col-span-4"
+              />
               <Input placeholder="Qty" type="number" value={String(newItemQuantity)} onChange={(e) => setNewItemQuantity(Math.max(1, Number(e.target.value) || 1))} className="col-span-2" />
               <Button onClick={handleAddItem} className="col-span-1">Add</Button>
             </div>
@@ -1373,11 +1549,13 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
   const { currencySymbol } = useCurrency();
   const [localItems, setLocalItems] = useState<OrderItem[]>([]);
   const [newItemName, setNewItemName] = useState("");
+  const [newItemNote, setNewItemNote] = useState("");
 
   useEffect(() => {
     if (open && order) {
       setLocalItems(order.items.map(i => ({ ...i })));
       setNewItemName("");
+      setNewItemNote("");
     }
   }, [open, order]);
 
@@ -1389,10 +1567,11 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
     if (!selectedMenuItem) {
       return;
     }
+    const normalizedNote = newItemNote.trim();
 
     setLocalItems(prev => {
       const nameLower = selectedMenuItem.name.trim().toLowerCase();
-      const existing = prev.find(i => i.name.trim().toLowerCase() === nameLower);
+      const existing = prev.find(i => i.name.trim().toLowerCase() === nameLower && String(i.note ?? "") === normalizedNote);
       if (existing) {
         return prev.map(i => i.id === existing.id ? { ...i, quantity: i.quantity + 1 } : i);
       }
@@ -1402,10 +1581,12 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
         quantity: 1,
         price: Number(selectedMenuItem.price) || 0,
         orderedAt: new Date().toISOString(),
+        note: normalizedNote || null,
       };
       return [...prev, newItem];
     });
     setNewItemName("");
+    setNewItemNote("");
   };
 
   const handleRemove = (itemId: string) => {
@@ -1462,7 +1643,10 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
               <TableBody>
                 {localItems.map(item => (
                   <TableRow key={item.id}>
-                    <TableCell className="font-medium">{item.name}</TableCell>
+                    <TableCell className="font-medium">
+                      <div>{item.name}</div>
+                      {item.note ? <div className="text-xs text-muted-foreground">Note: {item.note}</div> : null}
+                    </TableCell>
                     <TableCell className="text-center">{item.quantity}</TableCell>
                     <TableCell className="text-muted-foreground text-center">
                       <div className="flex items-center justify-center">
@@ -1481,7 +1665,7 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
               </TableBody>
             </Table>
           </div>
-          <div className="grid grid-cols-6 gap-2 my-4 border-t pt-4">
+          <div className="grid grid-cols-12 gap-2 my-4 border-t pt-4">
             <Combobox
               options={menuOptions}
               value={newItemName.toLowerCase()}
@@ -1492,6 +1676,12 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
               placeholder="Select item"
               searchPlaceholder="Search for an item..."
               emptyPlaceholder="No items found."
+              className="col-span-6"
+            />
+            <Input
+              placeholder="Note"
+              value={newItemNote}
+              onChange={(e) => setNewItemNote(e.target.value)}
               className="col-span-5"
             />
             <Button onClick={handleAddItem} className="col-span-1">Add</Button>
@@ -1564,7 +1754,10 @@ const OrderViewDialog = React.memo(({ order, open, onOpenChange }: { order: Orde
               <TableBody>
                 {order.items.map(item => (
                   <TableRow key={item.id}>
-                    <TableCell className="font-medium">{item.name}</TableCell>
+                    <TableCell className="font-medium">
+                      <div>{item.name}</div>
+                      {item.note ? <div className="text-xs text-muted-foreground">Note: {item.note}</div> : null}
+                    </TableCell>
                     <TableCell className="text-center">{item.quantity}</TableCell>
                     <TableCell className="text-muted-foreground text-center">
                       <div className="flex items-center justify-center">
