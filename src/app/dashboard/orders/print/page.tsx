@@ -153,8 +153,9 @@ function PrintPageContents() {
                             className="px-3 py-1 border rounded text-sm"
                         >Print</button>
                         <button
-                            onClick={async () => {
-                                const esc = await generateEscPos(user, profile, cashierName);
+                                onClick={async () => {
+                                    const esc = await generateEscPos(user, profile, cashierName, order);
+                                console.log("hi", esc);
                                 if (!esc) return;
 
                                 // Convert ESC/POS > readable text preview
@@ -308,15 +309,40 @@ export default function PrintPage() {
         </Suspense>
     );
 }
-
-
-async function generateEscPos(user: any, profile: RestaurantProfile | null, cashierName: string): Promise<Uint8Array | null> {
+async function generateEscPos(user: any, profile: RestaurantProfile | null, cashierName: string, orderArg?: any): Promise<Uint8Array | null> {
     try {
-        const searchParams = new URLSearchParams(window.location.search);
-        const orderData = searchParams.get('order');
-        if (!orderData) return null;
+        let order = orderArg ?? null;
 
-        const order = JSON.parse(decodeURIComponent(orderData));
+        if (!order) {
+            const searchParams = new URLSearchParams(window.location.search);
+            const orderData = searchParams.get('order');
+            const orderKey = searchParams.get('orderKey');
+
+            // Try direct `order` query param first
+            if (orderData) {
+                try {
+                    order = JSON.parse(decodeURIComponent(orderData));
+                } catch (e) {
+                    console.error('Failed to parse order from query param', e);
+                    order = null;
+                }
+            }
+
+            // Fallback to orderKey -> localStorage
+            if (!order && orderKey && typeof window !== 'undefined') {
+                try {
+                    const payload = window.localStorage.getItem(orderKey);
+                    if (payload) {
+                        order = JSON.parse(decodeURIComponent(payload));
+                    }
+                } catch (e) {
+                    console.error('Failed to parse order from localStorage', e);
+                    order = null;
+                }
+            }
+
+            if (!order) return null;
+        }
 
         // dynamically import the package and resolve the constructor across CJS/ESM shapes
         const pkg = await import('@point-of-sale/receipt-printer-encoder');
@@ -407,7 +433,7 @@ async function generateEscPos(user: any, profile: RestaurantProfile | null, cash
         return encoder.encode();
 
     } catch (err) {
-        console.error(err);
+        console.log("bvello", err);
         return null;
     }
 }
