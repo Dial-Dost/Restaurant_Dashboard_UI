@@ -280,6 +280,16 @@ const dedupeOrdersById = (items: Order[]) => {
   return Array.from(seen.values());
 };
 
+const PRINT_BILL_STORAGE_PREFIX = "restaurant-dashboard:print-order:";
+
+const createPrintBillStorageKey = () => `${PRINT_BILL_STORAGE_PREFIX}${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
+
+const storePrintBillPayload = (order: Order) => {
+  const storageKey = createPrintBillStorageKey();
+  localStorage.setItem(storageKey, JSON.stringify(order));
+  return storageKey;
+};
+
 export default function OrdersPage() {
   
   const { user } = useAuth();
@@ -419,8 +429,8 @@ export default function OrdersPage() {
         calculatedTaxes,
         currencySymbol,
     };
-    const orderData = encodeURIComponent(JSON.stringify(orderWithCalculatedCharges));
-    const url = `/dashboard/orders/print?order=${orderData}`;
+      const storageKey = storePrintBillPayload(orderWithCalculatedCharges);
+      const url = `/dashboard/orders/print?orderKey=${encodeURIComponent(storageKey)}`;
     window.open(url, '_blank');
   }
   

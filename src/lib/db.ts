@@ -1392,6 +1392,31 @@ export const addMenuCategory = async (restaurantId: string, category: string) =>
     return { acknowledged: true };
 };
 
+export const removeMenuCategory = async (restaurantId: string, category: string) => {
+    const encodedCategory = encodeURIComponent(category);
+    const response = await backendCall(`/menu/categories?category=${encodedCategory}`, restaurantId, {
+        method: 'DELETE',
+    });
+
+    if (response?.ok) {
+        await Promise.all([
+            getMenuCategories(restaurantId),
+            getMenuItems(restaurantId),
+        ]);
+        return { acknowledged: true };
+    }
+
+    const categories = await getMenuCategories(restaurantId);
+    const items = await getMenuItems(restaurantId);
+    const updatedCategories = categories.filter((existing) => existing.toLowerCase() !== category.toLowerCase());
+    const updatedItems = items.filter((item) => item.category.toLowerCase() !== category.toLowerCase());
+    await Promise.all([
+        writeLocalField(restaurantId, 'menuCategories', updatedCategories),
+        writeLocalField(restaurantId, 'menuItems', updatedItems),
+    ]);
+    return { acknowledged: true };
+};
+
 export const addAuditLogEntry = async (
     restaurantId: string,
     log: Omit<AuditLog, 'id' | 'timestamp'> & { employeeId?: string },

@@ -37,6 +37,7 @@ import {
 import {
   DropdownMenu,
   DropdownMenuContent,
+    DropdownMenuSeparator,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuTrigger,
@@ -51,7 +52,8 @@ import { SortableContext, useSortable, arrayMove } from "@dnd-kit/sortable";
 import { cn } from "@/lib/utils";
 import { type MenuItem } from "./data";
 import { useAuth } from "@/context/AuthContext";
-import { getMenuItems, getMenuCategories, addMenuItem, addMenuCategory, saveMenuItems } from "@/lib/db";
+import { useCurrency } from "@/hooks/use-currency";
+import { getMenuItems, getMenuCategories, addMenuItem, addMenuCategory, removeMenuCategory, saveMenuItems } from "@/lib/db";
 
 const menuItemSchema = z.object({
   name: z.string().min(1, "Item name is required."),
@@ -66,7 +68,7 @@ const categorySchema = z.object({
 type MenuItemFormData = z.infer<typeof menuItemSchema>;
 type CategoryFormData = z.infer<typeof categorySchema>;
 
-function SortableMenuItem({ item, onRemoveItem, isDragging }: { item: MenuItem, onRemoveItem: (id: string) => void, isDragging?: boolean }) {
+function SortableMenuItem({ item, onRemoveItem, currencySymbol, isDragging }: { item: MenuItem, onRemoveItem: (id: string) => void, currencySymbol: string, isDragging?: boolean }) {
     const { attributes, listeners, setNodeRef } = useSortable({
         id: item.id,
         data: { category: item.category },
@@ -81,7 +83,7 @@ function SortableMenuItem({ item, onRemoveItem, isDragging }: { item: MenuItem, 
                 <p className="font-medium">{item.name}</p>
             </div>
             <div className="flex items-center gap-4">
-                 <p className="text-muted-foreground">${item.price.toFixed(2)}</p>
+                  <p className="text-muted-foreground">{currencySymbol}{item.price.toFixed(2)}</p>
                  <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                         <Button variant="ghost" size="icon">
@@ -101,7 +103,7 @@ function SortableMenuItem({ item, onRemoveItem, isDragging }: { item: MenuItem, 
     );
 }
 
-function DroppableCategory({ category, items, onRemoveItem, activeId }: { category: string, items: MenuItem[], onRemoveItem: (id: string) => void, activeId: string | null }) {
+function DroppableCategory({ category, items, onRemoveItem, onRemoveCategory, currencySymbol, activeId }: { category: string, items: MenuItem[], onRemoveItem: (id: string) => void, onRemoveCategory: (category: string) => void, currencySymbol: string, activeId: string | null }) {
     const { isOver, setNodeRef } = useDroppable({
         id: category,
     });
@@ -109,16 +111,43 @@ function DroppableCategory({ category, items, onRemoveItem, activeId }: { catego
     return (
         <AccordionItem value={category} key={category}>
             <AccordionTrigger className="text-xl font-semibold hover:no-underline">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 min-w-0 flex-1">
                    <Utensils className="h-5 w-5 text-primary" /> {category}
                 </div>
+                <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                                                <span
+                                                    role="button"
+                                                    tabIndex={0}
+                                                    aria-label={`Category actions for ${category}`}
+                                                    className="inline-flex h-10 w-10 items-center justify-center rounded-md hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                                                    onClick={(event) => event.stopPropagation()}
+                                                    onKeyDown={(event) => {
+                                                        if (event.key === 'Enter' || event.key === ' ') {
+                                                            event.preventDefault();
+                                                            event.stopPropagation();
+                                                        }
+                                                    }}
+                                                >
+                                                        <MoreVertical className="h-4 w-4" />
+                                                </span>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" onClick={(event) => event.stopPropagation()}>
+                        <DropdownMenuLabel>Category Actions</DropdownMenuLabel>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem className="text-destructive" onClick={() => onRemoveCategory(category)}>
+                            <Trash2 className="mr-2 h-4 w-4" />
+                            <span>Delete Category</span>
+                        </DropdownMenuItem>
+                    </DropdownMenuContent>
+                </DropdownMenu>
             </AccordionTrigger>
             <AccordionContent ref={setNodeRef} className={`p-2 rounded-md transition-colors ${isOver ? 'bg-accent' : ''}`}>
                  <SortableContext items={items.map(i => i.id)}>
                     {items && items.length > 0 ? (
                         <ul className="space-y-2">
                             {items.map(item => (
-                                <SortableMenuItem key={item.id} item={item} onRemoveItem={onRemoveItem} isDragging={activeId === item.id} />
+                                <SortableMenuItem key={item.id} item={item} onRemoveItem={onRemoveItem} currencySymbol={currencySymbol} isDragging={activeId === item.id} />
                             ))}
                         </ul>
                     ) : (
@@ -134,6 +163,7 @@ function DroppableCategory({ category, items, onRemoveItem, activeId }: { catego
 
 export default function MenuPage() {
   const { user } = useAuth();
+    const { currencySymbol } = useCurrency();
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
   const [isItemDialogOpen, setIsItemDialogOpen] = useState(false);
@@ -190,7 +220,98 @@ export default function MenuPage() {
     updateMenuItems(newItems);
   }
 
+    const handleRemoveCategory = async (categoryName: string) => {
+        if (!user?.restaurantUsername) return;
+
+        const itemCount = menuItems.filter((item) => item.category === categoryName).length;
+        const shouldDelete = window.confirm(
+            itemCount > 0
+                ? `Delete category "${categoryName}" and ${itemCount} item${itemCount === 1 ? "" : "s"} in it?`
+                : `Delete category "${categoryName}"?`,
+        );
+
+        if (!shouldDelete) return;
+
+        try {
+            await removeMenuCategory(user.restaurantUsername, categoryName);
+            setMenuItems((prev) => prev.filter((item) => item.category.toLowerCase() !== categoryName.toLowerCase()));
+            setCategories((prev) => prev.filter((category) => category.toLowerCase() !== categoryName.toLowerCase()));
+        } catch (error: any) {
+            console.error("menu_category_delete_failed", error);
+            window.alert(String(error?.message ?? "Unable to delete category."));
+        }
+    };
+
     const normalizeColumn = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const normalizeCell = (value: unknown) => String(value ?? "").trim();
+    const parsePriceValue = (value: unknown) => {
+        const parsed = Number(String(value ?? "").replace(/[$,]/g, "").trim());
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    };
+
+    const parseSectionedMenuRows = (rows: unknown[][]): MenuItem[] => {
+        const importedItems: MenuItem[] = [];
+        let currentCategory = "";
+
+        for (const rawRow of rows) {
+            const row = (rawRow ?? []).map(normalizeCell);
+            const nonEmptyCells = row.filter(Boolean);
+
+            if (!nonEmptyCells.length) {
+                continue;
+            }
+
+            const normalizedRow = row.map(normalizeColumn);
+            const isHeaderRow = normalizedRow.includes("dishname") || normalizedRow.includes("itemname") || normalizedRow.includes("price");
+            if (isHeaderRow) {
+                continue;
+            }
+
+            if (nonEmptyCells.length === 1) {
+                const label = nonEmptyCells[0].replace(/\s+/g, " ").trim();
+                if (!label) {
+                    continue;
+                }
+
+                if (!currentCategory && /menu/i.test(label)) {
+                    continue;
+                }
+
+                currentCategory = label;
+                continue;
+            }
+
+            if (!currentCategory) {
+                continue;
+            }
+
+            let itemName = "";
+            let priceValue: number | null = null;
+
+            if (/^\d+$/.test(row[0] ?? "") && row[1]) {
+                itemName = row[1];
+                priceValue = parsePriceValue(row[2]);
+            }
+
+            if (!itemName && row[0] && row[1]) {
+                itemName = row[0];
+                priceValue = parsePriceValue(row[1]);
+            }
+
+            if (!itemName || priceValue == null) {
+                continue;
+            }
+
+            importedItems.push({
+                id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                name: itemName,
+                price: Number(priceValue.toFixed(2)),
+                category: currentCategory,
+            });
+        }
+
+        return importedItems;
+    };
 
     const handleImportMenuFile = async (file: File) => {
         if (!user?.restaurantUsername) return;
@@ -210,10 +331,6 @@ export default function MenuPage() {
                 defval: "",
                 raw: false,
             });
-            if (!rows.length) {
-                throw new Error("The uploaded file is empty.");
-            }
-
             const keys = Object.keys(rows[0] ?? {});
             const columnMap = new Map<string, string>();
             for (const key of keys) {
@@ -237,31 +354,37 @@ export default function MenuPage() {
                 || columnMap.get("section")
                 || columnMap.get("group");
 
-            if (!nameKey || !priceKey) {
-                throw new Error("Required columns not found. Include at least name/item and price columns.");
-            }
+            let importedItems: MenuItem[] = [];
+            if (nameKey && priceKey) {
+                for (const row of rows) {
+                    const itemName = String(row[nameKey] ?? "").trim();
+                    if (!itemName) continue;
 
-            const importedItems: MenuItem[] = [];
-            for (const row of rows) {
-                const itemName = String(row[nameKey] ?? "").trim();
-                if (!itemName) continue;
+                    const rawPrice = parsePriceValue(row[priceKey]);
+                    if (rawPrice == null) continue;
 
-                const rawPrice = Number(String(row[priceKey] ?? "").replace(/,/g, "").trim());
-                if (!Number.isFinite(rawPrice) || rawPrice <= 0) continue;
+                    const categoryRaw = categoryKey ? String(row[categoryKey] ?? "").trim() : "";
+                    const category = categoryRaw || "General";
 
-                const categoryRaw = categoryKey ? String(row[categoryKey] ?? "").trim() : "";
-                const category = categoryRaw || "General";
-
-                importedItems.push({
-                    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                    name: itemName,
-                    price: Number(rawPrice.toFixed(2)),
-                    category,
+                    importedItems.push({
+                        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                        name: itemName,
+                        price: Number(rawPrice.toFixed(2)),
+                        category,
+                    });
+                }
+            } else {
+                const sectionedRows = XLSX.utils.sheet_to_json<unknown[]>(worksheet, {
+                    header: 1,
+                    defval: "",
+                    raw: false,
+                    blankrows: false,
                 });
+                importedItems = parseSectionedMenuRows(sectionedRows);
             }
 
             if (!importedItems.length) {
-                throw new Error("No valid rows found. Ensure each row has a name and a positive price.");
+                throw new Error("No valid menu items found. Use category rows followed by item rows with a price, or a flat table with name and price columns.");
             }
 
             const existingByKey = new Map<string, MenuItem>();
@@ -424,6 +547,8 @@ export default function MenuPage() {
                                 category={category} 
                                 items={groupedItems[category] || []} 
                                 onRemoveItem={handleRemoveItem}
+                                onRemoveCategory={handleRemoveCategory}
+                                currencySymbol={currencySymbol}
                                 activeId={activeId}
                             />
                         ))}
@@ -440,7 +565,7 @@ export default function MenuPage() {
         <DragOverlay>
             {activeItem ? (
                 <div className="shadow-lg rounded-md">
-                     <SortableMenuItem item={activeItem} onRemoveItem={() => {}} isDragging />
+                     <SortableMenuItem item={activeItem} onRemoveItem={() => {}} currencySymbol={currencySymbol} isDragging />
                 </div>
             ) : null}
         </DragOverlay>

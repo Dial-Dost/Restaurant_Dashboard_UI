@@ -30,6 +30,7 @@ export default function Dashboard() {
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [tables, setTables] = useState<TableType[]>([]);
+  const [dashboardRevenue, setDashboardRevenue] = useState<number | null>(null);
   const [apcRange, setApcRange] = useState<ApcRange>('week');
   const [employeeApc, setEmployeeApc] = useState<number | null>(null);
   const [employeeApcOrdersCount, setEmployeeApcOrdersCount] = useState<number>(0);
@@ -40,7 +41,7 @@ export default function Dashboard() {
       const fetchData = async () => {
         setEmployeeApcLoading(true);
         try {
-          const [bookingData, customerData, tableData, apcInsight] = await Promise.all([
+          const [bookingData, customerData, tableData, apcInsight, dashboardApcInsight] = await Promise.all([
             getBookings(user.restaurantUsername),
             getCustomers(user.restaurantUsername),
             getTables(user.restaurantUsername),
@@ -48,14 +49,17 @@ export default function Dashboard() {
               period: apcRange,
               employeeId: user.employeeId,
             }),
+            getMonthlyApcInsight(user.restaurantUsername, { period: 'month' }),
           ]);
 
           setBookings(bookingData);
           setCustomers(customerData);
           setTables(tableData);
+          setDashboardRevenue(dashboardApcInsight?.total_revenue ?? 0);
           setEmployeeApc(apcInsight && apcInsight.total_covers > 0 ? apcInsight.monthly_apc : null);
           setEmployeeApcOrdersCount(apcInsight?.orders?.length ?? 0);
         } catch {
+          setDashboardRevenue(null);
           setEmployeeApc(null);
           setEmployeeApcOrdersCount(0);
         } finally {
@@ -64,13 +68,15 @@ export default function Dashboard() {
       }
       fetchData();
     } else {
+      setDashboardRevenue(null);
       setEmployeeApc(null);
       setEmployeeApcOrdersCount(0);
     }
   }, [user, apcRange]);
 
   // Current month data
-  const totalRevenue = customers.reduce((acc, customer) => acc + customer.billAmount, 0);
+  const customerRevenueFallback = customers.reduce((acc, customer) => acc + customer.billAmount, 0);
+  const totalRevenue = dashboardRevenue ?? customerRevenueFallback;
   const totalBookings = bookings.length;
   const newCustomers = customers.filter(c => c.totalBookings === 1).length;
   const activeTables = tables.filter(t => t.status !== "Available").length;

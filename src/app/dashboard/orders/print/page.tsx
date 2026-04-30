@@ -43,20 +43,41 @@ type Order = {
 
 function PrintPageContents() {
     const searchParams = useSearchParams();
-    const orderData = searchParams.get('order');
+    const orderKey = searchParams.get('orderKey');
+    const legacyOrderData = searchParams.get('order');
     const { user } = useAuth();
     const [logoBase64, setLogoBase64] = useState<string | null>(null);
     const [bill, setBill] = useState<any | null>(null);
     const [profile, setProfile] = useState<RestaurantProfile | null>(null);
     const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
     const [previewText, setPreviewText] = useState<string | null>(null);
+    const [order, setOrder] = useState<Order | null>(null);
+    const [loadError, setLoadError] = useState<string | null>(null);
 
     useEffect(() => {
-        if (!orderData) return;
+        const resolveOrder = () => {
+            const payload = legacyOrderData ?? (orderKey ? localStorage.getItem(orderKey) : null);
+            if (!payload) {
+                setLoadError('No order data provided.');
+                return null;
+            }
+
+            try {
+                const parsed = JSON.parse(decodeURIComponent(payload));
+                setOrder(parsed);
+                return parsed;
+            } catch {
+                setLoadError('Unable to load order data.');
+                return null;
+            }
+        };
+
+        const parsed = resolveOrder();
+        if (!parsed) return;
+
         // fetch restaurant profile, logo and bill info
         (async () => {
             try {
-                const parsed = JSON.parse(decodeURIComponent(orderData));
                 const restaurantId = user?.restaurantUsername ?? parsed.res_id ?? null;
                 if (restaurantId) {
                         const prof = await getRestaurantProfile(restaurantId, user?.employeeId ?? '').catch(() => null);
@@ -85,17 +106,24 @@ function PrintPageContents() {
             }
             // Do not auto-print. Let the user manually click Print.
         })();
-    }, [orderData]);
+    }, [legacyOrderData, orderKey, user]);
 
-    if (!orderData) {
+    if (loadError) {
         return (
             <div className="flex items-center justify-center h-screen">
-                <p>No order data provided. This window will close automatically.</p>
+                <p>{loadError}</p>
+            </div>
+        );
+    }
+
+    if (!order) {
+        return (
+            <div className="flex items-center justify-center h-screen">
+                <p>Loading order data...</p>
             </div>
         );
     }
     
-    const order: Order = JSON.parse(decodeURIComponent(orderData));
     const currencySymbol = order.currencySymbol || '$';
     const cashierName = `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || '';
     const billNo = bill?.id ?? '';
