@@ -6,24 +6,30 @@ let hasLoggedConnectError = false;
 export function initSocket({ url, restaurantId, token }: { url?: string; restaurantId: string; token?: string }) {
   if (socket) return socket;
 
-  // Prefer explicit URL, then shared backend env vars, then localhost:3000 dev fallback.
+  // Prefer explicit URL, then shared backend env vars, then localhost:3001 dev fallback (backend runs on 3001).
   const serverUrl =
     url ??
     process.env.NEXT_PUBLIC_BACKEND_URL ??
-    (typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:3000` : "/");
+    (typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:3001` : "/");
 
   const opts: any = {
     path: "/socket.io",
     // Start with polling then upgrade to websocket; more resilient across local/proxy/dev setups.
     transports: ["polling", "websocket"],
     upgrade: true,
-    timeout: 5000,
+    timeout: 10000,
+    reconnection: true,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000,
+    reconnectionAttempts: 5,
     auth: { restaurantId },
     transportOptions: {
-      polling: { extraHeaders: {} },
+      polling: {
+        extraHeaders: {
+          "X-Restaurant-Id": restaurantId,
+        },
+      },
     },
-    reconnectionAttempts: 3,
-    reconnectionDelay: 1000,
   };
 
   if (token) opts.auth.token = token;

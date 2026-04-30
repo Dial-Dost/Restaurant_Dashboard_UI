@@ -47,6 +47,7 @@ import {
   getMenuItems,
   getOrders,
   addOrder,
+  deleteOrder,
   getMonthlyApcInsight,
   createBill,
   getTables,
@@ -467,8 +468,12 @@ export default function OrdersPage() {
     const newOrder: Order = { ...baseOrder, total: calculateTotal(baseOrder) };
     try {
       await addOrder(user.restaurantUsername, newOrder);
-      const updatedOrders = await getOrders(user.restaurantUsername);
+      const [updatedOrders, updatedApcInsight] = await Promise.all([
+        getOrders(user.restaurantUsername),
+        getMonthlyApcInsight(user.restaurantUsername),
+      ]);
       setOrders(Array.isArray(updatedOrders) ? dedupeOrdersById(updatedOrders) : []);
+      setMonthlyApcInsight(updatedApcInsight ?? null);
       setIsAddDialogOpen(false);
     } catch (error) {
       console.error("Failed to add order", error);
@@ -533,6 +538,22 @@ export default function OrdersPage() {
     });
   }
 
+  const handleDeleteOrder = async (orderId: string) => {
+    if (!user?.restaurantUsername) return;
+    try {
+      await deleteOrder(user.restaurantUsername, orderId);
+        const [updatedOrders, updatedApcInsight] = await Promise.all([
+          getOrders(user.restaurantUsername),
+          getMonthlyApcInsight(user.restaurantUsername),
+        ]);
+        setOrders(Array.isArray(updatedOrders) ? updatedOrders : []);
+        setMonthlyApcInsight(updatedApcInsight ?? null);
+      toast({ title: "Order deleted", description: "The order has been successfully deleted." });
+    } catch (error) {
+      console.error("Failed to delete order", error);
+      toast({ title: "Error", description: "Failed to delete order", variant: "destructive" });
+    }
+  }
 
   const getStatusVariant = (status: string) => {
     switch (status) {
@@ -668,14 +689,22 @@ export default function OrdersPage() {
       const result = await replaceBill(user.restaurantUsername, payload);
       if (!result) throw new Error('Replace failed');
 
-      // refresh orders list to show cancelled + new order
-      const updatedOrders = await getOrders(user.restaurantUsername);
+      // refresh orders list and APC data to show cancelled + new order
+      const [updatedOrders, updatedApcInsight] = await Promise.all([
+        getOrders(user.restaurantUsername),
+        getMonthlyApcInsight(user.restaurantUsername),
+      ]);
       setOrders(Array.isArray(updatedOrders) ? updatedOrders : []);
+      setMonthlyApcInsight(updatedApcInsight ?? null);
       // also poll once after a short delay in case backend propagation is slightly delayed
       setTimeout(async () => {
         try {
-          const later = await getOrders(user.restaurantUsername);
+          const [later, laterApc] = await Promise.all([
+            getOrders(user.restaurantUsername),
+            getMonthlyApcInsight(user.restaurantUsername),
+          ]);
           if (Array.isArray(later)) setOrders(dedupeOrdersById(later));
+          if (laterApc) setMonthlyApcInsight(laterApc);
         } catch (e) {
           // ignore
         }
@@ -1063,6 +1092,24 @@ export default function OrdersPage() {
                           Close Bill (Admin)
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
+                        <DropdownMenuItem 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            runAdminAction(() => {
+                              if (confirm('Are you sure you want to delete this order? This action cannot be undone.')) {
+                                void handleDeleteOrder(order.id);
+                              }
+                            });
+                          }}
+                          disabled={
+                            order.status === 'Payment Pending Approval'
+                            || order.status === 'Paid'
+                            || order.status === 'Closed'
+                          }
+                          className="text-red-600"
+                        >
+                          Delete Order
+                        </DropdownMenuItem>
                         <DropdownMenuItem onClick={(e) => { e.stopPropagation(); triggerPrint(order); }}>
                             <Printer className="mr-2 h-4 w-4" />
                             Print Bill
@@ -1090,8 +1137,12 @@ export default function OrdersPage() {
           if (!user?.restaurantUsername) return;
           try {
             await addOrder(user.restaurantUsername, updatedOrder);
-            const updatedOrders = await getOrders(user.restaurantUsername);
+             const [updatedOrders, updatedApcInsight] = await Promise.all([
+               getOrders(user.restaurantUsername),
+               getMonthlyApcInsight(user.restaurantUsername),
+             ]);
             setOrders(Array.isArray(updatedOrders) ? dedupeOrdersById(updatedOrders) : []);
+              setMonthlyApcInsight(updatedApcInsight ?? null);
           } catch (err) {
             console.error('Failed to save order', err);
             alert('Unable to save order.');
@@ -1604,8 +1655,8 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
   };
 
   const subtotal = localItems.reduce((acc, it) => acc + it.price * it.quantity, 0);
-  const serviceCharge = calculateServiceCharge(order.subtotal, order.serviceChargePercentage, order.applyServiceCharge);
-  const calculatedTaxes = calculateTaxes(order.subtotal, order.taxes);
+  const serviceCharge = calculateServiceCharge(subtotal, order.serviceChargePercentage, order.applyServiceCharge);
+  const calculatedTaxes = calculateTaxes(subtotal, order.taxes);
   const totalTaxAmount = calculatedTaxes.reduce((sum, tax) => sum + tax.amount, 0);
   const total = subtotal + serviceCharge + totalTaxAmount;
 
@@ -1617,6 +1668,7 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
       items: localItems,
       subtotal,
       total,
+      taxes: calculatedTaxes,
     };
     await onSave(updatedOrder);
   };

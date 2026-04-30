@@ -1174,6 +1174,22 @@ export const addOrder = async (restaurantId: string, order: Order) => {
     return { acknowledged: true };
 };
 
+export const deleteOrder = async (restaurantId: string, orderId: string) => {
+    const response = await backendCall(`/orders/${encodeURIComponent(orderId)}`, restaurantId, {
+        method: 'DELETE',
+    });
+
+    if (response?.ok || response?.status === 204) {
+        await getOrders(restaurantId);
+        return { acknowledged: true };
+    }
+
+    const orders = await readLocalField<Order[]>(restaurantId, 'orders');
+    const updated = orders.filter((o) => o.id !== orderId);
+    await writeLocalField(restaurantId, 'orders', updated);
+    return { acknowledged: true };
+};
+
 export const createBill = async (
     restaurantId: string,
     bill: {
