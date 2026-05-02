@@ -172,9 +172,28 @@ export default function TablesPage() {
         }
     };
 
-  useEffect(() => {
-        void loadTables();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+    useEffect(() => {
+        if (!user?.restaurantUsername) {
+            return;
+        }
+
+        let isActive = true;
+
+        (async () => {
+            try {
+                const data = await getTables(user.restaurantUsername);
+                if (!isActive) return;
+                setTablesData(Array.isArray(data) ? data : []);
+            } catch (error) {
+                console.error("Failed to load tables", error);
+                if (!isActive) return;
+                setTablesData([]);
+            }
+        })();
+
+        return () => {
+            isActive = false;
+        };
     }, [user?.restaurantUsername]);
 
   const handleAddTable = async () => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import {
   Card,
   CardContent,
@@ -94,7 +94,7 @@ type AddEmployeeFormData = z.infer<typeof addEmployeeSchema>;
 export default function EmployeesPage() {
   const { user } = useAuth();
   const { toast } = useToast();
-  const [hasShownAccessToast, setHasShownAccessToast] = useState(false);
+  const hasShownAccessToastRef = useRef(false);
 
   const [employees, setEmployees] = useState<User[]>([]);
   const [roleDefinitions, setRoleDefinitions] = useState<RoleDefinition[]>([]);
@@ -166,32 +166,48 @@ export default function EmployeesPage() {
   };
 
   useEffect(() => {
-    void fetchEmployees();
-    void fetchRoles();
-    const fetchCoreRoles = async () => {
-      if (!user?.restaurantUsername) return;
+    if (!user?.restaurantUsername) return;
+
+    let isActive = true;
+
+    (async () => {
+      try {
+        const [employeesData, rolesData] = await Promise.all([
+          getRestaurantUsers(user.restaurantUsername, user.employeeId),
+          getRoles(user.restaurantUsername),
+        ]);
+        if (!isActive) return;
+        setEmployees(Array.isArray(employeesData) ? employeesData : []);
+        setRoleDefinitions(Array.isArray(rolesData) ? rolesData : []);
+      } catch (err) {
+        console.error('fetch_employees_or_roles_failed', err);
+        if (isActive) {
+          setEmployees([]);
+          setRoleDefinitions([]);
+        }
+      }
+
       try {
         const cores = await getCoreRoles(user.restaurantUsername, user.actions_set);
+        if (!isActive) return;
         setCoreRoles(Array.isArray(cores) ? cores : []);
       } catch (err) {
         console.error('fetch_core_roles_failed', err);
-        setCoreRoles([]);
+        if (isActive) setCoreRoles([]);
       }
-    };
-    void fetchCoreRoles();
-    const fetchActions = async () => {
-      if (!user?.restaurantUsername) return;
+
       try {
         const catalog = await getActions(user.restaurantUsername, user.actions_set);
+        if (!isActive) return;
         setAccessCatalog(Array.isArray(catalog) ? catalog : []);
       } catch (err) {
-        console.error("fetch_actions_failed", err);
-        setAccessCatalog([]);
+        console.error('fetch_actions_failed', err);
+        if (isActive) setAccessCatalog([]);
       }
-    };
-    void fetchActions();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.restaurantUsername, user?.employeeId]);
+    })();
+
+    return () => { isActive = false; };
+  }, [user?.restaurantUsername, user?.employeeId, user?.actions_set]);
 
   const handleAddEmployee = async (data: AddEmployeeFormData) => {
     if (!user) return;
@@ -367,7 +383,7 @@ export default function EmployeesPage() {
   };
 
   useEffect(() => {
-    if (!user || user.role === "admin" || hasShownAccessToast) {
+    if (!user || user.role === "admin" || hasShownAccessToastRef.current) {
       return;
     }
 
@@ -376,8 +392,8 @@ export default function EmployeesPage() {
       description: "You do not have the required role for this page. Required role: admin.",
       variant: "destructive",
     });
-    setHasShownAccessToast(true);
-  }, [user, hasShownAccessToast, toast]);
+    hasShownAccessToastRef.current = true;
+  }, [user, toast]);
 
   if (!user || user.role !== "admin") {
     return (

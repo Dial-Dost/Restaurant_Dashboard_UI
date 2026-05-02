@@ -44,12 +44,11 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Check if user session is stored in localStorage
     const storedUser = safeJsonParse(localStorage.getItem('authUser'));
-    if (storedUser) {
-      setUser(storedUser);
-    }
-    setLoading(false);
+    React.startTransition(() => {
+      if (storedUser) setUser(storedUser);
+      setLoading(false);
+    });
   }, []);
 
   const login = (userData: AuthUser) => {

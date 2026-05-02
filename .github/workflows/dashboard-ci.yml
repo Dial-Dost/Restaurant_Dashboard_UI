@@ -10,26 +10,28 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      NEXT_PUBLIC_RECEPTION_API_URL: ${{ secrets.NEXT_PUBLIC_RECEPTION_API_URL }}
+      NEXT_PUBLIC_BACKEND_URL: http://localhost:3001
+      NEXT_PUBLIC_FEEDBACK_FORM_URL: http://localhost:9003
+      HOSTNAME: 0.0.0.0
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
-      # - name: Lint
-      #   run: npm run lint
+      - name: Lint
+        run: npm run lint
 
-      # - name: Typecheck
-      #   run: npm run typecheck
-
-      - name: Test
-        run: npm run test -- --runInBand
+      - name: Typecheck
+        run: npm run typecheck
 
       - name: Build
         run: npm run build
+
+      - name: Test
+        run: npm run test -- --runInBand --passWithNoTests

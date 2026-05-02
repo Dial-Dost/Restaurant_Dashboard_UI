@@ -68,9 +68,11 @@ export default function Dashboard() {
       }
       fetchData();
     } else {
-      setDashboardRevenue(null);
-      setEmployeeApc(null);
-      setEmployeeApcOrdersCount(0);
+      Promise.resolve().then(() => {
+        setDashboardRevenue(null);
+        setEmployeeApc(null);
+        setEmployeeApcOrdersCount(0);
+      });
     }
   }, [user, apcRange]);
 

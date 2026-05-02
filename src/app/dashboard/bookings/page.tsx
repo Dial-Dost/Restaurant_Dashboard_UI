@@ -131,13 +131,38 @@ export default function BookingsPage() {
   };
   
   useEffect(() => {
-    if (!user) {
+    if (!user?.restaurantUsername) {
       return;
     }
 
-    loadBookings();
-    loadTables();
-  }, [user]);
+    let isActive = true;
+
+    (async () => {
+      try {
+        const data = await getBookingsData(user.restaurantUsername);
+        if (!isActive) return;
+        const mapped: Booking[] = (Array.isArray(data) ? data : []).map((item: Booking) => ({
+          ...item,
+          id: createBookingId(item.id),
+        }));
+        setBookings(mapped);
+      } catch (error) {
+        console.error("Failed to load bookings", error);
+        if (isActive) setBookings([]);
+      }
+
+      try {
+        const t = await getTablesData(user.restaurantUsername);
+        if (!isActive) return;
+        setTables(Array.isArray(t) ? t : []);
+      } catch (error) {
+        console.error("Failed to load tables", error);
+        if (isActive) setTables([]);
+      }
+    })();
+
+    return () => { isActive = false; };
+  }, [user?.restaurantUsername]);
 
   const handleAddBooking = async (data: BookingFormData) => {
     if (!user || !user.restaurantUsername) return;

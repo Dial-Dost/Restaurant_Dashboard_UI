@@ -47,11 +47,13 @@ function ForgotPasswordContent() {
 
   useEffect(() => {
     const name = searchParams.get('restaurant');
-    if (name) {
-      setRestaurantName(name);
-      setValue('restaurantName', name);
-    }
-    setIsReady(true);
+    Promise.resolve().then(() => {
+      if (name) {
+        setRestaurantName(name);
+        setValue('restaurantName', name);
+      }
+      setIsReady(true);
+    });
   }, [searchParams, setValue]);
 
   const handleReset = async (data: ForgotPasswordFields) => {

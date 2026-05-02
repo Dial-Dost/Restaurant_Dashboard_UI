@@ -43,6 +43,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Switch } from "@/components/ui/switch";
 import { Combobox } from "@/components/ui/combobox";
+import Image from 'next/image';
 import {
   getMenuItems,
   getOrders,
@@ -150,7 +151,7 @@ const compressProofImage = async (file: File): Promise<string | null> => {
   const objectUrl = URL.createObjectURL(file);
   try {
     const image = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const img = new Image();
+      const img = document.createElement('img') as HTMLImageElement;
       img.onload = () => resolve(img);
       img.onerror = () => reject(new Error("Unable to load image"));
       img.src = objectUrl;
@@ -346,9 +347,6 @@ export default function OrdersPage() {
 
   useEffect(() => {
     if (!user?.restaurantUsername) {
-      setOrders([]);
-      setMenuItems([]);
-      setMonthlyApcInsight(null);
       return;
     }
 
@@ -1209,9 +1207,11 @@ export default function OrdersPage() {
           </DialogHeader>
           {proofPreviewUrl ? (
             <div className="max-h-[70vh] overflow-auto rounded-md border p-2">
-              <img
+              <Image
                 src={proofPreviewUrl}
                 alt="Payment proof screenshot"
+                width={1024}
+                height={768}
                 className="h-auto w-full rounded-md object-contain"
               />
             </div>
@@ -1235,11 +1235,7 @@ function OrderForm({ onSubmit, menuItems, tables }: { onSubmit: (data: { tableId
   const [selectedNote, setSelectedNote] = useState("");
   const [itemsList, setItemsList] = useState<{ id?: string; name: string; price: number; quantity: number; note?: string | null }[]>([]);
 
-  useEffect(() => {
-    if (tables && tables.length && !selectedTableId) {
-      setSelectedTableId(tables[0].id.toString());
-    }
-  }, [tables]);
+  
 
   const menuOptions = menuItems.map(item => ({ value: item.name.toLowerCase(), label: item.name }));
   const tableOptions = tables.map(t => ({ value: String(t.id), label: t.name }));
@@ -1287,7 +1283,7 @@ function OrderForm({ onSubmit, menuItems, tables }: { onSubmit: (data: { tableId
       <div className="col-span-3">
         <Combobox
           options={tableOptions}
-          value={selectedTableId}
+          value={selectedTableId || (tables?.[0]?.id?.toString() ?? '')}
           onChange={(value) => setSelectedTableId(String(value ?? ''))}
           placeholder="Select a table"
           searchPlaceholder="Search tables..."
@@ -1371,33 +1367,35 @@ const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit, onRep
   const [reason, setReason] = useState("");
 
   useEffect(() => {
-    setServiceChargePerc(order.serviceChargePercentage?.toString() || "");
-    setApplyServiceCharge(order.applyServiceCharge);
-    setLocalItems(order.items.map(i => ({ ...i })));
-    setReason("");
-    setNewItemName("");
-    setNewItemQuantity(1);
-    setNewItemNote("");
+    Promise.resolve().then(() => {
+      setServiceChargePerc(order.serviceChargePercentage?.toString() || "");
+      setApplyServiceCharge(order.applyServiceCharge);
+      setLocalItems(order.items.map(i => ({ ...i })));
+      setReason("");
+      setNewItemName("");
+      setNewItemQuantity(1);
+      setNewItemNote("");
 
-    if (Array.isArray(order.taxes) && order.taxes.length > 0) {
-      setTaxes(order.taxes as any);
-    } else if (defaultTax && typeof defaultTax === "object") {
-      const taxesFromDefault: Tax[] = [];
-      for (const [k, v] of Object.entries(defaultTax)) {
-        if (!k) continue;
-        if (/service ?charge/i.test(k) || /service ?charges/i.test(k)) {
-          if (Number(v) > 0) {
-            setServiceChargePerc(String(Number(v)));
-            setApplyServiceCharge(true);
+      if (Array.isArray(order.taxes) && order.taxes.length > 0) {
+        setTaxes(order.taxes as any);
+      } else if (defaultTax && typeof defaultTax === "object") {
+        const taxesFromDefault: Tax[] = [];
+        for (const [k, v] of Object.entries(defaultTax)) {
+          if (!k) continue;
+          if (/service ?charge/i.test(k) || /service ?charges/i.test(k)) {
+            if (Number(v) > 0) {
+              setServiceChargePerc(String(Number(v)));
+              setApplyServiceCharge(true);
+            }
+          } else {
+            taxesFromDefault.push({ id: `d-${k}`, name: k, percentage: Number(v) });
           }
-        } else {
-          taxesFromDefault.push({ id: `d-${k}`, name: k, percentage: Number(v) });
         }
+        setTaxes(taxesFromDefault);
+      } else {
+        setTaxes([]);
       }
-      setTaxes(taxesFromDefault);
-    } else {
-      setTaxes([]);
-    }
+    });
   }, [order, defaultTax]);
 
   const handleTaxChange = (id: string, field: "name" | "percentage", value: string) => {
@@ -1614,9 +1612,11 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
 
   useEffect(() => {
     if (open && order) {
-      setLocalItems(order.items.map(i => ({ ...i })));
-      setNewItemName("");
-      setNewItemNote("");
+      Promise.resolve().then(() => {
+        setLocalItems(order.items.map(i => ({ ...i })));
+        setNewItemName("");
+        setNewItemNote("");
+      });
     }
   }, [open, order]);
 
@@ -1870,11 +1870,13 @@ const DefaultTaxDialog = React.memo(({ open, onOpenChange, defaultTax, onSaved }
 
   useEffect(() => {
     if (open) {
-      if (defaultTax && typeof defaultTax === 'object') {
-        setTaxes(Object.keys(defaultTax).map((k, i) => ({ id: `t${i}-${k}`, name: k, percentage: Number(defaultTax[k]) })));
-      } else {
-        setTaxes([]);
-      }
+      Promise.resolve().then(() => {
+        if (defaultTax && typeof defaultTax === 'object') {
+          setTaxes(Object.keys(defaultTax).map((k, i) => ({ id: `t${i}-${k}`, name: k, percentage: Number(defaultTax[k]) })));
+        } else {
+          setTaxes([]);
+        }
+      });
     }
   }, [open, defaultTax]);
 

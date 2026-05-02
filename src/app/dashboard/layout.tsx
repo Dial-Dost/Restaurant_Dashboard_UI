@@ -96,11 +96,11 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
       : []),
   ].filter((item) => canAccessByAction(item.actionKeywords));
 
-  const navItems = isValet
-    ? [{ href: '/dashboard/valet', label: 'Valet Dashboard', icon: <Activity className="h-6 w-6" />, exact: true }]
-    : isWaiterOnly
-      ? [{ href: '/dashboard/orders', label: t('orders'), icon: <ListOrdered className="h-6 w-6" />, exact: true }]
-      : fullNavItems;
+  const navItems = useMemo(() => {
+    if (isValet) return [{ href: '/dashboard/valet', label: 'Valet Dashboard', icon: <Activity className="h-6 w-6" />, exact: true }];
+    if (isWaiterOnly) return [{ href: '/dashboard/orders', label: t('orders'), icon: <ListOrdered className="h-6 w-6" />, exact: true }];
+    return fullNavItems;
+  }, [isValet, isWaiterOnly, fullNavItems, t]);
 
   useEffect(() => {
     if (!user) {

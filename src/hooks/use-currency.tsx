@@ -27,31 +27,31 @@ interface CurrencyContextType {
 const CurrencyContext = createContext<CurrencyContextType | undefined>(undefined);
 
 export const CurrencyProvider = ({ children }: { children: ReactNode }) => {
-  const [currency, setCurrencyState] = useState<CurrencyCode>('INR');
-  
-  useEffect(() => {
+  const [currency, setCurrencyState] = useState<CurrencyCode>(() => {
     const storedCurrency = localStorage.getItem('app-currency') as CurrencyCode;
-    if (storedCurrency && currencyOptions[storedCurrency]) {
-      setCurrencyState(storedCurrency);
-    }
-  }, []);
+    return storedCurrency && currencyOptions[storedCurrency] ? storedCurrency : 'INR';
+  });
 
   const setCurrency = (newCurrency: string) => {
     const currencyCode = newCurrency as CurrencyCode;
-    if(currencyOptions[currencyCode]) {
-        setCurrencyState(currencyCode);
-        localStorage.setItem('app-currency', currencyCode);
+    if (currencyOptions[currencyCode]) {
+      setCurrencyState(currencyCode);
+      localStorage.setItem('app-currency', currencyCode);
     }
   };
 
-  const currencySymbol = useMemo(() => currencyOptions[currency]?.symbol || '₹', [currency]);
-  
+  const currencySymbol = useMemo(
+    () => currencyOptions[currency]?.symbol || '₹',
+    [currency]
+  );
+
   return (
     <CurrencyContext.Provider value={{ currency, setCurrency, currencySymbol, currencyOptions }}>
       {children}
     </CurrencyContext.Provider>
   );
 };
+
 
 export const useCurrency = () => {
   const context = useContext(CurrencyContext);

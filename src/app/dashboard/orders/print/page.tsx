@@ -7,6 +7,7 @@ import { useAuth } from '@/context/AuthContext';
 import { getRestaurantProfile, getRestaurantLogo, getBillByOrder, RestaurantProfile, requestBackend } from '@/lib/db';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import Image from 'next/image';
 
 type OrderItem = {
     id: string;
@@ -208,7 +209,7 @@ function PrintPageContents() {
                 </div>
                 <CardHeader className="text-center border-b border-black pb-4">
                     {logoBase64 ? (
-                        <img src={`data:image/png;base64,${logoBase64}`} alt="logo" className="mx-auto h-16 object-contain" />
+                        <Image src={`data:image/png;base64,${logoBase64}`} alt="logo" className="mx-auto h-16 object-contain" width={64} height={64} />
                     ) : (
                         <p> Loading Logo ... </p>
                     )}
@@ -293,9 +294,9 @@ function PrintPageContents() {
 
                     <div className="text-center mt-4 text-xs text-gray-600">
                         <p>For calling Valet kindly scan the below QR code</p>
-                        {qrDataUrl ? (
-                          <img src={qrDataUrl} alt="valet-qr" className="mx-auto mt-2 w-[150px] h-[150px]" />
-                        ) : (
+                                                {qrDataUrl ? (
+                                                    <Image src={qrDataUrl} alt="valet-qr" className="mx-auto mt-2 w-[150px] h-[150px]" width={150} height={150} />
+                                                ) : (
                           <p className="text-xs text-muted-foreground">Loading QR...</p>
                         )}
                     </div>
@@ -414,7 +415,7 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
             try {
                 // 1. Load image asynchronously to get true dimensions
                 const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-                    const i = new Image();
+                    const i = document.createElement('img') as HTMLImageElement;
                     i.onload = () => resolve(i);
                     i.onerror = reject;
                     i.src = `data:image/png;base64,${logoBase64}`;

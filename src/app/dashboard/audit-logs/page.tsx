@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -21,7 +21,7 @@ export default function AuditLogsPage() {
   const { user } = useAuth();
   const { toast } = useToast();
   const [logs, setLogs] = useState<AuditLog[]>([]);
-  const [hasShownAccessToast, setHasShownAccessToast] = useState(false);
+  const hasShownAccessToastRef = useRef(false);
 
   useEffect(() => {
     if (user) {
@@ -33,7 +33,7 @@ export default function AuditLogsPage() {
   }, [user]);
 
   useEffect(() => {
-    if (!user || user.role === 'admin' || hasShownAccessToast) {
+    if (!user || user.role === 'admin' || hasShownAccessToastRef.current) {
       return;
     }
 
@@ -42,8 +42,8 @@ export default function AuditLogsPage() {
       description: 'You do not have the required role for this page. Required role: admin.',
       variant: 'destructive',
     });
-    setHasShownAccessToast(true);
-  }, [user, hasShownAccessToast, toast]);
+    hasShownAccessToastRef.current = true;
+  }, [user, toast]);
 
   if (user?.role !== 'admin') {
     return (
