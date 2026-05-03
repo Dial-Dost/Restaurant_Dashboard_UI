@@ -42,7 +42,7 @@ type ValetBooking = {
 };
 
 type ValetInfoResponse = {
-  role: "admin" | "employee" | "valet" | "waiter";
+  role: "admin" | "employee" | "valet" | "waiter" | "cashier" | "captain" | "manager";
   generated_at: string;
   bays: ValetBays[];
   bookings: ValetBooking[];

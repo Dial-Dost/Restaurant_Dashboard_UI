@@ -9,7 +9,7 @@ type AuthUser = {
   uid: string;
   employeeId: string; // employee UUID
   employeeUsername?: string;
-  role: 'admin' | 'employee' | 'valet' | 'waiter';
+  role: 'admin' | 'employee' | 'valet' | 'waiter' | 'cashier' | 'captain' | 'manager';
   role_all?: string[];
   restaurantUsername: string;
   restaurantName: string;

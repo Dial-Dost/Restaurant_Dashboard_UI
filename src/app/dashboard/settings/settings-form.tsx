@@ -71,7 +71,7 @@ export function SettingsForm() {
   const [feedbackQrError, setFeedbackQrError] = useState<string>("")
   const [currentProfile, setCurrentProfile] = useState<RestaurantProfile | null>(null)
 
-  const hasRole = (role: "admin" | "employee" | "valet" | "waiter") => {
+  const hasRole = (role: "admin" | "employee" | "valet" | "waiter" | "cashier" | "captain" | "manager") => {
     if (!user) return false
     if (user.role === role) return true
     return Array.isArray(user.role_all) ? user.role_all.includes(role) : false

@@ -785,6 +785,9 @@ function AddEmployeeForm({ onSubmit }: { onSubmit: (data: AddEmployeeFormData) =
                   <SelectItem value="employee">Employee</SelectItem>
                   <SelectItem value="admin">Admin</SelectItem>
                   <SelectItem value="valet">Valet</SelectItem>
+                  <SelectItem value="cashier">Cashier</SelectItem>
+                  <SelectItem value="captain">Captain</SelectItem>
+                  <SelectItem value="manager">Manager</SelectItem>
                 </SelectContent>
               </Select>
             )}

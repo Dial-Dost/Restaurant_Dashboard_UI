@@ -296,7 +296,7 @@ export default function OrdersPage() {
   const { user } = useAuth();
   const { currencySymbol } = useCurrency();
   const { toast } = useToast();
-  const hasRole = (role: "admin" | "employee" | "valet" | "waiter") => {
+  const hasRole = (role: "admin" | "employee" | "valet" | "waiter" | "cashier" | "captain" | "manager") => {
     if (!user) return false;
     if (user.role === role) return true;
     return Array.isArray(user.role_all) ? user.role_all.includes(role) : false;
