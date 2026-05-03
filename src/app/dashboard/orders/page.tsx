@@ -651,35 +651,33 @@ export default function OrdersPage() {
       alert('Reason is required');
       return;
     }
-
-    const confirmed = window.confirm('This will cancel the existing order and bill and create a new order and bill. Continue?');
+    const confirmed = window.confirm('This will update the existing bill and order in-place. Continue?');
     if (!confirmed) return;
 
     try {
       const subtotal = replacement.items.reduce((s, it) => s + (Number(it.price) || 0) * (Number(it.quantity) || 0), 0);
-      const serviceCharge = replacement.applyServiceCharge && replacement.serviceChargePercentage ? subtotal * (replacement.serviceChargePercentage / 100) : 0;
+      const serviceChargeAmount = replacement.applyServiceCharge && replacement.serviceChargePercentage ? subtotal * (replacement.serviceChargePercentage / 100) : 0;
       const tax_breakdown = (replacement.taxes || []).map((t) => ({ name: t.name, percentage: t.percentage, amount: Number(((subtotal) * (t.percentage/100)).toFixed(2)) }));
-      const totalAmt = Math.max(0, subtotal + serviceCharge + tax_breakdown.reduce((acc, t) => acc + (Number(t.amount) || 0), 0));
+      const totalAmt = Math.max(0, subtotal + serviceChargeAmount + tax_breakdown.reduce((acc, t) => acc + (Number(t.amount) || 0), 0));
 
+      // minimal payload: backend will keep existing emp_id/status if not provided
       const payload = {
         old_order_id: order.id,
         reason: replacement.reason,
         new_order: {
-          table: order.table,
-          customer: order.customer,
-          taken_by_employee_id: order.taken_by_employee_id ?? null,
-          taken_by_employee_name: order.taken_by_employee_name ?? null,
-          taken_by_employee_role: order.taken_by_employee_role ?? null,
           items: replacement.items,
           subtotal,
           serviceChargePercentage: replacement.serviceChargePercentage ?? order.serviceChargePercentage,
           applyServiceCharge: replacement.applyServiceCharge ?? order.applyServiceCharge,
           taxes: replacement.taxes,
+          table: order.table,
+          customer: order.customer,
+          taken_by_employee_id: order.taken_by_employee_id ?? null,
+          taken_by_employee_name: order.taken_by_employee_name ?? null,
+          taken_by_employee_role: order.taken_by_employee_role ?? null,
         },
         new_bill: {
           total_amt: totalAmt,
-          emp_id: user.employeeId ?? null,
-          status: 1,
           tax_breakdown,
         },
       } as const;
@@ -687,26 +685,33 @@ export default function OrdersPage() {
       const result = await replaceBill(user.restaurantUsername, payload);
       if (!result) throw new Error('Replace failed');
 
-      // refresh orders list and APC data to show cancelled + new order
-      const [updatedOrders, updatedApcInsight] = await Promise.all([
-        getOrders(user.restaurantUsername),
-        getMonthlyApcInsight(user.restaurantUsername),
-      ]);
-      setOrders(Array.isArray(updatedOrders) ? updatedOrders : []);
-      setMonthlyApcInsight(updatedApcInsight ?? null);
-      // also poll once after a short delay in case backend propagation is slightly delayed
-      setTimeout(async () => {
-        try {
-          const [later, laterApc] = await Promise.all([
-            getOrders(user.restaurantUsername),
-            getMonthlyApcInsight(user.restaurantUsername),
-          ]);
-          if (Array.isArray(later)) setOrders(dedupeOrdersById(later));
-          if (laterApc) setMonthlyApcInsight(laterApc);
-        } catch (e) {
-          // ignore
-        }
-      }, 700);
+      // update the existing order in local state instead of creating a new one
+      setOrders((prev) => {
+        return prev.map(o => {
+          if (o.id !== order.id) return o;
+          const updated: Order = {
+            ...o,
+            items: replacement.items.map(it => ({ ...it })),
+            subtotal,
+            serviceChargePercentage: payload.new_order.serviceChargePercentage,
+            taxes: payload.new_order.taxes as any,
+            applyServiceCharge: payload.new_order.applyServiceCharge ?? false,
+            total: Number((subtotal + serviceChargeAmount + tax_breakdown.reduce((acc, t) => acc + (Number(t.amount) || 0), 0)).toFixed(2)),
+            status: 'Bill Verification',
+          };
+          return updated;
+        });
+      });
+
+      // update APC insight if present
+      setMonthlyApcInsight((prev) => {
+        if (!prev) return prev;
+        const ordersCopy = (prev.orders || []).map(a => {
+          if (a.order_id !== order.id) return a;
+          return { ...a, total: Number(totalAmt) };
+        });
+        return { ...prev, orders: ordersCopy };
+      });
 
       setIsEditDialogOpen(false);
       setSelectedOrder(null);
@@ -1108,7 +1113,7 @@ export default function OrdersPage() {
                         >
                           Delete Order
                         </DropdownMenuItem>
-                        <DropdownMenuItem onClick={(e) => { e.stopPropagation(); triggerPrint(order); }}>
+                        <DropdownMenuItem onClick={(e) => { e.stopPropagation(); triggerPrint(order); }} disabled={order.status !== 'Bill Verification' && order.status !== 'Payment Pending Approval' && order.status !== 'Paid' && order.status !== 'Closed'}>
                             <Printer className="mr-2 h-4 w-4" />
                             Print Bill
                         </DropdownMenuItem>
