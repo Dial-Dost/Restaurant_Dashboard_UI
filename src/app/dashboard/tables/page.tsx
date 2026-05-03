@@ -37,7 +37,7 @@ import { cn } from "@/lib/utils";
 import { Users, PlusCircle, MoreVertical, Trash2, GripVertical } from "lucide-react";
 import { type Table } from "./data";
 import {
-    addAuditLogEntry,
+    // addAuditLogEntry,
     getTables,
     requestBackend,
 } from "@/lib/db";
@@ -232,12 +232,12 @@ export default function TablesPage() {
                 throw new Error("Failed to create table");
             }
 
-            await addAuditLogEntry(user.restaurantUsername, {
-                employee: ( `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || user?.employeeUsername ) ?? user?.employeeId ?? "System",
-                employeeId: user?.employeeId,
-                action: "Table Added",
-                details: `Created table ${trimmedName}${payload.table.capacity ? ` (capacity ${payload.table.capacity})` : ""}`,
-            });
+            // await addAuditLogEntry(user.restaurantUsername, {
+            //     employee: ( `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || user?.employeeUsername ) ?? user?.employeeId ?? "System",
+            //     employeeId: user?.employeeId,
+            //     action: "Table Added",
+            //     details: `Created table ${trimmedName}${payload.table.capacity ? ` (capacity ${payload.table.capacity})` : ""}`,
+            // });
 
             await loadTables();
       setNewTableName("");
@@ -263,12 +263,12 @@ export default function TablesPage() {
             throw new Error("Failed to delete table");
         }
 
-        await addAuditLogEntry(user.restaurantUsername, {
-            employee: ( `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || user?.employeeUsername ) ?? user?.employeeId ?? "System",
-            employeeId: user?.employeeId,
-            action: "Table Removed",
-            details: `Deleted table ${removed.name}`,
-        });
+        // await addAuditLogEntry(user.restaurantUsername, {
+        //     employee: ( `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || user?.employeeUsername ) ?? user?.employeeId ?? "System",
+        //     employeeId: user?.employeeId,
+        //     action: "Table Removed",
+        //     details: `Deleted table ${removed.name}`,
+        // });
 
         await loadTables();
         toast({

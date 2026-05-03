@@ -262,6 +262,7 @@ const toTableStatus = (booked: unknown, reserved: unknown): Table['status'] => {
 type FrontendAuthContext = {
     outletId: string | null;
     actionList: string[];
+    employeeId: string | null;
 };
 
 const getPathWithoutQuery = (path: string): string => {
@@ -290,13 +291,16 @@ const getFrontendAuthContext = async (): Promise<FrontendAuthContext> => {
             // nextCookies() may be a Promise; await it just in case.
             const ckAny: any = await nextCookies();
             const cookie = (typeof ckAny.get === 'function' ? ckAny.get('authUser') : ckAny?.cookies?.get?.('authUser'))?.value ?? null;
-            if (!cookie) return { outletId: null, actionList: [] };
+            if (!cookie) return { outletId: null, actionList: [], employeeId: null };
             const parsed = JSON.parse(decodeURIComponent(cookie)) as {
                 outlet_id?: unknown;
                 outletId?: unknown;
                 actions_set?: unknown;
                 action_list?: unknown;
+                employeeId?: unknown;
             };
+
+            const empId = typeof parsed?.employeeId === 'string' ? parsed.employeeId : null;
 
             const outletFromCookie =
                 typeof parsed?.outlet_id === 'string'
@@ -319,9 +323,10 @@ const getFrontendAuthContext = async (): Promise<FrontendAuthContext> => {
             return {
                 outletId: outletFromCookie && outletFromCookie.trim().length > 0 ? outletFromCookie.trim() : null,
                 actionList,
+                employeeId: empId,
             };
         } catch {
-            return { outletId: null, actionList: [] };
+            return { outletId: null, actionList: [], employeeId: null };
         }
     }
 
@@ -329,7 +334,7 @@ const getFrontendAuthContext = async (): Promise<FrontendAuthContext> => {
     try {
         const raw = window.localStorage.getItem('authUser');
         if (!raw) {
-            return { outletId: null, actionList: [] };
+            return { outletId: null, actionList: [], employeeId: null };
         }
 
         const parsed = JSON.parse(raw) as {
@@ -337,7 +342,10 @@ const getFrontendAuthContext = async (): Promise<FrontendAuthContext> => {
             outletId?: unknown;
             actions_set?: unknown;
             action_list?: unknown;
+            employeeId?: unknown;
         };
+
+        const empId = typeof parsed?.employeeId === 'string' ? parsed.employeeId : null;
 
         const outletFromStorage =
             typeof parsed?.outlet_id === 'string'
@@ -360,9 +368,10 @@ const getFrontendAuthContext = async (): Promise<FrontendAuthContext> => {
         return {
             outletId: outletFromStorage && outletFromStorage.trim().length > 0 ? outletFromStorage.trim() : null,
             actionList,
+            employeeId: empId,
         };
     } catch {
-        return { outletId: null, actionList: [] };
+        return { outletId: null, actionList: [], employeeId: null };
     }
 };
 
@@ -403,6 +412,14 @@ const applyEmployeeContextHeaders = async (
 
     if (compactActions.length > 0) {
         headers.set('X-Action-List', compactActions.join(','));
+    }
+
+    const empId = fromFrontend.employeeId;
+    if (empId) {
+        headers.set('X-Employee-Id', empId);
+    }
+    else{
+        console.log("EMployee Id Not found");
     }
 
     return headers;
@@ -1433,39 +1450,39 @@ export const removeMenuCategory = async (restaurantId: string, category: string)
     return { acknowledged: true };
 };
 
-export const addAuditLogEntry = async (
-    restaurantId: string,
-    log: Omit<AuditLog, 'id' | 'timestamp'> & { employeeId?: string },
-): Promise<void> => {
-    const response = await backendCall('/audit-logs', restaurantId, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            ...(log.employeeId ? { 'X-Employee-Id': log.employeeId } : {}),
-        },
-        body: JSON.stringify({
-            employee: log.employeeId ?? log.employee,
-            employee_id: log.employeeId ?? null,
-            action: log.action,
-            details: log.details ?? null,
-        }),
-    });
+// export const addAuditLogEntry = async (
+//     restaurantId: string,
+//     log: Omit<AuditLog, 'id' | 'timestamp'> & { employeeId?: string },
+// ): Promise<void> => {
+//     const response = await backendCall('/audit-logs', restaurantId, {
+//         method: 'POST',
+//         headers: {
+//             'Content-Type': 'application/json',
+//             ...(log.employeeId ? { 'X-Employee-Id': log.employeeId } : {}),
+//         },
+//         body: JSON.stringify({
+//             employee: log.employeeId ?? log.employee,
+//             employee_id: log.employeeId ?? null,
+//             action: log.action,
+//             details: log.details ?? null,
+//         }),
+//     });
 
-    if (response?.ok) {
-        await getAuditLogs(restaurantId);
-        return;
-    }
+//     if (response?.ok) {
+//         await getAuditLogs(restaurantId);
+//         return;
+//     }
 
-    const logs = await getAuditLogs(restaurantId);
-    logs.unshift({
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        employee: log.employee,
-        action: log.action,
-        details: log.details ?? '',
-        timestamp: new Date().toISOString(),
-    });
-    await writeLocalField(restaurantId, 'auditLogs', logs);
-};
+//     const logs = await getAuditLogs(restaurantId);
+//     logs.unshift({
+//         id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+//         employee: log.employee,
+//         action: log.action,
+//         details: log.details ?? '',
+//         timestamp: new Date().toISOString(),
+//     });
+//     await writeLocalField(restaurantId, 'auditLogs', logs);
+// };
 
 export const updateTableStatus = async (
     restaurantId: string,

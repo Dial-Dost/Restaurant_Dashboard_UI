@@ -58,7 +58,7 @@ import {
   confirmBillPaymentByWaiter,
   approveBillPaymentByAdmin,
   closeBillByOrder,
-  addAuditLogEntry,
+  // addAuditLogEntry,
   type MonthlyApcInsight,
   type PaymentMethod,
 } from "@/lib/db";
@@ -755,12 +755,12 @@ export default function OrdersPage() {
         || `${user.emp_Fname ?? ''} ${user.emp_Lname ?? ''}`.trim()
         || user.employeeId
         || 'System';
-      await addAuditLogEntry(user.restaurantUsername, {
-        employee: actorName,
-        employeeId: user.employeeId,
-        action: 'Bill Payment Confirmed',
-        details: `Waiter confirmed payment for order ${order.id} via ${paymentMethod}`,
-      });
+      // await addAuditLogEntry(user.restaurantUsername, {
+      //   employee: actorName,
+      //   employeeId: user.employeeId,
+      //   action: 'Bill Payment Confirmed',
+      //   details: `Waiter confirmed payment for order ${order.id} via ${paymentMethod}`,
+      // });
       const updatedOrders = await getOrders(user.restaurantUsername);
       setOrders(Array.isArray(updatedOrders) ? dedupeOrdersById(updatedOrders) : []);
       alert('Payment confirmation submitted. Awaiting admin approval.');
@@ -794,12 +794,12 @@ export default function OrdersPage() {
         || `${user.emp_Fname ?? ''} ${user.emp_Lname ?? ''}`.trim()
         || user.employeeId
         || 'System';
-      await addAuditLogEntry(user.restaurantUsername, {
-        employee: actorName,
-        employeeId: user.employeeId,
-        action: 'Bill Payment Approved',
-        details: `Admin approved payment for order ${order.id}`,
-      });
+      // await addAuditLogEntry(user.restaurantUsername, {
+      //   employee: actorName,
+      //   employeeId: user.employeeId,
+      //   action: 'Bill Payment Approved',
+      //   details: `Admin approved payment for order ${order.id}`,
+      // });
       const updatedOrders = await getOrders(user.restaurantUsername);
       setOrders(Array.isArray(updatedOrders) ? dedupeOrdersById(updatedOrders) : []);
     } catch (err: any) {
@@ -823,12 +823,12 @@ export default function OrdersPage() {
         || `${user.emp_Fname ?? ''} ${user.emp_Lname ?? ''}`.trim()
         || user.employeeId
         || 'System';
-      await addAuditLogEntry(user.restaurantUsername, {
-        employee: actorName,
-        employeeId: user.employeeId,
-        action: 'Bill Closed',
-        details: `Admin closed bill for order ${order.id}`,
-      });
+      // await addAuditLogEntry(user.restaurantUsername, {
+      //   employee: actorName,
+      //   employeeId: user.employeeId,
+      //   action: 'Bill Closed',
+      //   details: `Admin closed bill for order ${order.id}`,
+      // });
       const updatedOrders = await getOrders(user.restaurantUsername);
       setOrders(Array.isArray(updatedOrders) ? dedupeOrdersById(updatedOrders) : []);
     } catch (err: any) {
