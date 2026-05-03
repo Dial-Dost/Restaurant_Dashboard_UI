@@ -119,7 +119,7 @@ const SidebarProvider = React.forwardRef<
     
     const [isMounted, setIsMounted] = React.useState(false);
     React.useEffect(() => {
-        setIsMounted(true);
+      Promise.resolve().then(() => setIsMounted(true));
     }, []);
 
 
@@ -637,10 +637,8 @@ const SidebarMenuSkeleton = React.forwardRef<
     showIcon?: boolean
   }
 >(({ className, showIcon = false, ...props }, ref) => {
-  // Random width between 50 to 90%.
-  const width = React.useMemo(() => {
-    return `${Math.floor(Math.random() * 40) + 50}%`
-  }, [])
+  // Skeleton width (fixed for purity)
+  const width = "70%";
 
   return (
     <div

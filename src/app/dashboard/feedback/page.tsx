@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import {
   ResponsiveContainer,
   LineChart,
@@ -188,7 +188,7 @@ export default function FeedbackPage() {
     return () => {
       active = false;
     };
-  }, [user?.restaurantUsername, dailyDate, weeklyStart, monthlyStart, yearlyYear]);
+  }, [user?.restaurantUsername, user?.employeeId, user?.outlet_id, dailyDate, weeklyStart, monthlyStart, yearlyYear]);
 
   useEffect(() => {
     if (!user?.restaurantUsername) return;
@@ -287,7 +287,7 @@ export default function FeedbackPage() {
         }
       })();
     }
-  }, [lastEvent, user?.restaurantUsername, dailyDate, weeklyStart, monthlyStart, yearlyYear]);
+  }, [lastEvent, user?.restaurantUsername, user?.employeeId, user?.outlet_id, dailyDate, weeklyStart, monthlyStart, yearlyYear]);
 
   function shiftDate(iso: string, days: number) {
     // operate in UTC to avoid local timezone shifts
@@ -361,7 +361,7 @@ export default function FeedbackPage() {
     }
   }
 
-  function resolveEmployeeName(employeeId: any) {
+  const resolveEmployeeName = useCallback((employeeId: any) => {
     if (employeeId === undefined || employeeId === null) return null;
     const idStr = String(employeeId);
     if (employeesMap[idStr]?.name) return employeesMap[idStr].name;
@@ -369,7 +369,7 @@ export default function FeedbackPage() {
     const numeric = Number(employeeId);
     if (!Number.isNaN(numeric) && employeesMap[String(numeric)]?.name) return employeesMap[String(numeric)].name;
     return null;
-  }
+  }, [employeesMap]);
 
   const monthlyChartData = (() => {
     const monthly = stats?.monthly;
@@ -405,7 +405,7 @@ export default function FeedbackPage() {
         count,
       }))
       .sort((a, b) => b.count - a.count);
-  }, [entries, employeesMap]);
+  }, [entries, employeesMap, resolveEmployeeName]);
 
   const employeePerformance = useMemo(() => {
     const map: Record<string, { name: string; responses: number; total: number; ratedResponses: number }> = {};
@@ -445,12 +445,12 @@ export default function FeedbackPage() {
         if (bAvg !== aAvg) return bAvg - aAvg;
         return b.responses - a.responses;
       });
-  }, [entries, employeesMap]);
+  }, [entries, employeesMap, resolveEmployeeName]);
 
   const myPerformance = useMemo(() => {
     if (!user?.employeeId) return null;
     return employeePerformance.find((row) => row.employeeId === user.employeeId) ?? null;
-  }, [employeePerformance, user?.employeeId]);
+  }, [employeePerformance, user]);
 
   return (
     <div className="grid gap-4 md:gap-6">

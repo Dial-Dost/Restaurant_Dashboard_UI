@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useEffect, Suspense, useState } from 'react';
@@ -8,8 +7,7 @@ import { useAuth } from '@/context/AuthContext';
 import { getRestaurantProfile, getRestaurantLogo, getBillByOrder, RestaurantProfile, requestBackend } from '@/lib/db';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-
-// Dynamically import the encoder inside the function to avoid bundler/constructor issues
+import Image from 'next/image';
 
 type OrderItem = {
     id: string;
@@ -37,6 +35,7 @@ type Order = {
   applyServiceCharge?: boolean;
   calculatedTaxes?: Tax[];
   total: number;
+  roundOff?: number;
   status: string;
   currencySymbol: string;
 };
@@ -124,11 +123,17 @@ function PrintPageContents() {
         );
     }
     
-    const currencySymbol = order.currencySymbol || '$';
+    const currencySymbol = order.currencySymbol || '₹';
     const cashierName = `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || '';
-    const billNo = bill?.id ?? '';
+    const billId = bill?.id ?? '';
+    const billNo = bill?.bill_no ?? '';
     const totalQty = order.items.reduce((s, it) => s + (Number(it.quantity) || 0), 0);
-    const roundOff = Math.round(order.total) - order.total;
+    
+    // Exact mathematical logic for round-off and grand total
+    const rawTotal = Number(order.total);
+    const calculatedRoundOff = Math.round(rawTotal) - rawTotal;
+    const roundOffVal = order.roundOff !== undefined ? Number(order.roundOff) : calculatedRoundOff;
+    const finalGrandTotal = rawTotal + roundOffVal;
 
     return (
         <div className="p-4 bg-white text-black">
@@ -154,48 +159,48 @@ function PrintPageContents() {
                         >Print</button>
                         <button
                                 onClick={async () => {
-                                    const esc = await generateEscPos(user, profile, cashierName, order);
-                                console.log("hi", esc);
-                                if (!esc) return;
+                                    // Passed logoBase64 to the encoder
+                                    const esc = await generateEscPos(user, profile, cashierName, bill, order, logoBase64);
+                                    if (!esc) return;
 
-                                // Convert ESC/POS > readable text preview
-                                const decoded = new TextDecoder().decode(esc);
-                                setPreviewText(decoded);
+                                    // Convert ESC/POS > readable text preview
+                                    const decoded = new TextDecoder().decode(esc);
+                                    setPreviewText(decoded);
 
-                                // Convert to base64 and send to backend to publish to subscribed printing apps
-                                const toBase64 = (bytes: Uint8Array) => {
-                                    if (typeof window !== 'undefined' && typeof window.btoa === 'function') {
-                                        let binary = '';
-                                        const len = bytes.byteLength;
-                                        for (let i = 0; i < len; i++) binary += String.fromCharCode(bytes[i]);
-                                        return window.btoa(binary);
+                                    // Convert to base64 and send to backend to publish to subscribed printing apps
+                                    const toBase64 = (bytes: Uint8Array) => {
+                                        if (typeof window !== 'undefined' && typeof window.btoa === 'function') {
+                                            let binary = '';
+                                            const len = bytes.byteLength;
+                                            for (let i = 0; i < len; i++) binary += String.fromCharCode(bytes[i]);
+                                            return window.btoa(binary);
+                                        }
+                                        // fallback (node)
+                                        return Buffer.from(bytes).toString('base64');
+                                    };
+
+                                    const b64 = toBase64(esc);
+                                    const backend = (process.env.NEXT_PUBLIC_BACKEND_URL ?? `${window.location.protocol}//${window.location.hostname}:3000`).replace(/\/$/, '');
+
+                                    try {
+                                        const resp = await requestBackend({
+                                            baseUrl: backend,
+                                            path: '/publish/bill',
+                                            method: 'POST',
+                                            body: { restaurantId: user?.res_id, outletId: user?.outlet_id, billId: billId || String(Date.now()), escBase64: b64 },
+                                        });
+
+                                        if (!resp.ok) {
+                                            alert('Failed to publish bill: ' + resp.text);
+                                            return;
+                                        }
+
+                                        alert('Bill published to backend for printing');
+                                    } catch (err) {
+                                        console.error(err);
+                                        alert('Unable to send bill to backend');
                                     }
-                                    // fallback (node)
-                                    return Buffer.from(bytes).toString('base64');
-                                };
-
-                                const b64 = toBase64(esc);
-                                const backend = (process.env.NEXT_PUBLIC_BACKEND_URL ?? `${window.location.protocol}//${window.location.hostname}:3000`).replace(/\/$/, '');
-
-                                try {
-                                    const resp = await requestBackend({
-                                        baseUrl: backend,
-                                        path: '/publish/bill',
-                                        method: 'POST',
-                                        body: { restaurantId: user?.res_id, outletId: user?.outlet_id, billId: billNo || String(Date.now()), escBase64: b64 },
-                                    });
-
-                                    if (!resp.ok) {
-                                        alert('Failed to publish bill: ' + resp.text);
-                                        return;
-                                    }
-
-                                    alert('Bill published to backend for printing');
-                                } catch (err) {
-                                    console.error(err);
-                                    alert('Unable to send bill to backend');
-                                }
-                            }}
+                                }}
                             className="px-3 py-1 border rounded text-sm"
                         >
                             Print ESC/POS
@@ -204,7 +209,7 @@ function PrintPageContents() {
                 </div>
                 <CardHeader className="text-center border-b border-black pb-4">
                     {logoBase64 ? (
-                        <img src={`data:image/png;base64,${logoBase64}`} alt="logo" className="mx-auto h-16 object-contain" />
+                        <Image src={`data:image/png;base64,${logoBase64}`} alt="logo" className="mx-auto h-16 object-contain" width={64} height={64} />
                     ) : (
                         <p> Loading Logo ... </p>
                     )}
@@ -222,7 +227,7 @@ function PrintPageContents() {
                            
                         </div>
                         <div className="w-full flex justify-between">
-                             <p><strong>Bill No.:</strong> {billNo.slice(0, 10) || order.id}</p>
+                             <p><strong>Bill No.:</strong> {billNo}</p>
                             <p><strong>Cashier:</strong> {cashierName}</p>
                         </div>
                     </div>
@@ -240,8 +245,8 @@ function PrintPageContents() {
                                 <TableRow key={item.id}>
                                     <TableCell className="font-medium">{item.name}</TableCell>
                                     <TableCell className="text-center">{item.quantity}</TableCell>
-                                    <TableCell className="text-right">{currencySymbol}{item.price.toFixed(2)}</TableCell>
-                                    <TableCell className="text-right">{currencySymbol}{(item.price * item.quantity).toFixed(2)}</TableCell>
+                                    <TableCell className="text-right">{item.price.toFixed(2)}</TableCell>
+                                    <TableCell className="text-right">{(item.price * item.quantity).toFixed(2)}</TableCell>
                                 </TableRow>
                             ))}
                         </TableBody>
@@ -249,7 +254,7 @@ function PrintPageContents() {
                     <div className="mt-6 space-y-2 text-sm ml-auto max-w-xs ">
                         <div className="flex justify-between border-t border-black pt-2">
                             <span>Subtotal</span>
-                            <span>{currencySymbol}{order.subtotal.toFixed(2)}</span>
+                            <span>{order.subtotal.toFixed(2)}</span>
                         </div>
                         <div className="flex justify-between">
                             <span>Total Qty</span>
@@ -258,23 +263,28 @@ function PrintPageContents() {
                         {order.serviceChargePercentage && (
                             <div className="flex justify-between">
                                 <span>Service Charge ({order.serviceChargePercentage}%)</span>
-                                <span>{order.applyServiceCharge ? `${currencySymbol}${order.serviceCharge?.toFixed(2)}` : 'Opted-out'}</span>
+                                <span>{order.applyServiceCharge ? order.serviceCharge?.toFixed(2) : 'Opted-out'}</span>
                             </div>
                         )}
                         {order.calculatedTaxes?.map(tax => (
                              <div key={tax.id} className="flex justify-between">
                                 <span>{tax.name} ({tax.percentage}%)</span>
-                                <span>{currencySymbol}{tax.amount.toFixed(2)}</span>
+                                <span>{tax.amount.toFixed(2)}</span>
                             </div>
                         ))}
+
                         <hr className="border-t border-black my-2" />
-                        <div className="flex justify-between font-bold text-lg pt-2 mt-2">
-                            <span>Grand Total:</span>
-                            <span>{currencySymbol}{order.total.toFixed(2)}</span>
-                        </div>
+
+                        {/* Round off displayed BEFORE Grand Total */}
                         <div className="flex justify-between text-sm mt-1">
                             <span>Round off</span>
-                            <span>{currencySymbol}{roundOff.toFixed(2)}</span>
+                            <span>{(roundOffVal > 0 ? '+' : '') + roundOffVal.toFixed(2)}</span>
+                        </div>
+                        
+                        {/* Grand Total reflects raw total + round off */}
+                        <div className="flex justify-between font-bold text-lg pt-2 mt-2">
+                            <span>Grand Total:</span>
+                            <span>{currencySymbol}{finalGrandTotal.toFixed(2)}</span>
                         </div>
                     </div>
                     <hr className="border-t border-black my-4" />
@@ -284,18 +294,18 @@ function PrintPageContents() {
 
                     <div className="text-center mt-4 text-xs text-gray-600">
                         <p>For calling Valet kindly scan the below QR code</p>
-                        {qrDataUrl ? (
-                          <img src={qrDataUrl} alt="valet-qr" className="mx-auto mt-2 w-[150px] h-[150px]" />
-                        ) : (
+                                                {qrDataUrl ? (
+                                                    <Image src={qrDataUrl} alt="valet-qr" className="mx-auto mt-2 w-[150px] h-[150px]" width={150} height={150} />
+                                                ) : (
                           <p className="text-xs text-muted-foreground">Loading QR...</p>
                         )}
                     </div>
                 </CardContent>
             </Card>
             {previewText && (
-                <div className="mt-6 p-4 border bg-gray-100 text-xs whitespace-pre-wrap">
+                <div className="mt-6 p-4 border bg-gray-100 text-xs whitespace-pre overflow-x-auto">
                     <h3 className="font-bold mb-2">ESC/POS Preview:</h3>
-                    <pre>{previewText}</pre>
+                    <pre className="font-mono min-w-max">{previewText}</pre>
                 </div>
             )}
         </div>
@@ -309,7 +319,8 @@ export default function PrintPage() {
         </Suspense>
     );
 }
-async function generateEscPos(user: any, profile: RestaurantProfile | null, cashierName: string, orderArg?: any): Promise<Uint8Array | null> {
+
+export async function generateEscPos(user: any, profile: any, cashierName: string, bill: any, orderArg?: any, logoBase64?: string | null): Promise<Uint8Array | null> {
     try {
         let order = orderArg ?? null;
 
@@ -318,7 +329,6 @@ async function generateEscPos(user: any, profile: RestaurantProfile | null, cash
             const orderData = searchParams.get('order');
             const orderKey = searchParams.get('orderKey');
 
-            // Try direct `order` query param first
             if (orderData) {
                 try {
                     order = JSON.parse(decodeURIComponent(orderData));
@@ -328,7 +338,6 @@ async function generateEscPos(user: any, profile: RestaurantProfile | null, cash
                 }
             }
 
-            // Fallback to orderKey -> localStorage
             if (!order && orderKey && typeof window !== 'undefined') {
                 try {
                     const payload = window.localStorage.getItem(orderKey);
@@ -344,7 +353,6 @@ async function generateEscPos(user: any, profile: RestaurantProfile | null, cash
             if (!order) return null;
         }
 
-        // dynamically import the package and resolve the constructor across CJS/ESM shapes
         const pkg = await import('@point-of-sale/receipt-printer-encoder');
         const EncoderClass = pkg?.default ?? pkg?.ReceiptPrinterEncoder ?? pkg;
         if (typeof EncoderClass !== 'function') {
@@ -352,67 +360,196 @@ async function generateEscPos(user: any, profile: RestaurantProfile | null, cash
             return null;
         }
 
-        const encoder = new EncoderClass({ language: 'esc-pos' });
-        // some builds expose initialize as optional
+        const encoder = new EncoderClass({ 
+            language: 'esc-pos', 
+            width: 48, 
+            columns: 48,
+            feedBeforeCut: 4, 
+        });
+        
         if (typeof (encoder as any).initialize === 'function') (encoder as any).initialize();
 
-        // Header
+        // ----------------------------------------------------
+        // Layout Config & Helpers
+        // ----------------------------------------------------
+        const MAX_CHARS = 48; // Standard width for 80mm printers
+        const lineSeparator = '-'.repeat(MAX_CHARS);
+
+        const leftRight = (left: string, right: string, width = MAX_CHARS) => {
+            const l = left.toString();
+            const r = right.toString();
+            if (l.length + r.length >= width) {
+                const availableForLeft = width - r.length - 1;
+                return l.substring(0, availableForLeft > 0 ? availableForLeft : 0) + ' ' + r;
+            }
+            return l + ' '.repeat(width - l.length - r.length) + r;
+        };
+
+        const wrapText = (text: string, maxLen: number): string[] => {
+            const words = (text || '').split(' ');
+            const lines: string[] = [];
+            let currentLine = '';
+
+            words.forEach(word => {
+                if ((currentLine + word).length > maxLen) {
+                    if (currentLine) lines.push(currentLine.trim());
+                    currentLine = word + ' ';
+                } else {
+                    currentLine += word + ' ';
+                }
+            });
+            if (currentLine) lines.push(currentLine.trim());
+
+            return lines.length > 0 ? lines : [''];
+        };
+
+        const currencySymbol = order.currencySymbol || '₹';
+
+        // ----------------------------------------------------
+        // Receipt Generation
+        // ----------------------------------------------------
+        encoder.align('center');
+
+        // Dynamically process and insert the Logo if available
+        if (logoBase64 && typeof window !== 'undefined') {
+            try {
+                // 1. Load image asynchronously to get true dimensions
+                const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+                    const i = document.createElement('img') as HTMLImageElement;
+                    i.onload = () => resolve(i);
+                    i.onerror = reject;
+                    i.src = `data:image/png;base64,${logoBase64}`;
+                });
+
+                // 2. Calculate aspect ratio boundaries
+                // Full 80mm printer width is 512 dots. We use 384 for a clean centered logo.
+                const MAX_LOGO_WIDTH = 384; 
+                let targetWidth = Math.min(img.width, MAX_LOGO_WIDTH);
+                
+                // 3. Round down to nearest multiple of 8 (Mandatory for ESC/POS bit-image processing)
+                targetWidth = Math.floor(targetWidth / 8) * 8;
+                
+                // 4. Calculate height maintaining aspect ratio
+                const targetHeight = Math.round((img.height / img.width) * targetWidth);
+
+                // 5. Draw to off-screen canvas to flatten transparencies
+                const canvas = document.createElement('canvas');
+                canvas.width = targetWidth;
+                canvas.height = targetHeight;
+                const ctx = canvas.getContext('2d');
+                
+                if (ctx) {
+                    // Fill white background first (prevent transparent PNGs printing black)
+                    ctx.fillStyle = '#FFFFFF';
+                    ctx.fillRect(0, 0, targetWidth, targetHeight);
+                    // Draw resized logo
+                    ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+
+                    // 6. Push canvas to encoder using threshold (best for vector logos)
+                    encoder.image(canvas, targetWidth, targetHeight, 'threshold');
+                    encoder.newline();
+                }
+            } catch (err) {
+                console.error("Failed to render logo to ESC/POS", err);
+            }
+        }
+
+        // Header Text
         encoder
-            .align('center')
             .bold(true)
-            .line(profile?.outlet_name ?? 'CuisineFlow')
+            .line(profile?.outlet_name ?? 'CSR Organics Main Outlet')
             .bold(false)
-            .line(profile?.outlet_add ?? '')
-            .newline();
+            .line(profile?.outlet_add ?? '12 Example Street, Bengaluru')
+            .newline()
+            .line(lineSeparator)
+            .align('left');
 
         // Meta info
-        encoder
-            .align('left')
-            .line(`Customer: ${order.customer}`)
-            .line(`Bill No: ${order.id}`)
-            .line(`Table: ${order.table}`)
-            .line(`Date: ${new Date().toLocaleString()}`)
-            .line(`Cashier: ${cashierName}`)
-            .newline();
+        encoder.line(`Customer Name: ${order.customer || 'Guest'}`);
 
-        // Items
-        encoder.line('Item           Qty   Price   Amt');
-        encoder.line('--------------------------------');
+        encoder.line(lineSeparator);
 
+        const orderDate = new Date().toLocaleString(); 
+        encoder.line(leftRight(`Date: ${orderDate}`, `Dine In: ${order.table || 'N/A'}`, MAX_CHARS));
+        
+        let displayId = bill.bill_no || '';
+        // if (displayId.length > 18) {
+        //     const parts = displayId.split('-');
+        //     displayId = parts.length > 1 ? `${parts[0]}-${parts[1].substring(0, 1)}` : displayId.substring(0, 10);
+        // }
+
+        encoder.line(leftRight(`Bill No.: ${displayId}`, `Cashier: ${cashierName}`, MAX_CHARS));
+        encoder.line(lineSeparator);
+
+        // Items Header 
+        const COL_ITEM = 20;
+        const COL_QTY = 6;
+        const COL_PRICE = 10;
+        const COL_TOTAL = 12;
+
+        encoder.line('Item'.padEnd(COL_ITEM) + 'Qty'.padStart(COL_QTY) + 'Price'.padStart(COL_PRICE) + 'Total'.padStart(COL_TOTAL));
+        encoder.line(lineSeparator);
+
+        // Items List
         order.items.forEach((it: any) => {
-            const name = it.name.slice(0, 14).padEnd(14);
-            const qty = String(it.quantity).padStart(3);
-            const price = it.price.toFixed(2).padStart(7);
-            const amt = (it.price * it.quantity).toFixed(2).padStart(7);
+            const itemNameLines = wrapText(it.name, COL_ITEM - 1);
+            const qtyStr = String(it.quantity).padStart(COL_QTY);
+            const priceStr = Number(it.price).toFixed(2).padStart(COL_PRICE);
+            const totalStr = (Number(it.price) * Number(it.quantity)).toFixed(2).padStart(COL_TOTAL);
 
-            encoder.line(`${name}${qty}${price}${amt}`);
+            encoder.line(itemNameLines[0].padEnd(COL_ITEM) + qtyStr + priceStr + totalStr);
+
+            for (let i = 1; i < itemNameLines.length; i++) {
+                encoder.line(itemNameLines[i]);
+            }
+            
+            encoder.newline();
         });
 
-        encoder.newline();
+        encoder.line(lineSeparator);
 
         // Totals
-        const totalQty = order.items.reduce((s: number, it: any) => s + it.quantity, 0);
+        const totalQty = order.items.reduce((s: number, it: any) => s + Number(it.quantity), 0);
 
-        encoder
-            .line(`Total Qty: ${totalQty}`)
-            .line(`Subtotal: ${order.subtotal.toFixed(2)}`);
+        encoder.line(leftRight('Subtotal', Number(order.subtotal).toFixed(2)));
+        encoder.line(leftRight('Total Qty', String(totalQty)));
+
+        if (order.serviceChargePercentage) {
+            const scAmount = order.applyServiceCharge ? Number(order.serviceCharge) : 0;
+            encoder.line(leftRight(`Service Charge (${order.serviceChargePercentage}%)`, order.applyServiceCharge ? scAmount.toFixed(2) : 'Opted-out'));
+        }
 
         if (order.calculatedTaxes) {
             order.calculatedTaxes.forEach((t: any) => {
-                encoder.line(`${t.name} (${t.percentage}%): ${t.amount.toFixed(2)}`);
+                encoder.line(leftRight(`${t.name} (${t.percentage}%)`, Number(t.amount).toFixed(2)));
             });
         }
 
+        // Exact mathematical logic for round-off and grand total
+        const rawTotal = Number(order.total);
+        const calculatedRoundOff = Math.round(rawTotal) - rawTotal;
+        const roundOffVal = order.roundOff !== undefined ? Number(order.roundOff) : calculatedRoundOff;
+        const finalGrandTotal = rawTotal + roundOffVal;
+
+        // Round off FIRST
+        const roundOffDisplay = (roundOffVal > 0 ? '+' : '') + roundOffVal.toFixed(2);
+        
+        encoder.line(lineSeparator);
+        encoder.line(leftRight('Round off', roundOffDisplay));
+
+        // Grand Total LAST
         encoder
-            .newline()
             .bold(true)
-            .align('right')
-            .line(`TOTAL: ${order.total.toFixed(2)}`)
-            .bold(false)
+            .line(leftRight('Grand Total:', currencySymbol + finalGrandTotal.toFixed(2)))
+            .bold(false);
+            
+        encoder.line(lineSeparator);
+
+        // Footer
+        encoder
             .align('center')
-            .newline()
-            .line('Thank you!')
-            .newline()
+            .line('Thanks')
+            .line(lineSeparator)
             .line('For calling Valet kindly scan the below QR code')
             .newline();
 
@@ -422,18 +559,17 @@ async function generateEscPos(user: any, profile: RestaurantProfile | null, cash
         if (baseUrl && user?.res_id && user?.employeeId && user?.outlet_id) {
             const params = new URLSearchParams({ restaurantId: user.res_id, employeeId: user.employeeId, outletId: user.outlet_id });
             const feedbackUrl = `${baseUrl}?${params.toString()}`;
-            encoder.qrcode(feedbackUrl, 6, 'L');
+            
+            encoder.qrcode(feedbackUrl, 2, 6, 'l');
         }
 
         encoder.newline().newline();
-
-        // Cut
         encoder.cut();
 
         return encoder.encode();
 
     } catch (err) {
-        console.log("bvello", err);
+        console.error("Error generating ESC/POS sequence:", err);
         return null;
     }
 }

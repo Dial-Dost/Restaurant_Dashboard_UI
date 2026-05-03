@@ -65,7 +65,7 @@ export default function TestimonialsSection() {
               <CarouselItem key={index} className="md:basis-1/2 lg:basis-1/2">
                 <Card className="h-full">
                   <CardContent className="flex flex-col items-center justify-center p-6 text-center h-full">
-                    <p className="text-muted-foreground italic mb-6">"{testimonial.quote}"</p>
+                    <p className="text-muted-foreground italic mb-6">&ldquo;{testimonial.quote}&rdquo;</p>
                     <div className="flex items-center">
                       <Avatar className="h-12 w-12 mr-4">
                         <AvatarImage src={testimonial.image} alt={testimonial.name} data-ai-hint={testimonial.aiHint} />

@@ -48,7 +48,7 @@ import {
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { addAuditLogEntry, getInventory, addInventoryItem, removeInventoryItem } from "@/lib/db";
+import {  getInventory, addInventoryItem, removeInventoryItem } from "@/lib/db"; //addAuditLogEntry,
 import { useAuth } from "@/context/AuthContext";
 
 export type InventoryItem = {
@@ -97,12 +97,12 @@ export default function InventoryPage() {
     };
     await addInventoryItem(user.restaurantUsername, newItem);
 
-    await addAuditLogEntry(user.restaurantUsername, {
-      employee: ( `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || user?.employeeUsername ) ?? user?.employeeId ?? "System",
-      employeeId: user?.employeeId,
-        action: 'Inventory Add',
-        details: `Added new item: ${data.name} (${data.stock} ${data.unit})`,
-    });
+    // await addAuditLogEntry(user.restaurantUsername, {
+    //   employee: ( `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || user?.employeeUsername ) ?? user?.employeeId ?? "System",
+    //   employeeId: user?.employeeId,
+    //     action: 'Inventory Add',
+    //     details: `Added new item: ${data.name} (${data.stock} ${data.unit})`,
+    // });
     
     setInventory(await getInventory(user.restaurantUsername));
     setIsDialogOpen(false);

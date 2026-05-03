@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -186,7 +186,7 @@ export default function ValetDashboardPage() {
   const [newDateTime, setNewDateTime] = useState<string>(() => getCurrentLocalDateTimeValue());
   const [newRecordBayValue, setNewRecordBayValue] = useState<string>("__default_main__");
   const [creating, setCreating] = useState(false);
-  const [hasShownAccessToast, setHasShownAccessToast] = useState(false);
+  const hasShownAccessToastRef = useRef(false);
 
   const canViewValet = user?.role === "valet" || user?.role === "admin";
 
@@ -222,7 +222,7 @@ export default function ValetDashboardPage() {
   };
 
   useEffect(() => {
-    fetchValetInfo();
+    Promise.resolve().then(() => fetchValetInfo());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.restaurantUsername, user?.employeeId]);
 
@@ -246,7 +246,7 @@ export default function ValetDashboardPage() {
     ];
     if (relevant.includes(lastEvent.event)) {
       // lightweight approach: refetch the full valet snapshot
-      fetchValetInfo();
+      Promise.resolve().then(() => fetchValetInfo());
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lastEvent]);
@@ -886,7 +886,7 @@ export default function ValetDashboardPage() {
             .filter((v) => v && v.name.length > 0) as Array<{ name: string; total_capacity: number }>;
 
           const ensuredMain = cleaned.some((c) => c.name === "Main") ? cleaned : [{ name: "Main", total_capacity: 5 }, ...cleaned];
-          setManagedBays(ensuredMain);
+          Promise.resolve().then(() => setManagedBays(ensuredMain));
         }
       } catch {
         // ignore parse errors
@@ -956,7 +956,7 @@ export default function ValetDashboardPage() {
         setBaysLoading(false);
       }
     })();
-  }, [user?.restaurantUsername, data?.bays, baysInitializedForRestaurant]);
+  }, [user?.restaurantUsername, user?.employeeId, user?.outlet_id, user?.role, data?.bays, baysInitializedForRestaurant]);
 
   useEffect(() => {
     if (!user?.restaurantUsername) {
@@ -969,7 +969,7 @@ export default function ValetDashboardPage() {
 
     const bayKey = `valet-bays:${user.restaurantUsername}`;
     window.localStorage.setItem(bayKey, JSON.stringify(managedBays));
-  }, [user?.restaurantUsername, baysInitializedForRestaurant, bayOptions]);
+  }, [user?.restaurantUsername, user?.employeeId, user?.outlet_id, user?.role, baysInitializedForRestaurant, bayOptions, managedBays]);
 
   const addBay = async () => {
     const normalized = newBayName.trim();
@@ -1145,19 +1145,20 @@ export default function ValetDashboardPage() {
       ? Math.max(0, stats.spaceAvailable)
       : Math.max(0, parsedSpace);
 
-    setMaxBaysDisplay(initialMax);
-    setSpaceAvailableDisplay(initialSpace);
-
-    window.localStorage.setItem(maxKey, String(initialMax));
-    window.localStorage.setItem(spaceKey, String(initialSpace));
-    setSpaceInitializedForRestaurant(user.restaurantUsername);
+    Promise.resolve().then(() => {
+      setMaxBaysDisplay(initialMax);
+      setSpaceAvailableDisplay(initialSpace);
+      window.localStorage.setItem(maxKey, String(initialMax));
+      window.localStorage.setItem(spaceKey, String(initialSpace));
+      setSpaceInitializedForRestaurant(user.restaurantUsername);
+    });
   }, [user?.restaurantUsername, stats.spaceAvailable, stats.totalBays, spaceInitializedForRestaurant]);
 
   // Keep the visible space available in sync when server-side capacities change.
   useEffect(() => {
     if (!user?.restaurantUsername) return;
     if (spaceInitializedForRestaurant !== user.restaurantUsername) return;
-    setSpaceAvailableDisplay(Math.max(0, stats.spaceAvailable));
+    Promise.resolve().then(() => setSpaceAvailableDisplay(Math.max(0, stats.spaceAvailable)));
   }, [user?.restaurantUsername, stats.spaceAvailable, spaceInitializedForRestaurant]);
 
   useEffect(() => {
@@ -1177,7 +1178,7 @@ export default function ValetDashboardPage() {
   }, [user?.restaurantUsername, spaceAvailableDisplay, maxBaysDisplay, spaceInitializedForRestaurant]);
 
   useEffect(() => {
-    if (!user?.role || canViewValet || hasShownAccessToast) {
+    if (!user?.role || canViewValet || hasShownAccessToastRef.current) {
       return;
     }
 
@@ -1186,8 +1187,8 @@ export default function ValetDashboardPage() {
       description: "You do not have the required role for this page. Required role: valet or admin.",
       variant: "destructive",
     });
-    setHasShownAccessToast(true);
-  }, [user?.role, canViewValet, hasShownAccessToast, toast]);
+    hasShownAccessToastRef.current = true;
+  }, [user?.role, canViewValet, toast]);
 
   if (user?.role && !canViewValet) {
     return (

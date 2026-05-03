@@ -103,7 +103,7 @@ const Carousel = React.forwardRef<
         return
       }
 
-      setApi(api)
+      Promise.resolve().then(() => setApi(api))
     }, [api, setApi])
 
     React.useEffect(() => {
@@ -111,7 +111,7 @@ const Carousel = React.forwardRef<
         return
       }
 
-      onSelect(api)
+      Promise.resolve().then(() => onSelect(api))
       api.on("reInit", onSelect)
       api.on("select", onSelect)
 

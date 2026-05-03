@@ -52,7 +52,7 @@ import {
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { addAuditLogEntry, getBookings as getBookingsData, getTables as getTablesData, requestBackend } from "@/lib/db";
+import {  getBookings as getBookingsData, getTables as getTablesData, requestBackend } from "@/lib/db"; //addAuditLogEntry,
 import { useAuth } from "@/context/AuthContext";
 import { type Booking } from "./data";
 import { type Table as TableType } from "../tables/data";
@@ -85,20 +85,20 @@ export default function BookingsPage() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [tables, setTables] = useState<TableType[]>([]);
 
-  const recordAuditEntry = async (action: string, details: string) => {
-    if (!user?.restaurantUsername) return;
+  // const recordAuditEntry = async (action: string, details: string) => {
+  //   if (!user?.restaurantUsername) return;
 
-      try {
-        await addAuditLogEntry(user.restaurantUsername, {
-        employee: ( `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || user?.employeeUsername ) ?? user?.employeeId ?? "System",
-        employeeId: user?.employeeId,
-        action,
-        details,
-      });
-    } catch (auditError) {
-      console.warn("Failed to record audit entry", auditError);
-    }
-  };
+  //     try {
+  //       await addAuditLogEntry(user.restaurantUsername, {
+  //       employee: ( `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || user?.employeeUsername ) ?? user?.employeeId ?? "System",
+  //       employeeId: user?.employeeId,
+  //       action,
+  //       details,
+  //     });
+  //   } catch (auditError) {
+  //     console.warn("Failed to record audit entry", auditError);
+  //   }
+  // };
 
   const loadBookings = async () => {
     if (!user?.restaurantUsername) {
@@ -131,13 +131,38 @@ export default function BookingsPage() {
   };
   
   useEffect(() => {
-    if (!user) {
+    if (!user?.restaurantUsername) {
       return;
     }
 
-    loadBookings();
-    loadTables();
-  }, [user]);
+    let isActive = true;
+
+    (async () => {
+      try {
+        const data = await getBookingsData(user.restaurantUsername);
+        if (!isActive) return;
+        const mapped: Booking[] = (Array.isArray(data) ? data : []).map((item: Booking) => ({
+          ...item,
+          id: createBookingId(item.id),
+        }));
+        setBookings(mapped);
+      } catch (error) {
+        console.error("Failed to load bookings", error);
+        if (isActive) setBookings([]);
+      }
+
+      try {
+        const t = await getTablesData(user.restaurantUsername);
+        if (!isActive) return;
+        setTables(Array.isArray(t) ? t : []);
+      } catch (error) {
+        console.error("Failed to load tables", error);
+        if (isActive) setTables([]);
+      }
+    })();
+
+    return () => { isActive = false; };
+  }, [user?.restaurantUsername]);
 
   const handleAddBooking = async (data: BookingFormData) => {
     if (!user || !user.restaurantUsername) return;
@@ -177,12 +202,12 @@ export default function BookingsPage() {
         throw new Error(response.text || "Failed to create booking");
       }
 
-      await recordAuditEntry(
-        "Booking Create",
-        requestedTable
-          ? `Created booking for ${data.customer} at table ${requestedTable}`
-          : `Created booking for ${data.customer} (table unassigned)`,
-      );
+      // await recordAuditEntry(
+      //   "Booking Create",
+      //   requestedTable
+      //     ? `Created booking for ${data.customer} at table ${requestedTable}`
+      //     : `Created booking for ${data.customer} (table unassigned)`,
+      // );
 
       await loadBookings();
       await loadTables();
@@ -206,10 +231,10 @@ export default function BookingsPage() {
         throw new Error(response.text || "Failed to cancel booking");
       }
 
-      await recordAuditEntry(
-        "Booking Cancel",
-        `Cancelled booking for ${booking.customer} at table ${booking.table || "Unassigned"}`,
-      );
+      // await recordAuditEntry(
+      //   "Booking Cancel",
+      //   `Cancelled booking for ${booking.customer} at table ${booking.table || "Unassigned"}`,
+      // );
 
       await loadBookings();
       await loadTables();
@@ -233,10 +258,10 @@ export default function BookingsPage() {
         throw new Error(response.text || "Failed to update booking status");
       }
 
-      await recordAuditEntry(
-        "Booking Status",
-        `Updated booking ${booking.id} status to ${status}`,
-      );
+      // await recordAuditEntry(
+      //   "Booking Status",
+      //   `Updated booking ${booking.id} status to ${status}`,
+      // );
 
       await loadBookings();
       await loadTables();

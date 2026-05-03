@@ -62,6 +62,7 @@ const settingsFormSchema = z.object({
 })
 
 type SettingsFormValues = z.infer<typeof settingsFormSchema>
+import Image from 'next/image';
 
 export function SettingsForm() {
   const { toast } = useToast()
@@ -340,9 +341,11 @@ export function SettingsForm() {
 
             {feedbackQrDataUrl ? (
               <div className="space-y-3">
-                <img
+                <Image
                   src={feedbackQrDataUrl}
                   alt="Feedback QR code"
+                  width={224}
+                  height={224}
                   className="h-56 w-56 rounded-md border bg-white p-2"
                 />
                 <div className="flex flex-wrap gap-2">
