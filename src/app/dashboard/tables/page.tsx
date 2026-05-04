@@ -64,7 +64,7 @@ function SortableTable({
     table: Table;
     occupancy: { is_occupied: boolean; num_covers: number } | null;
     onRemove: (tableId: number) => void;
-    onOpenOrders: (tableName: string) => void;
+    onOpenOrders: (tableName: string, linkedOrderId?: string | null) => void;
     onOccupy: (tableName: string, numCovers: number) => void;
     onRelease: (tableName: string) => void;
     onUpdateCovers: (tableName: string, numCovers: number) => void;
@@ -200,9 +200,11 @@ function SortableTable({
                         Release
                     </Button>
                 ) : null}
-                <Button variant="ghost" className="w-full h-8 text-xs" onClick={() => onOpenOrders(table.name)}>
-                    Take Orders
-                </Button>
+                {isOccupied ? (
+                    <Button variant="ghost" className="w-full h-8 text-xs" onClick={() => onOpenOrders(table.name, (occupancy as any)?.linkedOrderId ?? null)}>
+                        {(occupancy as any)?.linkedOrderId ? 'View Order' : 'Take Orders'}
+                    </Button>
+                ) : null}
             </div>
         </Card>
     )
@@ -215,7 +217,7 @@ export default function TablesPage() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [newTableName, setNewTableName] = useState("");
   const [newTableCapacity, setNewTableCapacity] = useState("");
-    const [tableOccupancyByName, setTableOccupancyByName] = useState<Record<string, { is_occupied: boolean; num_covers: number }>>({});
+    const [tableOccupancyByName, setTableOccupancyByName] = useState<Record<string, { is_occupied: boolean; num_covers: number; linkedOrderId?: string | null }>>({});
     const [busyTableName, setBusyTableName] = useState<string | null>(null);
     const [activeId, setActiveId] = useState<number | null>(null);
   const { toast } = useToast();
@@ -255,14 +257,15 @@ export default function TablesPage() {
             const statusEntries = await Promise.all(
                 nextTables.map(async (table) => {
                     try {
-                        const status = await getTableStatus(user.restaurantUsername, table.name);
-                        return [
-                            table.name.toLowerCase(),
-                            {
-                                is_occupied: Boolean(status?.is_occupied),
-                                num_covers: Math.max(1, Number(status?.num_covers ?? table.capacity ?? 1) || 1),
-                            },
-                        ] as const;
+                                const status = await getTableStatus(user.restaurantUsername, table.name);
+                                return [
+                                    table.name.toLowerCase(),
+                                    {
+                                        is_occupied: Boolean(status?.is_occupied),
+                                        num_covers: Math.max(1, Number(status?.num_covers ?? table.capacity ?? 1) || 1),
+                                        linkedOrderId: typeof status?.linked_order_id === 'string' && status?.linked_order_id ? String(status.linked_order_id) : null,
+                                    },
+                                ] as const;
                     } catch {
                         return [
                             table.name.toLowerCase(),
@@ -291,6 +294,14 @@ export default function TablesPage() {
         loadTables().catch((error) => {
             console.error("Failed to load tables", error);
         });
+
+        const handler = () => { loadTables().catch((err) => console.error('tables:changed handler failed', err)); };
+        if (typeof window !== 'undefined') {
+            window.addEventListener('tables:changed', handler as EventListener);
+        }
+        return () => {
+            if (typeof window !== 'undefined') window.removeEventListener('tables:changed', handler as EventListener);
+        };
     }, [user?.restaurantUsername]);
 
   const handleAddTable = async () => {
@@ -428,8 +439,11 @@ export default function TablesPage() {
   const sortedCapacities = Object.keys(groupedTables).map(Number).sort((a, b) => a - b);
   const totalTables = tablesData.length;
     const unavailableTables = tablesData.filter(t => t.status !== "Available").length;
-    const openOrdersForTable = (tableName: string) => {
-        router.push(`/dashboard/orders?table=${encodeURIComponent(tableName)}`);
+    const openOrdersForTable = (tableName: string, linkedOrderId?: string | null) => {
+        const params = new URLSearchParams();
+        params.set('table', tableName);
+        if (linkedOrderId) params.set('highlightOrder', linkedOrderId);
+        router.push(`/dashboard/orders?${params.toString()}`);
     };
 
     const handleOccupyTable = async (tableName: string, numCovers: number) => {

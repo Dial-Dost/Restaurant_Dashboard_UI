@@ -418,7 +418,7 @@ const applyEmployeeContextHeaders = async (
     if (empId) {
         headers.set('X-Employee-Id', empId);
     }
-    else{
+    else {
         console.log("EMployee Id Not found");
     }
 
@@ -687,7 +687,22 @@ const mapOrder = (item: any): Order => ({
         typeof item.taken_by_employee_name === 'string' ? item.taken_by_employee_name : null,
     taken_by_employee_role:
         typeof item.taken_by_employee_role === 'string' ? item.taken_by_employee_role : null,
-    items: Array.isArray(item.items) ? item.items.map(mapOrderItem) : [],
+    // prefer flattened payload if provided by backend
+    items: Array.isArray(item.items_flattened) ? item.items_flattened.map(mapOrderItem) : Array.isArray(item.items) ? item.items.map(mapOrderItem) : [],
+    // flattened list for printing/APC (prefer explicit field)
+    items_flattened: Array.isArray(item.items_flattened) ? item.items_flattened.map(mapOrderItem) : Array.isArray(item.items) ? item.items.map(mapOrderItem) : [],
+    // split items: prefer explicit items_split from backend; otherwise derive from flattened + status
+    items_split: (() => {
+        if (Array.isArray(item.items_split)) {
+            return item.items_split.map((t: any) => [String(t[0]), Array.isArray(t[1]) ? t[1].map(mapOrderItem) : []]);
+        }
+        const mapped = Array.isArray(item.items) ? item.items.map(mapOrderItem) : Array.isArray(item.items_flattened) ? item.items_flattened.map(mapOrderItem) : [];
+        const status = String(item.status ?? 'Preparing');
+        if (status === 'Preparing') {
+            return [['Served', []], ['Preparing', mapped]] as [string, any][];
+        }
+        return [['Served', mapped], ['Preparing', []]] as [string, any][];
+    })(),
     subtotal: Number(item.subtotal ?? 0),
     serviceChargePercentage:
         item.serviceChargePercentage === undefined ? undefined : Number(item.serviceChargePercentage),
@@ -781,7 +796,7 @@ export const findRestaurantByName = async (name: string) => {
         const verify = await backendCall(
             "/auth/restaurant-login",
             "",
-            { method: 'GET', headers: {'X-Restaurant-Username': local.data.profile.restaurant_username} },
+            { method: 'GET', headers: { 'X-Restaurant-Username': local.data.profile.restaurant_username } },
         );
         if (verify?.ok) {
             return deepClone(local);
@@ -793,7 +808,7 @@ export const findRestaurantByName = async (name: string) => {
 
     const probe = await backendCall("/auth/restaurant-login", normalized, {
         method: 'GET',
-        headers: {"X-Restaurant-Username": normalized, "content-type": "application/json"},
+        headers: { "X-Restaurant-Username": normalized, "content-type": "application/json" },
     });
 
     if (!probe || !probe.ok) {
@@ -879,7 +894,7 @@ export const createRestaurant = async (restaurantName: string, admin: User) => {
             ? payload.restaurantName
             : restaurantName;
 
-    const persistedUsername = 
+    const persistedUsername =
         typeof payload?.restaurantUsername === 'string' && payload.restaurantUsername.trim().length > 0
             ? payload.restaurantUsername
             : getRestaurantUsernameFromName(persistedName);
@@ -1085,15 +1100,26 @@ export const getTables = async (restaurantId: string): Promise<Table[]> => {
     return readLocalField<Table[]>(restaurantId, 'tables');
 };
 
-export const occupyTable = async (restaurantId: string, tableName: string, numCovers: number) => {
+export const occupyTable = async (restaurantId: string, tableName: string, numCovers: number, linkedOrderId?: string | null) => {
+    const payload: any = { table_name: tableName, num_covers: numCovers };
+    if (typeof linkedOrderId === 'string' && linkedOrderId.trim().length > 0) payload.order_id = linkedOrderId;
+
     const response = await backendCall('/occupy-table', restaurantId, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ table_name: tableName, num_covers: numCovers }),
+        body: JSON.stringify(payload),
     });
 
     if (response?.ok) {
         await getTables(restaurantId);
+        // notify other UI parts (Tables page) that table data changed
+        try {
+            if (typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('tables:changed'));
+            }
+        } catch {
+            // ignore
+        }
         return { acknowledged: true };
     }
 
@@ -1244,12 +1270,18 @@ export const addOrder = async (restaurantId: string, order: Order) => {
     });
 
     if (response?.ok) {
-        await getOrders(restaurantId);
-        return { acknowledged: true };
+        try {
+            const payload = await response.json();
+            await getOrders(restaurantId);
+            return payload;
+        } catch {
+            await getOrders(restaurantId);
+            return { acknowledged: true } as any;
+        }
     }
 
     await addToLocalField(restaurantId, 'orders', order);
-    return { acknowledged: true };
+    return { acknowledged: true } as any;
 };
 
 export const deleteOrder = async (restaurantId: string, orderId: string) => {

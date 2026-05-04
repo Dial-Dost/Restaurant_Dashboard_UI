@@ -30,7 +30,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { MoreHorizontal, PlusCircle, Clock, Printer, Trash2, X } from "lucide-react";
+import { MoreHorizontal, PlusCircle, Clock, Printer, Trash2, X, ChevronUp, ChevronDown } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -49,8 +49,10 @@ import Image from 'next/image';
 import {
   getMenuItems,
   getOrders,
+  requestBackend,
   addOrder,
   deleteOrder,
+  occupyTable,
   getMonthlyApcInsight,
   createBill,
   getTables,
@@ -64,6 +66,7 @@ import {
   type MonthlyApcInsight,
   type PaymentMethod,
 } from "@/lib/db";
+// Removed DnD kit - using simple arrow controls instead
 import { useAuth } from "@/context/AuthContext";
 import { useCurrency } from "@/hooks/use-currency";
 import { useToast } from "@/hooks/use-toast";
@@ -102,6 +105,10 @@ export type Order = {
   taken_by_employee_name?: string | null;
   taken_by_employee_role?: string | null;
   items: OrderItem[];
+  // flattened items for backward compatibility and printing
+  items_flattened?: OrderItem[];
+  // split items as tuples, e.g. [['Served', [...]], ['Preparing', [...]]]
+  items_split?: [string, OrderItem[]][];
   subtotal: number;
   serviceChargePercentage?: number;
   taxes?: Tax[];
@@ -297,8 +304,8 @@ const storePrintBillPayload = (order: Order) => {
 export default function OrdersPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { user } = useAuth();
   const { currencySymbol } = useCurrency();
+  const { user } = useAuth();
   const { toast } = useToast();
   const hasRole = (role: "admin" | "employee" | "valet" | "waiter" | "cashier" | "captain" | "manager") => {
     if (!user) return false;
@@ -333,6 +340,7 @@ export default function OrdersPage() {
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
   const [isViewOpen, setIsViewOpen] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
+  const [highlightedOrderId, setHighlightedOrderId] = useState<string | null>(null);
   const [defaultTax, setDefaultTax] = useState<Record<string, number> | null>(null);
   const [isDefaultTaxDialogOpen, setIsDefaultTaxDialogOpen] = useState(false);
   const [isProofPreviewOpen, setIsProofPreviewOpen] = useState(false);
@@ -381,8 +389,11 @@ export default function OrdersPage() {
   }, [monthlyApcInsight]);
 
   useEffect(() => {
-    setIsAddDialogOpen(Boolean(selectedTableName));
-  }, [selectedTableName]);
+    // Only open the Add Order dialog when a table param is present and
+    // no highlightOrder parameter is provided (View Order should not open add dialog).
+    const highlightParam = searchParams.get('highlightOrder')?.trim() ?? '';
+    setIsAddDialogOpen(Boolean(selectedTableName) && !highlightParam);
+  }, [selectedTableName, searchParams]);
 
   useEffect(() => {
     if (!user?.restaurantUsername) {
@@ -439,6 +450,23 @@ export default function OrdersPage() {
     };
   }, [user]);
 
+    // Highlight order if requested via query param
+    useEffect(() => {
+      const param = searchParams.get('highlightOrder')?.trim() ?? '';
+      if (!param) return;
+      setHighlightedOrderId(param);
+      // wait for DOM to render table rows
+      setTimeout(() => {
+        const el = document.getElementById(`order-row-${param}`) as HTMLElement | null;
+        if (el) {
+          try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
+          try { el.focus(); } catch {}
+          // remove highlight after a short delay
+          setTimeout(() => setHighlightedOrderId(null), 3500);
+        }
+      }, 250);
+    }, [searchParams, displayOrders]);
+
   // Refresh tables when realtime table events occur
   useEffect(() => {
     const handler = (e: any) => {
@@ -457,15 +485,18 @@ export default function OrdersPage() {
   }, [user]);
 
   const triggerPrint = (order: Order) => {
+    const flattenedItems = (order as any).items_flattened?.length ? (order as any).items_flattened : order.items;
     let calculatedTaxes = calculateTaxes(order.subtotal, order.taxes);
     if ((!calculatedTaxes || calculatedTaxes.length === 0) && defaultTax) {
       calculatedTaxes = Object.keys(defaultTax).map((name, i) => ({ id: `d${i}`, name, percentage: Number(defaultTax[name]), amount: order.subtotal * (Number(defaultTax[name]) / 100) }));
     }
     const orderWithCalculatedCharges = {
-        ...order,
-        serviceCharge: calculateServiceCharge(order.subtotal, order.serviceChargePercentage, order.applyServiceCharge),
-        calculatedTaxes,
-        currencySymbol,
+      ...order,
+      items: flattenedItems,
+      items_flattened: flattenedItems,
+      serviceCharge: calculateServiceCharge(order.subtotal, order.serviceChargePercentage, order.applyServiceCharge),
+      calculatedTaxes,
+      currencySymbol,
     };
       const storageKey = storePrintBillPayload(orderWithCalculatedCharges);
       const url = `/dashboard/orders/print?orderKey=${encodeURIComponent(storageKey)}`;
@@ -504,7 +535,32 @@ export default function OrdersPage() {
     };
     const newOrder: Order = { ...baseOrder, total: calculateTotal(baseOrder) };
     try {
-      await addOrder(user.restaurantUsername, newOrder);
+      // Ensure table is occupied first (backend requires table to be occupied before adding order)
+      const tableName = String(tables.find(t => t.id === newOrderData.tableId)?.name ?? '');
+      if (tableName) {
+        try {
+          await occupyTable(user.restaurantUsername, tableName, 1);
+        } catch (e) {
+          // ignore occupancy errors — addOrder will fail if necessary
+        }
+      }
+
+      const resp: any = await addOrder(user.restaurantUsername, newOrder);
+      const createdId = resp?.id ?? resp?._id ?? null;
+
+      // Link the table to the created order id for quick access
+      if (createdId && tableName) {
+        try {
+          const occ = await occupyTable(user.restaurantUsername, tableName, 1, createdId);
+          // sanity check: backend should return linked_order_id
+          if (!occ || (occ as any).linked_order_id == null) {
+            console.warn('occupyTable did not persist linked_order_id', { tableName, createdId, resp: occ });
+          }
+        } catch (e) {
+          console.error('occupyTable failed to link order', e);
+        }
+      }
+
       const [updatedOrders, updatedApcInsight] = await Promise.all([
         getOrders(user.restaurantUsername),
         getMonthlyApcInsight(user.restaurantUsername),
@@ -529,24 +585,39 @@ export default function OrdersPage() {
     setOrders((prev) => {
       const updated = prev.map(order => {
         if(order.id === orderId) {
-          const existingItem = order.items.find(item => item.name.toLowerCase() === itemName.toLowerCase());
+          // add to Preparing section and flattened list
+          const newItem: OrderItem = {
+            id: `i${Date.now()}`,
+            name: itemName,
+            quantity: 1,
+            price: itemPrice,
+            orderedAt: new Date().toISOString(),
+          };
 
-          let newItems;
-          if (existingItem) {
-            newItems = order.items.map(item => item.id === existingItem.id ? { ...item, quantity: item.quantity + 1 } : item);
+          // merged flattened list
+          const flattened: OrderItem[] = Array.isArray((order as any).items_flattened) ? [...(order as any).items_flattened as OrderItem[]] : [...order.items];
+          // if same item name exists in flattened, increment quantity, else push
+          const existingFlat = flattened.find(it => it.name.toLowerCase() === itemName.toLowerCase());
+          if (existingFlat) {
+            existingFlat.quantity = existingFlat.quantity + 1;
           } else {
-            newItems = [...order.items, {
-              id: `i${Date.now()}`,
-              name: itemName,
-              quantity: 1,
-              price: itemPrice,
-              orderedAt: new Date().toISOString()
-            }];
+            flattened.push(newItem);
           }
-                
-          const newSubtotal = newItems.reduce((acc, item) => acc + item.price * item.quantity, 0);
-          const newTotal = calculateTotal({ ...order, items: newItems, subtotal: newSubtotal });
-          return { ...order, items: newItems, subtotal: newSubtotal, total: newTotal };
+
+          // update split: push into Preparing tuple
+          const split = Array.isArray((order as any).items_split)
+            ? (JSON.parse(JSON.stringify((order as any).items_split)) as unknown as [string, OrderItem[]][])
+            : ([['Served', []], ['Preparing', []]] as [string, OrderItem[]][]);
+          const preparingTuple = split.find(s => s[0] === 'Preparing');
+          if (preparingTuple) {
+            preparingTuple[1].push(newItem);
+          } else {
+            split.push(['Preparing', [newItem]] as [string, OrderItem[]]);
+          }
+
+          const newSubtotal = flattened.reduce((acc: number, it: OrderItem) => acc + it.price * it.quantity, 0);
+          const newTotal = calculateTotal({ ...order, items: flattened, subtotal: newSubtotal });
+          return { ...order, items: flattened, items_flattened: flattened, items_split: split, subtotal: newSubtotal, total: newTotal, status: 'Preparing' as OrderStatus };
         }
         return order;
       });
@@ -561,10 +632,21 @@ export default function OrdersPage() {
     setOrders((prev) => {
       const updated = prev.map(order => {
         if(order.id === orderId) {
-          const newItems = order.items.filter(item => item.id !== itemId);
-          const newSubtotal = newItems.reduce((acc, item) => acc + item.price * item.quantity, 0);
-          const newTotal = calculateTotal({ ...order, items: newItems, subtotal: newSubtotal });
-          return { ...order, items: newItems, subtotal: newSubtotal, total: newTotal };
+          // remove from flattened and from split tuples
+          const flattened: OrderItem[] = Array.isArray((order as any).items_flattened) ? ((order as any).items_flattened as OrderItem[]).filter((it) => it.id !== itemId) : order.items.filter(item => item.id !== itemId);
+
+          const split = Array.isArray((order as any).items_split)
+            ? (JSON.parse(JSON.stringify((order as any).items_split)) as unknown as [string, OrderItem[]][])
+            : ([['Served', []], ['Preparing', []]] as [string, OrderItem[]][]);
+          for (const tup of split) {
+            tup[1] = tup[1].filter((it) => it.id !== itemId);
+          }
+
+          const newSubtotal = flattened.reduce((acc: number, item: OrderItem) => acc + item.price * item.quantity, 0);
+          const newTotal = calculateTotal({ ...order, items: flattened, subtotal: newSubtotal });
+          const hasPreparing = (split.find(s => s[0] === 'Preparing')?.[1]?.length ?? 0) > 0;
+          const newStatus: OrderStatus = hasPreparing ? 'Preparing' : (flattened.length > 0 ? 'Served' : order.status);
+          return { ...order, items: flattened, items_flattened: flattened, items_split: split, subtotal: newSubtotal, total: newTotal, status: newStatus };
         }
         return order;
       });
@@ -876,6 +958,20 @@ export default function OrdersPage() {
     }
   };
 
+  const refreshOrders = async () => {
+    if (!user?.restaurantUsername) return;
+    try {
+      const updatedOrders = await getOrders(user.restaurantUsername);
+      setOrders(Array.isArray(updatedOrders) ? dedupeOrdersById(updatedOrders) : []);
+      if (selectedOrder) {
+        const updatedSelected = Array.isArray(updatedOrders) ? updatedOrders.find(o => o.id === selectedOrder.id) ?? null : null;
+        if (updatedSelected) setSelectedOrder(updatedSelected);
+      }
+    } catch (err) {
+      console.error('refreshOrders failed', err);
+    }
+  };
+
   const getApcBadgeClass = (zone?: "red" | "yellow" | "green") => {
     if (zone === "green") return "bg-green-100 text-green-800 border-green-200";
     if (zone === "yellow") return "bg-yellow-100 text-yellow-900 border-yellow-200";
@@ -1000,12 +1096,18 @@ export default function OrdersPage() {
               {displayOrders.map((order) => {
                 const apcInsight = orderApcByOrderId.get(String(order.id));
                 return (
-                <TableRow key={order.id} onClick={() => handleRowClick(order)} className="cursor-pointer">
+                <TableRow
+                  key={order.id}
+                  id={`order-row-${order.id}`}
+                  tabIndex={0}
+                  onClick={() => handleRowClick(order)}
+                  className={`cursor-pointer ${highlightedOrderId === String(order.id) ? 'ring-2 ring-primary/60' : ''}`}
+                >
                   <TableCell className="font-medium">
                     <div>{order.table}</div>
                   </TableCell>
                   <TableCell>
-                    <div className="font-medium">{order.items.map(i => `${i.quantity}x ${i.name}${i.note ? ` (${i.note})` : ""}`).join(', ')}</div>
+                    <div className="font-medium">{(order as any).items_flattened?.length ? (order as any).items_flattened.map((i: any) => `${i.quantity}x ${i.name}${i.note ? ` (${i.note})` : ""}`).join(', ') : order.items.map(i => `${i.quantity}x ${i.name}${i.note ? ` (${i.note})` : ""}`).join(', ')}</div>
                     {order.payment_method ? (
                       <div className="text-xs text-muted-foreground">
                         Payment Method: {order.payment_method}
@@ -1054,7 +1156,7 @@ export default function OrdersPage() {
                           <span className="sr-only">Toggle menu</span>
                         </Button>
                       </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
+                      <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
                         <DropdownMenuLabel>Actions</DropdownMenuLabel>
                         <DropdownMenuItem
                           disabled={
@@ -1084,7 +1186,22 @@ export default function OrdersPage() {
                         >
                           Edit Bill
                         </DropdownMenuItem>
-                        <DropdownMenuSub>
+                        <DropdownMenuItem
+                                  onClick={() => {
+                                    runAdminAction(() => { void handleSetBillVerification(order); });
+                                  }}
+                                  disabled={
+                                    order.status === 'Preparing'||
+                                    order.status === 'Bill Verification'
+                                    || order.status === 'Payment Pending Approval'
+                                    || order.status === 'Paid'
+                                    || order.status === 'Closed'
+                                    || order.status === 'Cancelled'
+                                  }
+                                >
+                                  Bill Verification
+                                </DropdownMenuItem>
+                        {/* <DropdownMenuSub>
                           <DropdownMenuSubTrigger>Update Status</DropdownMenuSubTrigger>
                             <DropdownMenuSubContent>
                                 <DropdownMenuItem
@@ -1120,6 +1237,7 @@ export default function OrdersPage() {
                                     runAdminAction(() => { void handleSetBillVerification(order); });
                                   }}
                                   disabled={
+                                    order.status === 'Preparing'||
                                     order.status === 'Bill Verification'
                                     || order.status === 'Payment Pending Approval'
                                     || order.status === 'Paid'
@@ -1130,10 +1248,11 @@ export default function OrdersPage() {
                                   Bill Verification
                                 </DropdownMenuItem>
                             </DropdownMenuSubContent>
-                        </DropdownMenuSub>
+                        </DropdownMenuSub> */}
                         <DropdownMenuSub>
                           <DropdownMenuSubTrigger
-                            disabled={order.status !== 'Bill Verification'}
+                            disabled={order.status !== "Bill Verification"}
+                            className="data-[disabled]:opacity-50 data-[disabled]:cursor-not-allowed"
                           >
                             Confirm Payment (Waiter)
                           </DropdownMenuSubTrigger>
@@ -1144,7 +1263,8 @@ export default function OrdersPage() {
                                 onClick={() => {
                                   void handleWaiterConfirmPayment(order, method);
                                 }}
-                                disabled={order.status !== 'Bill Verification'}
+                                disabled={order.status !== "Bill Verification"}
+                                className="data-[disabled]:opacity-50 data-[disabled]:cursor-not-allowed"
                               >
                                 {method}
                               </DropdownMenuItem>
@@ -1173,6 +1293,7 @@ export default function OrdersPage() {
                             });
                           }}
                           disabled={
+                            order.status === 'Bill Verification' ||
                             order.status === 'Payment Pending Approval'
                             || order.status === 'Paid'
                             || order.status === 'Closed'
@@ -1207,13 +1328,26 @@ export default function OrdersPage() {
         onSave={async (updatedOrder) => {
           if (!user?.restaurantUsername) return;
           try {
+            // detect removed item ids and call delete endpoint for each
+            try {
+              const orig = selectedOrder;
+              const origIds = Array.isArray(orig?.items) ? orig.items.map(i => String(i.id)) : [];
+              const updatedIds = Array.isArray(updatedOrder.items) ? updatedOrder.items.map(i => String(i.id)) : [];
+              const removed = origIds.filter(id => !updatedIds.includes(id));
+              if (removed.length > 0) {
+                await Promise.all(removed.map(id => requestBackend({ path: `/orders/${encodeURIComponent(String(updatedOrder.id))}/items/${encodeURIComponent(id)}`, method: 'DELETE', restaurantId: user.restaurantUsername })));
+              }
+            } catch (e) {
+              console.error('Failed to call delete-item endpoints', e);
+            }
+
             await addOrder(user.restaurantUsername, updatedOrder);
-             const [updatedOrders, updatedApcInsight] = await Promise.all([
-               getOrders(user.restaurantUsername),
-               getMonthlyApcInsight(user.restaurantUsername),
-             ]);
+            const [updatedOrders, updatedApcInsight] = await Promise.all([
+              getOrders(user.restaurantUsername),
+              getMonthlyApcInsight(user.restaurantUsername),
+            ]);
             setOrders(Array.isArray(updatedOrders) ? dedupeOrdersById(updatedOrders) : []);
-              setMonthlyApcInsight(updatedApcInsight ?? null);
+            setMonthlyApcInsight(updatedApcInsight ?? null);
           } catch (err) {
             console.error('Failed to save order', err);
             alert('Unable to save order.');
@@ -1232,6 +1366,7 @@ export default function OrdersPage() {
           setIsViewOpen(isOpen);
           if (!isOpen) setSelectedOrder(null);
         }}
+        onRefreshOrders={refreshOrders}
       />}
 
         {selectedOrder && <EditOrderDialog
@@ -1883,14 +2018,112 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
 });
 OrderDetailsDialog.displayName = "OrderDetailsDialog";
 
-const OrderViewDialog = React.memo(({ order, open, onOpenChange }: { order: Order | null, open: boolean, onOpenChange: (open: boolean) => void }) => {
+const OrderViewDialog = React.memo(({ order, open, onOpenChange, onRefreshOrders }: { order: Order | null, open: boolean, onOpenChange: (open: boolean) => void, onRefreshOrders?: () => Promise<void> }) => {
   const { currencySymbol } = useCurrency();
+  const { user } = useAuth();
   if (!order) return null;
 
   const calculatedTaxes = calculateTaxes(order.subtotal, order.taxes);
   const serviceCharge = calculateServiceCharge(order.subtotal, order.serviceChargePercentage, order.applyServiceCharge);
   const totalTaxAmount = calculatedTaxes.reduce((sum, t) => sum + t.amount, 0);
   const total = order.subtotal + serviceCharge + totalTaxAmount;
+
+  // derive split items
+  const split = order.items_split ?? [['Served', order.items_flattened ?? order.items], ['Preparing', []]] as [string, OrderItem[]][];
+  const servedInitial = Array.isArray(split[0][1]) ? split[0][1] : [];
+  const preparingInitial = Array.isArray(split[1][1]) ? split[1][1] : [];
+
+  const [served, setServed] = React.useState<OrderItem[]>(servedInitial);
+  const [preparing, setPreparing] = React.useState<OrderItem[]>(preparingInitial);
+  const [isDirty, setIsDirty] = React.useState(false);
+
+  React.useEffect(() => {
+    setServed(servedInitial);
+    setPreparing(preparingInitial);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [order.id, order.items_flattened?.length, order.items_split]);
+
+  const dndEnabled = !(order.status === 'Bill Verification' || order.status === 'Payment Pending Approval' || order.status === 'Paid' || order.status === 'Closed' || order.status === 'Cancelled');
+
+  const persistSplit = async (servedList: OrderItem[], preparingList: OrderItem[]) => {
+    try {
+      await requestBackend({ path: `/bills/order/${encodeURIComponent(order.id)}/status`, method: 'PATCH', restaurantId: user?.restaurantUsername, body: { items_split: [['Served', servedList], ['Preparing', preparingList]] } });
+      // call parent refresh handler so OrdersPage can reload state
+      if (onRefreshOrders) await onRefreshOrders();
+    } catch (err) {
+      console.error('persist items_split failed', err);
+    }
+  };
+
+  const handleSaveChanges = async () => {
+    if (!dndEnabled) return;
+    try {
+      await persistSplit(served, preparing);
+      setIsDirty(false);
+    } catch (err) {
+      console.error('save changes failed', err);
+    }
+  };
+
+  const handleDiscardChanges = () => {
+    // reset to initial values from the order
+    setServed(servedInitial);
+    setPreparing(preparingInitial);
+    setIsDirty(false);
+  };
+
+  const ItemRow: React.FC<{ item: OrderItem; side: 'served' | 'preparing' }> = ({ item, side }) => {
+    const moveToOther = () => {
+      const activeId = item.id;
+      if (side === 'preparing') {
+        const moving = preparing.find(p => p.id === activeId);
+        if (!moving) return;
+        setPreparing(prev => prev.filter(p => p.id !== activeId));
+        setServed(prev => [...prev, moving]);
+        setIsDirty(true);
+      } else {
+        const moving = served.find(s => s.id === activeId);
+        if (!moving) return;
+        setServed(prev => prev.filter(s => s.id !== activeId));
+        setPreparing(prev => [...prev, moving]);
+        setIsDirty(true);
+      }
+    };
+
+    return (
+      <TableRow key={item.id}>
+        <TableCell className="font-medium">
+          <div className="flex items-center justify-between">
+            <div>
+              <div>{item.name}</div>
+              {item.note ? <div className="text-xs text-muted-foreground">Note: {item.note}</div> : null}
+            </div>
+            <div>
+              {side === 'preparing' ? (
+                <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); moveToOther(); }} title="Move to Served">
+                  <ChevronUp className="h-4 w-4" />
+                </Button>
+              ) : (
+                <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); moveToOther(); }} title="Move to Preparing">
+                  <ChevronDown className="h-4 w-4" />
+                </Button>
+              )}
+            </div>
+          </div>
+        </TableCell>
+        <TableCell className="text-center">{item.quantity}</TableCell>
+        <TableCell className="text-muted-foreground text-center">
+          <div className="flex items-center justify-center">
+            <Clock className="h-3 w-3 mr-1" />
+            {formatOrderedAt(item.orderedAt)}
+          </div>
+        </TableCell>
+        <TableCell className="text-right">{currencySymbol}{(item.price * item.quantity).toFixed(2)}</TableCell>
+      </TableRow>
+    );
+  };
+
+  // DnD removed: using explicit arrow controls for moves between Preparing and Served
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -1905,36 +2138,40 @@ const OrderViewDialog = React.memo(({ order, open, onOpenChange }: { order: Orde
           </DialogDescription>
         </DialogHeader>
         <div className="p-4">
-          <div className="max-h-[40vh] overflow-y-auto my-4">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Item</TableHead>
-                  <TableHead className="text-center">Qty</TableHead>
-                  <TableHead className="text-center">Time</TableHead>
-                  <TableHead className="text-right">Price</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {order.items.map(item => (
-                  <TableRow key={item.id}>
-                    <TableCell className="font-medium">
-                      <div>{item.name}</div>
-                      {item.note ? <div className="text-xs text-muted-foreground">Note: {item.note}</div> : null}
-                    </TableCell>
-                    <TableCell className="text-center">{item.quantity}</TableCell>
-                    <TableCell className="text-muted-foreground text-center">
-                      <div className="flex items-center justify-center">
-                        <Clock className="h-3 w-3 mr-1" />
-                        {formatOrderedAt(item.orderedAt)}
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-right">{currencySymbol}{(item.price * item.quantity).toFixed(2)}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+            <div className="flex flex-col gap-4 max-h-[60vh] overflow-y-auto my-4">
+              <div>
+                <h4 className="text-sm font-medium mb-2">Served</h4>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Item</TableHead>
+                      <TableHead className="text-center">Qty</TableHead>
+                      <TableHead className="text-center">Time</TableHead>
+                      <TableHead className="text-right">Price</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {served.map(item => <ItemRow key={item.id} item={item} side="served" />)}
+                  </TableBody>
+                </Table>
+              </div>
+              <div>
+                <h4 className="text-sm font-medium mb-2">Preparing</h4>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Item</TableHead>
+                      <TableHead className="text-center">Qty</TableHead>
+                      <TableHead className="text-center">Time</TableHead>
+                      <TableHead className="text-right">Price</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {preparing.map(item => <ItemRow key={item.id} item={item} side="preparing" />)}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
           <div className="space-y-2 text-sm">
             <div className="flex justify-between border-t pt-2">
               <span>Subtotal</span>
@@ -1959,6 +2196,12 @@ const OrderViewDialog = React.memo(({ order, open, onOpenChange }: { order: Orde
           </div>
         </div>
         <DialogFooter>
+          {isDirty && dndEnabled ? (
+            <>
+              <Button variant="outline" onClick={handleDiscardChanges}>Discard</Button>
+              <Button className="ml-2" onClick={handleSaveChanges}>Save Changes</Button>
+            </>
+          ) : null}
           <Button onClick={() => onOpenChange(false)}>Close</Button>
         </DialogFooter>
       </DialogContent>

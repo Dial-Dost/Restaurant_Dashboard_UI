@@ -83,9 +83,7 @@ function PrintPageContents() {
                         setProfile(prof ?? null);
                         const logo = await getRestaurantLogo(restaurantId).catch(() => null);
                         setLogoBase64(logo ?? null);
-                        const billResp = parsed.table
-                            ? await getBillForTable(restaurantId, parsed.table).catch(() => null)
-                            : await getBillByOrder(restaurantId, parsed.id).catch(() => null);
+                        const billResp = await getBillByOrder(restaurantId, parsed.id).catch(() => null);
                         setBill(billResp ?? null);
 
                         // Build feedback URL like settings and generate QR data URL client-side
@@ -405,7 +403,7 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
             return lines.length > 0 ? lines : [''];
         };
 
-        const currencySymbol = order.currencySymbol || '₹';
+        const currencySymbol = 'Rs. '; //order.currencySymbol || '₹';
 
         // ----------------------------------------------------
         // Receipt Generation
@@ -565,7 +563,7 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
             encoder.qrcode(feedbackUrl, 2, 6, 'l');
         }
 
-        encoder.newline().newline();
+        encoder.align('center').line('A Voluntary Service Charge is included to support our staff. If you prefer not to contribute, please inform your server before payment and it will be removed.');
         encoder.cut();
 
         return encoder.encode();
