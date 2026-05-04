@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useMemo } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   Card,
   CardContent,
@@ -43,6 +44,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Switch } from "@/components/ui/switch";
 import { Combobox } from "@/components/ui/combobox";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import Image from 'next/image';
 import {
   getMenuItems,
@@ -293,7 +295,8 @@ const storePrintBillPayload = (order: Order) => {
 };
 
 export default function OrdersPage() {
-  
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const { user } = useAuth();
   const { currencySymbol } = useCurrency();
   const { toast } = useToast();
@@ -334,6 +337,11 @@ export default function OrdersPage() {
   const [isDefaultTaxDialogOpen, setIsDefaultTaxDialogOpen] = useState(false);
   const [isProofPreviewOpen, setIsProofPreviewOpen] = useState(false);
   const [proofPreviewUrl, setProofPreviewUrl] = useState<string | null>(null);
+  const selectedTableName = searchParams.get("table")?.trim() ?? "";
+  const selectedTable = useMemo(() => {
+    if (!selectedTableName) return null;
+    return tables.find((table) => table.name.toLowerCase() === selectedTableName.toLowerCase()) ?? null;
+  }, [selectedTableName, tables]);
 
   const displayOrders = useMemo(() => dedupeOrdersById(orders), [orders]);
 
@@ -344,6 +352,37 @@ export default function OrdersPage() {
     }
     return map;
   }, [monthlyApcInsight]);
+
+  const tableApcSummaries = useMemo(() => {
+    const summaryByTable = new Map<string, { table: string; revenue: number; covers: number; orders: number }>();
+
+    for (const item of monthlyApcInsight?.orders ?? []) {
+      const tableName = item.table_name?.trim() || "Unassigned";
+      const current = summaryByTable.get(tableName) ?? {
+        table: tableName,
+        revenue: 0,
+        covers: 0,
+        orders: 0,
+      };
+
+      const covers = Number(item.people_count ?? 1);
+      current.revenue += Number(item.total ?? 0);
+      current.covers += Number.isFinite(covers) && covers > 0 ? covers : 1;
+      current.orders += 1;
+      summaryByTable.set(tableName, current);
+    }
+
+    return Array.from(summaryByTable.values())
+      .map((item) => ({
+        ...item,
+        apc: item.covers > 0 ? item.revenue / item.covers : 0,
+      }))
+      .sort((left, right) => right.revenue - left.revenue);
+  }, [monthlyApcInsight]);
+
+  useEffect(() => {
+    setIsAddDialogOpen(Boolean(selectedTableName));
+  }, [selectedTableName]);
 
   useEffect(() => {
     if (!user?.restaurantUsername) {
@@ -847,29 +886,66 @@ export default function OrdersPage() {
 
   return (
     <div className="grid gap-4 md:gap-8">
-      <div className="flex items-center justify-between">
-        <h1 className="text-lg font-semibold md:text-2xl">Orders</h1>
-        <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
-          <DialogTrigger asChild>
-            <Button>
-                <PlusCircle className="mr-2 h-4 w-4" />
-                Add Order
-            </Button>
-          </DialogTrigger>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h1 className="text-lg font-semibold md:text-2xl">Orders</h1>
+          <p className="text-sm text-muted-foreground">
+            Reporting only. Start table-side ordering from the Tables view.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" onClick={() => router.push("/dashboard/tables")}>Open Tables</Button>
           {isAdmin ? (
-            <Button variant="outline" className="ml-2" onClick={() => setIsDefaultTaxDialogOpen(true)}>Modify Default Tax</Button>
+            <Button variant="outline" onClick={() => setIsDefaultTaxDialogOpen(true)}>Modify Default Tax</Button>
           ) : null}
-          <DialogContent className="sm:max-w-2xl w-full">
-            <DialogHeader>
-              <DialogTitle>Add New Order</DialogTitle>
-              <DialogDescription>
-                Fill in the details for the new order.
-              </DialogDescription>
-            </DialogHeader>
-            <OrderForm onSubmit={handleAddOrder} menuItems={menuItems} tables={tables} />
-          </DialogContent>
-        </Dialog>
+        </div>
       </div>
+      <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+        <DialogContent className="sm:max-w-2xl w-full">
+          <DialogHeader>
+            <DialogTitle>Add New Order</DialogTitle>
+            <DialogDescription>
+              {selectedTable ? `Taking orders for ${selectedTable.name}. Add items directly below.` : "Choose a table, then add items below."}
+            </DialogDescription>
+          </DialogHeader>
+          <OrderForm
+            onSubmit={handleAddOrder}
+            menuItems={menuItems}
+            tables={tables}
+            selectedTableName={selectedTable?.name ?? selectedTableName}
+            onClearSelectedTable={() => router.push("/dashboard/orders")}
+          />
+        </DialogContent>
+      </Dialog>
+      <Card>
+        <CardHeader>
+          <CardTitle>Table APC Summary</CardTitle>
+          <CardDescription>
+            Final bill performance by table for the current month.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {tableApcSummaries.length > 0 ? (
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {tableApcSummaries.map((summary) => (
+                <Card key={summary.table} className="border-dashed">
+                  <CardHeader className="pb-2">
+                    <CardDescription>{summary.table}</CardDescription>
+                    <CardTitle className="text-xl">{currencySymbol}{summary.apc.toFixed(2)}</CardTitle>
+                  </CardHeader>
+                  <CardContent className="pt-0 text-sm text-muted-foreground">
+                    <div>{summary.orders} bill{summary.orders === 1 ? "" : "s"}</div>
+                    <div>{summary.covers} covers</div>
+                    <div>{currencySymbol}{summary.revenue.toFixed(2)} revenue</div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">No table APC data available yet.</p>
+          )}
+        </CardContent>
+      </Card>
       <Card>
         <CardHeader>
           <CardTitle>Current Orders</CardTitle>
@@ -988,8 +1064,7 @@ export default function OrdersPage() {
                             || order.status === 'Closed'
                             || order.status === 'Cancelled'
                           }
-                          onClick={(e) => {
-                            e.stopPropagation();
+                          onClick={() => {
                             runAdminAction(() => {
                               setSelectedOrder(order);
                               setIsDetailsOpen(true);
@@ -1000,8 +1075,7 @@ export default function OrdersPage() {
                         </DropdownMenuItem>
                         <DropdownMenuItem
                           disabled={order.status !== 'Bill Verification'}
-                          onClick={(e) => {
-                            e.stopPropagation();
+                          onClick={() => {
                             runAdminAction(() => {
                               setSelectedOrder(order);
                               setIsEditDialogOpen(true);
@@ -1011,11 +1085,10 @@ export default function OrdersPage() {
                           Edit Bill
                         </DropdownMenuItem>
                         <DropdownMenuSub>
-                          <DropdownMenuSubTrigger onClick={(e) => {e.stopPropagation();}}>Update Status</DropdownMenuSubTrigger>
+                          <DropdownMenuSubTrigger>Update Status</DropdownMenuSubTrigger>
                             <DropdownMenuSubContent>
                                 <DropdownMenuItem
-                                  onClick={(e) => {
-                                    e.stopPropagation();
+                                  onClick={() => {
                                     runAdminAction(() => { void updateOrderStatus(order.id, 'Preparing'); });
                                   }}
                                   disabled={
@@ -1029,8 +1102,7 @@ export default function OrdersPage() {
                                   Preparing
                                 </DropdownMenuItem>
                                 <DropdownMenuItem
-                                  onClick={(e) => {
-                                    e.stopPropagation();
+                                  onClick={() => {
                                     runAdminAction(() => { void updateOrderStatus(order.id, 'Served'); });
                                   }}
                                   disabled={
@@ -1044,8 +1116,7 @@ export default function OrdersPage() {
                                   Served
                                 </DropdownMenuItem>
                                 <DropdownMenuItem
-                                  onClick={(e) => {
-                                    e.stopPropagation();
+                                  onClick={() => {
                                     runAdminAction(() => { void handleSetBillVerification(order); });
                                   }}
                                   disabled={
@@ -1062,7 +1133,6 @@ export default function OrdersPage() {
                         </DropdownMenuSub>
                         <DropdownMenuSub>
                           <DropdownMenuSubTrigger
-                            onClick={(e) => { e.stopPropagation(); }}
                             disabled={order.status !== 'Bill Verification'}
                           >
                             Confirm Payment (Waiter)
@@ -1071,8 +1141,7 @@ export default function OrdersPage() {
                             {PAYMENT_METHOD_OPTIONS.map((method) => (
                               <DropdownMenuItem
                                 key={method}
-                                onClick={(e) => {
-                                  e.stopPropagation();
+                                onClick={() => {
                                   void handleWaiterConfirmPayment(order, method);
                                 }}
                                 disabled={order.status !== 'Bill Verification'}
@@ -1083,21 +1152,20 @@ export default function OrdersPage() {
                           </DropdownMenuSubContent>
                         </DropdownMenuSub>
                         <DropdownMenuItem
-                          onClick={(e) => { e.stopPropagation(); void handleAdminApprovePayment(order); }}
+                          onClick={() => { void handleAdminApprovePayment(order); }}
                           disabled={order.status !== 'Payment Pending Approval'}
                         >
                           Approve Payment (Admin)
                         </DropdownMenuItem>
                         <DropdownMenuItem
-                          onClick={(e) => { e.stopPropagation(); void handleCloseBill(order); }}
+                          onClick={() => { void handleCloseBill(order); }}
                           disabled={order.status !== 'Paid'}
                         >
                           Close Bill (Admin)
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem 
-                          onClick={(e) => {
-                            e.stopPropagation();
+                          onClick={() => {
                             runAdminAction(() => {
                               if (confirm('Are you sure you want to delete this order? This action cannot be undone.')) {
                                 void handleDeleteOrder(order.id);
@@ -1113,7 +1181,7 @@ export default function OrdersPage() {
                         >
                           Delete Order
                         </DropdownMenuItem>
-                        <DropdownMenuItem onClick={(e) => { e.stopPropagation(); triggerPrint(order); }} disabled={order.status !== 'Bill Verification' && order.status !== 'Payment Pending Approval' && order.status !== 'Paid' && order.status !== 'Closed'}>
+                        <DropdownMenuItem onClick={() => { triggerPrint(order); }} disabled={order.status !== 'Bill Verification' && order.status !== 'Payment Pending Approval' && order.status !== 'Paid' && order.status !== 'Closed'}>
                             <Printer className="mr-2 h-4 w-4" />
                             Print Bill
                         </DropdownMenuItem>
@@ -1232,13 +1300,33 @@ export default function OrdersPage() {
   );
 }
 
-function OrderForm({ onSubmit, menuItems, tables }: { onSubmit: (data: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null }[] }) => Promise<void> | void; menuItems: MenuItem[]; tables: { id: number; name: string; capacity: number }[] }) {
+function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSelectedTable }: { onSubmit: (data: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null }[] }) => Promise<void> | void; menuItems: MenuItem[]; tables: { id: number; name: string; capacity: number }[]; selectedTableName?: string; onClearSelectedTable?: () => void }) {
   const { currencySymbol } = useCurrency();
-  const [selectedTableId, setSelectedTableId] = useState<string>(tables?.[0]?.id?.toString() ?? '');
+  const [selectedTableId, setSelectedTableId] = useState<string>(() => {
+    if (selectedTableName) {
+      const matched = tables.find((table) => table.name.toLowerCase() === selectedTableName.toLowerCase());
+      if (matched) return String(matched.id);
+    }
+    return tables?.[0]?.id?.toString() ?? '';
+  });
   const [selectedItemValue, setSelectedItemValue] = useState("");
   const [selectedQuantity, setSelectedQuantity] = useState<number>(1);
   const [selectedNote, setSelectedNote] = useState("");
   const [itemsList, setItemsList] = useState<{ id?: string; name: string; price: number; quantity: number; note?: string | null }[]>([]);
+
+  useEffect(() => {
+    if (selectedTableName) {
+      const matched = tables.find((table) => table.name.toLowerCase() === selectedTableName.toLowerCase());
+      if (matched) {
+        setSelectedTableId(String(matched.id));
+      }
+      return;
+    }
+
+    if (!selectedTableId && tables[0]) {
+      setSelectedTableId(String(tables[0].id));
+    }
+  }, [selectedTableName, selectedTableId, tables]);
 
   
 
@@ -1286,14 +1374,23 @@ function OrderForm({ onSubmit, menuItems, tables }: { onSubmit: (data: { tableId
       <div className="grid grid-cols-4 items-center gap-4">
       <Label htmlFor="table" className="text-right">Table</Label>
       <div className="col-span-3">
-        <Combobox
-          options={tableOptions}
-          value={selectedTableId || (tables?.[0]?.id?.toString() ?? '')}
-          onChange={(value) => setSelectedTableId(String(value ?? ''))}
-          placeholder="Select a table"
-          searchPlaceholder="Search tables..."
-          emptyPlaceholder="No tables available"
-        />
+        {selectedTableName ? (
+          <div className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
+            <span className="font-medium">{selectedTableName}</span>
+            {onClearSelectedTable ? (
+              <Button variant="ghost" size="sm" onClick={onClearSelectedTable}>Change</Button>
+            ) : null}
+          </div>
+        ) : (
+          <Combobox
+            options={tableOptions}
+            value={selectedTableId || (tables?.[0]?.id?.toString() ?? '')}
+            onChange={(value) => setSelectedTableId(String(value ?? ''))}
+            placeholder="Select a table"
+            searchPlaceholder="Search tables..."
+            emptyPlaceholder="No tables available"
+          />
+        )}
       </div>
       </div>
       <div className="grid grid-cols-4 items-center gap-4">

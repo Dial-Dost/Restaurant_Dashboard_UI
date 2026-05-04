@@ -1085,6 +1085,67 @@ export const getTables = async (restaurantId: string): Promise<Table[]> => {
     return readLocalField<Table[]>(restaurantId, 'tables');
 };
 
+export const occupyTable = async (restaurantId: string, tableName: string, numCovers: number) => {
+    const response = await backendCall('/occupy-table', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ table_name: tableName, num_covers: numCovers }),
+    });
+
+    if (response?.ok) {
+        await getTables(restaurantId);
+        return { acknowledged: true };
+    }
+
+    throw new Error(response ? await readErrorMessage(response) : 'Unable to occupy table');
+};
+
+export const updateTableCovers = async (restaurantId: string, tableName: string, numCovers: number) => {
+    const response = await backendCall('/table-covers', restaurantId, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ table_name: tableName, num_covers: numCovers }),
+    });
+
+    if (response?.ok) {
+        await getTables(restaurantId);
+        return { acknowledged: true };
+    }
+
+    throw new Error(response ? await readErrorMessage(response) : 'Unable to update table covers');
+};
+
+export const releaseTable = async (restaurantId: string, tableName: string) => {
+    const response = await backendCall('/release-table', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ table_name: tableName }),
+    });
+
+    if (response?.ok) {
+        await getTables(restaurantId);
+        return { acknowledged: true };
+    }
+
+    throw new Error(response ? await readErrorMessage(response) : 'Unable to release table');
+};
+
+export const getTableStatus = async (restaurantId: string, tableName: string) => {
+    return backendJson<any>(
+        `/table-status?table_name=${encodeURIComponent(tableName)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+};
+
+export const getBillForTable = async (restaurantId: string, tableName: string) => {
+    const response = await backendCall(`/bill-for-table?table_name=${encodeURIComponent(tableName)}`, restaurantId, {
+        method: 'GET',
+    });
+    if (!response || !response.ok) return null;
+    try { return await response.json(); } catch { return null; }
+};
+
 export const getAuditLogs = async (restaurantId: string, limit = 100): Promise<AuditLog[]> => {
     const data = await backendJson<any[]>(
         `/audit-logs?restaurantId=${encodeURIComponent(restaurantId)}&limit=${Math.max(1, limit)}`,

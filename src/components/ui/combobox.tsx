@@ -38,7 +38,7 @@ export function Combobox({ options, value, onChange, placeholder, searchPlacehol
   const [open, setOpen] = React.useState(false)
 
   return (
-    <Popover open={open} onOpenChange={setOpen} modal>
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button
           type="button"

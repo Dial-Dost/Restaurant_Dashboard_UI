@@ -4,7 +4,7 @@ import { useEffect, Suspense, useState } from 'react';
 import QRCode from 'qrcode';
 import { useSearchParams } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
-import { getRestaurantProfile, getRestaurantLogo, getBillByOrder, RestaurantProfile, requestBackend } from '@/lib/db';
+import { getRestaurantProfile, getRestaurantLogo, getBillByOrder, getBillForTable, RestaurantProfile, requestBackend } from '@/lib/db';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import Image from 'next/image';
@@ -83,7 +83,9 @@ function PrintPageContents() {
                         setProfile(prof ?? null);
                         const logo = await getRestaurantLogo(restaurantId).catch(() => null);
                         setLogoBase64(logo ?? null);
-                        const billResp = await getBillByOrder(restaurantId, parsed.id).catch(() => null);
+                        const billResp = parsed.table
+                            ? await getBillForTable(restaurantId, parsed.table).catch(() => null)
+                            : await getBillByOrder(restaurantId, parsed.id).catch(() => null);
                         setBill(billResp ?? null);
 
                         // Build feedback URL like settings and generate QR data URL client-side

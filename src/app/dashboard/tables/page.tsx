@@ -2,6 +2,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -38,7 +39,11 @@ import { Users, PlusCircle, MoreVertical, Trash2, GripVertical } from "lucide-re
 import { type Table } from "./data";
 import {
     // addAuditLogEntry,
+    occupyTable,
+    releaseTable,
+    updateTableCovers,
     getTables,
+    getTableStatus,
     requestBackend,
 } from "@/lib/db";
 import { useAuth } from "@/context/AuthContext";
@@ -48,20 +53,40 @@ import { SortableContext, useSortable, arrayMove } from "@dnd-kit/sortable";
 
 function SortableTable({
     table,
+    occupancy,
     onRemove,
+    onOpenOrders,
+    onOccupy,
+    onRelease,
+    onUpdateCovers,
+    busyTableName,
 }: {
     table: Table;
+    occupancy: { is_occupied: boolean; num_covers: number } | null;
     onRemove: (tableId: number) => void;
+    onOpenOrders: (tableName: string) => void;
+    onOccupy: (tableName: string, numCovers: number) => void;
+    onRelease: (tableName: string) => void;
+    onUpdateCovers: (tableName: string, numCovers: number) => void;
+    busyTableName: string | null;
 }) {
     const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: table.id });
+    const [coverCount, setCoverCount] = useState(String(occupancy?.num_covers ?? table.capacity ?? 1));
+
+    useEffect(() => {
+        setCoverCount(String(occupancy?.num_covers ?? table.capacity ?? 1));
+    }, [occupancy?.num_covers, table.capacity]);
 
     const style = {
         transform: transform ? `translate3d(${transform.x}px, ${transform.y}px, 0)` : undefined,
         transition,
     };
 
-    const isUnavailable = table.status === "Booked" || table.status === "Occupied";
+    const isOccupied = Boolean(occupancy?.is_occupied);
+    const isUnavailable = isOccupied || table.status === "Booked" || table.status === "Occupied";
     const isReserved = table.status === "Reserved";
+    const parsedCoverCount = Math.max(1, Number(coverCount) || 1);
+    const isBusy = busyTableName === table.name;
     
     return (
         <Card
@@ -69,8 +94,8 @@ function SortableTable({
             style={style}
             className={cn(
                 "transition-all touch-none min-w-0",
-                isUnavailable ? 'bg-secondary' : isReserved ? 'bg-muted/40' : 'bg-background',
-                isDragging ? 'opacity-50 shadow-2xl z-10' : 'hover:shadow-lg'
+                isOccupied ? 'bg-red-950/40 border-red-900' : isUnavailable ? 'bg-amber-900/30 border-amber-800' : isReserved ? 'bg-blue-950/30 border-blue-800' : 'bg-slate-800/50 border-slate-700',
+                isDragging ? 'opacity-50 shadow-2xl z-10' : 'hover:shadow-lg hover:border-slate-600'
             )}
         >
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2 p-3">
@@ -78,7 +103,9 @@ function SortableTable({
                     <button {...listeners} {...attributes} className="cursor-grab p-1 shrink-0">
                         <GripVertical className="h-4 w-4 text-muted-foreground" />
                     </button>
-                    <span className="truncate" title={table.name}>{table.name}</span>
+                    <button type="button" className="truncate text-left hover:underline" title={table.name} onClick={() => onOpenOrders(table.name)}>
+                        {table.name}
+                    </button>
                 </CardTitle>
                 <DropdownMenu>
                     <DropdownMenuTrigger asChild>
@@ -110,30 +137,86 @@ function SortableTable({
                     </DropdownMenuContent>
                 </DropdownMenu>
             </CardHeader>
-            <CardContent className="p-3 pt-0 flex justify-between items-center">
-                <div className="flex flex-wrap items-center gap-1">
-                    <Badge
-                        variant={isUnavailable ? 'destructive' : isReserved ? 'secondary' : 'default'}
-                        className="text-[10px] sm:text-xs"
-                    >
-                        {table.status}
-                    </Badge>
-                </div>
-                <div className="flex items-center text-muted-foreground">
-                    <Users className="h-3 w-3 mr-1" />
-                    <span className="text-xs">{table.capacity}</span>
+            <CardContent className="p-3 pt-0">
+                <div className="space-y-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                        <Badge
+                            variant={isOccupied ? 'destructive' : 'default'}
+                            className={cn(
+                                "text-[10px] sm:text-xs",
+                                isOccupied && 'bg-red-600 text-white'
+                            )}
+                        >
+                            {isOccupied ? 'Occupied' : 'Available'}
+                        </Badge>
+                        {occupancy ? (
+                            <Badge variant="outline" className="text-[10px] sm:text-xs bg-slate-700/50">
+                                {occupancy.num_covers} covers
+                            </Badge>
+                        ) : null}
+                        {table.status !== "Available" ? (
+                            <Badge variant="secondary" className="text-[10px] sm:text-xs">
+                                Booking: {table.status}
+                            </Badge>
+                        ) : null}
+                    </div>
+                    <div className="flex items-center text-muted-foreground text-xs">
+                        <Users className="h-3 w-3 mr-1" />
+                        <span>Cap: {table.capacity}</span>
+                    </div>
                 </div>
             </CardContent>
+            <div className="px-3 pb-3 space-y-2">
+                <div className="grid gap-1.5 grid-cols-2">
+                    <div className="space-y-1">
+                        <Label htmlFor={`covers-${table.id}`} className="text-[9px] uppercase tracking-wide text-muted-foreground">
+                            Covers
+                        </Label>
+                        <Input
+                            id={`covers-${table.id}`}
+                            type="number"
+                            min={1}
+                            value={coverCount}
+                            onChange={(event) => setCoverCount(event.target.value)}
+                            className="h-8 text-sm"
+                        />
+                    </div>
+                    <Button
+                        variant={isOccupied ? "outline" : "default"}
+                        className="col-span-1 self-end h-8 text-xs"
+                        disabled={isBusy}
+                        onClick={() => (isOccupied ? onUpdateCovers(table.name, parsedCoverCount) : onOccupy(table.name, parsedCoverCount))}
+                    >
+                        {isOccupied ? "Update" : "Occupy"}
+                    </Button>
+                </div>
+                {isOccupied ? (
+                    <Button
+                        variant="outline"
+                        className="w-full h-8 text-xs"
+                        disabled={isBusy}
+                        onClick={() => onRelease(table.name)}
+                    >
+                        Release
+                    </Button>
+                ) : null}
+                <Button variant="ghost" className="w-full h-8 text-xs" onClick={() => onOpenOrders(table.name)}>
+                    Take Orders
+                </Button>
+            </div>
         </Card>
     )
 }
 
 export default function TablesPage() {
+  const router = useRouter();
   const { user } = useAuth();
   const [tablesData, setTablesData] = useState<Table[]>([]);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [newTableName, setNewTableName] = useState("");
   const [newTableCapacity, setNewTableCapacity] = useState("");
+    const [tableOccupancyByName, setTableOccupancyByName] = useState<Record<string, { is_occupied: boolean; num_covers: number }>>({});
+    const [busyTableName, setBusyTableName] = useState<string | null>(null);
     const [activeId, setActiveId] = useState<number | null>(null);
   const { toast } = useToast();
 
@@ -160,15 +243,43 @@ export default function TablesPage() {
     const loadTables = async () => {
         if (!user?.restaurantUsername) {
             setTablesData([]);
+            setTableOccupancyByName({});
             return;
         }
 
         try {
             const data = await getTables(user.restaurantUsername);
-            setTablesData(Array.isArray(data) ? data : []);
+            const nextTables = Array.isArray(data) ? data : [];
+            setTablesData(nextTables);
+
+            const statusEntries = await Promise.all(
+                nextTables.map(async (table) => {
+                    try {
+                        const status = await getTableStatus(user.restaurantUsername, table.name);
+                        return [
+                            table.name.toLowerCase(),
+                            {
+                                is_occupied: Boolean(status?.is_occupied),
+                                num_covers: Math.max(1, Number(status?.num_covers ?? table.capacity ?? 1) || 1),
+                            },
+                        ] as const;
+                    } catch {
+                        return [
+                            table.name.toLowerCase(),
+                            {
+                                is_occupied: table.status === "Occupied",
+                                num_covers: Math.max(1, Number(table.capacity ?? 1) || 1),
+                            },
+                        ] as const;
+                    }
+                }),
+            );
+
+            setTableOccupancyByName(Object.fromEntries(statusEntries));
         } catch (error) {
             console.error("Failed to load tables", error);
             setTablesData([]);
+            setTableOccupancyByName({});
         }
     };
 
@@ -177,23 +288,9 @@ export default function TablesPage() {
             return;
         }
 
-        let isActive = true;
-
-        (async () => {
-            try {
-                const data = await getTables(user.restaurantUsername);
-                if (!isActive) return;
-                setTablesData(Array.isArray(data) ? data : []);
-            } catch (error) {
-                console.error("Failed to load tables", error);
-                if (!isActive) return;
-                setTablesData([]);
-            }
-        })();
-
-        return () => {
-            isActive = false;
-        };
+        loadTables().catch((error) => {
+            console.error("Failed to load tables", error);
+        });
     }, [user?.restaurantUsername]);
 
   const handleAddTable = async () => {
@@ -331,6 +428,72 @@ export default function TablesPage() {
   const sortedCapacities = Object.keys(groupedTables).map(Number).sort((a, b) => a - b);
   const totalTables = tablesData.length;
     const unavailableTables = tablesData.filter(t => t.status !== "Available").length;
+    const openOrdersForTable = (tableName: string) => {
+        router.push(`/dashboard/orders?table=${encodeURIComponent(tableName)}`);
+    };
+
+    const handleOccupyTable = async (tableName: string, numCovers: number) => {
+        if (!user?.restaurantUsername) return;
+        setBusyTableName(tableName);
+        try {
+            await occupyTable(user.restaurantUsername, tableName, numCovers);
+            toast({
+                title: "Table occupied",
+                description: `${tableName} is now marked occupied with ${numCovers} cover${numCovers === 1 ? "" : "s"}.`,
+            });
+            await loadTables();
+        } catch (error: any) {
+            toast({
+                title: "Unable to update table",
+                description: String(error?.message ?? "Failed to mark the table occupied."),
+                variant: "destructive",
+            });
+        } finally {
+            setBusyTableName(null);
+        }
+    };
+
+    const handleUpdateTableCovers = async (tableName: string, numCovers: number) => {
+        if (!user?.restaurantUsername) return;
+        setBusyTableName(tableName);
+        try {
+            await updateTableCovers(user.restaurantUsername, tableName, numCovers);
+            toast({
+                title: "Covers updated",
+                description: `${tableName} now has ${numCovers} cover${numCovers === 1 ? "" : "s"}.`,
+            });
+            await loadTables();
+        } catch (error: any) {
+            toast({
+                title: "Unable to update covers",
+                description: String(error?.message ?? "Failed to save the cover count."),
+                variant: "destructive",
+            });
+        } finally {
+            setBusyTableName(null);
+        }
+    };
+
+    const handleReleaseTable = async (tableName: string) => {
+        if (!user?.restaurantUsername) return;
+        setBusyTableName(tableName);
+        try {
+            await releaseTable(user.restaurantUsername, tableName);
+            toast({
+                title: "Table released",
+                description: `${tableName} is now available.`,
+            });
+            await loadTables();
+        } catch (error: any) {
+            toast({
+                title: "Unable to release table",
+                description: String(error?.message ?? "Failed to mark the table available."),
+                variant: "destructive",
+            });
+        } finally {
+            setBusyTableName(null);
+        }
+    };
 
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
@@ -411,7 +574,13 @@ export default function TablesPage() {
                                     <SortableTable
                                         key={table.id}
                                         table={table}
+                                        occupancy={tableOccupancyByName[table.name.toLowerCase()] ?? null}
                                         onRemove={handleRemoveTable}
+                                        onOpenOrders={openOrdersForTable}
+                                        onOccupy={handleOccupyTable}
+                                        onRelease={handleReleaseTable}
+                                        onUpdateCovers={handleUpdateTableCovers}
+                                        busyTableName={busyTableName}
                                     />
                                 ))}
                             </div>
@@ -430,7 +599,16 @@ export default function TablesPage() {
         </div>
          <DragOverlay>
             {activeTable ? (
-                <SortableTable table={activeTable} onRemove={() => {}} />
+                <SortableTable
+                    table={activeTable}
+                    occupancy={tableOccupancyByName[activeTable.name.toLowerCase()] ?? null}
+                    onRemove={() => {}}
+                    onOpenOrders={openOrdersForTable}
+                    onOccupy={handleOccupyTable}
+                    onRelease={handleReleaseTable}
+                    onUpdateCovers={handleUpdateTableCovers}
+                    busyTableName={busyTableName}
+                />
             ) : null}
         </DragOverlay>
     </DndContext>
