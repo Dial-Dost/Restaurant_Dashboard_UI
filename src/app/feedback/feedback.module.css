@@ -1,0 +1,286 @@
+/* Customer feedback form — ported from Restaurant_Feedback_UI/src/styles.css when
+   the standalone Vite app was folded into the dashboard as /feedback.
+   Theme tokens are namespaced --fb-* (the dashboard's shadcn globals already own
+   --accent/--ring/--border/--radius at :root) and are overridden at runtime via
+   inline style on the page root from the restaurant's branding, so the feedback
+   form matches the customer order + queue pages exactly. */
+
+.pageShell {
+  /* Defaults; the page sets the branded values inline on this element. */
+  --fb-bg: #fafafa;
+  --fb-surface: #ffffff;
+  --fb-text: #171717;
+  --fb-muted: #737373;
+  --fb-accent: #ea580c;
+  --fb-ring: #ea580c;
+  --fb-border: #ececec;
+  --fb-radius: 18px;
+
+  min-height: 100dvh;
+  background: var(--fb-bg);
+  color: var(--fb-text);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+.pageShell * { box-sizing: border-box; }
+.pageShell button { font-family: inherit; }
+
+/* ---- Layout: mobile-first single column, phone-width ---- */
+.feedbackWrap {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 0 0 3rem;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* ---- Header (accent gradient, like order/queue) ---- */
+.introCard {
+  background: linear-gradient(135deg, var(--fb-accent), color-mix(in srgb, var(--fb-accent) 74%, #000));
+  color: #fff;
+  padding: 30px 20px 26px;
+  border-radius: 0 0 26px 26px;
+  box-shadow: 0 10px 30px color-mix(in srgb, var(--fb-accent) 22%, transparent);
+  text-align: center;
+}
+.brandLogo {
+  height: 56px;
+  width: 56px;
+  object-fit: cover;
+  border-radius: 16px;
+  margin: 0 auto 12px;
+  display: block;
+  background: rgba(255, 255, 255, 0.18);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
+  border: 2px solid rgba(255, 255, 255, 0.4);
+}
+.eyebrow {
+  margin: 0 0 2px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.88);
+}
+.introCard h1 {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.introSub {
+  margin: 6px auto 0;
+  max-width: 30ch;
+  font-size: 0.92rem;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+/* ---- Cards ---- */
+.feedbackCard {
+  margin: 0 14px;
+  background: var(--fb-surface);
+  border: 1px solid var(--fb-border);
+  border-radius: var(--fb-radius);
+  padding: 18px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* ---- Fields ---- */
+.headerGrid { display: flex; flex-direction: column; gap: 12px; }
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--fb-text);
+}
+.field input,
+.field textarea {
+  font: inherit;
+  font-weight: 400;
+  color: var(--fb-text);
+  background: var(--fb-bg);
+  border: 1px solid var(--fb-border);
+  border-radius: 12px;
+  padding: 11px 13px;
+  outline: none;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.field textarea { resize: vertical; min-height: 88px; }
+.field input::placeholder,
+.field textarea::placeholder { color: var(--fb-muted); opacity: 0.8; }
+.field input:focus,
+.field textarea:focus {
+  border-color: var(--fb-ring);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--fb-ring) 18%, transparent);
+}
+
+/* ---- Category rating cards ---- */
+.categoryGrid { display: flex; flex-direction: column; gap: 12px; }
+.categoryCard {
+  background: var(--fb-surface);
+  border: 1px solid var(--fb-border);
+  border-radius: 14px;
+  padding: 14px;
+}
+.categoryHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.categoryHead h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--fb-text);
+}
+.question {
+  margin: 8px 0 0;
+  font-size: 0.86rem;
+  line-height: 1.45;
+  color: var(--fb-muted);
+}
+
+/* ---- Stars (large, touch-friendly) ---- */
+.starGroup { display: inline-flex; gap: 2px; }
+.star {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 1.7rem;
+  line-height: 1;
+  padding: 2px;
+  color: var(--fb-accent);
+  transition: transform 90ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.star:active { transform: scale(0.86); }
+
+/* ---- Low-rating follow-up (chat-style) ---- */
+.followUpWrap {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--fb-border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.botBubble {
+  margin: 0;
+  align-self: flex-start;
+  max-width: 90%;
+  background: color-mix(in srgb, var(--fb-accent) 9%, var(--fb-surface));
+  border: 1px solid color-mix(in srgb, var(--fb-accent) 16%, transparent);
+  color: var(--fb-text);
+  font-size: 0.86rem;
+  line-height: 1.4;
+  padding: 9px 12px;
+  border-radius: 14px 14px 14px 4px;
+}
+.followUpEntryRow { display: flex; gap: 8px; }
+.followUpReply {
+  flex: 1;
+  font: inherit;
+  color: var(--fb-text);
+  background: var(--fb-bg);
+  border: 1px solid var(--fb-border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  outline: none;
+}
+.followUpReply:focus { border-color: var(--fb-ring); box-shadow: 0 0 0 3px color-mix(in srgb, var(--fb-ring) 18%, transparent); }
+.followUpSend {
+  flex-shrink: 0;
+  font: inherit;
+  font-weight: 600;
+  color: #fff;
+  background: var(--fb-accent);
+  border: none;
+  border-radius: 12px;
+  padding: 0 16px;
+  cursor: pointer;
+  transition: transform 90ms ease, filter 140ms ease;
+}
+.followUpSend:active { transform: scale(0.96); }
+.followUpError { margin: 0; font-size: 0.8rem; color: #dc2626; }
+
+/* ---- Buttons ---- */
+.footerRow {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.footerRow p { margin: 0; font-size: 0.86rem; color: var(--fb-muted); line-height: 1.45; }
+.footerRow button,
+.anotherFeedbackBtn {
+  font: inherit;
+  font-weight: 600;
+  color: #fff;
+  background: var(--fb-accent);
+  border: none;
+  border-radius: 12px;
+  padding: 12px 16px;
+  cursor: pointer;
+  transition: transform 90ms ease, filter 140ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.footerRow button:active,
+.anotherFeedbackBtn:active,
+.submitBtn:active { transform: scale(0.985); }
+.footerRow button:disabled,
+.submitBtn:disabled { opacity: 0.55; cursor: default; }
+
+.submitBtn {
+  margin: 2px 0 0;
+  width: 100%;
+  font: inherit;
+  font-size: 1rem;
+  font-weight: 700;
+  color: #fff;
+  background: linear-gradient(135deg, var(--fb-accent), color-mix(in srgb, var(--fb-accent) 78%, #000));
+  border: none;
+  border-radius: 14px;
+  padding: 14px;
+  cursor: pointer;
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--fb-accent) 26%, transparent);
+  transition: transform 90ms ease, filter 140ms ease;
+}
+
+.message {
+  margin: 0;
+  font-size: 0.86rem;
+  color: var(--fb-muted);
+  text-align: center;
+}
+
+/* ---- Submission (success) screen ---- */
+.submissionScreen { text-align: center; align-items: center; }
+.successIcon {
+  width: 72px;
+  height: 72px;
+  margin: 4px auto 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 2rem;
+  color: #fff;
+  background: linear-gradient(135deg, var(--fb-accent), color-mix(in srgb, var(--fb-accent) 74%, #000));
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--fb-accent) 26%, transparent);
+}
+.submissionScreen h2 { margin: 6px 0 0; font-size: 1.3rem; font-weight: 700; }
+.submissionText { margin: 4px 0 0; font-size: 0.92rem; line-height: 1.5; color: var(--fb-muted); }
+.submissionScreen .anotherFeedbackBtn { margin-top: 14px; width: 100%; text-align: center; }
+
+/* Small phones */
+@media (max-width: 380px) {
+  .introCard h1 { font-size: 1.35rem; }
+  .star { font-size: 1.55rem; }
+}

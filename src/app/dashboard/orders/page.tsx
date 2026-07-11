@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   Card,
@@ -30,7 +30,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { MoreHorizontal, PlusCircle, Clock, Printer, Trash2, X, ChevronUp, ChevronDown } from "lucide-react";
+import { MoreHorizontal, PlusCircle, Clock, Printer, Trash2, X, ChevronUp, ChevronDown, Flame, ChefHat, CheckCircle2, MonitorSmartphone, Megaphone } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -62,15 +62,27 @@ import {
   confirmBillPaymentByWaiter,
   approveBillPaymentByAdmin,
   closeBillByOrder,
+  getDiscountRequests,
+  decideDiscountRequest,
+  reopenBill,
+  getBillForTable,
+  fireOrderItems,
+  barkOrder,
+  getKdsExpo,
+  getKitchenSections,
   // addAuditLogEntry,
   type MonthlyApcInsight,
   type PaymentMethod,
+  type PaymentSplit,
+  type DiscountRequest,
+  type ExpoTable,
 } from "@/lib/db";
 // Removed DnD kit - using simple arrow controls instead
 import { useAuth } from "@/context/AuthContext";
 import { useCurrency } from "@/hooks/use-currency";
 import { useToast } from "@/hooks/use-toast";
 import type { MenuItem } from "../menu/data";
+import { BillActions } from "./bill-actions";
 
 
 type OrderItem = {
@@ -80,6 +92,26 @@ type OrderItem = {
     price: number;
     orderedAt: string;
   note?: string | null;
+  // KOT station routing (enriched from the menu by the backend).
+  station?: string | null;
+  // Course hold-and-fire: held items wait (no prep ageing) until fired.
+  course_hold?: boolean;
+  fired_at?: string | null;
+};
+
+// Per-item prep timer as stored in Orders.timing (mirrors the backend shape).
+type OrderTimer = {
+  started_at: string | null;
+  ended_at: string | null;
+  paused: boolean;
+  pause_started_at: string | null;
+  paused_ms: number;
+};
+
+type OrderTiming = {
+  ordered_at?: string;
+  order?: OrderTimer;
+  items?: Record<string, OrderTimer>;
 };
 
 export type OrderStatus =
@@ -101,6 +133,8 @@ export type Order = {
   id: string;
   table: string;
   customer: string;
+  // Order channel: dine_in (default) / takeaway / delivery / swiggy / zomato.
+  order_type?: string | null;
   taken_by_employee_id?: string | null;
   taken_by_employee_name?: string | null;
   taken_by_employee_role?: string | null;
@@ -123,7 +157,15 @@ export type Order = {
   payment_admin_approved_by?: string | null;
   bill_closed_at?: string | null;
   bill_closed_by?: string | null;
+  bill_id?: string | null;
+  timing?: OrderTiming | null;
+  // "Barked" step: when the expo announced the order to the kitchen. Null =
+  // awaiting bark (greyed, no running timers); missing (old backend) = barked.
+  barked_at?: string | null;
 };
+
+// Un-barked orders sit greyed with idle timers until the expo barks them.
+const isOrderBarked = (o: Order): boolean => (o.barked_at === undefined ? true : o.barked_at !== null);
 
 const PAYMENT_METHOD_OPTIONS: PaymentMethod[] = [
   "Swiggy",
@@ -301,7 +343,22 @@ const storePrintBillPayload = (order: Order) => {
   return storageKey;
 };
 
+// Entry point: a locked, full-screen kitchen display when the URL asks for one
+// (?station=<Section>&kiosk=1), otherwise the normal Orders dashboard. Keeping
+// this as a thin wrapper means the full dashboard tree only ever mounts in the
+// non-kiosk case, so the existing page stays byte-for-byte unchanged.
 export default function OrdersPage() {
+  const searchParams = useSearchParams();
+  const station = searchParams.get("station")?.trim() ?? "";
+  const kiosk = (searchParams.get("kiosk")?.trim() ?? "").toLowerCase();
+  const kioskMode = station.length > 0 && (kiosk === "1" || kiosk === "true" || kiosk === "yes");
+  if (kioskMode) {
+    return <KitchenKioskDisplay station={station} />;
+  }
+  return <OrdersDashboard />;
+}
+
+function OrdersDashboard() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { currencySymbol } = useCurrency();
@@ -333,7 +390,7 @@ export default function OrdersPage() {
 
   const [orders, setOrders] = useState<Order[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
-  const [tables, setTables] = useState<{ id: number; name: string; capacity: number }[]>([]);
+  const [tables, setTables] = useState<{ id: number; name: string; capacity: number; qr_token?: string | null }[]>([]);
   const [monthlyApcInsight, setMonthlyApcInsight] = useState<MonthlyApcInsight | null>(null);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
@@ -345,7 +402,28 @@ export default function OrdersPage() {
   const [isDefaultTaxDialogOpen, setIsDefaultTaxDialogOpen] = useState(false);
   const [isProofPreviewOpen, setIsProofPreviewOpen] = useState(false);
   const [proofPreviewUrl, setProofPreviewUrl] = useState<string | null>(null);
+  // Pending staff discount requests (admin approval queue).
+  const [discountRequests, setDiscountRequests] = useState<DiscountRequest[]>([]);
+  // Split-tender dialog: the order being settled + its bill total + the rows.
+  const [splitPayOrder, setSplitPayOrder] = useState<Order | null>(null);
+  const [splitPayTotal, setSplitPayTotal] = useState<number | null>(null);
+  const [splitRows, setSplitRows] = useState<{ method: string; amount: string }[]>([]);
+  const [splitBusy, setSplitBusy] = useState(false);
   const selectedTableName = searchParams.get("table")?.trim() ?? "";
+  // Deep-link a kitchen display to one section (?station=Tandoor) so a physical
+  // kitchen screen can be locked to its own section.
+  const stationParam = searchParams.get("station")?.trim() ?? "";
+  // Managed kitchen sections (from settings) — drive the KDS filter chips even
+  // before any ticket carries the station.
+  const [kitchenSections, setKitchenSections] = useState<string[]>([]);
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    void getKitchenSections(user.restaurantUsername).then((s) => {
+      if (!cancelled) setKitchenSections(s);
+    });
+    return () => { cancelled = true; };
+  }, [user]);
   const selectedTable = useMemo(() => {
     if (!selectedTableName) return null;
     return tables.find((table) => table.name.toLowerCase() === selectedTableName.toLowerCase()) ?? null;
@@ -432,6 +510,15 @@ export default function OrdersPage() {
           console.warn('failed to load tables', e);
           setTables([]);
         }
+        // pending discount approvals (admin-only endpoint; harmless empty otherwise)
+        if (isAdmin) {
+          try {
+            const reqs = await getDiscountRequests(user.restaurantUsername);
+            if (isActive) setDiscountRequests(reqs);
+          } catch {
+            if (isActive) setDiscountRequests([]);
+          }
+        }
       } catch (error) {
         console.error("Failed to load orders", error);
         if (!isActive) {
@@ -476,6 +563,10 @@ export default function OrdersPage() {
         if (detail.event === 'table:added' || detail.event === 'table:deleted' || detail.event === 'table:updated') {
           if (user?.restaurantUsername) getTables(user.restaurantUsername).then(t => setTables(Array.isArray(t) ? t : [])).catch(() => {});
         }
+        // Keep the KDS/orders list live when items are fired or bills change.
+        if (detail.event === 'order:updated' || detail.event === 'bill:updated') {
+          if (user?.restaurantUsername) getOrders(user.restaurantUsername).then(o => setOrders(Array.isArray(o) ? dedupeOrdersById(o) : [])).catch(() => {});
+        }
       } catch (err) {
         // ignore
       }
@@ -503,7 +594,7 @@ export default function OrdersPage() {
     window.open(url, '_blank');
   }
   
-  const handleAddOrder = async (newOrderData: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null }[] }) => {
+  const handleAddOrder = async (newOrderData: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null; course_hold?: boolean }[]; covers?: number }) => {
     if (!user?.restaurantUsername) return;
     const items = newOrderData.items.map(it => ({
       id: it.id ?? `i${Date.now()}${Math.random().toString(36).slice(2,5)}`,
@@ -512,6 +603,7 @@ export default function OrdersPage() {
       price: Number(it.price ?? 0),
       orderedAt: new Date().toISOString(),
       note: typeof it.note === "string" && it.note.trim().length > 0 ? it.note.trim() : null,
+      ...(it.course_hold ? { course_hold: true } : {}),
     }));
     const subtotal = items.reduce((acc, it) => acc + it.price * it.quantity, 0);
     const defaults = deriveDefaultsForCharges(defaultTax);
@@ -539,7 +631,7 @@ export default function OrdersPage() {
       const tableName = String(tables.find(t => t.id === newOrderData.tableId)?.name ?? '');
       if (tableName) {
         try {
-          await occupyTable(user.restaurantUsername, tableName, 1);
+          await occupyTable(user.restaurantUsername, tableName, newOrderData.covers ?? null);
         } catch (e) {
           // ignore occupancy errors — addOrder will fail if necessary
         }
@@ -551,7 +643,7 @@ export default function OrdersPage() {
       // Link the table to the created order id for quick access
       if (createdId && tableName) {
         try {
-          const occ = await occupyTable(user.restaurantUsername, tableName, 1, createdId);
+          const occ = await occupyTable(user.restaurantUsername, tableName, null, createdId);
           // sanity check: backend should return linked_order_id
           if (!occ || (occ as any).linked_order_id == null) {
             console.warn('occupyTable did not persist linked_order_id', { tableName, createdId, resp: occ });
@@ -724,6 +816,19 @@ export default function OrdersPage() {
       } catch (e) {
         // ignore
       }
+    }
+  };
+
+  // Bark the order to the kitchen: advances the visible stage and starts the
+  // order/dish prep timers (they stay idle until the bark).
+  const handleBarkOrder = async (order: Order) => {
+    if (!user?.restaurantUsername) return;
+    try {
+      await barkOrder(user.restaurantUsername, order.id);
+      toast({ title: "Order barked", description: `Table ${order.table || "—"} announced to the kitchen — timers started.` });
+      await refreshOrders();
+    } catch (err) {
+      toast({ title: "Unable to bark order", description: String((err as Error)?.message ?? err), variant: "destructive" });
     }
   };
 
@@ -958,6 +1063,105 @@ export default function OrdersPage() {
     }
   };
 
+  const refreshDiscountRequests = async () => {
+    if (!user?.restaurantUsername || !isAdmin) return;
+    try { setDiscountRequests(await getDiscountRequests(user.restaurantUsername)); } catch { /* keep current */ }
+  };
+
+  const handleDecideDiscount = async (request: DiscountRequest, approve: boolean) => {
+    if (!user?.restaurantUsername) return;
+    try {
+      await decideDiscountRequest(user.restaurantUsername, request.id, approve);
+      toast({
+        title: approve ? "Discount approved" : "Discount rejected",
+        description: `Table ${request.table_name ?? "?"} · ${request.discount_value}${request.discount_type === "percent" ? "%" : ""} (≈${currencySymbol}${request.amount.toFixed(2)})`,
+      });
+      await Promise.all([refreshDiscountRequests(), refreshOrders()]);
+    } catch (err: unknown) {
+      toast({ title: "Failed", description: String((err as Error)?.message ?? err), variant: "destructive" });
+      await refreshDiscountRequests();
+    }
+  };
+
+  const handleReopenBill = async (order: Order) => {
+    if (!user?.restaurantUsername) return;
+    if (!hasRole('admin')) {
+      showRoleRequiredToast('admin');
+      return;
+    }
+    if (!order.bill_id) {
+      toast({ title: "No bill found for this order", variant: "destructive" });
+      return;
+    }
+    const confirmed = window.confirm('Re-open this closed bill? The table goes back in service and the payment must be approved again.');
+    if (!confirmed) return;
+    try {
+      const r = await reopenBill(user.restaurantUsername, order.bill_id);
+      toast({ title: "Bill re-opened", description: `${r.restored_orders ?? 0} order(s) restored — approve the payment again to settle.` });
+      await refreshOrders();
+    } catch (err: unknown) {
+      toast({ title: "Unable to re-open bill", description: String((err as Error)?.message ?? err), variant: "destructive" });
+    }
+  };
+
+  // --- Split tender (multiple payment modes on one bill) --------------------
+  const openSplitPayment = async (order: Order) => {
+    if (!user?.restaurantUsername) return;
+    if (!(hasRole("waiter") || hasRole("admin"))) {
+      showRoleRequiredToast("waiter or admin");
+      return;
+    }
+    // The bill total is the TABLE's consolidated grand total (discount + service
+    // charge + taxes), not the single order's total — fetch it for prefill.
+    let total: number | null = null;
+    try {
+      const bill = await getBillForTable(user.restaurantUsername, order.table);
+      const g = Number(bill?.grand_total);
+      if (Number.isFinite(g) && g > 0) total = Math.round(g * 100) / 100;
+    } catch { /* leave null — user fills amounts manually */ }
+    setSplitPayTotal(total);
+    setSplitRows([
+      { method: "Cash", amount: total != null ? total.toFixed(2) : "" },
+      { method: "Card", amount: "0.00" },
+    ]);
+    setSplitPayOrder(order);
+  };
+
+  const updateSplitRow = (idx: number, patch: Partial<{ method: string; amount: string }>) => {
+    setSplitRows((rows) => {
+      const next = rows.map((r, i) => (i === idx ? { ...r, ...patch } : { ...r }));
+      // Auto-balance: the LAST row absorbs the remainder of the bill total.
+      if (splitPayTotal != null && patch.amount !== undefined && idx < next.length - 1) {
+        const sumOthers = next.slice(0, -1).reduce((s, r) => s + (Number(r.amount) || 0), 0);
+        const rest = Math.round((splitPayTotal - sumOthers) * 100) / 100;
+        next[next.length - 1] = { ...next[next.length - 1], amount: rest > 0 ? rest.toFixed(2) : "0.00" };
+      }
+      return next;
+    });
+  };
+
+  const submitSplitPayment = async () => {
+    if (!user?.restaurantUsername || !user.employeeId || !splitPayOrder) return;
+    const splits: PaymentSplit[] = splitRows
+      .map((r) => ({ method: r.method, amount: Math.round((Number(r.amount) || 0) * 100) / 100 }))
+      .filter((r) => r.amount > 0);
+    if (splits.length < 2) {
+      toast({ title: "A split payment needs at least two parts", variant: "destructive" });
+      return;
+    }
+    setSplitBusy(true);
+    try {
+      await confirmBillPaymentByWaiter(user.restaurantUsername, user.employeeId, splitPayOrder.id, "Split", null, splits);
+      toast({ title: "Split payment recorded", description: "Awaiting admin approval." });
+      setSplitPayOrder(null);
+      await refreshOrders();
+    } catch (err: unknown) {
+      toast({ title: "Unable to record split payment", description: String((err as Error)?.message ?? err), variant: "destructive" });
+    } finally {
+      setSplitBusy(false);
+    }
+  };
+
   const refreshOrders = async () => {
     if (!user?.restaurantUsername) return;
     try {
@@ -966,6 +1170,9 @@ export default function OrdersPage() {
       if (selectedOrder) {
         const updatedSelected = Array.isArray(updatedOrders) ? updatedOrders.find(o => o.id === selectedOrder.id) ?? null : null;
         if (updatedSelected) setSelectedOrder(updatedSelected);
+      }
+      if (isAdmin) {
+        try { setDiscountRequests(await getDiscountRequests(user.restaurantUsername)); } catch { /* keep current */ }
       }
     } catch (err) {
       console.error('refreshOrders failed', err);
@@ -996,6 +1203,43 @@ export default function OrdersPage() {
           ) : null}
         </div>
       </div>
+      {isAdmin && discountRequests.length > 0 ? (
+        <Card className="border-amber-300">
+          <CardHeader>
+            <CardTitle>Discount approvals</CardTitle>
+            <CardDescription>
+              Staff discounts above your approval threshold wait here until a manager decides.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {discountRequests.map((request) => (
+              <div key={request.id} className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-3">
+                <div className="text-sm">
+                  <div className="font-medium">
+                    Table {request.table_name ?? "?"} · {request.discount_value}{request.discount_type === "percent" ? "%" : ""} off
+                    {" "}(≈{currencySymbol}{request.amount.toFixed(2)})
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    Requested by {request.requested_by ?? "unknown"} · {formatOrderedAt(request.created_at)}
+                    {request.reason ? ` · “${request.reason}”` : ""}
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <Button size="sm" variant="outline" onClick={() => { void handleDecideDiscount(request, false); }}>Reject</Button>
+                  <Button size="sm" onClick={() => { void handleDecideDiscount(request, true); }}>Approve</Button>
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      ) : null}
+      <KitchenDisplay
+        orders={displayOrders}
+        restaurantId={user?.restaurantUsername ?? ""}
+        onRefresh={refreshOrders}
+        managedSections={kitchenSections}
+        initialStation={stationParam || undefined}
+      />
       <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
         <DialogContent className="sm:max-w-2xl w-full">
           <DialogHeader>
@@ -1143,12 +1387,53 @@ export default function OrdersPage() {
                     )}
                   </TableCell>
                   <TableCell>
-                    <Badge variant={getStatusVariant(order.status)}>
-                      {order.status}
-                    </Badge>
+                    {order.status === "Preparing" && !isOrderBarked(order) ? (
+                      <Badge variant="outline" className="border-dashed text-muted-foreground">Not barked</Badge>
+                    ) : (
+                      <Badge variant={getStatusVariant(order.status)}>
+                        {order.status}
+                      </Badge>
+                    )}
                   </TableCell>
                   <TableCell>
                     {isWaiterOnly ? null : (
+                    <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+                    {order.status === "Preparing" && !isOrderBarked(order) ? (
+                      <Button
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        title="Bark this order to the kitchen — starts the prep timers"
+                        onClick={() => { void handleBarkOrder(order); }}
+                      >
+                        <Megaphone className="mr-1 h-3.5 w-3.5" /> Bark
+                      </Button>
+                    ) : null}
+                    {order.table && order.status !== 'Cancelled' && (
+                      <BillActions
+                        restaurantId={user?.restaurantUsername ?? ''}
+                        tableName={order.table}
+                        isAdmin={isAdmin}
+                        onChanged={() => { void refreshOrders(); }}
+                      />
+                    )}
+                    {(() => {
+                      // Customer-facing display: full-screen live bill for this table
+                      // (public page — the signed table token is the auth).
+                      const tbl = tables.find((t) => t.name.toLowerCase() === order.table?.toLowerCase());
+                      if (!tbl?.qr_token || !user?.restaurantUsername) return null;
+                      const cfdUrl = `/cfd/${encodeURIComponent(user.restaurantUsername)}?t=${encodeURIComponent(tbl.qr_token)}`;
+                      return (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          title="Open customer display"
+                          onClick={() => window.open(cfdUrl, '_blank')}
+                        >
+                          <MonitorSmartphone className="h-4 w-4" />
+                          <span className="sr-only">Open customer display</span>
+                        </Button>
+                      );
+                    })()}
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button aria-haspopup="true" size="icon" variant="ghost" onClick={(e) => e.stopPropagation()}>
@@ -1269,6 +1554,14 @@ export default function OrdersPage() {
                                 {method}
                               </DropdownMenuItem>
                             ))}
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              onClick={() => { void openSplitPayment(order); }}
+                              disabled={order.status !== "Bill Verification"}
+                              className="data-[disabled]:opacity-50 data-[disabled]:cursor-not-allowed"
+                            >
+                              Split payment…
+                            </DropdownMenuItem>
                           </DropdownMenuSubContent>
                         </DropdownMenuSub>
                         <DropdownMenuItem
@@ -1283,6 +1576,14 @@ export default function OrdersPage() {
                         >
                           Close Bill (Admin)
                         </DropdownMenuItem>
+                        {isAdmin && (
+                          <DropdownMenuItem
+                            onClick={() => { void handleReopenBill(order); }}
+                            disabled={!order.bill_closed_at || !order.bill_id}
+                          >
+                            Re-open Bill (Admin)
+                          </DropdownMenuItem>
+                        )}
                         <DropdownMenuSeparator />
                         <DropdownMenuItem 
                           onClick={() => {
@@ -1308,6 +1609,7 @@ export default function OrdersPage() {
                         </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
+                    </div>
                     )}
                   </TableCell>
                 </TableRow>
@@ -1316,7 +1618,68 @@ export default function OrdersPage() {
           </Table>
         </CardContent>
       </Card>
-      
+
+      <Dialog open={splitPayOrder !== null} onOpenChange={(v) => { if (!v && !splitBusy) setSplitPayOrder(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Split payment · Table {splitPayOrder?.table}</DialogTitle>
+            <DialogDescription>
+              {splitPayTotal != null
+                ? `Bill total ${currencySymbol}${splitPayTotal.toFixed(2)} — the amounts must add up exactly (the last row auto-balances).`
+                : "Enter the amount taken by each payment mode — together they must add up to the bill total."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            {splitRows.map((row, idx) => (
+              <div key={idx} className="flex items-center gap-2">
+                <Select value={row.method} onValueChange={(v) => updateSplitRow(idx, { method: v })}>
+                  <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {["Cash", "Upi", "Card"].map((m) => (
+                      <SelectItem key={m} value={m}>{m}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={row.amount}
+                  onChange={(e) => updateSplitRow(idx, { amount: e.target.value })}
+                />
+                {splitRows.length > 2 ? (
+                  <Button variant="ghost" size="icon" onClick={() => setSplitRows((rows) => rows.filter((_, i) => i !== idx))}>
+                    <X className="h-4 w-4" />
+                  </Button>
+                ) : null}
+              </div>
+            ))}
+            {splitRows.length < 4 ? (
+              <Button variant="outline" size="sm" onClick={() => setSplitRows((rows) => [...rows, { method: "Upi", amount: "0.00" }])}>
+                Add payment mode
+              </Button>
+            ) : null}
+            {splitPayTotal != null ? (() => {
+              const sum = splitRows.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+              const diff = Math.round((splitPayTotal - sum) * 100) / 100;
+              return Math.abs(diff) > 0.01 ? (
+                <p className="text-xs text-red-600">
+                  {diff > 0
+                    ? `${currencySymbol}${diff.toFixed(2)} still unallocated`
+                    : `${currencySymbol}${Math.abs(diff).toFixed(2)} over the bill total`}
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground">Amounts match the bill total.</p>
+              );
+            })() : null}
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setSplitPayOrder(null)} disabled={splitBusy}>Cancel</Button>
+            <Button onClick={() => { void submitSplitPayment(); }} disabled={splitBusy}>Record split payment</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {selectedOrder && <OrderDetailsDialog
         order={selectedOrder}
         canEditPrice={isAdmin}
@@ -1435,7 +1798,569 @@ export default function OrdersPage() {
   );
 }
 
-function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSelectedTable }: { onSubmit: (data: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null }[] }) => Promise<void> | void; menuItems: MenuItem[]; tables: { id: number; name: string; capacity: number }[]; selectedTableName?: string; onClearSelectedTable?: () => void }) {
+// ---- Kitchen display (KDS): station-filtered tickets + expo/pass view ------
+
+// Live elapsed (ms) for a prep timer, mirroring the backend computation.
+const timerElapsedMs = (t?: OrderTimer | null, nowMs?: number): number => {
+  if (!t?.started_at) return 0;
+  const now = nowMs ?? Date.now();
+  const end = t.ended_at ? Date.parse(t.ended_at) : now;
+  let paused = t.paused_ms ?? 0;
+  if (t.paused && t.pause_started_at) paused += now - Date.parse(t.pause_started_at);
+  return Math.max(0, end - Date.parse(t.started_at) - paused);
+};
+
+const formatElapsed = (ms: number) => {
+  const s = Math.floor(ms / 1000);
+  const m = Math.floor(s / 60);
+  return m > 0 ? `${m}m ${String(s % 60).padStart(2, "0")}s` : `${s}s`;
+};
+
+const isItemHeld = (item: OrderItem) => item.course_hold === true && !item.fired_at;
+
+const StationBadge = ({ station }: { station?: string | null }) =>
+  station ? (
+    <Badge variant="outline" className="text-[10px] uppercase tracking-wide px-1.5 py-0">
+      {station}
+    </Badge>
+  ) : null;
+
+// Order-channel badge (Swiggy/Zomato/takeaway/delivery) so aggregator tickets
+// are unmissable on the pass. Dine-in (the default) shows nothing.
+const SOURCE_BADGE_CLASS: Record<string, string> = {
+  swiggy: "border-orange-400 bg-orange-50 text-orange-700",
+  zomato: "border-red-400 bg-red-50 text-red-700",
+};
+const SourceBadge = ({ source }: { source?: string | null }) => {
+  const s = (source ?? "").trim().toLowerCase();
+  if (!s || s === "dine_in") return null;
+  return (
+    <Badge variant="outline" className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0 ${SOURCE_BADGE_CLASS[s] ?? ""}`}>
+      {s.replace(/_/g, " ")}
+    </Badge>
+  );
+};
+
+function KitchenDisplay({ orders, restaurantId, onRefresh, managedSections = [], initialStation }: { orders: Order[]; restaurantId: string; onRefresh: () => Promise<void>; managedSections?: string[]; initialStation?: string }) {
+  const { toast } = useToast();
+  const [mode, setMode] = useState<"tickets" | "expo">("tickets");
+  // ?station= deep link initialises the filter so a wall screen stays locked to
+  // one kitchen section.
+  const [station, setStation] = useState<string>(initialStation?.trim() || "All");
+  const [expo, setExpo] = useState<ExpoTable[]>([]);
+  const [now, setNow] = useState(() => Date.now());
+  const [busyItem, setBusyItem] = useState<string | null>(null);
+
+  // Kitchen tickets = orders still in service; settled/verification orders left out.
+  const activeOrders = useMemo(
+    () => orders.filter((o) => o.status === "Preparing" || o.status === "Served"),
+    [orders],
+  );
+
+  // Chips = union of the MANAGED section list (settings order first) and any
+  // station present on active tickets (legacy/free-form labels).
+  const stations = useMemo(() => {
+    const out: string[] = ["All"];
+    const seen = new Set<string>();
+    for (const s of managedSections) {
+      const key = s.toLowerCase();
+      if (!seen.has(key)) { seen.add(key); out.push(s); }
+    }
+    const extras = new Set<string>();
+    for (const o of activeOrders) for (const it of o.items) {
+      if (it.station && !seen.has(it.station.toLowerCase())) extras.add(it.station);
+    }
+    out.push(...Array.from(extras).sort());
+    return out;
+  }, [activeOrders, managedSections]);
+
+  // Ageing tick while tickets are on screen.
+  useEffect(() => {
+    if (mode !== "tickets" || activeOrders.length === 0) return;
+    const t = setInterval(() => setNow(Date.now()), 10000);
+    return () => clearInterval(t);
+  }, [mode, activeOrders.length]);
+
+  useEffect(() => {
+    if (mode !== "expo" || !restaurantId) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const r = await getKdsExpo(restaurantId);
+        if (!cancelled) setExpo(r.tables);
+      } catch { /* keep the previous snapshot */ }
+    };
+    void load();
+    const t = setInterval(() => { void load(); }, 15000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [mode, restaurantId, orders]);
+
+  const handleFire = async (orderId: string, itemId: string) => {
+    setBusyItem(itemId);
+    try {
+      await fireOrderItems(restaurantId, orderId, [itemId]);
+      toast({ title: "Course fired", description: "The kitchen has it now." });
+      await onRefresh();
+    } catch (err: unknown) {
+      toast({ title: "Unable to fire course", description: String((err as Error)?.message ?? err), variant: "destructive" });
+    } finally {
+      setBusyItem(null);
+    }
+  };
+
+  const handleServe = async (orderId: string, itemId: string) => {
+    setBusyItem(itemId);
+    try {
+      await requestBackend({
+        path: `/orders/${encodeURIComponent(orderId)}/items/${encodeURIComponent(itemId)}/serve`,
+        method: "POST",
+        restaurantId,
+      });
+      await onRefresh();
+    } catch (err: unknown) {
+      toast({ title: "Unable to mark served", description: String((err as Error)?.message ?? err), variant: "destructive" });
+    } finally {
+      setBusyItem(null);
+    }
+  };
+
+  // Bark the ticket to the kitchen — the prep timers start at this instant.
+  const handleBark = async (orderId: string) => {
+    setBusyItem(orderId);
+    try {
+      await barkOrder(restaurantId, orderId);
+      toast({ title: "Order barked", description: "The kitchen has it now — timers started." });
+      await onRefresh();
+    } catch (err: unknown) {
+      toast({ title: "Unable to bark order", description: String((err as Error)?.message ?? err), variant: "destructive" });
+    } finally {
+      setBusyItem(null);
+    }
+  };
+
+  const tickets = activeOrders
+    .map((order) => ({
+      order,
+      items: order.items.filter((it) => station === "All" || (it.station ?? "").toLowerCase() === station.toLowerCase()),
+    }))
+    .filter((t) => t.items.length > 0);
+
+  const expoChipClass = (status: string) =>
+    status === "served"
+      ? "bg-green-100 text-green-800 border-green-300"
+      : status === "held"
+        ? "bg-muted text-muted-foreground border-dashed"
+        : status === "unbarked"
+          ? "bg-muted/70 text-muted-foreground border-dotted opacity-80"
+          : "bg-amber-100 text-amber-900 border-amber-300";
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <CardTitle className="flex items-center gap-2"><ChefHat className="h-5 w-5" /> Kitchen display</CardTitle>
+          <CardDescription>
+            {mode === "tickets"
+              ? "Live tickets with station routing and course holds."
+              : "Expo/pass: per-table ready vs pending consolidation."}
+          </CardDescription>
+        </div>
+        <div className="flex gap-1 rounded-md border p-1">
+          <Button size="sm" variant={mode === "tickets" ? "default" : "ghost"} onClick={() => setMode("tickets")}>Tickets</Button>
+          <Button size="sm" variant={mode === "expo" ? "default" : "ghost"} onClick={() => setMode("expo")}>Expo</Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {mode === "tickets" ? (
+          <>
+            {stations.length > 1 ? (
+              <div className="mb-3 flex flex-wrap items-center gap-1.5">
+                {stations.map((s) => (
+                  <span key={s} className="inline-flex items-center">
+                    <Button
+                      size="sm"
+                      variant={station.toLowerCase() === s.toLowerCase() ? "default" : "outline"}
+                      className={`h-7 px-2.5 text-xs capitalize ${s === "All" ? "" : "rounded-r-none"}`}
+                      onClick={() => setStation(s)}
+                    >
+                      {s}
+                    </Button>
+                    {s !== "All" ? (
+                      <Button
+                        asChild
+                        size="sm"
+                        variant="outline"
+                        className="h-7 rounded-l-none border-l-0 px-1.5"
+                        title={`Open the locked ${s} kitchen display in a new tab`}
+                      >
+                        <a
+                          href={`/dashboard/orders?station=${encodeURIComponent(s)}&kiosk=1`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          aria-label={`Open locked ${s} kitchen display`}
+                        >
+                          <MonitorSmartphone className="h-3 w-3" />
+                        </a>
+                      </Button>
+                    ) : null}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {tickets.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No active kitchen tickets{station !== "All" ? ` for ${station}` : ""}.</p>
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                {tickets.map(({ order, items }) => {
+                  const orderMs = timerElapsedMs(order.timing?.order, now);
+                  // Un-barked tickets sit greyed with idle timers until barked.
+                  const barked = isOrderBarked(order);
+                  return (
+                    <Card key={order.id} className={`border-dashed ${barked ? "" : "bg-muted/40"}`}>
+                      <CardHeader className="pb-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <CardTitle className="flex items-center gap-1.5 text-base">
+                            {order.table || "—"}
+                            <SourceBadge source={order.order_type} />
+                          </CardTitle>
+                          <div className="flex items-center gap-2">
+                            {barked && order.timing?.order?.started_at ? (
+                              <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                                <Clock className="h-3 w-3" />{formatElapsed(orderMs)}
+                              </span>
+                            ) : null}
+                            {barked ? (
+                              <Badge variant={order.status === "Preparing" ? "secondary" : "default"}>{order.status}</Badge>
+                            ) : (
+                              <Badge variant="outline" className="border-dashed text-muted-foreground">Not barked</Badge>
+                            )}
+                          </div>
+                        </div>
+                      </CardHeader>
+                      <CardContent className="space-y-1.5 pt-0">
+                        {items.map((item) => {
+                          const held = isItemHeld(item);
+                          const timer = order.timing?.items?.[item.id];
+                          const served = Boolean(timer?.ended_at);
+                          const ms = timerElapsedMs(timer, now);
+                          return (
+                            <div key={item.id} className={`flex items-center justify-between gap-2 text-sm ${held || !barked ? "opacity-60" : ""}`}>
+                              <div className="min-w-0">
+                                <span className={served ? "line-through text-muted-foreground" : ""}>
+                                  {item.quantity}× {item.name}
+                                </span>{" "}
+                                <StationBadge station={item.station} />
+                                {held ? (
+                                  <Badge variant="outline" className="ml-1 border-amber-400 bg-amber-50 text-amber-800 text-[10px] px-1.5 py-0">HOLD</Badge>
+                                ) : null}
+                                {item.note ? <div className="text-xs text-muted-foreground">Note: {item.note}</div> : null}
+                              </div>
+                              <div className="flex shrink-0 items-center gap-1">
+                                {!barked ? null : served ? (
+                                  <CheckCircle2 className="h-4 w-4 text-green-600" />
+                                ) : held ? (
+                                  <Button size="sm" variant="outline" className="h-7 px-2 text-xs" disabled={busyItem === item.id} onClick={() => { void handleFire(order.id, item.id); }}>
+                                    <Flame className="mr-1 h-3 w-3 text-orange-500" /> Fire
+                                  </Button>
+                                ) : (
+                                  <>
+                                    {timer?.started_at ? (
+                                      <span className="text-xs text-muted-foreground">{formatElapsed(ms)}</span>
+                                    ) : null}
+                                    <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" disabled={busyItem === item.id} onClick={() => { void handleServe(order.id, item.id); }}>
+                                      Serve
+                                    </Button>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                        {!barked ? (
+                          <Button size="sm" className="mt-2 w-full" disabled={busyItem === order.id} onClick={() => { void handleBark(order.id); }}>
+                            <Megaphone className="mr-1.5 h-4 w-4" /> Bark to kitchen
+                          </Button>
+                        ) : null}
+                      </CardContent>
+                    </Card>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        ) : expo.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No active tables on the pass.</p>
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {expo.map((t) => (
+              <Card key={t.table} className={`border ${t.pending_count === 0 ? "border-green-300" : "border-amber-300"}`}>
+                <CardHeader className="pb-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <CardTitle className="flex items-center gap-1.5 text-base">
+                      {t.table}
+                      <SourceBadge source={t.source} />
+                    </CardTitle>
+                    <div className="flex items-center gap-1 text-xs">
+                      <Badge className="bg-green-100 text-green-800 hover:bg-green-100">{t.ready_count} ready</Badge>
+                      <Badge variant="secondary" className={t.pending_count > 0 ? "bg-amber-100 text-amber-900 hover:bg-amber-100" : ""}>{t.pending_count} pending</Badge>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent className="pt-0">
+                  <div className="flex flex-wrap gap-1.5">
+                    {t.items.map((item, idx) => (
+                      <span key={idx} className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs ${expoChipClass(item.status)}`}>
+                        {item.qty}× {item.name}
+                        {item.station ? <span className="uppercase text-[9px] opacity-70">· {item.station}</span> : null}
+                        {item.status === "held" ? <span className="text-[9px] font-semibold">HOLD</span> : null}
+                        {item.status === "unbarked" ? <span className="text-[9px] font-semibold">NOT BARKED</span> : null}
+                      </span>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---- Locked per-zone kitchen display (kiosk) -------------------------------
+// A wall-mounted kitchen monitor locked to ONE section via ?station=X&kiosk=1.
+// It renders ONLY that section's live tickets, full-screen and large, with
+// nothing that could let kitchen staff switch sections or reach bill/admin
+// actions. It pulls only that section server-side (?station=) AND re-filters
+// client-side, so it stays locked even against a backend that ignores the
+// param. There is deliberately NO chip bar and NO way to change the section.
+function KitchenKioskDisplay({ station }: { station: string }) {
+  const { user } = useAuth();
+  const { toast } = useToast();
+  const restaurantId = user?.restaurantUsername ?? "";
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [now, setNow] = useState(() => Date.now());
+  const [busyItem, setBusyItem] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!restaurantId) return;
+    try {
+      const data = await getOrders(restaurantId, station);
+      setOrders(Array.isArray(data) ? dedupeOrdersById(data) : []);
+    } catch {
+      // Keep the previous snapshot on a transient failure — a kitchen screen
+      // should never flash empty because one poll blipped.
+    } finally {
+      setLoaded(true);
+    }
+  }, [restaurantId, station]);
+
+  // Initial load + polling auto-refresh + realtime nudges.
+  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    const t = setInterval(() => { void load(); }, 10000);
+    return () => clearInterval(t);
+  }, [load]);
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent)?.detail as { event?: string } | undefined;
+      if (!detail) return;
+      if (detail.event === "order:updated" || detail.event === "bill:updated") void load();
+    };
+    window.addEventListener("realtime:event", handler as EventListener);
+    return () => window.removeEventListener("realtime:event", handler as EventListener);
+  }, [load]);
+
+  // Ageing tick so item/urgency timers keep advancing on the wall screen.
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 5000);
+    return () => clearInterval(t);
+  }, []);
+
+  const activeOrders = useMemo(
+    () => orders.filter((o) => o.status === "Preparing" || o.status === "Served"),
+    [orders],
+  );
+
+  // Locked to ONE section — re-filter client-side (defence in depth) so this
+  // display can never show another zone's items even if the server returned the
+  // full set.
+  const tickets = useMemo(
+    () =>
+      activeOrders
+        .map((order) => ({
+          order,
+          items: order.items.filter((it) => (it.station ?? "").toLowerCase() === station.toLowerCase()),
+        }))
+        .filter((t) => t.items.length > 0),
+    [activeOrders, station],
+  );
+
+  const handleFire = async (orderId: string, itemId: string) => {
+    setBusyItem(itemId);
+    try {
+      await fireOrderItems(restaurantId, orderId, [itemId]);
+      await load();
+    } catch (err: unknown) {
+      toast({ title: "Unable to fire course", description: String((err as Error)?.message ?? err), variant: "destructive" });
+    } finally {
+      setBusyItem(null);
+    }
+  };
+
+  const handleServe = async (orderId: string, itemId: string) => {
+    setBusyItem(itemId);
+    try {
+      await requestBackend({ path: `/orders/${encodeURIComponent(orderId)}/items/${encodeURIComponent(itemId)}/serve`, method: "POST", restaurantId });
+      await load();
+    } catch (err: unknown) {
+      toast({ title: "Unable to mark served", description: String((err as Error)?.message ?? err), variant: "destructive" });
+    } finally {
+      setBusyItem(null);
+    }
+  };
+
+  const handleBark = async (orderId: string) => {
+    setBusyItem(orderId);
+    try {
+      await barkOrder(restaurantId, orderId);
+      await load();
+    } catch (err: unknown) {
+      toast({ title: "Unable to bark order", description: String((err as Error)?.message ?? err), variant: "destructive" });
+    } finally {
+      setBusyItem(null);
+    }
+  };
+
+  // Order-level urgency by minutes since the prep timer started (i.e. barked).
+  const urgency = (order: Order): "fresh" | "warn" | "late" => {
+    const min = timerElapsedMs(order.timing?.order, now) / 60000;
+    if (min >= 10) return "late";
+    if (min >= 5) return "warn";
+    return "fresh";
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex flex-col overflow-hidden bg-background text-foreground">
+      {/* Locked header: section name + kitchen-display badge. No chips, no way to switch. */}
+      <header className="flex items-center justify-between gap-3 border-b bg-card px-6 py-4">
+        <div className="flex min-w-0 items-center gap-3">
+          <ChefHat className="h-8 w-8 shrink-0 text-primary" />
+          <h1 className="truncate text-3xl font-bold capitalize md:text-4xl">{station}</h1>
+          <Badge variant="secondary" className="ml-1 hidden items-center gap-1 text-xs uppercase tracking-wide sm:inline-flex">
+            <MonitorSmartphone className="h-3.5 w-3.5" /> Kitchen display
+          </Badge>
+        </div>
+        <div className="flex items-center gap-3 text-sm text-muted-foreground">
+          <span className="hidden sm:inline">{tickets.length} active ticket{tickets.length === 1 ? "" : "s"}</span>
+          <span className="flex items-center gap-1 tabular-nums">
+            <Clock className="h-4 w-4" />{new Date(now).toLocaleTimeString()}
+          </span>
+        </div>
+      </header>
+
+      <main className="flex-1 overflow-auto p-4 md:p-6">
+        {!restaurantId ? (
+          <div className="flex h-full items-center justify-center">
+            <p className="text-2xl text-muted-foreground">Signing in…</p>
+          </div>
+        ) : !loaded ? (
+          <div className="flex h-full items-center justify-center">
+            <p className="text-2xl text-muted-foreground">Loading kitchen tickets…</p>
+          </div>
+        ) : tickets.length === 0 ? (
+          <div className="flex h-full items-center justify-center">
+            <p className="text-center text-2xl text-muted-foreground">No active tickets for {station}.</p>
+          </div>
+        ) : (
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+            {tickets.map(({ order, items }) => {
+              const barked = isOrderBarked(order);
+              const orderMs = timerElapsedMs(order.timing?.order, now);
+              const u = barked ? urgency(order) : "fresh";
+              const accent = !barked
+                ? "border-dashed opacity-80"
+                : u === "late"
+                  ? "border-red-500 ring-2 ring-red-500/40"
+                  : u === "warn"
+                    ? "border-amber-500"
+                    : "border-border";
+              return (
+                <Card key={order.id} className={`flex flex-col border-2 ${accent} ${barked ? "" : "bg-muted/40"}`}>
+                  <CardHeader className="pb-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <CardTitle className="flex items-center gap-2 text-2xl">
+                        {order.table || "—"}
+                        <SourceBadge source={order.order_type} />
+                      </CardTitle>
+                      <div className="flex items-center gap-2">
+                        {barked && order.timing?.order?.started_at ? (
+                          <span className={`flex items-center gap-1 text-base font-semibold tabular-nums ${u === "late" ? "text-red-600" : u === "warn" ? "text-amber-600" : "text-muted-foreground"}`}>
+                            <Clock className="h-4 w-4" />{formatElapsed(orderMs)}
+                          </span>
+                        ) : null}
+                        {barked ? (
+                          <Badge variant={order.status === "Preparing" ? "secondary" : "default"} className="text-sm">{order.status}</Badge>
+                        ) : (
+                          <Badge variant="outline" className="border-dashed text-muted-foreground">Not barked</Badge>
+                        )}
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="flex-1 space-y-2 pt-0">
+                    {items.map((item) => {
+                      const held = isItemHeld(item);
+                      const timer = order.timing?.items?.[item.id];
+                      const served = Boolean(timer?.ended_at);
+                      const ms = timerElapsedMs(timer, now);
+                      return (
+                        <div key={item.id} className={`flex items-center justify-between gap-2 text-lg ${held || !barked ? "opacity-60" : ""}`}>
+                          <div className="min-w-0">
+                            <span className={served ? "line-through text-muted-foreground" : "font-medium"}>
+                              {item.quantity}× {item.name}
+                            </span>
+                            {held ? (
+                              <Badge variant="outline" className="ml-2 border-amber-400 bg-amber-50 text-amber-800 text-[11px] px-1.5 py-0">HOLD</Badge>
+                            ) : null}
+                            {item.note ? <div className="text-sm text-muted-foreground">Note: {item.note}</div> : null}
+                          </div>
+                          <div className="flex shrink-0 items-center gap-1.5">
+                            {!barked ? null : served ? (
+                              <CheckCircle2 className="h-6 w-6 text-green-600" />
+                            ) : held ? (
+                              <Button size="sm" variant="outline" className="h-9 px-3 text-sm" disabled={busyItem === item.id} onClick={() => { void handleFire(order.id, item.id); }}>
+                                <Flame className="mr-1 h-4 w-4 text-orange-500" /> Fire
+                              </Button>
+                            ) : (
+                              <>
+                                {timer?.started_at ? <span className="text-sm text-muted-foreground tabular-nums">{formatElapsed(ms)}</span> : null}
+                                <Button size="sm" variant="ghost" className="h-9 px-3 text-sm" disabled={busyItem === item.id} onClick={() => { void handleServe(order.id, item.id); }}>
+                                  Serve
+                                </Button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {!barked ? (
+                      <Button className="mt-2 w-full" disabled={busyItem === order.id} onClick={() => { void handleBark(order.id); }}>
+                        <Megaphone className="mr-1.5 h-4 w-4" /> Bark to kitchen
+                      </Button>
+                    ) : null}
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
+
+function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSelectedTable }: { onSubmit: (data: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null; course_hold?: boolean }[]; covers?: number }) => Promise<void> | void; menuItems: MenuItem[]; tables: { id: number; name: string; capacity: number }[]; selectedTableName?: string; onClearSelectedTable?: () => void }) {
   const { currencySymbol } = useCurrency();
   const [selectedTableId, setSelectedTableId] = useState<string>(() => {
     if (selectedTableName) {
@@ -1447,7 +2372,9 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
   const [selectedItemValue, setSelectedItemValue] = useState("");
   const [selectedQuantity, setSelectedQuantity] = useState<number>(1);
   const [selectedNote, setSelectedNote] = useState("");
-  const [itemsList, setItemsList] = useState<{ id?: string; name: string; price: number; quantity: number; note?: string | null }[]>([]);
+  const [selectedHold, setSelectedHold] = useState(false);
+  const [itemsList, setItemsList] = useState<{ id?: string; name: string; price: number; quantity: number; note?: string | null; course_hold?: boolean }[]>([]);
+  const [covers, setCovers] = useState<number>(1);
 
   useEffect(() => {
     if (selectedTableName) {
@@ -1474,22 +2401,24 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
     if (!selectedMenuItem) return;
     const price = Number(selectedMenuItem.price || 0);
     const note = selectedNote.trim();
+    const hold = selectedHold;
     setItemsList(prev => {
       const existing = prev.find(
-        p => p.name.toLowerCase() === name.toLowerCase() && String(p.note ?? "") === note,
+        p => p.name.toLowerCase() === name.toLowerCase() && String(p.note ?? "") === note && Boolean(p.course_hold) === hold,
       );
       if (existing) {
         return prev.map(p =>
-          p.name.toLowerCase() === name.toLowerCase() && String(p.note ?? "") === note
+          p.name.toLowerCase() === name.toLowerCase() && String(p.note ?? "") === note && Boolean(p.course_hold) === hold
             ? { ...p, quantity: p.quantity + selectedQuantity }
             : p,
         );
       }
-      return [...prev, { id: undefined, name, price, quantity: selectedQuantity, note: note || null }];
+      return [...prev, { id: undefined, name, price, quantity: selectedQuantity, note: note || null, course_hold: hold }];
     });
     setSelectedItemValue("");
     setSelectedQuantity(1);
     setSelectedNote("");
+    setSelectedHold(false);
   };
 
   const removeItem = (name: string, note?: string | null) => {
@@ -1501,7 +2430,7 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
   const handleSubmit = () => {
     const tableIdNum = Number(selectedTableId);
     if (!selectedTableId || Number.isNaN(tableIdNum) || itemsList.length === 0) return;
-    void onSubmit({ tableId: tableIdNum, items: itemsList });
+    void onSubmit({ tableId: tableIdNum, items: itemsList, covers });
   };
 
   return (
@@ -1526,6 +2455,12 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
             emptyPlaceholder="No tables available"
           />
         )}
+      </div>
+      </div>
+      <div className="grid grid-cols-4 items-center gap-4">
+      <Label htmlFor="covers" className="text-right">Guests</Label>
+      <div className="col-span-3">
+        <Input id="covers" type="number" min={1} value={String(covers)} onChange={(e) => setCovers(Math.max(1, Number(e.target.value) || 1))} placeholder="Number of guests (covers)" />
       </div>
       </div>
       <div className="grid grid-cols-4 items-center gap-4">
@@ -1558,6 +2493,13 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
           className="col-span-3"
         />
       </div>
+      <div className="grid grid-cols-4 items-center gap-4">
+        <Label htmlFor="item-hold" className="text-right">Hold</Label>
+        <div className="col-span-3 flex items-center gap-2">
+          <Switch id="item-hold" checked={selectedHold} onCheckedChange={setSelectedHold} />
+          <span className="text-sm text-muted-foreground">Hold this course — the kitchen fires it later.</span>
+        </div>
+      </div>
 
       <div>
       {itemsList.length === 0 ? (
@@ -1565,9 +2507,14 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
       ) : (
         <div className="space-y-2">
           {itemsList.map(it => (
-            <div key={`${it.name}-${String(it.note ?? "")}`} className="flex items-center justify-between">
+            <div key={`${it.name}-${String(it.note ?? "")}-${it.course_hold ? "h" : ""}`} className="flex items-center justify-between">
               <div>
-                <div>{it.quantity}x {it.name}</div>
+                <div className="flex items-center gap-1.5">
+                  {it.quantity}x {it.name}
+                  {it.course_hold ? (
+                    <Badge variant="outline" className="border-amber-400 bg-amber-50 text-amber-800 text-[10px] px-1.5 py-0">HOLD</Badge>
+                  ) : null}
+                </div>
                 {it.note ? <div className="text-xs text-muted-foreground">Note: {it.note}</div> : null}
               </div>
               <div className="flex items-center gap-2">
@@ -1846,6 +2793,7 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
   const [localItems, setLocalItems] = useState<OrderItem[]>([]);
   const [newItemName, setNewItemName] = useState("");
   const [newItemNote, setNewItemNote] = useState("");
+  const [newItemHold, setNewItemHold] = useState(false);
 
   useEffect(() => {
     if (open && order) {
@@ -1853,6 +2801,7 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
         setLocalItems(order.items.map(i => ({ ...i })));
         setNewItemName("");
         setNewItemNote("");
+        setNewItemHold(false);
       });
     }
   }, [open, order]);
@@ -1866,10 +2815,11 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
       return;
     }
     const normalizedNote = newItemNote.trim();
+    const hold = newItemHold;
 
     setLocalItems(prev => {
       const nameLower = selectedMenuItem.name.trim().toLowerCase();
-      const existing = prev.find(i => i.name.trim().toLowerCase() === nameLower && String(i.note ?? "") === normalizedNote);
+      const existing = prev.find(i => i.name.trim().toLowerCase() === nameLower && String(i.note ?? "") === normalizedNote && isItemHeld(i) === hold);
       if (existing) {
         return prev.map(i => i.id === existing.id ? { ...i, quantity: i.quantity + 1 } : i);
       }
@@ -1880,11 +2830,13 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
         price: Number(selectedMenuItem.price) || 0,
         orderedAt: new Date().toISOString(),
         note: normalizedNote || null,
+        ...(hold ? { course_hold: true } : {}),
       };
       return [...prev, newItem];
     });
     setNewItemName("");
     setNewItemNote("");
+    setNewItemHold(false);
   };
 
   const handleRemove = (itemId: string) => {
@@ -1922,7 +2874,11 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
           <DialogDescription>
             <span className="flex items-center gap-2">
               <span>Status:</span>
-              <Badge variant={order.status === "Preparing" ? "secondary" : order.status === "Served" ? "default" : "outline"} className="text-xs">{order.status}</Badge>
+              {order.status === "Preparing" && !isOrderBarked(order) ? (
+                <Badge variant="outline" className="border-dashed text-muted-foreground text-xs">Not barked</Badge>
+              ) : (
+                <Badge variant={order.status === "Preparing" ? "secondary" : order.status === "Served" ? "default" : "outline"} className="text-xs">{order.status}</Badge>
+              )}
             </span>
             {!canEditPrice ? " Price changes are disabled for your role." : ""}
           </DialogDescription>
@@ -1943,7 +2899,13 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
                 {localItems.map(item => (
                   <TableRow key={item.id}>
                     <TableCell className="font-medium">
-                      <div>{item.name}</div>
+                      <div className="flex items-center gap-1.5">
+                        {item.name}
+                        <StationBadge station={item.station} />
+                        {isItemHeld(item) ? (
+                          <Badge variant="outline" className="border-amber-400 bg-amber-50 text-amber-800 text-[10px] px-1.5 py-0">HOLD</Badge>
+                        ) : null}
+                      </div>
                       {item.note ? <div className="text-xs text-muted-foreground">Note: {item.note}</div> : null}
                     </TableCell>
                     <TableCell className="text-center">{item.quantity}</TableCell>
@@ -1975,14 +2937,18 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
               placeholder="Select item"
               searchPlaceholder="Search for an item..."
               emptyPlaceholder="No items found."
-              className="col-span-6"
+              className="col-span-5"
             />
             <Input
               placeholder="Note"
               value={newItemNote}
               onChange={(e) => setNewItemNote(e.target.value)}
-              className="col-span-5"
+              className="col-span-4"
             />
+            <div className="col-span-2 flex items-center justify-center gap-1" title="Hold this course — fire it from the KDS later">
+              <Switch id="details-item-hold" checked={newItemHold} onCheckedChange={setNewItemHold} />
+              <Label htmlFor="details-item-hold" className="text-xs font-normal text-muted-foreground">Hold</Label>
+            </div>
             <Button onClick={handleAddItem} className="col-span-1">Add</Button>
           </div>
           <div className="space-y-2 text-sm">
@@ -2095,7 +3061,13 @@ const OrderViewDialog = React.memo(({ order, open, onOpenChange, onRefreshOrders
         <TableCell className="font-medium">
           <div className="flex items-center justify-between">
             <div>
-              <div>{item.name}</div>
+              <div className="flex items-center gap-1.5">
+                {item.name}
+                <StationBadge station={item.station} />
+                {isItemHeld(item) ? (
+                  <Badge variant="outline" className="border-amber-400 bg-amber-50 text-amber-800 text-[10px] px-1.5 py-0">HOLD</Badge>
+                ) : null}
+              </div>
               {item.note ? <div className="text-xs text-muted-foreground">Note: {item.note}</div> : null}
             </div>
             <div>

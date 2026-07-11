@@ -19,7 +19,14 @@ export function RealtimeProvider({ children, restaurantId }: { children: ReactNo
 
   useEffect(() => {
     if (!restaurantId) return;
-    const socket = initSocket({ restaurantId });
+    // The backend authenticates the socket from this token (it derives the
+    // tenant from the session, not from restaurantId).
+    let token: string | undefined;
+    try {
+      const raw = typeof window !== 'undefined' ? window.localStorage.getItem('authUser') : null;
+      if (raw) token = JSON.parse(raw)?.token ?? undefined;
+    } catch { /* ignore */ }
+    const socket = initSocket({ restaurantId, token });
     socketRef.current = socket;
 
     const onConnect = () => setConnected(true);

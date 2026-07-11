@@ -1,9 +1,20 @@
 
+// One recipe row: inventory ingredient consumed per unit sold (+ optional note,
+// e.g. "grams" or "chopped").
+export type RecipeIngredient = { inventory_id: string; qty: number; note?: string };
+
 export type MenuItem = {
   id: string;
   name: string;
   price: number;
   category: string;
+  image_url?: string | null;
+  available?: boolean;
+  recipe?: RecipeIngredient[];
+  // Prep station that cooks this dish (KOT routing), e.g. "tandoor" / "grill".
+  station?: string | null;
+  // Allergen tags shown to guests on the QR menu, e.g. ["gluten", "nuts"].
+  allergens?: string[];
 };
 
 export const initialMenuItems: MenuItem[] = [

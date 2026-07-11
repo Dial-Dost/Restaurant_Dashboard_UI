@@ -11,7 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       NEXT_PUBLIC_BACKEND_URL: http://localhost:3001
-      NEXT_PUBLIC_FEEDBACK_FORM_URL: http://localhost:9003
+      # NEXT_PUBLIC_FEEDBACK_FORM_URL intentionally unset: the feedback form lives
+      # inside this app at /feedback and defaults to same-origin.
       HOSTNAME: 0.0.0.0
     steps:
       - uses: actions/checkout@v4

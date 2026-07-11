@@ -56,7 +56,7 @@ export default function Dashboard() {
           setCustomers(customerData);
           setTables(tableData);
           setDashboardRevenue(dashboardApcInsight?.total_revenue ?? 0);
-          setEmployeeApc(apcInsight && apcInsight.total_covers > 0 ? apcInsight.monthly_apc : null);
+          setEmployeeApc(apcInsight ? apcInsight.monthly_apc : null);
           setEmployeeApcOrdersCount(apcInsight?.orders?.length ?? 0);
         } catch {
           setDashboardRevenue(null);
@@ -84,22 +84,6 @@ export default function Dashboard() {
   const activeTables = tables.filter(t => t.status !== "Available").length;
   const totalTables = tables.length;
 
-  // Mock previous month data for comparison
-  const prevMonthRevenue = totalRevenue * 0.8; // Assume 20% growth
-  const prevMonthBookings = Math.floor(totalBookings * 0.9); // Assume 10% growth
-  const prevMonthNewCustomers = Math.floor(newCustomers * 0.85); // Assume 15% growth
-
-  const calculatePercentageChange = (current: number, previous: number) => {
-    if (previous === 0) {
-        return current > 0 ? '100% from last month' : '0% from last month';
-    }
-    const change = ((current - previous) / previous) * 100;
-    if (change > 0) {
-        return `+${change.toFixed(1)}% from last month`;
-    }
-    return `${change.toFixed(1)}% from last month`;
-  };
-  
   return (
     <>
       <div className="flex items-center justify-between">
@@ -119,7 +103,7 @@ export default function Dashboard() {
           <CardContent>
             <div className="text-2xl font-bold">{currencySymbol}{totalRevenue.toFixed(2)}</div>
             <p className="text-xs text-muted-foreground">
-                {calculatePercentageChange(totalRevenue, prevMonthRevenue)}
+                Total revenue
             </p>
           </CardContent>
         </Card>
@@ -131,9 +115,9 @@ export default function Dashboard() {
             <CreditCard className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">+{totalBookings}</div>
+            <div className="text-2xl font-bold">{totalBookings}</div>
              <p className="text-xs text-muted-foreground">
-                {calculatePercentageChange(totalBookings, prevMonthBookings)}
+                Total bookings
             </p>
           </CardContent>
         </Card>
@@ -143,9 +127,9 @@ export default function Dashboard() {
             <CircleUser className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">+{newCustomers}</div>
+            <div className="text-2xl font-bold">{newCustomers}</div>
              <p className="text-xs text-muted-foreground">
-                {calculatePercentageChange(newCustomers, prevMonthNewCustomers)}
+                First-time guests
             </p>
           </CardContent>
         </Card>

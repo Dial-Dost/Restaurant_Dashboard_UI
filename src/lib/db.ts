@@ -12,6 +12,7 @@ import { type MenuItem } from '@/app/dashboard/menu/data';
 import { type Order } from '@/app/dashboard/orders/page';
 import { type Table } from '@/app/dashboard/tables/data';
 import { type AuditLog } from '@/app/dashboard/audit-logs/page';
+import { SELECTED_OUTLET_KEY } from '@/lib/outlet';
 
 export type User = {
     id: string;
@@ -25,6 +26,15 @@ export type User = {
     role: string;
     role_all?: string[];
     action_list: string[];
+    is_superadmin?: boolean;
+};
+
+export type PasswordResetRequest = {
+    id: string;
+    employee_id: string;
+    username: string;
+    name: string;
+    created_at: string;
 };
 
 export type RestaurantProfile = {
@@ -103,7 +113,12 @@ export type PaymentMethod =
     | 'Cash'
     | 'Upi'
     | 'Card'
-    | 'Online Transfer';
+    | 'Online Transfer'
+    | 'Split';
+
+// One row of a split-tender payment ({method, amount}); the rows must sum to
+// the bill's grand total (backend-validated).
+export type PaymentSplit = { method: string; amount: number };
 
 type OutletData = {
     outlet_add: string;
@@ -253,8 +268,16 @@ const formatBookingTime = (isoString: string): string => {
 const toCustomerStatus = (hasBooking: unknown): Customer['status'] =>
     hasBooking ? 'In-house' : 'Departed';
 
-const toTableStatus = (booked: unknown, reserved: unknown): Table['status'] => {
-    if (Boolean(booked)) return 'Occupied';
+const toTableStatus = (booked: unknown, reserved: unknown, occupied?: unknown, paymentPending?: unknown): Table['status'] => {
+    // A table physically occupied by walk-ins (e.g. seated from the waitlist) has
+    // no Booking row, so it must be read from is_occupied / payment_pending too —
+    // otherwise it would wrongly show as free and could be double-seated.
+    if (Boolean(occupied) || Boolean(paymentPending)) return 'Occupied';
+    // A table inside an ACTIVE booking window (get-tables booked=true) is NOT
+    // physically occupied — it is "Booked" (an in-progress reservation). It must
+    // stay visually distinct from Occupied and remain orderable/occupiable.
+    if (Boolean(booked)) return 'Booked';
+    // An upcoming (future-window) booking marks the table "Reserved".
     if (Boolean(reserved)) return 'Reserved';
     return 'Available';
 };
@@ -263,6 +286,7 @@ type FrontendAuthContext = {
     outletId: string | null;
     actionList: string[];
     employeeId: string | null;
+    token: string | null;
 };
 
 const getPathWithoutQuery = (path: string): string => {
@@ -291,13 +315,14 @@ const getFrontendAuthContext = async (): Promise<FrontendAuthContext> => {
             // nextCookies() may be a Promise; await it just in case.
             const ckAny: any = await nextCookies();
             const cookie = (typeof ckAny.get === 'function' ? ckAny.get('authUser') : ckAny?.cookies?.get?.('authUser'))?.value ?? null;
-            if (!cookie) return { outletId: null, actionList: [], employeeId: null };
+            if (!cookie) return { outletId: null, actionList: [], employeeId: null, token: null };
             const parsed = JSON.parse(decodeURIComponent(cookie)) as {
                 outlet_id?: unknown;
                 outletId?: unknown;
                 actions_set?: unknown;
                 action_list?: unknown;
                 employeeId?: unknown;
+                token?: unknown;
             };
 
             const empId = typeof parsed?.employeeId === 'string' ? parsed.employeeId : null;
@@ -324,9 +349,10 @@ const getFrontendAuthContext = async (): Promise<FrontendAuthContext> => {
                 outletId: outletFromCookie && outletFromCookie.trim().length > 0 ? outletFromCookie.trim() : null,
                 actionList,
                 employeeId: empId,
+                token: typeof parsed?.token === 'string' && parsed.token.trim().length > 0 ? parsed.token : null,
             };
         } catch {
-            return { outletId: null, actionList: [], employeeId: null };
+            return { outletId: null, actionList: [], employeeId: null, token: null };
         }
     }
 
@@ -334,7 +360,7 @@ const getFrontendAuthContext = async (): Promise<FrontendAuthContext> => {
     try {
         const raw = window.localStorage.getItem('authUser');
         if (!raw) {
-            return { outletId: null, actionList: [], employeeId: null };
+            return { outletId: null, actionList: [], employeeId: null, token: null };
         }
 
         const parsed = JSON.parse(raw) as {
@@ -343,6 +369,7 @@ const getFrontendAuthContext = async (): Promise<FrontendAuthContext> => {
             actions_set?: unknown;
             action_list?: unknown;
             employeeId?: unknown;
+            token?: unknown;
         };
 
         const empId = typeof parsed?.employeeId === 'string' ? parsed.employeeId : null;
@@ -369,9 +396,23 @@ const getFrontendAuthContext = async (): Promise<FrontendAuthContext> => {
             outletId: outletFromStorage && outletFromStorage.trim().length > 0 ? outletFromStorage.trim() : null,
             actionList,
             employeeId: empId,
+            token: typeof parsed?.token === 'string' && parsed.token.trim().length > 0 ? parsed.token : null,
         };
     } catch {
-        return { outletId: null, actionList: [], employeeId: null };
+        return { outletId: null, actionList: [], employeeId: null, token: null };
+    }
+};
+
+// The admin-selected active outlet (web outlet switcher), persisted in
+// localStorage. Null on the server or when unset. The exported KEY lives in
+// '@/lib/outlet' (this is a "use server" file and may only export async fns).
+const getSelectedOutletId = (): string | null => {
+    try {
+        if (typeof window === 'undefined') return null;
+        const v = window.localStorage.getItem(SELECTED_OUTLET_KEY);
+        return v && v.trim().length > 0 ? v.trim() : null;
+    } catch {
+        return null;
     }
 };
 
@@ -381,45 +422,28 @@ const applyEmployeeContextHeaders = async (
     explicitOutletId?: string,
     explicitActionList?: string[],
 ): Promise<Headers> => {
-    const restaurantLogin = isRestaurantLoginPath(path);
-    const employeeLogin = isEmployeeLoginPath(path);
-    if (restaurantLogin) {
+    if (isRestaurantLoginPath(path)) {
         return headers;
     }
 
     const fromFrontend = await getFrontendAuthContext();
+
+    // Verified session token: the backend derives tenant/employee/role/actions
+    // from this, never from client-supplied identity headers.
+    if (fromFrontend.token) {
+        headers.set('Authorization', `Bearer ${fromFrontend.token}`);
+    }
+
+    // Outlet selection stays a header (admins/managers may target an outlet
+    // within their own restaurant); the server authorizes it against the session.
+    // Precedence: a per-call override > the admin's outlet switcher choice
+    // (localStorage) > the session's home outlet.
     const finalOutletId =
         (typeof explicitOutletId === 'string' && explicitOutletId.trim().length > 0
             ? explicitOutletId.trim()
-            : fromFrontend.outletId) ?? null;
-
+            : getSelectedOutletId() ?? fromFrontend.outletId) ?? null;
     if (finalOutletId) {
         headers.set('X-Outlet-Id', finalOutletId);
-    }
-
-    if (employeeLogin) {
-        return headers;
-    }
-
-    const finalActionList = Array.isArray(explicitActionList) && explicitActionList.length > 0
-        ? explicitActionList
-        : fromFrontend.actionList;
-
-    const compactActions = finalActionList
-        .filter((entry): entry is string => typeof entry === 'string')
-        .map((entry) => entry.trim())
-        .filter((entry) => entry.length > 0);
-
-    if (compactActions.length > 0) {
-        headers.set('X-Action-List', compactActions.join(','));
-    }
-
-    const empId = fromFrontend.employeeId;
-    if (empId) {
-        headers.set('X-Employee-Id', empId);
-    }
-    else {
-        console.log("EMployee Id Not found");
     }
 
     return headers;
@@ -433,7 +457,7 @@ const headersForRestaurant = async (
     actionList?: string[],
 ): Promise<Headers> => {
     const merged = new Headers(headers);
-    merged.set('X-Restaurant-Id', restaurantId);
+    // Tenant is derived from the session token, not X-Restaurant-Id.
     return applyEmployeeContextHeaders(path, merged, outletId, actionList);
 };
 
@@ -506,10 +530,8 @@ export const requestBackend = async <T = unknown>(
     const finalBaseUrl = (baseUrl ?? API_BASE_URL).replace(/\/$/, '');
     const mergedHeaders = new Headers(headers);
 
-    if (restaurantId) mergedHeaders.set('X-Restaurant-Id', restaurantId);
-    if (employeeId) mergedHeaders.set('X-Employee-Id', employeeId);
-
-    // applyEmployeeContextHeaders is async now
+    // Identity (tenant/employee/role/actions) is carried by the session bearer
+    // token attached in applyEmployeeContextHeaders, not by these headers.
     await applyEmployeeContextHeaders(path, mergedHeaders, outletId, actionList);
 
     const hasBody = body !== undefined;
@@ -621,6 +643,8 @@ const mapBooking = (item: any): Booking => ({
     source: item.source ?? 'Unknown',
     status: item.status ?? (item.active ? 'Arrived' : 'Confirmed'),
     notes: item.notes ?? item.additional_information ?? '',
+    deposit: item.deposit && typeof item.deposit === 'object' ? item.deposit : null,
+    min_spend: Number(item.min_spend) > 0 ? Number(item.min_spend) : null,
 });
 
 const mapCustomer = (item: any): Customer => ({
@@ -640,7 +664,8 @@ const mapTable = (item: any, index: number): Table => {
         id: stableTableId(name, index + 1),
         name,
         capacity: Number.isFinite(capacity) ? capacity : 0,
-        status: toTableStatus(item.booked, item.reserved),
+        status: toTableStatus(item.booked, item.reserved, item.occupied, item.payment_pending),
+        qr_token: typeof item.qr_token === 'string' && item.qr_token ? item.qr_token : null,
     };
 };
 
@@ -648,6 +673,7 @@ const mapAuditLog = (item: any): AuditLog => ({
     id: String(item.id ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
     employee: item.employee ?? 'Unknown',
     action: item.action ?? 'Unknown',
+    category: item.category ?? 'General',
     details: item.details ?? '',
     timestamp: item.timestamp ? new Date(item.timestamp).toISOString() : new Date().toISOString(),
 });
@@ -659,6 +685,7 @@ const mapInventoryItem = (item: any): InventoryItem => ({
     stock: Math.max(0, Number(item.stock ?? 0)),
     unit: String(item.unit ?? 'pcs'),
     status: (item.status as InventoryItem['status']) ?? 'In Stock',
+    expiry_date: typeof item.expiry_date === 'string' ? item.expiry_date : null,
 });
 
 const mapMenuItem = (item: any): MenuItem => ({
@@ -666,6 +693,19 @@ const mapMenuItem = (item: any): MenuItem => ({
     name: String(item.name ?? 'Unnamed Item'),
     price: Number(item.price ?? 0),
     category: String(item.category ?? 'General'),
+    // Carry the description-JSON extras through so client-side bulk saves
+    // (drag-reorder etc.) round-trip them instead of dropping them.
+    image_url: typeof item.image_url === 'string' ? item.image_url : null,
+    available: item.available !== false,
+    station: typeof item.station === 'string' && item.station ? item.station : null,
+    allergens: Array.isArray(item.allergens) ? item.allergens.filter((a: unknown) => typeof a === 'string' && a).map(String) : [],
+    recipe: Array.isArray(item.recipe)
+        ? item.recipe.map((r: any) => ({
+            inventory_id: String(r.inventory_id ?? ''),
+            qty: Number(r.qty ?? 0),
+            ...(typeof r.note === 'string' && r.note ? { note: r.note } : {}),
+        }))
+        : [],
 });
 
 const mapOrderItem = (item: any) => ({
@@ -675,12 +715,17 @@ const mapOrderItem = (item: any) => ({
     price: Number(item.price ?? 0),
     orderedAt: String(item.orderedAt ?? new Date().toISOString()),
     note: typeof item.note === 'string' ? item.note : null,
+    // KOT station routing + course hold-and-fire (enriched by the backend).
+    station: typeof item.station === 'string' && item.station ? item.station : null,
+    course_hold: item.course_hold === true,
+    fired_at: typeof item.fired_at === 'string' && item.fired_at ? item.fired_at : null,
 });
 
 const mapOrder = (item: any): Order => ({
     id: String(item.id ?? `${Date.now()}`),
     table: String(item.table ?? ''),
     customer: String(item.customer ?? 'Guest'),
+    order_type: typeof item.order_type === 'string' && item.order_type ? item.order_type : null,
     taken_by_employee_id:
         typeof item.taken_by_employee_id === 'string' ? item.taken_by_employee_id : null,
     taken_by_employee_name:
@@ -729,6 +774,9 @@ const mapOrder = (item: any): Order => ({
         typeof item.payment_admin_approved_by === 'string' ? item.payment_admin_approved_by : null,
     bill_closed_at: typeof item.bill_closed_at === 'string' ? item.bill_closed_at : null,
     bill_closed_by: typeof item.bill_closed_by === 'string' ? item.bill_closed_by : null,
+    bill_id: typeof item.bill_id === 'string' ? item.bill_id : null,
+    // Per-order/per-item prep timers (KDS ageing) — passed through verbatim.
+    timing: item.timing && typeof item.timing === 'object' ? item.timing : null,
 });
 
 const readLocalField = async <T>(restaurantId: string, field: keyof RestaurantData): Promise<T> => {
@@ -834,10 +882,6 @@ export const findUserInRestaurant = async (restaurantId: string, employeeId: str
         restaurantId,
         {
             method: 'GET',
-            headers: {
-                'X-Employee-Id': employeeId,
-                'X-User-Role': 'admin',
-            },
         },
     );
 
@@ -1068,16 +1112,26 @@ export const getMenuCategories = async (restaurantId: string): Promise<string[]>
     return readLocalField<string[]>(restaurantId, 'menuCategories');
 };
 
-export const getOrders = async (restaurantId: string): Promise<Order[]> => {
+export const getOrders = async (restaurantId: string, station?: string): Promise<Order[]> => {
+    // Optional per-zone filter: a locked kitchen display fetches only its own
+    // section server-side (the backend trims each order's items to that station).
+    // Empty/absent => full set, unchanged. A station-filtered result is a subset,
+    // so we deliberately DON'T let it overwrite the full local snapshot cache.
+    const stationParam = typeof station === 'string' ? station.trim() : '';
+    const query = stationParam
+        ? `/orders?restaurantId=${encodeURIComponent(restaurantId)}&station=${encodeURIComponent(stationParam)}`
+        : `/orders?restaurantId=${encodeURIComponent(restaurantId)}`;
     const data = await backendJson<any[]>(
-        `/orders?restaurantId=${encodeURIComponent(restaurantId)}`,
+        query,
         restaurantId,
         { method: 'GET' },
     );
 
     if (Array.isArray(data)) {
         const mapped = data.map(mapOrder);
-        await writeLocalField(restaurantId, 'orders', mapped);
+        if (!stationParam) {
+            await writeLocalField(restaurantId, 'orders', mapped);
+        }
         return mapped;
     }
 
@@ -1100,8 +1154,9 @@ export const getTables = async (restaurantId: string): Promise<Table[]> => {
     return readLocalField<Table[]>(restaurantId, 'tables');
 };
 
-export const occupyTable = async (restaurantId: string, tableName: string, numCovers: number, linkedOrderId?: string | null) => {
-    const payload: any = { table_name: tableName, num_covers: numCovers };
+export const occupyTable = async (restaurantId: string, tableName: string, numCovers?: number | null, linkedOrderId?: string | null) => {
+    const payload: any = { table_name: tableName };
+    if (typeof numCovers === 'number' && numCovers >= 1) payload.num_covers = numCovers;
     if (typeof linkedOrderId === 'string' && linkedOrderId.trim().length > 0) payload.order_id = linkedOrderId;
 
     const response = await backendCall('/occupy-table', restaurantId, {
@@ -1172,20 +1227,29 @@ export const getBillForTable = async (restaurantId: string, tableName: string) =
     try { return await response.json(); } catch { return null; }
 };
 
-export const getAuditLogs = async (restaurantId: string, limit = 100): Promise<AuditLog[]> => {
-    const data = await backendJson<any[]>(
-        `/audit-logs?restaurantId=${encodeURIComponent(restaurantId)}&limit=${Math.max(1, limit)}`,
-        restaurantId,
-        { method: 'GET' },
-    );
+export const getAuditLogs = async (
+    restaurantId: string,
+    opts: { limit?: number; offset?: number; category?: string; search?: string; from?: string; to?: string } = {},
+): Promise<AuditLog[]> => {
+    const qs = new URLSearchParams({ restaurantId });
+    qs.set('limit', String(Math.max(1, opts.limit ?? 100)));
+    if (opts.offset) qs.set('offset', String(opts.offset));
+    if (opts.category && opts.category !== 'All') qs.set('category', opts.category);
+    if (opts.search) qs.set('search', opts.search);
+    if (opts.from) qs.set('from', opts.from);
+    if (opts.to) qs.set('to', opts.to);
+    const filtered = Boolean((opts.category && opts.category !== 'All') || opts.search || opts.from || opts.to || opts.offset);
+
+    const data = await backendJson<any[]>(`/audit-logs?${qs.toString()}`, restaurantId, { method: 'GET' });
 
     if (Array.isArray(data)) {
         const mapped = data.map(mapAuditLog);
-        await writeLocalField(restaurantId, 'auditLogs', mapped);
+        // Only cache the full (unfiltered) list so a filtered fetch never clobbers it.
+        if (!filtered) await writeLocalField(restaurantId, 'auditLogs', mapped);
         return mapped;
     }
 
-    return readLocalField<AuditLog[]>(restaurantId, 'auditLogs');
+    return filtered ? [] : readLocalField<AuditLog[]>(restaurantId, 'auditLogs');
 };
 
 export const getRestaurantProfile = async (restaurantId: string, employeeId: string): Promise<RestaurantProfile> => {
@@ -1217,6 +1281,9 @@ export const addCustomer = async (restaurantId: string, customer: Customer) => {
                 name: customer.name,
                 number: customer.phone,
                 email: customer.email || undefined,
+                gender: customer.gender || undefined,
+                age_group: customer.ageGroup || undefined,
+                pincode: customer.pincode || undefined,
             },
         }),
     });
@@ -1365,6 +1432,7 @@ export const confirmBillPaymentByWaiter = async (
     orderId: string,
     payment_method: PaymentMethod,
     payment_proof_screenshot_url?: string | null,
+    splits?: PaymentSplit[],
 ) => {
     const response = await backendCall(`/bills/order/${encodeURIComponent(orderId)}/waiter-confirm-payment`, restaurantId, {
         method: 'POST',
@@ -1375,6 +1443,7 @@ export const confirmBillPaymentByWaiter = async (
         body: JSON.stringify({
             payment_method,
             payment_proof_screenshot_url: payment_proof_screenshot_url ?? null,
+            ...(splits && splits.length > 0 ? { splits } : {}),
         }),
     });
 
@@ -1595,7 +1664,15 @@ export const updateRestaurantProfile = async (restaurantId: string, employeeId: 
     const response = await backendCall('/restaurant/profile', restaurantId, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'X-Employee-Id': employeeId },
-        body: JSON.stringify(profile),
+        // Send the short keys the endpoint expects (it also accepts the long shape,
+        // but this keeps the contract explicit).
+        body: JSON.stringify({
+            name: profile.restaurant_name,
+            address: profile.outlet_add,
+            phone: profile.outlet_phone,
+            email: profile.email,
+            hours: profile.outlet_hours,
+        }),
     });
 
     if (response?.ok) {
@@ -1603,6 +1680,13 @@ export const updateRestaurantProfile = async (restaurantId: string, employeeId: 
         return { acknowledged: true };
     }
 
+    // Reachable backend that returned an error → surface it so the user sees the
+    // real reason instead of a silent "saved" that didn't persist.
+    if (response) {
+        throw new Error(await readErrorMessage(response));
+    }
+
+    // Only fall back to local when the backend is unreachable (offline).
     const restaurant = ensureLocalRestaurant(restaurantId);
     restaurant.Restaurant_name = profile.restaurant_name;
     restaurant.data.profile = deepClone(profile);
@@ -1849,6 +1933,333 @@ export const removeRoleFromEmployee = async (
     return Boolean(response?.ok);
 };
 
+// Admin: set/reset a user's login password.
+export const setUserPassword = async (
+    restaurantId: string,
+    employeeId: string,
+    password: string,
+): Promise<void> => {
+    const response = await backendCall('/restaurant/users/password', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ employeeId, password }),
+    });
+    if (!response?.ok) throw new Error(response ? await readErrorMessage(response) : 'Unable to set password');
+};
+
+// Admin: pending forgot-password requests for the restaurant.
+export const getPasswordRequests = async (restaurantId: string): Promise<PasswordResetRequest[]> => {
+    const data = await backendJson<{ requests: PasswordResetRequest[] }>('/restaurant/password-requests', restaurantId, { method: 'GET' });
+    return Array.isArray(data?.requests) ? data!.requests : [];
+};
+
+// Admin: dismiss a pending password request without resetting.
+export const dismissPasswordRequest = async (restaurantId: string, requestId: string): Promise<boolean> => {
+    const response = await backendCall(`/restaurant/password-requests/${encodeURIComponent(requestId)}/dismiss`, restaurantId, { method: 'POST' });
+    return Boolean(response?.ok);
+};
+
+// --- Attendance / working hours --------------------------------------------
+export type MyAttendance = { clocked_in: boolean; since: string | null; today_minutes: number; pending_approval?: boolean };
+export type AttendanceSummaryRow = { emp_id: string; name: string; minutes: number; shifts: number; open: boolean };
+export type PendingClockIn = { id: string; emp_id: string; name: string; clock_in: string; clock_out: string | null };
+
+export const getMyAttendance = async (restaurantId: string): Promise<MyAttendance> => {
+    const d = await backendJson<MyAttendance>('/attendance/me', restaurantId, { method: 'GET' });
+    return d ?? { clocked_in: false, since: null, today_minutes: 0 };
+};
+
+export const reviewClockIn = async (restaurantId: string, attendanceId: string, approve: boolean): Promise<void> => {
+    const r = await backendCall(`/attendance/${encodeURIComponent(attendanceId)}/${approve ? 'approve' : 'reject'}`, restaurantId, { method: 'POST' });
+    if (!r || !r.ok) throw new Error(r ? await readErrorMessage(r) : 'Unable to review clock-in');
+};
+
+export const clockIn = async (restaurantId: string): Promise<boolean> => {
+    const r = await backendCall('/attendance/clock-in', restaurantId, { method: 'POST' });
+    return Boolean(r?.ok);
+};
+
+export const clockOut = async (restaurantId: string): Promise<boolean> => {
+    const r = await backendCall('/attendance/clock-out', restaurantId, { method: 'POST' });
+    return Boolean(r?.ok);
+};
+
+export const getAttendanceSummary = async (
+    restaurantId: string,
+    from: string,
+    to: string,
+): Promise<{ from: string; to: string; rows: AttendanceSummaryRow[]; pending: PendingClockIn[] }> => {
+    const d = await backendJson<{ from: string; to: string; rows: AttendanceSummaryRow[]; pending: PendingClockIn[] }>(
+        `/attendance?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+    return d ?? { from, to, rows: [], pending: [] };
+};
+
+// --- Inventory ops: vendors, receive, wastage, movements -------------------
+export type Vendor = { id: string; name: string; phone?: string | null; email?: string | null; notes?: string | null };
+export type StockMovement = {
+    id: string;
+    inventory_id: string;
+    item_name: string | null;
+    delta: number;
+    kind: string;
+    reason: string | null;
+    vendor_id: string | null;
+    unit_cost: number | null;
+    created_at: string;
+};
+
+export const getVendors = async (restaurantId: string): Promise<Vendor[]> => {
+    const d = await backendJson<{ vendors: Vendor[] }>('/vendors', restaurantId, { method: 'GET' });
+    return Array.isArray(d?.vendors) ? d!.vendors : [];
+};
+
+export const addVendor = async (restaurantId: string, vendor: { name: string; phone?: string; email?: string; notes?: string }): Promise<void> => {
+    const r = await backendCall('/vendors', restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(vendor) });
+    if (!r?.ok) throw new Error(r ? await readErrorMessage(r) : 'Unable to add vendor');
+};
+
+export const deleteVendor = async (restaurantId: string, id: string): Promise<void> => {
+    const r = await backendCall(`/vendors/${encodeURIComponent(id)}`, restaurantId, { method: 'DELETE' });
+    if (!r?.ok) throw new Error(r ? await readErrorMessage(r) : 'Unable to delete vendor');
+};
+
+export const receiveStock = async (
+    restaurantId: string,
+    body: { inventory_id: string; qty: number; vendor_id?: string; unit_cost?: number; note?: string },
+): Promise<void> => {
+    const r = await backendCall('/inventory/receive', restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!r?.ok) throw new Error(r ? await readErrorMessage(r) : 'Unable to receive stock');
+};
+
+export const recordWastage = async (
+    restaurantId: string,
+    body: { inventory_id: string; qty: number; reason?: string },
+): Promise<void> => {
+    const r = await backendCall('/inventory/wastage', restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!r?.ok) throw new Error(r ? await readErrorMessage(r) : 'Unable to record wastage');
+};
+
+export const getStockMovements = async (restaurantId: string, from?: string, to?: string): Promise<StockMovement[]> => {
+    const qs = from && to ? `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}` : '';
+    const d = await backendJson<{ movements: StockMovement[] }>(`/inventory/movements${qs}`, restaurantId, { method: 'GET' });
+    return Array.isArray(d?.movements) ? d!.movements : [];
+};
+
+// Issue stock from the store to the kitchen (logged as a kind='issue' movement;
+// feeds the food-cost % KPI).
+export const issueStock = async (
+    restaurantId: string,
+    body: { inventory_id: string; qty: number; note?: string },
+): Promise<void> => {
+    const r = await backendCall('/inventory/issue', restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!r?.ok) throw new Error(r ? await readErrorMessage(r) : 'Unable to issue stock');
+};
+
+// Set (or clear, with null) an inventory item's expiry date.
+export const setInventoryExpiry = async (
+    restaurantId: string,
+    inventoryId: string,
+    expiryDate: string | null,
+): Promise<void> => {
+    const r = await backendCall('/inventory/expiry', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inventory_id: inventoryId, expiry_date: expiryDate }),
+    });
+    if (!r?.ok) throw new Error(r ? await readErrorMessage(r) : 'Unable to set expiry');
+};
+
+// Vendor price history for one ingredient (costed purchases, oldest first).
+export type PricePoint = { date: string; qty: number; unit_cost: number; vendor: string | null };
+export const getPriceHistory = async (restaurantId: string, inventoryId: string): Promise<PricePoint[]> => {
+    const d = await backendJson<{ points: PricePoint[] }>(
+        `/inventory/price-history?inventory_id=${encodeURIComponent(inventoryId)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+    return Array.isArray(d?.points) ? d!.points : [];
+};
+
+// --- Recipe/BOM costing -------------------------------------------------------
+export type MenuCostingIngredient = { inventory_id: string; name: string; unit: string; qty: number; note: string | null; unit_cost: number | null; line_cost: number | null };
+export type MenuCostingItem = {
+    id: string;
+    name: string;
+    category: string;
+    price: number;
+    cost: number | null;
+    margin_pct: number | null;
+    missing_costs: number;
+    ingredients: MenuCostingIngredient[];
+};
+export type MenuCosting = {
+    items: MenuCostingItem[];
+    ingredients: { id: string; name: string; unit: string; unit_cost: number | null }[];
+};
+export const getMenuCosting = async (restaurantId: string): Promise<MenuCosting> => {
+    const d = await backendJson<MenuCosting>('/menu/costing', restaurantId, { method: 'GET' });
+    return d ?? { items: [], ingredients: [] };
+};
+
+// --- Purchase orders --------------------------------------------------------
+export type PurchaseOrderItem = { inventory_id: string; name: string; qty_ordered: number; unit_cost: number; qty_received: number };
+export type PurchaseOrder = {
+    id: string;
+    vendor_id: string | null;
+    vendor_name: string | null;
+    status: 'draft' | 'ordered' | 'received' | 'cancelled';
+    items: PurchaseOrderItem[];
+    total_cost: number;
+    notes: string | null;
+    expected_date: string | null;
+    created_at: string;
+    created_by: string | null;
+    ordered_at: string | null;
+    received_at: string | null;
+};
+
+export const getPurchaseOrders = async (restaurantId: string, opts?: { status?: string; from?: string; to?: string }): Promise<PurchaseOrder[]> => {
+    const params = new URLSearchParams({ restaurantId });
+    if (opts?.status) params.set('status', opts.status);
+    if (opts?.from) params.set('from', opts.from);
+    if (opts?.to) params.set('to', opts.to);
+    const d = await backendJson<{ orders: PurchaseOrder[] }>(`/purchase-orders?${params.toString()}`, restaurantId, { method: 'GET' });
+    return Array.isArray(d?.orders) ? d!.orders : [];
+};
+
+export const createPurchaseOrder = async (
+    restaurantId: string,
+    body: {
+        vendor_id?: string;
+        vendor_name?: string;
+        items: Array<{ inventory_id: string; name: string; qty_ordered: number; unit_cost: number }>;
+        notes?: string;
+        expected_date?: string;
+        status?: 'draft' | 'ordered';
+    },
+): Promise<PurchaseOrder> => {
+    const res = await backendCall('/purchase-orders', restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to create purchase order');
+    return res.json() as Promise<PurchaseOrder>;
+};
+
+export const setPurchaseOrderStatus = async (restaurantId: string, id: string, status: 'draft' | 'ordered' | 'cancelled'): Promise<PurchaseOrder> => {
+    const res = await backendCall(`/purchase-orders/${encodeURIComponent(id)}/status`, restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) });
+    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to update purchase order');
+    return res.json() as Promise<PurchaseOrder>;
+};
+
+export const receivePurchaseOrder = async (restaurantId: string, id: string, lines: Array<{ inventory_id: string; qty_received: number }>, qualityRating?: number | null): Promise<PurchaseOrder> => {
+    const body: Record<string, unknown> = { lines };
+    if (typeof qualityRating === 'number' && qualityRating >= 1 && qualityRating <= 5) body.quality_rating = qualityRating;
+    const res = await backendCall(`/purchase-orders/${encodeURIComponent(id)}/receive`, restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to receive purchase order');
+    return res.json() as Promise<PurchaseOrder>;
+};
+
+// --- Marketing campaigns ------------------------------------------------------
+export type Campaign = { id: string; name: string; cost: number; starts_at: string; ends_at: string; notes: string | null; created_at: string };
+
+export const createCampaign = async (restaurantId: string, input: { name: string; cost: number; starts_at: string; ends_at: string; notes?: string }): Promise<Campaign> => {
+    const res = await backendCall('/campaigns', restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to create campaign');
+    return res.json() as Promise<Campaign>;
+};
+
+export const deleteCampaign = async (restaurantId: string, id: string): Promise<void> => {
+    const res = await backendCall(`/campaigns/${encodeURIComponent(id)}`, restaurantId, { method: 'DELETE' });
+    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to delete campaign');
+};
+
+export const deletePurchaseOrder = async (restaurantId: string, id: string): Promise<void> => {
+    const res = await backendCall(`/purchase-orders/${encodeURIComponent(id)}`, restaurantId, { method: 'DELETE' });
+    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to delete purchase order');
+};
+
+// --- Coupons ----------------------------------------------------------------
+export type Coupon = {
+    id: string;
+    code: string;
+    description: string | null;
+    type: 'percent' | 'flat';
+    value: number;
+    min_order: number;
+    max_discount: number | null;
+    usage_limit: number | null;
+    used_count: number;
+    per_customer_limit: number | null;
+    valid_from: string | null;
+    valid_to: string | null;
+    active: boolean;
+    // 'promo' (default) or 'gift' — gift vouchers carry a spendable balance.
+    kind?: 'promo' | 'gift';
+    balance?: number | null;
+};
+
+export type CouponInput = {
+    id?: string;
+    code: string;
+    description?: string | null;
+    type: 'percent' | 'flat';
+    value: number;
+    min_order?: number | null;
+    max_discount?: number | null;
+    usage_limit?: number | null;
+    per_customer_limit?: number | null;
+    valid_from?: string | null;
+    valid_to?: string | null;
+    active?: boolean;
+};
+
+export const getCoupons = async (restaurantId: string): Promise<Coupon[]> => {
+    const d = await backendJson<{ coupons: Coupon[] }>('/coupons', restaurantId, { method: 'GET' });
+    return Array.isArray(d?.coupons) ? d!.coupons : [];
+};
+
+export const saveCoupon = async (restaurantId: string, coupon: CouponInput): Promise<Coupon> => {
+    const r = await backendCall('/coupons', restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(coupon) });
+    if (!r?.ok) throw new Error(r ? await readErrorMessage(r) : 'Unable to save coupon');
+    const data = await r.json().catch(() => null) as { coupon?: Coupon } | null;
+    return data?.coupon as Coupon;
+};
+
+export const deleteCoupon = async (restaurantId: string, id: string): Promise<void> => {
+    const r = await backendCall(`/coupons/${encodeURIComponent(id)}`, restaurantId, { method: 'DELETE' });
+    if (!r?.ok) throw new Error(r ? await readErrorMessage(r) : 'Unable to delete coupon');
+};
+
+// Issue a gift voucher (admin) — a kind='gift' coupon with a spendable balance.
+export const createGiftVoucher = async (restaurantId: string, input: { amount: number; code?: string }): Promise<Coupon> => {
+    const r = await backendCall('/vouchers', restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+    if (!r?.ok) throw new Error(r ? await readErrorMessage(r) : 'Unable to issue voucher');
+    const data = await r.json().catch(() => null) as { coupon?: Coupon } | null;
+    return data?.coupon as Coupon;
+};
+
+// --- Loyalty points ----------------------------------------------------------
+export type LoyaltyAccount = {
+    phone: string;
+    balance: number;
+    point_value: number;
+    earn_per_100: number;
+    history: Array<{ points: number; kind: string; note: string | null; bill_id: string | null; created_at: string }>;
+};
+
+export const getLoyalty = async (restaurantId: string, phone: string): Promise<LoyaltyAccount> => {
+    const r = await backendCall(`/loyalty/${encodeURIComponent(phone)}`, restaurantId, { method: 'GET' });
+    if (!r?.ok) throw new Error(r ? await readErrorMessage(r) : 'Unable to load loyalty account');
+    return await r.json() as LoyaltyAccount;
+};
+
+export const redeemLoyalty = async (
+    restaurantId: string,
+    opts: { phone: string; points: number; table_name: string },
+): Promise<{ success: boolean; points: number; discount: number; balance: number }> =>
+    postJson('/loyalty/redeem', restaurantId, opts) as Promise<{ success: boolean; points: number; discount: number; balance: number }>;
+
 export const getTableAssignments = async (
     restaurantId: string,
     outletId: string,
@@ -1939,3 +2350,592 @@ export const getMonthlyApcInsight = async (
 
     return data ?? null;
 };
+
+export type ApcTrendPoint = { month: string; period_start: string; total_revenue: number; total_covers: number; monthly_apc: number; bills: number };
+
+export const getApcTrends = async (restaurantId: string, months = 12): Promise<ApcTrendPoint[]> => {
+    const data = await backendJson<{ series: ApcTrendPoint[] }>(
+        `/orders/apc-trends?restaurantId=${encodeURIComponent(restaurantId)}&months=${Math.max(1, months)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+    return Array.isArray(data?.series) ? data!.series : [];
+};
+
+export type KpiCard = { key: string; label: string; value: number | null; unit: string; status: 'blue' | 'green' | 'amber' | 'red' | 'grey' };
+export type AdvancedAnalytics = {
+    window_days: number;
+    discounts: { total_bills: number; discount_bills: number; utilization_pct: number; total_discount: number; redemptions: number };
+    staff: { name: string; feedbacks: number; avg_rating: number | null; complaint_pct: number }[];
+    overall_avg_rating: number | null;
+    overall_complaint_pct: number;
+    total_feedbacks: number;
+    processing_time_min: number | null;
+    processing_time_n: number;
+    suppliers: { vendor: string; pos: number; on_time_pct: number; spend: number; quality: number | null; score: number | null }[];
+    overall_on_time_pct: number | null;
+    overall_supplier_score: number | null;
+    demographics: { total_customers: number; tagged: number; coverage_pct: number | null; by_gender: { label: string; n: number }[]; by_age: { label: string; n: number }[]; top_pincodes: { label: string; n: number }[] };
+    campaigns: { id: string; name: string; cost: number; starts_at: string; ends_at: string; sales_during: number; sales_before: number; uplift_pct: number | null; roi_pct: number | null }[];
+    overall_campaign_roi_pct: number | null;
+    stock_alerts: { name: string; qty: number; expiring?: boolean; expiry_date?: string | null }[];
+    seasonal: { month: string; revenue: number; bills: number; index: number }[];
+    menu_classes: { name: string; qty: number; revenue: number; popularity_pct: number; class: 'STAR' | 'GREAT' | 'MID' | 'BAD' }[];
+    bad_share_pct: number | null;
+    churn: { rate_pct: number | null; cohort: number; at_risk: { customer: string; orders: number; spend: number; days_since_visit: number }[] };
+    wait_time_min: number | null;
+    wait_time_n: number;
+    tat: { avg_min: number | null; median_min: number | null; sessions: number; by_table: { table_name: string; visits: number; avg_min: number }[] };
+    happiness_corr: number | null;
+    happiness_pairs: number;
+    offers: { code: string; used: number; limit: number | null; redemption_pct: number | null }[];
+    overall_redemption_pct: number | null;
+    demand_forecast: { name: string; total_qty: number; forecast_next_week: number; trend: 'up' | 'down' | 'flat' }[];
+    forecast_mape_pct: number | null;
+    food_cost?: {
+        actual_cost: number;
+        food_cost_pct: number | null;
+        theoretical_cost: number;
+        variance_pct: number | null;
+        issue_events: number;
+        uncosted_issues: number;
+        recipes_missing: number;
+        note: string | null;
+    };
+    profit?: { revenue: number; expenses: number; margin_pct: number | null };
+    kpis: KpiCard[];
+};
+
+export const getAdvancedAnalytics = async (restaurantId: string, days = 90): Promise<AdvancedAnalytics | null> => {
+    const data = await backendJson<AdvancedAnalytics>(
+        `/analytics/advanced?restaurantId=${encodeURIComponent(restaurantId)}&days=${Math.max(7, days)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+    return data ?? null;
+};
+
+// --- Multi-outlet comparison ---------------------------------------------------
+export type OutletComparison = {
+    days: number;
+    outlets: Array<{ outlet_id: string; name: string; revenue: number; bills: number; orders: number; avg_rating: number | null }>;
+};
+
+export const getOutletsComparison = async (restaurantId: string, days = 30): Promise<OutletComparison | null> => {
+    const data = await backendJson<OutletComparison>(
+        `/analytics/outlets?restaurantId=${encodeURIComponent(restaurantId)}&days=${Math.max(1, days)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+    return data ?? null;
+};
+
+// --- Guest CRM insights ----------------------------------------------------------
+export type CustomerSegment = 'new' | 'regular' | 'high-spend' | 'dormant';
+export type CustomerInsight = {
+    customer_id: string;
+    name: string;
+    phone: string;
+    visits: number;
+    total_spend: number;
+    last_visit: string | null;
+    avg_rating: number | null;
+    feedbacks: number;
+    segment: CustomerSegment;
+    history: Array<{ day: string; orders: number; spend: number }>;
+};
+
+export const getCustomerInsights = async (restaurantId: string): Promise<CustomerInsight[]> => {
+    const data = await backendJson<{ customers: CustomerInsight[] }>(
+        `/customers/insights?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+    return Array.isArray(data?.customers) ? data!.customers : [];
+};
+
+// --- Payroll ------------------------------------------------------------------
+export type PayrollProfile = { emp_id: string; pay_type: 'monthly' | 'hourly'; base_salary: number; hourly_rate: number; allowances: number; deductions: number; pf_pct: number; esi_pct: number };
+export type PayrollRow = {
+    emp_id: string;
+    name: string;
+    role: string;
+    profile: PayrollProfile | null;
+    hours_worked: number;
+    computed_pay: number | null;
+    pf_amount: number | null;
+    esi_amount: number | null;
+    paid: boolean;
+    paid_amount: number | null;
+    paid_at: string | null;
+};
+export type PayrollData = { period: string; rows: PayrollRow[]; total_due: number; total_paid: number };
+
+export const getPayroll = async (restaurantId: string, month: string): Promise<PayrollData | null> => {
+    const data = await backendJson<PayrollData>(
+        `/payroll?restaurantId=${encodeURIComponent(restaurantId)}&month=${encodeURIComponent(month)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+    return data ?? null;
+};
+
+export const setPayrollProfile = async (restaurantId: string, input: { emp_id: string; pay_type: string; base_salary: number; hourly_rate: number; allowances: number; deductions: number; pf_pct: number; esi_pct: number }): Promise<void> => {
+    const res = await backendCall('/payroll/profile', restaurantId, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to save payroll profile');
+};
+
+// Payroll register CSV (string) for the month — gross + PF/ESI statutory split.
+export const getPayrollCsv = async (restaurantId: string, month: string): Promise<string> => {
+    const res = await backendCall(`/payroll.csv?restaurantId=${encodeURIComponent(restaurantId)}&month=${encodeURIComponent(month)}`, restaurantId, { method: 'GET' });
+    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to export payroll');
+    return res.text();
+};
+
+export const payPayroll = async (restaurantId: string, input: { emp_id: string; period: string; amount: number; note?: string }): Promise<void> => {
+    const res = await backendCall('/payroll/pay', restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to record payment');
+};
+
+export type MonthlyHistoryRow = {
+    month: string;
+    revenue: number;
+    bills: number;
+    orders: number;
+    avg_bill: number | null;
+    discounts: number;
+    feedback_count: number;
+    avg_rating: number | null;
+    new_customers: number;
+    avg_tat_min: number | null;
+};
+
+export const getMonthlyHistory = async (restaurantId: string, months = 36): Promise<MonthlyHistoryRow[]> => {
+    const data = await backendJson<{ series: MonthlyHistoryRow[] }>(
+        `/analytics/history?restaurantId=${encodeURIComponent(restaurantId)}&months=${Math.max(3, months)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+    return Array.isArray(data?.series) ? data!.series : [];
+};
+
+export type DishStat = { name: string; category: string; quantity: number; revenue: number; orders: number; current_price: number | null };
+export type PriceSuggestion = { name: string; category: string; current_price: number; suggested_price: number; direction: 'increase' | 'decrease'; reason: string };
+export type WaiterStat = { employee_id: string; employee_name: string; orders: number; revenue: number };
+export type MenuInsights = {
+    period_days: number;
+    total_revenue: number;
+    total_items_sold: number;
+    top_dishes: DishStat[];
+    slow_movers: DishStat[];
+    price_suggestions: PriceSuggestion[];
+    top_waiters: WaiterStat[];
+};
+
+export const getMenuInsights = async (
+    restaurantId: string,
+    days = 30,
+): Promise<MenuInsights | null> => {
+    const data = await backendJson<MenuInsights>(
+        `/analytics/menu-insights?restaurantId=${encodeURIComponent(restaurantId)}&days=${days}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+    return data ?? null;
+};
+
+export type OperationsAnalytics = {
+    days: number;
+    by_hour: Array<{ hour: number; orders: number; revenue: number }>;
+    by_weekday: Array<{ weekday: number; label: string; orders: number; revenue: number }>;
+};
+
+export const getOperationsAnalytics = async (
+    restaurantId: string,
+    days = 30,
+): Promise<OperationsAnalytics | null> => {
+    const data = await backendJson<OperationsAnalytics>(
+        `/analytics/operations?restaurantId=${encodeURIComponent(restaurantId)}&days=${days}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+    return data ?? null;
+};
+
+// --- Accounting & reporting -------------------------------------------------
+export type SalesReport = {
+    from: string; to: string;
+    total_sales: number; total_tax: number; total_refund: number; net_sales: number; bill_count: number;
+    by_day: Array<{ date: string; sales: number; tax: number; refund: number; bills: number }>;
+    by_method: Array<{ method: string; sales: number; bills: number }>;
+};
+export type GstReport = {
+    from: string; to: string; total_taxable: number; total_tax: number;
+    by_rate: Array<{ name: string; percentage: number; taxable: number; tax: number }>;
+};
+export type ProfitAndLoss = {
+    from: string; to: string;
+    gross_sales: number; refunds: number; tax_collected: number; net_revenue: number; total_expenses: number; net_profit: number;
+    expenses_by_category: Array<{ category: string; amount: number }>;
+};
+export type ExpenseRow = { id: string; spent_on: string; category: string; vendor: string | null; amount: number; note: string | null; created_at: string };
+
+const qFromTo = (from?: string, to?: string) => `${from ? `&from=${encodeURIComponent(from)}` : ''}${to ? `&to=${encodeURIComponent(to)}` : ''}`;
+
+export const getSalesReport = async (restaurantId: string, from?: string, to?: string) =>
+    backendJson<SalesReport>(`/reports/sales?restaurantId=${encodeURIComponent(restaurantId)}${qFromTo(from, to)}`, restaurantId, { method: 'GET' });
+export const getGstReport = async (restaurantId: string, from?: string, to?: string) =>
+    backendJson<GstReport>(`/reports/gst?restaurantId=${encodeURIComponent(restaurantId)}${qFromTo(from, to)}`, restaurantId, { method: 'GET' });
+export const getProfitAndLoss = async (restaurantId: string, from?: string, to?: string) =>
+    backendJson<ProfitAndLoss>(`/reports/pnl?restaurantId=${encodeURIComponent(restaurantId)}${qFromTo(from, to)}`, restaurantId, { method: 'GET' });
+// Money given away as discounts/coupons/vouchers. Bill totals are stored net of
+// discount, so these figures are context — never subtract them from sales again.
+export type DiscountsReport = {
+    from: string; to: string;
+    bill_count: number; discounted_bills: number;
+    total_discount: number; manual_discount: number; coupon_discount: number;
+    estimated_bills: number; total_sales: number; gift_redemption_total: number;
+    by_coupon: Array<{ code: string; kind: 'promo' | 'gift'; uses: number; amount: number }>;
+    notes: string[];
+};
+export const getDiscountsReport = async (restaurantId: string, from?: string, to?: string) =>
+    backendJson<DiscountsReport>(`/reports/discounts?restaurantId=${encodeURIComponent(restaurantId)}${qFromTo(from, to)}`, restaurantId, { method: 'GET' });
+export const getExpenses = async (restaurantId: string, from?: string, to?: string) =>
+    backendJson<{ expenses: ExpenseRow[] }>(`/expenses?restaurantId=${encodeURIComponent(restaurantId)}${qFromTo(from, to)}`, restaurantId, { method: 'GET' });
+
+// --- Balance sheet (pragmatic snapshot) ---------------------------------------
+export type BalanceSheet = {
+    as_of: string;
+    assets: { cash_in_hand: number; receivables: number; inventory_value: number; total: number };
+    liabilities: { payables: number; unpaid_payroll: number; total: number };
+    equity: number;
+    notes: string[];
+};
+export const getBalanceSheet = async (restaurantId: string, asOf?: string) =>
+    backendJson<BalanceSheet>(`/reports/balance-sheet?restaurantId=${encodeURIComponent(restaurantId)}${asOf ? `&as_of=${encodeURIComponent(asOf)}` : ''}`, restaurantId, { method: 'GET' });
+
+// --- Bank / settlement reconciliation -----------------------------------------
+export type ReconciliationRow = {
+    method: string;
+    expected: number;
+    actual: number | null;
+    status: 'matched' | 'variance' | null;
+    note: string | null;
+};
+export const getReconciliation = async (restaurantId: string, date?: string) =>
+    backendJson<{ date: string; rows: ReconciliationRow[] }>(`/reconciliation?restaurantId=${encodeURIComponent(restaurantId)}${date ? `&date=${encodeURIComponent(date)}` : ''}`, restaurantId, { method: 'GET' });
+
+export const saveReconciliation = async (
+    restaurantId: string,
+    input: { date: string; method: string; actual: number; note?: string },
+): Promise<ReconciliationRow & { date: string }> => {
+    const res = await backendCall('/reconciliation', restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to save reconciliation');
+    return res.json();
+};
+
+// Tally-compatible voucher XML (string) for import into Tally.
+export const getTallyXml = async (restaurantId: string, from?: string, to?: string): Promise<string> => {
+    const res = await backendCall(`/reports/tally.xml?restaurantId=${encodeURIComponent(restaurantId)}${qFromTo(from, to)}`, restaurantId, { method: 'GET' });
+    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to build Tally export');
+    return res.text();
+};
+
+export const addExpense = async (
+    restaurantId: string,
+    body: { amount: number; category?: string; vendor?: string; note?: string; spent_on?: string },
+) => {
+    const res = await backendCall('/expenses', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    });
+    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to add expense');
+    return res.json();
+};
+
+export const deleteExpense = async (restaurantId: string, id: string) => {
+    const res = await backendCall(`/expenses/${encodeURIComponent(id)}`, restaurantId, { method: 'DELETE' });
+    if (!res || !res.ok) throw new Error('Unable to delete expense');
+    return { acknowledged: true };
+};
+
+// --- Cash register / day-close ----------------------------------------------
+export type CashSession = {
+    id: string;
+    opened_at: string;
+    opened_by: string | null;
+    opening_float: number;
+    closed_at: string | null;
+    closed_by: string | null;
+    cash_sales: number | null;
+    cash_refunds: number | null;
+    cash_payouts: number | null;
+    expected_cash: number | null;
+    counted_cash: number | null;
+    variance: number | null;
+    notes: string | null;
+    status: 'open' | 'closed';
+};
+export type CurrentCashSession = CashSession & { live_cash_sales: number; live_cash_refunds: number; live_expected: number };
+
+export const getCurrentCashSession = async (restaurantId: string) =>
+    backendJson<{ session: CurrentCashSession | null }>(`/cash/current?restaurantId=${encodeURIComponent(restaurantId)}`, restaurantId, { method: 'GET' });
+
+export const getCashSessions = async (restaurantId: string, from?: string, to?: string) =>
+    backendJson<{ sessions: CashSession[] }>(`/cash/sessions?restaurantId=${encodeURIComponent(restaurantId)}${qFromTo(from, to)}`, restaurantId, { method: 'GET' });
+
+export const openCashSession = async (restaurantId: string, openingFloat: number) => {
+    const res = await backendCall('/cash/open', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ opening_float: openingFloat }),
+    });
+    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to open cash session');
+    return res.json() as Promise<CashSession>;
+};
+
+export const closeCashSession = async (
+    restaurantId: string,
+    body: { counted_cash: number; cash_payouts?: number; notes?: string },
+) => {
+    const res = await backendCall('/cash/close', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    });
+    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to close cash session');
+    return res.json() as Promise<CashSession>;
+};
+
+// --- Subscription & billing (tenant self-serve) -----------------------------
+export type BillingPlan = { id: string; code: string; name: string; price_cents: number; features: Record<string, unknown>; limits: Record<string, unknown>; active: boolean };
+export type BillingSubscription = { res_id: string; plan_id: string | null; status: string; trial_ends_at: string | null; current_period_end: string | null; pending_plan_id: string | null };
+export type BillingInvoice = { id: string; plan_id: string | null; amount_cents: number; status: string; period_start: string | null; period_end: string | null; note: string | null; created_at: string };
+export type BillingInfo = {
+    configured: boolean;
+    online_pay: boolean;
+    subscription: BillingSubscription | null;
+    plan: BillingPlan | null;
+    pending_plan: BillingPlan | null;
+    plans: BillingPlan[];
+    invoices: BillingInvoice[];
+};
+
+export const getBilling = async (restaurantId: string): Promise<BillingInfo> => {
+    const data = await backendJson<BillingInfo>(`/billing?restaurantId=${encodeURIComponent(restaurantId)}`, restaurantId, { method: 'GET' });
+    if (!data) throw new Error('Unable to load billing');
+    return data;
+};
+
+export const changePlan = async (restaurantId: string, planId: string): Promise<{ mode: 'upgrade' | 'downgrade_scheduled' | 'noop'; invoice?: BillingInvoice; plan: BillingPlan }> => {
+    const res = await backendCall('/billing/change-plan', restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan_id: planId }) });
+    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to change plan');
+    return res.json();
+};
+
+export const billingPayCreate = async (restaurantId: string, invoiceId: string): Promise<{ order_id: string; amount: number; currency: string; key_id: string; invoice_id: string }> => {
+    const res = await backendCall('/billing/pay/create', restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ invoice_id: invoiceId }) });
+    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to start payment');
+    return res.json();
+};
+
+export const billingPayVerify = async (
+    restaurantId: string,
+    body: { invoice_id: string; razorpay_order_id: string; razorpay_payment_id: string; razorpay_signature: string },
+): Promise<{ ok: boolean }> => {
+    const res = await backendCall('/billing/pay/verify', restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Payment verification failed');
+    return res.json();
+};
+
+// --- Waitlist / queue (staff) -----------------------------------------------
+export type WaitlistEntry = {
+    id: string;
+    name: string;
+    phone: string | null;
+    party_size: number;
+    status: 'waiting' | 'called' | 'seated' | 'cancelled' | 'no_show';
+    position: number;
+    minutes_waiting: number;
+    pre_order: Array<{ id: string; name: string; price: number; quantity: number; note?: string }>;
+    party_members?: Array<{ name: string; phone: string; joined_at: string }>;
+    table_name: string | null;
+    created_at: string;
+    called_at: string | null;
+};
+
+export const getWaitlist = async (restaurantId: string): Promise<WaitlistEntry[]> => {
+    const d = await backendJson<{ entries: WaitlistEntry[] }>(`/waitlist?restaurantId=${encodeURIComponent(restaurantId)}`, restaurantId, { method: 'GET' });
+    return Array.isArray(d?.entries) ? d!.entries : [];
+};
+
+export const callWaitlistEntry = async (restaurantId: string, id: string) => {
+    const res = await backendCall(`/waitlist/${encodeURIComponent(id)}/call`, restaurantId, { method: 'POST' });
+    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to call this party');
+    return res.json();
+};
+
+export const seatWaitlistEntry = async (restaurantId: string, id: string, tableName: string) => {
+    const res = await backendCall(`/waitlist/${encodeURIComponent(id)}/seat`, restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ table_name: tableName }) });
+    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to seat this party');
+    return res.json();
+};
+
+export const cancelWaitlistEntry = async (restaurantId: string, id: string, status: 'cancelled' | 'no_show' = 'cancelled') => {
+    const res = await backendCall(`/waitlist/${encodeURIComponent(id)}/cancel`, restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) });
+    if (!res || !res.ok) throw new Error('Unable to update the queue');
+    return { ok: true };
+};
+
+// --- Multi-outlet -----------------------------------------------------------
+export type OutletRow = { id: string; outlet_name: string; outlet_add: string | null; outlet_phone: string | null; outlet_hours: string | null; is_active: boolean; is_default: boolean };
+export type OutletsRollup = {
+    days: number;
+    outlets: Array<{ outlet_id: string; name: string; revenue: number; orders: number }>;
+    totals: { revenue: number; orders: number; outlets: number };
+};
+
+export const getOutlets = async (restaurantId: string) =>
+    backendJson<{ outlets: OutletRow[] }>(`/outlets?restaurantId=${encodeURIComponent(restaurantId)}`, restaurantId, { method: 'GET' });
+export const getOutletsRollup = async (restaurantId: string, days = 30) =>
+    backendJson<OutletsRollup>(`/outlets/rollup?restaurantId=${encodeURIComponent(restaurantId)}&days=${days}`, restaurantId, { method: 'GET' });
+
+export const addOutlet = async (restaurantId: string, body: { name: string; address?: string; phone?: string; hours?: string }) => {
+    const res = await backendCall('/outlets', restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to add outlet');
+    return res.json();
+};
+export const updateOutlet = async (restaurantId: string, id: string, body: { name?: string; address?: string; phone?: string; hours?: string }) => {
+    const res = await backendCall(`/outlets/${encodeURIComponent(id)}`, restaurantId, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to update outlet');
+    return { acknowledged: true };
+};
+export const setOutletActive = async (restaurantId: string, id: string, active: boolean) => {
+    const res = await backendCall(`/outlets/${encodeURIComponent(id)}/active`, restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active }) });
+    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to update outlet');
+    return { acknowledged: true };
+};
+export const deleteOutlet = async (restaurantId: string, id: string) => {
+    const res = await backendCall(`/outlets/${encodeURIComponent(id)}`, restaurantId, { method: 'DELETE' });
+    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to delete outlet');
+    return { acknowledged: true };
+};
+
+// --- POS everyday ops (discount / split / merge / refund) -------------------
+const postJson = async (path: string, restaurantId: string, body: unknown) => {
+    const res = await backendCall(path, restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Request failed');
+    try { return await res.json(); } catch { return {}; }
+};
+
+// May come back applied ({applied: true}) or parked for manager approval
+// ({pending: true, request_id}) when the restaurant's threshold is exceeded.
+export type BillDiscountResult = {
+    success?: boolean;
+    applied?: boolean;
+    discount_type?: 'percent' | 'flat' | null;
+    discount_value?: number;
+    pending?: boolean;
+    request_id?: string;
+    amount?: number;
+    threshold?: number;
+};
+export const setBillDiscount = async (restaurantId: string, tableName: string, type: 'percent' | 'flat', value: number): Promise<BillDiscountResult> =>
+    postJson('/bills/discount', restaurantId, { table_name: tableName, type, value });
+
+export type DiscountRequest = {
+    id: string;
+    bill_id: string;
+    table_name: string | null;
+    requested_by: string | null;
+    discount_type: 'percent' | 'flat';
+    discount_value: number;
+    amount: number;
+    reason: string | null;
+    status: 'pending' | 'approved' | 'rejected';
+    decided_by: string | null;
+    decided_at: string | null;
+    created_at: string;
+};
+export const getDiscountRequests = async (restaurantId: string, status: string = 'pending'): Promise<DiscountRequest[]> => {
+    const res = await backendCall(`/discount-requests?status=${encodeURIComponent(status)}`, restaurantId, { method: 'GET' });
+    if (!res || !res.ok) return [];
+    try { const j = await res.json(); return Array.isArray(j?.requests) ? j.requests : []; } catch { return []; }
+};
+export const decideDiscountRequest = async (restaurantId: string, requestId: string, approve: boolean): Promise<{ success: boolean; request?: DiscountRequest }> =>
+    postJson(`/discount-requests/${encodeURIComponent(requestId)}/${approve ? 'approve' : 'reject'}`, restaurantId, {});
+
+// Re-open a closed bill (admin only, within the configured window).
+export const reopenBill = async (restaurantId: string, billId: string): Promise<{ success: boolean; restored_orders?: number; window_min?: number }> =>
+    postJson(`/bills/${encodeURIComponent(billId)}/reopen`, restaurantId, {});
+
+// --- Kitchen: hold-and-fire + expo/pass screen ------------------------------
+// Fire held course items: stamps fired_at, clears course_hold, starts timers.
+export const fireOrderItems = async (restaurantId: string, orderId: string, itemIds: string[]): Promise<{ success: boolean; fired: string[] }> =>
+    postJson(`/orders/${encodeURIComponent(orderId)}/fire`, restaurantId, { item_ids: itemIds });
+
+// Bark an order: the expo announces it to the kitchen — stamps barked_at and
+// starts the order/dish prep timers (they stay idle until the bark).
+export const barkOrder = async (restaurantId: string, orderId: string): Promise<{ success: boolean; barked_at?: string; already_barked?: boolean }> =>
+    postJson(`/orders/${encodeURIComponent(orderId)}/bark`, restaurantId, {});
+
+export type ExpoItem = { name: string; qty: number; station: string | null; status: 'served' | 'preparing' | 'held' | 'unbarked' };
+export type ExpoTable = { table: string; items: ExpoItem[]; ready_count: number; pending_count: number; source?: string | null };
+export const getKdsExpo = async (restaurantId: string): Promise<{ tables: ExpoTable[] }> => {
+    const res = await backendCall('/kds/expo', restaurantId, { method: 'GET' });
+    if (!res || !res.ok) return { tables: [] };
+    try { const j = await res.json(); return { tables: Array.isArray(j?.tables) ? j.tables : [] }; } catch { return { tables: [] }; }
+};
+// --- Kitchen sections (managed list in /restaurant/settings) ----------------
+// Ordered list of kitchen sections (e.g. Tandoor/Curry/Bar); menu items point
+// at one via their `station` and the KDS offers one display per section.
+export const getKitchenSections = async (restaurantId: string): Promise<string[]> => {
+    const res = await backendCall('/restaurant/settings', restaurantId, { method: 'GET' });
+    if (!res || !res.ok) return [];
+    try { const j = await res.json(); return Array.isArray(j?.kitchen_sections) ? j.kitchen_sections.map((s: unknown) => String(s)) : []; } catch { return []; }
+};
+export const saveKitchenSections = async (restaurantId: string, sections: string[]): Promise<string[]> => {
+    const res = await backendCall('/restaurant/settings', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kitchen_sections: sections }),
+    });
+    if (!res || !res.ok) throw new Error('Unable to save kitchen sections');
+    try { const j = await res.json(); return Array.isArray(j?.kitchen_sections) ? j.kitchen_sections.map((s: unknown) => String(s)) : sections; } catch { return sections; }
+};
+// Rename a section — the backend also cascades the new name onto every menu
+// item that pointed at the old one.
+export const renameKitchenSection = async (restaurantId: string, from: string, to: string): Promise<{ success: boolean; updated_items?: number; kitchen_sections?: string[] }> =>
+    postJson('/kitchen-sections/rename', restaurantId, { from, to });
+
+// --- Inventory categories (managed list in /restaurant/settings) ------------
+// Ordered list of ingredient categories (Vegetable/Meat/Dairy/...); inventory
+// items carry one via their `category` field. Mirrors kitchen_sections: an
+// unset column reads back as the defaults, an explicit [] clears it.
+export const getInventoryCategories = async (restaurantId: string): Promise<string[]> => {
+    const res = await backendCall('/restaurant/settings', restaurantId, { method: 'GET' });
+    if (!res || !res.ok) return [];
+    try { const j = await res.json(); return Array.isArray(j?.inventory_categories) ? j.inventory_categories.map((s: unknown) => String(s)) : []; } catch { return []; }
+};
+export const saveInventoryCategories = async (restaurantId: string, categories: string[]): Promise<string[]> => {
+    const res = await backendCall('/restaurant/settings', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inventory_categories: categories }),
+    });
+    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to save inventory categories');
+    try { const j = await res.json(); return Array.isArray(j?.inventory_categories) ? j.inventory_categories.map((s: unknown) => String(s)) : categories; } catch { return categories; }
+};
+// Rename a category — the backend also cascades the new name onto every
+// inventory item that pointed at the old one.
+export const renameInventoryCategory = async (restaurantId: string, from: string, to: string): Promise<{ success: boolean; updated_items?: number; inventory_categories?: string[] }> =>
+    postJson('/inventory-categories/rename', restaurantId, { from, to });
+
+export type SplitPart = { label: string; subtotal: number; total: number };
+export const splitBill = async (restaurantId: string, tableName: string, parts: number): Promise<{ grand_total: number; parts: SplitPart[] }> =>
+    postJson('/bills/split', restaurantId, { table_name: tableName, mode: 'even', parts });
+export const mergeTables = async (restaurantId: string, fromTable: string, toTable: string) =>
+    postJson('/bills/merge', restaurantId, { from_table: fromTable, to_table: toTable });
+export const refundBill = async (restaurantId: string, opts: { table_name?: string; bill_id?: string; amount?: number; reason?: string }): Promise<{ amount: number; gateway: string }> =>
+    postJson('/bills/refund', restaurantId, opts);

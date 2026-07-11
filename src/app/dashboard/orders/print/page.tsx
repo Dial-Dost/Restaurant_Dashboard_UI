@@ -87,8 +87,9 @@ function PrintPageContents() {
                         setBill(billResp ?? null);
 
                         // Build feedback URL like settings and generate QR data URL client-side
+                        // (the form lives inside this app at /feedback; env still overrides).
                         try {
-                            const fallbackBase = typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:9003` : '';
+                            const fallbackBase = typeof window !== 'undefined' ? `${window.location.origin}/feedback` : '';
                             const baseUrl = (process.env.NEXT_PUBLIC_FEEDBACK_FORM_URL ?? fallbackBase).replace(/\/$/, '');
                             if (baseUrl && user?.res_id && user?.employeeId && user?.outlet_id) {
                                 const params = new URLSearchParams({ restaurantId: user.res_id, employeeId: user.employeeId, outletId: user.outlet_id });
@@ -151,12 +152,17 @@ function PrintPageContents() {
             `}</style>
             
             <Card className="mx-auto w-[420px] max-w-full shadow-none border-black receipt-card">
-                <div className="mb-3 text-right">
-                    <div className="flex gap-2 justify-end no-print">
+                <div className="mb-3 no-print">
+                    <p className="mb-2 text-left text-xs text-gray-500">Bill preview — review the receipt below, then click Print when you&apos;re ready. Nothing prints automatically.</p>
+                    <div className="flex gap-2 justify-end">
                         <button
                             onClick={() => { window.print(); }}
                             className="px-3 py-1 border rounded text-sm"
                         >Print</button>
+                        <button
+                            onClick={() => { window.close(); }}
+                            className="px-3 py-1 border rounded text-sm"
+                        >Close</button>
                         <button
                                 onClick={async () => {
                                     // Passed logoBase64 to the encoder
@@ -553,8 +559,8 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
             .line('For calling Valet kindly scan the below QR code')
             .newline();
 
-        // QR
-        const fallbackBase = typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:9003` : '';
+        // QR (feedback form lives inside this app at /feedback; env still overrides)
+        const fallbackBase = typeof window !== 'undefined' ? `${window.location.origin}/feedback` : '';
         const baseUrl = (process.env.NEXT_PUBLIC_FEEDBACK_FORM_URL ?? fallbackBase).replace(/\/$/, '');
         if (baseUrl && user?.res_id && user?.employeeId && user?.outlet_id) {
             const params = new URLSearchParams({ restaurantId: user.res_id, employeeId: user.employeeId, outletId: user.outlet_id });

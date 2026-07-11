@@ -24,7 +24,10 @@ const restaurantSignUpSchema = z.object({
   restaurantName: z.string().min(2, "Restaurant name is too short."),
   adminName: z.string().min(2, "Your name is too short."),
   adminEmployeeId: z.string().min(1, "Employee ID is required."),
-  password: z.string().min(6, "Password must be at least 6 characters."),
+  password: z.string()
+    .min(10, "Password must be at least 10 characters.")
+    .regex(/[a-zA-Z]/, "Password must contain a letter.")
+    .regex(/[0-9]/, "Password must contain a number."),
   confirmPassword: z.string()
 }).refine(data => data.password === data.confirmPassword, {
   message: "Passwords do not match.",

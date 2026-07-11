@@ -330,19 +330,27 @@ export default function BookingsPage() {
                   <TableCell className="hidden md:table-cell text-center">{booking.guests}</TableCell>
                   <TableCell className="hidden lg:table-cell">{booking.table}</TableCell>
                   <TableCell className="hidden lg:table-cell">{booking.source}</TableCell>
-                  <TableCell className="hidden xl:table-cell whitespace-pre-wrap">{booking.notes || "-"}</TableCell>
+                  <TableCell className="hidden xl:table-cell whitespace-pre-wrap">
+                    {booking.notes || "-"}
+                    {booking.min_spend ? (
+                      <div className="mt-1 text-xs text-muted-foreground">Min spend ₹{booking.min_spend}</div>
+                    ) : null}
+                  </TableCell>
                   <TableCell>
-                    <Badge
-                      variant={
-                        booking.status === "Confirmed"
-                          ? "default"
-                          : booking.status === "Arrived" || booking.status === "Seated"
-                          ? "secondary"
-                          : "outline"
-                      }
-                    >
-                      {booking.status}
-                    </Badge>
+                    <div className="flex flex-col items-start gap-1">
+                      <Badge
+                        variant={
+                          booking.status === "Confirmed"
+                            ? "default"
+                            : booking.status === "Arrived" || booking.status === "Seated"
+                            ? "secondary"
+                            : "outline"
+                        }
+                      >
+                        {booking.status}
+                      </Badge>
+                      <DepositBadge deposit={booking.deposit} />
+                    </div>
                   </TableCell>
                   <TableCell>
                     <DropdownMenu>
@@ -375,7 +383,144 @@ export default function BookingsPage() {
           </Table>
         </CardContent>
       </Card>
+      <RecentMessagesCard />
     </div>
+  );
+}
+
+// Delivery visibility for automated guest messaging (confirmations, reminders,
+// WhatsApp replies). Admin-only endpoint — the card hides itself when the
+// backend refuses (non-admin) or there is nothing to show yet.
+type OutboundMessage = {
+  id: string;
+  channel: string;
+  to_phone: string | null;
+  body: string | null;
+  kind: string | null;
+  ref_id: string | null;
+  status: string;
+  error: string | null;
+  provider: string | null;
+  created_at: string;
+};
+
+function RecentMessagesCard() {
+  const { user } = useAuth();
+  const [messages, setMessages] = useState<OutboundMessage[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      if (!user?.restaurantUsername) return;
+      const response = await requestBackend<OutboundMessage[]>({
+        path: "/messages",
+        method: "GET",
+        restaurantId: user.restaurantUsername,
+      });
+      if (!cancelled && response.ok && Array.isArray(response.data)) {
+        setMessages(response.data);
+      }
+    };
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.restaurantUsername]);
+
+  if (!messages || messages.length === 0) return null;
+
+  const statusStyles: Record<string, string> = {
+    sent: "border-green-300 bg-green-50 text-green-800",
+    failed: "border-red-300 bg-red-50 text-red-800",
+    skipped_no_provider: "border-neutral-300 bg-neutral-100 text-neutral-600",
+  };
+  const statusLabels: Record<string, string> = {
+    sent: "Sent",
+    failed: "Failed",
+    skipped_no_provider: "No provider",
+  };
+  const kindLabels: Record<string, string> = {
+    booking_confirm: "Confirmation",
+    booking_reminder: "Reminder",
+    wa_reply: "WhatsApp reply",
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Recent messages</CardTitle>
+        <CardDescription>
+          Automated guest messages (booking confirmations, reminders and WhatsApp
+          replies) and whether they were delivered to the provider. Configure the
+          SMS/WhatsApp provider in the owner app settings.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>When</TableHead>
+              <TableHead>To</TableHead>
+              <TableHead className="hidden md:table-cell">Type</TableHead>
+              <TableHead className="hidden lg:table-cell">Message</TableHead>
+              <TableHead>Status</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {messages.map((m) => (
+              <TableRow key={m.id}>
+                <TableCell className="whitespace-nowrap text-sm">
+                  {new Date(m.created_at).toLocaleString()}
+                </TableCell>
+                <TableCell className="text-sm">
+                  <div>{m.to_phone || "-"}</div>
+                  <div className="text-xs text-muted-foreground">{m.channel}</div>
+                </TableCell>
+                <TableCell className="hidden md:table-cell text-sm">
+                  {kindLabels[m.kind ?? ""] ?? m.kind ?? "-"}
+                </TableCell>
+                <TableCell className="hidden lg:table-cell max-w-[320px] truncate text-sm text-muted-foreground" title={m.body ?? ""}>
+                  {m.body || "-"}
+                </TableCell>
+                <TableCell>
+                  <Badge variant="outline" className={statusStyles[m.status] ?? ""}>
+                    {statusLabels[m.status] ?? m.status}
+                  </Badge>
+                  {m.error ? (
+                    <div className="mt-1 max-w-[220px] truncate text-xs text-red-600" title={m.error}>
+                      {m.error}
+                    </div>
+                  ) : null}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
+  );
+}
+
+// Reservation-deposit state badge: pending (unpaid Razorpay order), paid,
+// refund_due (early cancel — refund manually from Razorpay) or forfeited.
+function DepositBadge({ deposit }: { deposit?: Booking["deposit"] }) {
+  if (!deposit) return null;
+  const styles: Record<string, string> = {
+    pending: "border-amber-300 bg-amber-50 text-amber-800",
+    paid: "border-green-300 bg-green-50 text-green-800",
+    refund_due: "border-red-300 bg-red-50 text-red-800",
+    forfeited: "border-neutral-300 bg-neutral-100 text-neutral-600",
+  };
+  const labels: Record<string, string> = {
+    pending: `Deposit ₹${deposit.amount} pending`,
+    paid: `Deposit ₹${deposit.amount} paid`,
+    refund_due: `Refund due ₹${deposit.amount}`,
+    forfeited: `Deposit ₹${deposit.amount} forfeited`,
+  };
+  return (
+    <Badge variant="outline" className={styles[deposit.status] ?? ""}>
+      {labels[deposit.status] ?? `Deposit ₹${deposit.amount}`}
+    </Badge>
   );
 }
 

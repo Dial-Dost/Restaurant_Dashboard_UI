@@ -4,8 +4,8 @@
 
 import { findRestaurantByName, findUserInRestaurant, createRestaurant, User, addEmployee, removeEmployee } from '@/lib/db';
 
-// This is a mock authentication service that uses the in-memory database.
-// In a real application, you would use a secure authentication provider.
+// Authentication service: thin server-action wrapper over the backend auth API
+// (employee login, restaurant registration, employee management, password reset).
 
 const getRestaurantId = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, "");
 const API_BASE_URL = (
@@ -90,26 +90,26 @@ export const signInEmployee = async (restaurantName: string, employeeUsername: s
     return await response.json();
 }
 
-// Password Reset - Mock implementation
+// Password reset: files a forgot-password request with the backend.
 export const sendPasswordReset = async (restaurantName: string, employeeUsername: string) => {
-    const restaurant = await findRestaurantByName(restaurantName);
-    if (!restaurant) {
-        console.log(`Password reset requested for non-existent restaurant: ${restaurantName}`);
-        return;
+    // File a forgot-password request: the restaurant's admin fulfils it from the
+    // Employees page. The backend always responds success (no account enumeration).
+    try {
+        await fetch(`${API_BASE_URL}/auth/forgot-password`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ restaurant: restaurantName, username: employeeUsername }),
+            cache: 'no-store',
+        });
+    } catch (error) {
+        console.warn('forgot_password_request_failed', error);
     }
-
-    const user = await findUserInRestaurant(restaurant.res_username, employeeUsername);
-    if (!user) {
-        console.log(`Password reset requested for non-existent user: ${employeeUsername}`);
-        return;
-    }
-
-    console.log(`A password reset link would be sent to the registered email for employee ${employeeUsername} at ${restaurantName}.`);
 }
 
-// Sign Out - Mock implementation
+// Sign out: client-side no-op. The session is a bearer token held client-side and
+// invalidated server-side via the backend /auth/logout call (see the auth hook);
+// nothing to clear here.
 export const signOutUser = async () => {
-    console.log("User signed out.");
     return;
 }
 

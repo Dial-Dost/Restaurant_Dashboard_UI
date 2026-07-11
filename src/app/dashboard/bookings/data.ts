@@ -52,4 +52,24 @@ export const initialBookings = [
   },
 ];
 
-export type Booking = (typeof initialBookings)[0];
+// Reservation deposit as returned inside /get-bookings rows (lives in the
+// booking's slot JSON server-side). refund_due/forfeited are set on cancel.
+export type BookingDeposit = {
+  amount: number;
+  status: "pending" | "paid" | "refund_due" | "forfeited";
+  payment_id?: string | null;
+};
+
+export type Booking = {
+  id: string;
+  customer: string;
+  time: string;
+  guests: number;
+  table: string;
+  source: string;
+  status: string;
+  notes: string;
+  deposit?: BookingDeposit | null;
+  // Informational minimum spend (₹) — shown to guest + staff, not enforced.
+  min_spend?: number | null;
+};

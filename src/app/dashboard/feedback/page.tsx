@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState, useCallback } from "react";
+import QRCode from "qrcode";
 import {
   ResponsiveContainer,
   LineChart,
@@ -12,8 +13,10 @@ import {
 } from "recharts";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { useAuth } from "@/context/AuthContext";
 import { useRealtime } from "@/context/RealtimeContext";
+import { useToast } from "@/hooks/use-toast";
 import { requestBackend } from "@/lib/db";
 
 type FeedbackCategoryRating = {
@@ -58,9 +61,13 @@ function formatDate(input?: string | null): string {
 
 export default function FeedbackPage() {
   const { user } = useAuth();
+  const { toast } = useToast();
   const [entries, setEntries] = useState<FeedbackEntry[]>([]);
   const [summary, setSummary] = useState<FeedbackSummary | null>(null);
   const [employeesMap, setEmployeesMap] = useState<Record<string, { name: string; role?: string }>>({});
+  // Raw employee list (kept alongside employeesMap) so we can build a per-employee feedback QR.
+  const [employees, setEmployees] = useState<any[]>([]);
+  const [employeeQrMap, setEmployeeQrMap] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const { lastEvent } = useRealtime();
   const [stats, setStats] = useState<{ daily?: any; weekly?: any; overall?: Array<any>; monthly?: any; yearly?: any } | null>(null);
@@ -133,6 +140,7 @@ export default function FeedbackPage() {
           }
         }
         setEmployeesMap(map);
+        setEmployees(usersList);
         // debug: log users payload and built map to help diagnose missing names
         try {
           console.debug("feedback: usersList", usersList);
@@ -275,6 +283,7 @@ export default function FeedbackPage() {
               }
             }
             setEmployeesMap(map);
+            setEmployees(usersList);
             try {
               console.debug("feedback: usersList (refetch)", usersList);
               console.debug("feedback: employeesMap keys (refetch)", Object.keys(map));
@@ -370,6 +379,68 @@ export default function FeedbackPage() {
     if (!Number.isNaN(numeric) && employeesMap[String(numeric)]?.name) return employeesMap[String(numeric)].name;
     return null;
   }, [employeesMap]);
+
+  // Feedback form base URL — same resolution as settings-form: same-origin /feedback
+  // by default, NEXT_PUBLIC_FEEDBACK_FORM_URL overrides, and a localhost placeholder is
+  // auto-rewritten to the current host on deployed/forwarded hosts.
+  const feedbackBase = useMemo(() => {
+    const fallbackBase = typeof window !== "undefined" ? `${window.location.origin}/feedback` : "";
+    const configuredBase = (process.env.NEXT_PUBLIC_FEEDBACK_FORM_URL ?? "").trim();
+    let baseUrl = configuredBase || fallbackBase;
+    if (typeof window !== "undefined" && baseUrl) {
+      try {
+        const parsed = new URL(baseUrl);
+        const configuredHost = parsed.hostname.toLowerCase();
+        const currentHost = window.location.hostname.toLowerCase();
+        const isConfiguredLocal = configuredHost === "localhost" || configuredHost === "127.0.0.1";
+        const isCurrentLocal = currentHost === "localhost" || currentHost === "127.0.0.1";
+        if (isConfiguredLocal && !isCurrentLocal) {
+          parsed.protocol = window.location.protocol;
+          parsed.hostname = window.location.hostname;
+          baseUrl = parsed.toString();
+        }
+      } catch {
+        // ignore invalid env URL, keep fallback
+      }
+    }
+    return baseUrl.replace(/\/$/, "");
+  }, []);
+
+  // Per-employee feedback link: {base}?rid=<restaurantUsername>&oid=<outlet_id>&eid=<Employees.id UUID>
+  const empQrId = (emp: any) => String(emp?.id ?? emp?.employee_id ?? emp?.employeeId ?? "");
+  const buildEmployeeFeedbackUrl = useCallback((eid: string) => {
+    if (!feedbackBase || !user?.restaurantUsername || !eid) return "";
+    const params = new URLSearchParams({
+      rid: String(user.restaurantUsername),
+      oid: String(user.outlet_id ?? ""),
+      eid: String(eid),
+    });
+    return `${feedbackBase}?${params.toString()}`;
+  }, [feedbackBase, user?.restaurantUsername, user?.outlet_id]);
+
+  // Generate a QR data URL per employee (admin only — this card is admin-gated).
+  useEffect(() => {
+    let active = true;
+    if (user?.role !== "admin" || employees.length === 0) {
+      setEmployeeQrMap({});
+      return;
+    }
+    (async () => {
+      const map: Record<string, string> = {};
+      for (const emp of employees) {
+        const eid = empQrId(emp);
+        const url = buildEmployeeFeedbackUrl(eid);
+        if (!eid || !url) continue;
+        try {
+          map[eid] = await QRCode.toDataURL(url, { width: 220, margin: 2 });
+        } catch {
+          // skip this employee's QR on failure
+        }
+      }
+      if (active) setEmployeeQrMap(map);
+    })();
+    return () => { active = false; };
+  }, [employees, buildEmployeeFeedbackUrl, user?.role]);
 
   const monthlyChartData = (() => {
     const monthly = stats?.monthly;
@@ -711,6 +782,66 @@ export default function FeedbackPage() {
           )}
         </CardContent>
       </Card>
+
+      {user?.role === "admin" && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Employee feedback QR codes</CardTitle>
+            <CardDescription>
+              Each staff member&apos;s personal feedback link. Print or share it so customer reviews are attributed to them.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {employees.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No employees found.</p>
+            ) : (
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {employees.map((emp) => {
+                  const eid = empQrId(emp);
+                  const url = buildEmployeeFeedbackUrl(eid);
+                  const name = resolveEmployeeName(eid) ?? String(emp?.emp_Fname ?? "Unknown");
+                  const role = employeesMap[eid]?.role || String(emp?.role ?? "");
+                  const qr = employeeQrMap[eid];
+                  return (
+                    <div key={eid || name} className="flex flex-col items-center gap-3 rounded-md border p-4 text-center">
+                      <div className="w-full">
+                        <p className="truncate font-medium">{name}</p>
+                        {role ? <p className="text-xs capitalize text-muted-foreground">{role}</p> : null}
+                      </div>
+                      {qr ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={qr} alt={`Feedback QR for ${name}`} className="h-40 w-40 rounded-md border bg-white p-2" />
+                      ) : (
+                        <div className="flex h-40 w-40 items-center justify-center rounded-md border bg-muted text-xs text-muted-foreground">
+                          {url ? "Generating…" : "Unavailable"}
+                        </div>
+                      )}
+                      <p className="w-full break-all text-[11px] text-muted-foreground">{url || "—"}</p>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={!url}
+                        onClick={async () => {
+                          if (!url) return;
+                          try {
+                            await navigator.clipboard.writeText(url);
+                            toast({ title: "Link copied", description: `Feedback link for ${name} copied.` });
+                          } catch {
+                            toast({ title: "Copy failed", description: "Could not copy the feedback link.", variant: "destructive" });
+                          }
+                        }}
+                      >
+                        Copy link
+                      </Button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>

@@ -67,6 +67,7 @@ function EmployeeLoginContent() {
       // normalize backend response to AuthUser shape
       const authUser = {
         uid: (user.uid ?? user.employeeId) as string,
+        token: user.token as string,
         employeeId: user.employeeId as string,
         employeeUsername: user.employeeUsername as string,
         role: user.role,

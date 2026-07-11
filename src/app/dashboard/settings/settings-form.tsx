@@ -83,8 +83,11 @@ export function SettingsForm() {
       return ""
     }
 
+    // The feedback form lives inside this app at /feedback, so same-origin is the
+    // default; NEXT_PUBLIC_FEEDBACK_FORM_URL still overrides (e.g. a separately
+    // hosted form).
     const fallbackBase = typeof window !== "undefined"
-      ? `${window.location.protocol}//${window.location.hostname}:9003`
+      ? `${window.location.origin}/feedback`
       : ""
 
     const configuredBase = (process.env.NEXT_PUBLIC_FEEDBACK_FORM_URL ?? "").trim()
@@ -211,12 +214,20 @@ export function SettingsForm() {
         outlet_id: currentProfile?.outlet_id ?? user.outlet_id ?? "main",
         outlet_name: currentProfile?.outlet_name ?? data.name,
     };
-    await updateRestaurantProfile(user.restaurantUsername, user.employeeId, profileData);
-    setCurrency(data.currency);
-    toast({
-      title: "Settings saved!",
-      description: "Your restaurant profile has been updated.",
-    })
+    try {
+      await updateRestaurantProfile(user.restaurantUsername, user.employeeId, profileData);
+      setCurrency(data.currency);
+      toast({
+        title: "Settings saved!",
+        description: "Your restaurant profile has been updated.",
+      })
+    } catch (error: any) {
+      toast({
+        title: "Couldn't save settings",
+        description: error?.message ?? "Unable to update profile.",
+        variant: "destructive",
+      })
+    }
   }
 
   return (

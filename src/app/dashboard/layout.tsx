@@ -18,6 +18,13 @@ import {
   LogOut,
   BookOpen,
   Activity,
+  Clock,
+  Ticket,
+  Wallet,
+  Truck,
+  CreditCard,
+  Hourglass,
+  History,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import Link from 'next/link';
@@ -32,6 +39,8 @@ import {
 import Image from 'next/image';
 import { ThemeProvider } from '@/components/ThemeProvider';
 import { ThemeToggle } from '@/components/ThemeToggle';
+import { OutletSwitcher } from './outlet-switcher';
+import { SubscriptionBanner } from '@/components/subscription-banner';
 import { usePathname, useRouter } from 'next/navigation';
 import { useTranslation } from '@/context/LanguageContext';
 import { useAuth } from '@/context/AuthContext';
@@ -87,12 +96,25 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
     { href: '/dashboard/orders', label: t('orders'), icon: <ListOrdered className="h-6 w-6" />, actionKeywords: ['order', 'bill', 'payment'] },
     { href: '/dashboard/menu', label: 'Menu', icon: <BookOpen className="h-6 w-6" />, actionKeywords: ['menu'] },
     { href: '/dashboard/tables', label: t('tables'), icon: <Package className="h-6 w-6" />, actionKeywords: ['table'] },
+    { href: '/dashboard/waitlist', label: 'Waitlist', icon: <Hourglass className="h-6 w-6" />, actionKeywords: ['table', 'order', 'waitlist'] },
     { href: '/dashboard/inventory', label: t('inventory'), icon: <ClipboardList className="h-6 w-6" />, actionKeywords: ['inventory', 'stock'] },
+    { href: '/dashboard/purchase-orders', label: 'Purchase orders', icon: <Truck className="h-6 w-6" />, actionKeywords: ['inventory', 'stock', 'purchase', 'vendor'] },
     { href: '/dashboard/customers', label: t('customers'), icon: <Users className="h-6 w-6" />, actionKeywords: ['customer'] },
+    { href: '/dashboard/attendance', label: 'Attendance', icon: <Clock className="h-6 w-6" />, actionKeywords: [] as string[] },
     { href: '/dashboard/feedback', label: 'Feedback', icon: <FileText className="h-6 w-6" />, actionKeywords: ['feedback'] },
     { href: '/dashboard/analytics', label: t('analytics'), icon: <LineChart className="h-6 w-6" />, actionKeywords: ['analytics', 'apc', 'report'] },
+    { href: '/dashboard/history', label: 'History', icon: <History className="h-6 w-6" />, actionKeywords: ['analytics', 'report'] },
+    { href: '/dashboard/accounting', label: 'Accounting', icon: <FileText className="h-6 w-6" />, actionKeywords: ['report', 'accounting', 'finance'] },
+    { href: '/dashboard/cash', label: 'Cash register', icon: <Wallet className="h-6 w-6" />, actionKeywords: ['report', 'accounting', 'finance', 'cash'] },
+    { href: '/dashboard/outlets', label: 'Outlets', icon: <Globe className="h-6 w-6" />, actionKeywords: ['outlet', 'branch', 'setting', 'profile'] },
     ...(hasRole('admin')
       ? [{ href: '/dashboard/valet', label: 'Valet Dashboard', icon: <Activity className="h-6 w-6" />, actionKeywords: ['valet', 'parking'] }]
+      : []),
+    ...(hasRole('admin')
+      ? [{ href: '/dashboard/coupons', label: 'Coupons', icon: <Ticket className="h-6 w-6" />, actionKeywords: [] as string[] }]
+      : []),
+    ...(hasRole('admin')
+      ? [{ href: '/dashboard/billing', label: 'Billing & plan', icon: <CreditCard className="h-6 w-6" />, actionKeywords: [] as string[] }]
       : []),
   ].filter((item) => canAccessByAction(item.actionKeywords));
 
@@ -107,11 +129,14 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    const valetAllowedPaths = new Set(['/dashboard/valet', '/dashboard/settings']);
-    const waiterAllowedPaths = new Set(['/dashboard/orders', '/dashboard/settings']);
+    // Settings holds payment keys, taxes and branding — admin-only, so it is NOT
+    // in any non-admin allow-list (mirrors the backend enforceAdmin gate).
+    const isAdmin = hasRole('admin');
+    const valetAllowedPaths = new Set(['/dashboard/valet']);
+    const waiterAllowedPaths = new Set(['/dashboard/orders']);
     const roleAwareAllowedPaths = new Set([
       ...navItems.map((item) => item.href),
-      '/dashboard/settings',
+      ...(isAdmin ? ['/dashboard/settings'] : []),
     ]);
 
     if (isValet && !valetAllowedPaths.has(pathname)) {
@@ -173,6 +198,7 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
           <div className="w-full flex-1">
             {/* Add nav items here */}
           </div>
+          <OutletSwitcher />
           <ThemeToggle />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -210,12 +236,14 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
             <DropdownMenuContent align="end">
               <DropdownMenuLabel>{t('myAccount')}</DropdownMenuLabel>
               <DropdownMenuSeparator />
-              <DropdownMenuItem asChild>
-                <Link href="/dashboard/settings">
-                  <Settings className="mr-2 h-4 w-4" />
-                  {t('settings')}
-                </Link>
-              </DropdownMenuItem>
+              {hasRole('admin') && (
+                <DropdownMenuItem asChild>
+                  <Link href="/dashboard/settings">
+                    <Settings className="mr-2 h-4 w-4" />
+                    {t('settings')}
+                  </Link>
+                </DropdownMenuItem>
+              )}
                {(canViewEmployees || canViewAuditLogs) && (
                 <>
                   {canViewEmployees && (
@@ -251,6 +279,7 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
           </DropdownMenu>
         </header>
         <main className="flex flex-1 flex-col gap-4 p-4 lg:gap-6 lg:p-6 pb-24">
+          <SubscriptionBanner />
           {children}
         </main>
         <div className="fixed bottom-0 left-0 right-0 flex justify-center z-50">

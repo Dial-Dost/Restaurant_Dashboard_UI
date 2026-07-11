@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -42,7 +43,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { PlusCircle, MoreVertical, Trash2, Utensils, GripVertical, Upload } from "lucide-react";
+import { PlusCircle, MoreVertical, Trash2, Utensils, GripVertical, Upload, ChefHat, X, Pencil, Flame } from "lucide-react";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -50,15 +51,30 @@ import { DndContext, closestCenter, useSensor, useSensors, PointerSensor, DragEn
 import { useDroppable } from "@dnd-kit/core";
 import { SortableContext, useSortable, arrayMove } from "@dnd-kit/sortable";
 import { cn } from "@/lib/utils";
-import { type MenuItem } from "./data";
+import { type MenuItem, type RecipeIngredient } from "./data";
 import { useAuth } from "@/context/AuthContext";
 import { useCurrency } from "@/hooks/use-currency";
-import { getMenuItems, getMenuCategories, addMenuItem, addMenuCategory, removeMenuCategory, saveMenuItems } from "@/lib/db";
+import {
+  getMenuItems,
+  getMenuCategories,
+  addMenuItem,
+  addMenuCategory,
+  removeMenuCategory,
+  saveMenuItems,
+  getMenuCosting,
+  getKitchenSections,
+  saveKitchenSections,
+  renameKitchenSection,
+  type MenuCosting,
+  type MenuCostingItem,
+} from "@/lib/db";
 
 const menuItemSchema = z.object({
   name: z.string().min(1, "Item name is required."),
   price: z.coerce.number().min(0.01, "Price must be greater than 0."),
   category: z.string().min(1, "Category is required."),
+  // Optional KOT prep station (tandoor/grill/bar/...) for KDS routing.
+  station: z.string().optional(),
 });
 
 const categorySchema = z.object({
@@ -68,11 +84,19 @@ const categorySchema = z.object({
 type MenuItemFormData = z.infer<typeof menuItemSchema>;
 type CategoryFormData = z.infer<typeof categorySchema>;
 
-function SortableMenuItem({ item, onRemoveItem, currencySymbol, isDragging }: { item: MenuItem, onRemoveItem: (id: string) => void, currencySymbol: string, isDragging?: boolean }) {
+// A station is "managed" when it appears in the restaurant's kitchen-section
+// list; stations left behind by a deleted section stay on the item but render
+// with unassigned (dashed/amber) styling until re-assigned.
+const isManagedStation = (station: string | null | undefined, sections: string[]) =>
+    !!station && sections.some((s) => s.toLowerCase() === station.toLowerCase());
+
+function SortableMenuItem({ item, onRemoveItem, onEditRecipe, costing, currencySymbol, isDragging, sections = [] }: { item: MenuItem, onRemoveItem: (id: string) => void, onEditRecipe?: (item: MenuItem) => void, costing?: MenuCostingItem, currencySymbol: string, isDragging?: boolean, sections?: string[] }) {
     const { attributes, listeners, setNodeRef } = useSortable({
         id: item.id,
         data: { category: item.category },
     });
+
+    const unmanagedStation = !!item.station && sections.length > 0 && !isManagedStation(item.station, sections);
 
     return (
         <li ref={setNodeRef} className={cn("flex items-center justify-between rounded-md border p-3 bg-background touch-none", isDragging && "opacity-50")}>
@@ -80,7 +104,34 @@ function SortableMenuItem({ item, onRemoveItem, currencySymbol, isDragging }: { 
                  <button {...listeners} {...attributes} className="cursor-grab p-1">
                     <GripVertical className="h-5 w-5 text-muted-foreground" />
                 </button>
-                <p className="font-medium">{item.name}</p>
+                <div>
+                    <p className="font-medium flex items-center gap-1.5">
+                        {item.name}
+                        {item.station ? (
+                            <Badge
+                                variant="outline"
+                                title={unmanagedStation ? "This section was removed — item is unassigned until you pick a managed section." : undefined}
+                                className={cn(
+                                    "text-[10px] uppercase tracking-wide px-1.5 py-0",
+                                    unmanagedStation && "border-dashed border-amber-400 text-amber-700 dark:text-amber-400",
+                                )}
+                            >
+                                {item.station}
+                            </Badge>
+                        ) : null}
+                    </p>
+                    {costing && costing.cost != null && (
+                        <p className="text-xs text-muted-foreground">
+                            Cost {currencySymbol}{costing.cost.toFixed(2)}
+                            {costing.margin_pct != null && (
+                                <span className={cn("ml-1 font-medium", costing.margin_pct >= 60 ? "text-green-600" : costing.margin_pct >= 40 ? "text-amber-600" : "text-destructive")}>
+                                    · {costing.margin_pct.toFixed(0)}% margin
+                                </span>
+                            )}
+                            {costing.missing_costs > 0 && <span className="ml-1">(partial — {costing.missing_costs} uncosted)</span>}
+                        </p>
+                    )}
+                </div>
             </div>
             <div className="flex items-center gap-4">
                   <p className="text-muted-foreground">{currencySymbol}{item.price.toFixed(2)}</p>
@@ -92,6 +143,12 @@ function SortableMenuItem({ item, onRemoveItem, currencySymbol, isDragging }: { 
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                         <DropdownMenuLabel>Actions</DropdownMenuLabel>
+                        {onEditRecipe && (
+                            <DropdownMenuItem onClick={() => onEditRecipe(item)}>
+                                <ChefHat className="mr-2 h-4 w-4" />
+                                <span>Recipe &amp; cost</span>
+                            </DropdownMenuItem>
+                        )}
                         <DropdownMenuItem className="text-destructive" onClick={() => onRemoveItem(item.id)}>
                             <Trash2 className="mr-2 h-4 w-4" />
                             <span>Delete</span>
@@ -103,7 +160,7 @@ function SortableMenuItem({ item, onRemoveItem, currencySymbol, isDragging }: { 
     );
 }
 
-function DroppableCategory({ category, items, onRemoveItem, onRemoveCategory, currencySymbol, activeId }: { category: string, items: MenuItem[], onRemoveItem: (id: string) => void, onRemoveCategory: (category: string) => void, currencySymbol: string, activeId: string | null }) {
+function DroppableCategory({ category, items, onRemoveItem, onRemoveCategory, onEditRecipe, costingById, currencySymbol, activeId, sections }: { category: string, items: MenuItem[], onRemoveItem: (id: string) => void, onRemoveCategory: (category: string) => void, onEditRecipe: (item: MenuItem) => void, costingById: Map<string, MenuCostingItem>, currencySymbol: string, activeId: string | null, sections: string[] }) {
     const { isOver, setNodeRef } = useDroppable({
         id: category,
     });
@@ -147,7 +204,7 @@ function DroppableCategory({ category, items, onRemoveItem, onRemoveCategory, cu
                     {items && items.length > 0 ? (
                         <ul className="space-y-2">
                             {items.map(item => (
-                                <SortableMenuItem key={item.id} item={item} onRemoveItem={onRemoveItem} currencySymbol={currencySymbol} isDragging={activeId === item.id} />
+                                <SortableMenuItem key={item.id} item={item} onRemoveItem={onRemoveItem} onEditRecipe={onEditRecipe} costing={costingById.get(item.id)} currencySymbol={currencySymbol} isDragging={activeId === item.id} sections={sections} />
                             ))}
                         </ul>
                     ) : (
@@ -171,16 +228,35 @@ export default function MenuPage() {
   const [activeId, setActiveId] = useState<string | null>(null);
     const [isImporting, setIsImporting] = useState(false);
     const fileInputRef = useRef<HTMLInputElement | null>(null);
+    const [costing, setCosting] = useState<MenuCosting>({ items: [], ingredients: [] });
+    const [recipeItem, setRecipeItem] = useState<MenuItem | null>(null);
+    // Managed kitchen sections (Tandoor/Curry/Bar/...) — each gets its own KDS display.
+    const [sections, setSections] = useState<string[]>([]);
+    const [newSection, setNewSection] = useState("");
+    const [sectionBusy, setSectionBusy] = useState(false);
+    const [isOrganiseOpen, setIsOrganiseOpen] = useState(false);
+
+    const refreshCosting = async (restaurantUsername: string) => {
+        try {
+            setCosting(await getMenuCosting(restaurantUsername));
+        } catch {
+            /* costing is an enrichment — never block the menu page on it */
+        }
+    };
 
   useEffect(() => {
     if (user) {
         const fetchData = async () => {
           setMenuItems(await getMenuItems(user.restaurantUsername));
           setCategories(await getMenuCategories(user.restaurantUsername));
+          setSections(await getKitchenSections(user.restaurantUsername));
+          await refreshCosting(user.restaurantUsername);
         }
         fetchData();
     }
   }, [user]);
+
+    const costingById = new Map(costing.items.map((c) => [c.id, c]));
 
   const sensors = useSensors(useSensor(PointerSensor));
 
@@ -242,6 +318,79 @@ export default function MenuPage() {
         }
     };
 
+    // --- Kitchen sections (managed list; each section = one KDS display) ----
+    const handleAddSection = async () => {
+        if (!user) return;
+        const name = newSection.trim().replace(/\s+/g, " ").slice(0, 32);
+        if (!name) return;
+        if (sections.some((s) => s.toLowerCase() === name.toLowerCase())) {
+            setNewSection("");
+            return;
+        }
+        setSectionBusy(true);
+        try {
+            setSections(await saveKitchenSections(user.restaurantUsername, [...sections, name]));
+            setNewSection("");
+        } catch (error: any) {
+            window.alert(String(error?.message ?? "Unable to add section."));
+        } finally {
+            setSectionBusy(false);
+        }
+    };
+
+    const handleRenameSection = async (from: string) => {
+        if (!user) return;
+        const to = window.prompt(`Rename kitchen section "${from}" to:`, from)?.trim().replace(/\s+/g, " ").slice(0, 32) ?? "";
+        if (!to || to === from) return;
+        setSectionBusy(true);
+        try {
+            const result = await renameKitchenSection(user.restaurantUsername, from, to);
+            setSections(result.kitchen_sections ?? (await getKitchenSections(user.restaurantUsername)));
+            // The rename cascades onto menu items — reload them so badges update.
+            setMenuItems(await getMenuItems(user.restaurantUsername));
+            window.alert(`Renamed "${from}" to "${to}" (${result.updated_items ?? 0} menu item${(result.updated_items ?? 0) === 1 ? "" : "s"} updated).`);
+        } catch (error: any) {
+            window.alert(String(error?.message ?? "Unable to rename section."));
+        } finally {
+            setSectionBusy(false);
+        }
+    };
+
+    const handleDeleteSection = async (name: string) => {
+        if (!user) return;
+        const count = menuItems.filter((it) => (it.station ?? "").toLowerCase() === name.toLowerCase()).length;
+        if (!window.confirm(
+            count > 0
+                ? `Remove kitchen section "${name}"? ${count} item${count === 1 ? "" : "s"} keep the label but show as unassigned until re-organised.`
+                : `Remove kitchen section "${name}"?`,
+        )) return;
+        setSectionBusy(true);
+        try {
+            setSections(await saveKitchenSections(user.restaurantUsername, sections.filter((s) => s.toLowerCase() !== name.toLowerCase())));
+        } catch (error: any) {
+            window.alert(String(error?.message ?? "Unable to remove section."));
+        } finally {
+            setSectionBusy(false);
+        }
+    };
+
+    // Persist the organise-dialog assignments through the preserve-on-omit bulk
+    // save: only id/name/price/category/station travel, so recipes, modifiers,
+    // allergens and images are untouched server-side.
+    const handleOrganiseSave = async (assignments: Record<string, string | null>) => {
+        if (!user) return;
+        const minimal = menuItems.map((it) => ({
+            id: it.id,
+            name: it.name,
+            price: it.price,
+            category: it.category,
+            station: assignments[it.id] !== undefined ? assignments[it.id] : (it.station ?? null),
+        }));
+        await saveMenuItems(user.restaurantUsername, minimal);
+        setMenuItems(await getMenuItems(user.restaurantUsername));
+        setIsOrganiseOpen(false);
+    };
+
     const normalizeColumn = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, "");
     const normalizeCell = (value: unknown) => String(value ?? "").trim();
     const parsePriceValue = (value: unknown) => {
@@ -267,9 +416,11 @@ export default function MenuPage() {
                 continue;
             }
 
+            // A lone text cell is a section/category header. A lone number is a
+            // stray serial (S/NO) — never a category.
             if (nonEmptyCells.length === 1) {
                 const label = nonEmptyCells[0].replace(/\s+/g, " ").trim();
-                if (!label) {
+                if (!label || /^\d+(\.\d+)?$/.test(label)) {
                     continue;
                 }
 
@@ -285,17 +436,31 @@ export default function MenuPage() {
                 continue;
             }
 
-            let itemName = "";
+            // Identify the item by NAME + PRICE, independent of any S/NO column.
+            // Serial numbers are often drag-filled formulas (=A2+1) that some
+            // spreadsheet readers hand back as blank/formula text; keying off that
+            // column silently dropped every auto-numbered row. Instead: take the
+            // price as the right-most positive amount, and the name as the first
+            // non-empty cell that isn't the price and isn't a bare serial number.
             let priceValue: number | null = null;
-
-            if (/^\d+$/.test(row[0] ?? "") && row[1]) {
-                itemName = row[1];
-                priceValue = parsePriceValue(row[2]);
+            let priceIdx = -1;
+            for (let i = row.length - 1; i >= 0; i -= 1) {
+                const candidate = parsePriceValue(row[i]);
+                if (candidate != null) {
+                    priceValue = candidate;
+                    priceIdx = i;
+                    break;
+                }
             }
 
-            if (!itemName && row[0] && row[1]) {
-                itemName = row[0];
-                priceValue = parsePriceValue(row[1]);
+            let itemName = "";
+            for (let i = 0; i < row.length; i += 1) {
+                if (i === priceIdx) continue;
+                const cell = row[i];
+                if (cell && !/^\d+(\.\d+)?$/.test(cell)) {
+                    itemName = cell.replace(/\s+/g, " ").trim();
+                    break;
+                }
             }
 
             if (!itemName || priceValue == null) {
@@ -329,7 +494,7 @@ export default function MenuPage() {
             const worksheet = workbook.Sheets[firstSheetName];
             const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(worksheet, {
                 defval: "",
-                raw: false,
+                raw: true,
             });
             const keys = Object.keys(rows[0] ?? {});
             const columnMap = new Map<string, string>();
@@ -377,7 +542,7 @@ export default function MenuPage() {
                 const sectionedRows = XLSX.utils.sheet_to_json<unknown[]>(worksheet, {
                     header: 1,
                     defval: "",
-                    raw: false,
+                    raw: true,
                     blankrows: false,
                 });
                 importedItems = parseSectionedMenuRows(sectionedRows);
@@ -526,11 +691,73 @@ export default function MenuPage() {
                         <DialogTitle>Add New Menu Item</DialogTitle>
                         <DialogDescription>Fill in the details for the new menu item.</DialogDescription>
                     </DialogHeader>
-                    <MenuItemForm onSubmit={handleAddItem} categories={categories} />
+                    <MenuItemForm onSubmit={handleAddItem} categories={categories} sections={sections} />
                 </DialogContent>
                 </Dialog>
             </div>
         </div>
+        <Card>
+            <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                    <CardTitle className="flex items-center gap-2"><Flame className="h-5 w-5 text-primary" /> Kitchen sections</CardTitle>
+                    <CardDescription>
+                        Each item routes to its kitchen section, and every section gets its own display on the Orders page. Rename cascades to all items in the section.
+                    </CardDescription>
+                </div>
+                <Button variant="outline" size="sm" onClick={() => setIsOrganiseOpen(true)} disabled={menuItems.length === 0}>
+                    <ChefHat className="mr-2 h-4 w-4" /> Organise by kitchen
+                </Button>
+            </CardHeader>
+            <CardContent className="space-y-3">
+                <div className="flex flex-wrap gap-2">
+                    {sections.length === 0 && (
+                        <p className="text-sm text-muted-foreground">No kitchen sections yet — add e.g. Tandoor, Curry, Bar, Dessert.</p>
+                    )}
+                    {sections.map((s) => (
+                        <span key={s} className="inline-flex items-center gap-1 rounded-full border bg-background px-3 py-1 text-sm">
+                            {s}
+                            <button
+                                type="button"
+                                className="ml-1 rounded p-0.5 text-muted-foreground hover:text-foreground disabled:opacity-50"
+                                title={`Rename ${s} (updates all its items)`}
+                                aria-label={`Rename section ${s}`}
+                                disabled={sectionBusy}
+                                onClick={() => void handleRenameSection(s)}
+                            >
+                                <Pencil className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                                type="button"
+                                className="rounded p-0.5 text-muted-foreground hover:text-destructive disabled:opacity-50"
+                                title={`Remove ${s}`}
+                                aria-label={`Remove section ${s}`}
+                                disabled={sectionBusy}
+                                onClick={() => void handleDeleteSection(s)}
+                            >
+                                <X className="h-3.5 w-3.5" />
+                            </button>
+                        </span>
+                    ))}
+                </div>
+                <div className="flex max-w-sm items-center gap-2">
+                    <Input
+                        placeholder="New section (e.g. Tandoor)"
+                        value={newSection}
+                        maxLength={32}
+                        onChange={(e) => setNewSection(e.target.value)}
+                        onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                                e.preventDefault();
+                                void handleAddSection();
+                            }
+                        }}
+                    />
+                    <Button type="button" variant="outline" size="sm" onClick={() => void handleAddSection()} disabled={sectionBusy || !newSection.trim()}>
+                        <PlusCircle className="mr-2 h-4 w-4" /> Add
+                    </Button>
+                </div>
+            </CardContent>
+        </Card>
         <Card>
             <CardHeader>
             <CardTitle>Menu Items</CardTitle>
@@ -542,14 +769,17 @@ export default function MenuPage() {
                 {categories.length > 0 ? (
                     <Accordion type="multiple" defaultValue={categories} className="w-full">
                         {categories.map((category) => (
-                            <DroppableCategory 
-                                key={category} 
-                                category={category} 
-                                items={groupedItems[category] || []} 
+                            <DroppableCategory
+                                key={category}
+                                category={category}
+                                items={groupedItems[category] || []}
                                 onRemoveItem={handleRemoveItem}
                                 onRemoveCategory={handleRemoveCategory}
+                                onEditRecipe={setRecipeItem}
+                                costingById={costingById}
                                 currencySymbol={currencySymbol}
                                 activeId={activeId}
+                                sections={sections}
                             />
                         ))}
                     </Accordion>
@@ -569,12 +799,419 @@ export default function MenuPage() {
                 </div>
             ) : null}
         </DragOverlay>
+        {isOrganiseOpen && (
+            <OrganiseByKitchenDialog
+                items={menuItems}
+                sections={sections}
+                onClose={() => setIsOrganiseOpen(false)}
+                onSave={handleOrganiseSave}
+            />
+        )}
+        {recipeItem && user && (
+            <RecipeDialog
+                item={recipeItem}
+                ingredients={costing.ingredients}
+                currencySymbol={currencySymbol}
+                sections={sections}
+                onClose={() => setRecipeItem(null)}
+                onSave={async (recipe, station, allergens) => {
+                    await addMenuItem(user.restaurantUsername, { ...recipeItem, recipe, station, allergens });
+                    setRecipeItem(null);
+                    setMenuItems(await getMenuItems(user.restaurantUsername));
+                    await refreshCosting(user.restaurantUsername);
+                }}
+            />
+        )}
     </DndContext>
   );
 }
 
+// Common prep stations offered as suggestions — used only while the restaurant
+// has no managed kitchen-section list yet (then the field stays free-form).
+const STATION_SUGGESTIONS = ["tandoor", "grill", "curry", "chinese", "fryer", "salad", "bar", "dessert"];
 
-function MenuItemForm({ onSubmit, categories }: { onSubmit: (data: MenuItemFormData) => void; categories: string[] }) {
+// Radix Select forbids empty item values — sentinel for "no section".
+const NO_STATION = "__none__";
+
+// Kitchen-section picker: offers the MANAGED sections (plus the item's current
+// station when it isn't in the list, styled as unassigned) and a None option.
+function StationSelect({ value, sections, onChange, id }: { value: string; sections: string[]; onChange: (v: string) => void; id?: string }) {
+    const current = value.trim();
+    const unlisted = current && !sections.some((s) => s.toLowerCase() === current.toLowerCase());
+    return (
+        <Select value={current || NO_STATION} onValueChange={(v) => onChange(v === NO_STATION ? "" : v)}>
+            <SelectTrigger id={id} className={cn(unlisted && "border-dashed border-amber-400 text-amber-700 dark:text-amber-400")}>
+                <SelectValue placeholder="No section" />
+            </SelectTrigger>
+            <SelectContent>
+                <SelectItem value={NO_STATION}>No section</SelectItem>
+                {sections.map((s) => (
+                    <SelectItem key={s} value={s}>{s}</SelectItem>
+                ))}
+                {unlisted ? (
+                    <SelectItem value={current} className="text-amber-700 dark:text-amber-400">{current} (unassigned)</SelectItem>
+                ) : null}
+            </SelectContent>
+        </Select>
+    );
+}
+
+// "Organise by kitchen": every menu item grouped by its CURRENT section (incl.
+// Unassigned), searchable, with a quick per-row section picker. Saving persists
+// through the preserve-on-omit bulk menu save (recipes etc. survive).
+function OrganiseByKitchenDialog({
+    items,
+    sections,
+    onClose,
+    onSave,
+}: {
+    items: MenuItem[];
+    sections: string[];
+    onClose: () => void;
+    onSave: (assignments: Record<string, string | null>) => Promise<void>;
+}) {
+    const [assignments, setAssignments] = useState<Record<string, string | null>>({});
+    const [search, setSearch] = useState("");
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+
+    const stationOf = (item: MenuItem) => {
+        const assigned = assignments[item.id];
+        return (assigned !== undefined ? assigned : item.station) ?? "";
+    };
+
+    const q = search.trim().toLowerCase();
+    const visible = q
+        ? items.filter((it) => it.name.toLowerCase().includes(q) || it.category.toLowerCase().includes(q) || stationOf(it).toLowerCase().includes(q))
+        : items;
+
+    // Group by current section: managed sections first (in managed order), then
+    // any unmanaged station labels still on items, then Unassigned.
+    const managedLower = sections.map((s) => s.toLowerCase());
+    const groups: Array<{ label: string; unmanaged: boolean; rows: MenuItem[] }> = sections.map((s) => ({ label: s, unmanaged: false, rows: [] as MenuItem[] }));
+    const extra = new Map<string, MenuItem[]>();
+    const unassigned: MenuItem[] = [];
+    for (const it of visible) {
+        const st = stationOf(it).trim();
+        if (!st) { unassigned.push(it); continue; }
+        const idx = managedLower.indexOf(st.toLowerCase());
+        if (idx >= 0) { groups[idx].rows.push(it); continue; }
+        const list = extra.get(st) ?? [];
+        list.push(it);
+        extra.set(st, list);
+    }
+    for (const [label, rows] of Array.from(extra.entries()).sort((a, b) => a[0].localeCompare(b[0]))) {
+        groups.push({ label, unmanaged: true, rows });
+    }
+    groups.push({ label: "Unassigned", unmanaged: true, rows: unassigned });
+
+    const changedCount = Object.keys(assignments).filter((id) => {
+        const item = items.find((it) => it.id === id);
+        return item && (assignments[id] ?? "") !== (item.station ?? "");
+    }).length;
+
+    const save = async () => {
+        setBusy(true);
+        setError(null);
+        try {
+            await onSave(assignments);
+        } catch (e: any) {
+            setError(String(e?.message ?? "Unable to save assignments."));
+            setBusy(false);
+        }
+    };
+
+    return (
+        <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+            <DialogContent className="sm:max-w-[640px]">
+                <DialogHeader>
+                    <DialogTitle>Organise menu by kitchen</DialogTitle>
+                    <DialogDescription>
+                        Assign every dish to its kitchen section — each section has its own display in the kitchen.
+                    </DialogDescription>
+                </DialogHeader>
+                <Input
+                    placeholder="Search items, categories or sections…"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                />
+                <div className="max-h-[55vh] space-y-4 overflow-y-auto pr-1">
+                    {groups.filter((g) => g.rows.length > 0 || !g.unmanaged).map((g) => (
+                        <div key={g.label}>
+                            <p className={cn("mb-1.5 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide", g.unmanaged ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground")}>
+                                {g.label}
+                                {g.unmanaged && g.label !== "Unassigned" ? <span className="font-normal normal-case">(not a managed section)</span> : null}
+                                <span className="font-normal">· {g.rows.length}</span>
+                            </p>
+                            {g.rows.length === 0 ? (
+                                <p className="text-xs text-muted-foreground">No items yet.</p>
+                            ) : (
+                                <ul className="space-y-1.5">
+                                    {g.rows.map((it) => (
+                                        <li key={it.id} className="flex items-center justify-between gap-3 rounded-md border p-2">
+                                            <div className="min-w-0">
+                                                <p className="truncate text-sm font-medium">{it.name}</p>
+                                                <p className="text-xs text-muted-foreground">{it.category}</p>
+                                            </div>
+                                            <div className="w-44 shrink-0">
+                                                <StationSelect
+                                                    value={stationOf(it)}
+                                                    sections={sections}
+                                                    onChange={(v) => setAssignments((prev) => ({ ...prev, [it.id]: v || null }))}
+                                                />
+                                            </div>
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
+                        </div>
+                    ))}
+                    {visible.length === 0 && <p className="text-sm text-muted-foreground">No items match “{search}”.</p>}
+                </div>
+                {error && <p className="text-sm text-destructive">{error}</p>}
+                <DialogFooter>
+                    <Button variant="ghost" onClick={onClose}>Cancel</Button>
+                    <Button onClick={() => void save()} disabled={busy || changedCount === 0}>
+                        {busy ? "Saving…" : `Save${changedCount > 0 ? ` (${changedCount} change${changedCount === 1 ? "" : "s"})` : ""}`}
+                    </Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+    );
+}
+
+// Fixed allergen suggestion set (free-form tags are also allowed). These show
+// as chips on the guest-facing QR menu.
+const ALLERGEN_SUGGESTIONS = ["gluten", "dairy", "nuts", "peanut", "egg", "soy", "shellfish", "fish", "sesame"];
+
+// Recipe/BOM editor: which inventory ingredients (and how much) one unit of the
+// dish consumes. Costs use the latest recorded purchase price per ingredient.
+// Also hosts the KOT prep-station assignment for the dish.
+function RecipeDialog({
+    item,
+    ingredients,
+    currencySymbol,
+    sections,
+    onClose,
+    onSave,
+}: {
+    item: MenuItem;
+    ingredients: MenuCosting["ingredients"];
+    currencySymbol: string;
+    sections: string[];
+    onClose: () => void;
+    onSave: (recipe: RecipeIngredient[], station: string | null, allergens: string[]) => Promise<void>;
+}) {
+    const [rows, setRows] = useState<{ inventory_id: string; qty: string; note: string }[]>(
+        (item.recipe ?? []).map((r) => ({ inventory_id: r.inventory_id, qty: String(r.qty), note: r.note ?? "" })),
+    );
+    const [station, setStation] = useState<string>(item.station ?? "");
+    const [allergens, setAllergens] = useState<string[]>(item.allergens ?? []);
+    const [allergenInput, setAllergenInput] = useState("");
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+
+    const toggleAllergen = (tag: string) => {
+        const t = tag.trim().toLowerCase().slice(0, 24);
+        if (!t) return;
+        setAllergens((prev) => (prev.includes(t) ? prev.filter((a) => a !== t) : [...prev, t]));
+    };
+    const addFreeformAllergen = () => {
+        const t = allergenInput.trim().toLowerCase().slice(0, 24);
+        if (t && !allergens.includes(t)) setAllergens((prev) => [...prev, t]);
+        setAllergenInput("");
+    };
+
+    const costOf = (invId: string) => ingredients.find((i) => i.id === invId)?.unit_cost ?? null;
+    const unitOf = (invId: string) => ingredients.find((i) => i.id === invId)?.unit ?? "";
+
+    let estCost = 0;
+    let uncosted = 0;
+    for (const r of rows) {
+        const qty = Number(r.qty);
+        if (!r.inventory_id || !Number.isFinite(qty) || qty <= 0) continue;
+        const uc = costOf(r.inventory_id);
+        if (uc == null) uncosted += 1;
+        else estCost += qty * uc;
+    }
+    const margin = item.price > 0 ? ((item.price - estCost) / item.price) * 100 : null;
+
+    const save = async () => {
+        const recipe: RecipeIngredient[] = [];
+        for (const r of rows) {
+            const qty = Number(r.qty);
+            if (!r.inventory_id) continue;
+            if (!Number.isFinite(qty) || qty <= 0) {
+                setError("Every ingredient needs a positive quantity.");
+                return;
+            }
+            recipe.push({ inventory_id: r.inventory_id, qty, ...(r.note.trim() ? { note: r.note.trim() } : {}) });
+        }
+        setBusy(true);
+        setError(null);
+        try {
+            await onSave(recipe, station.trim() ? station.trim() : null, allergens);
+        } catch (e: any) {
+            setError(e?.message ?? "Unable to save recipe");
+            setBusy(false);
+        }
+    };
+
+    return (
+        <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+            <DialogContent className="sm:max-w-[560px]">
+                <DialogHeader>
+                    <DialogTitle>Recipe &amp; cost — {item.name}</DialogTitle>
+                    <DialogDescription>Ingredients consumed per unit sold. Costs come from the latest purchase price.</DialogDescription>
+                </DialogHeader>
+                <div className="flex items-center gap-2">
+                    <Label htmlFor="prep-station" className="shrink-0">Kitchen section</Label>
+                    {sections.length > 0 ? (
+                        <div className="flex-1">
+                            <StationSelect id="prep-station" value={station} sections={sections} onChange={setStation} />
+                        </div>
+                    ) : (
+                        <>
+                            <Input
+                                id="prep-station"
+                                list="station-suggestions"
+                                placeholder="e.g. tandoor, grill, bar (KOT routing)"
+                                value={station}
+                                onChange={(e) => setStation(e.target.value)}
+                                maxLength={40}
+                            />
+                            <datalist id="station-suggestions">
+                                {STATION_SUGGESTIONS.map((s) => <option key={s} value={s} />)}
+                            </datalist>
+                        </>
+                    )}
+                </div>
+                <div className="space-y-2">
+                    <Label>Allergens <span className="font-normal text-muted-foreground">(shown to guests on the QR menu)</span></Label>
+                    <div className="flex flex-wrap gap-1.5">
+                        {ALLERGEN_SUGGESTIONS.map((a) => {
+                            const on = allergens.includes(a);
+                            return (
+                                <button
+                                    key={a}
+                                    type="button"
+                                    onClick={() => toggleAllergen(a)}
+                                    className={cn(
+                                        "rounded-full border px-2.5 py-0.5 text-xs capitalize transition-colors",
+                                        on ? "border-primary bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-accent",
+                                    )}
+                                >
+                                    {a}
+                                </button>
+                            );
+                        })}
+                        {allergens.filter((a) => !ALLERGEN_SUGGESTIONS.includes(a)).map((a) => (
+                            <button
+                                key={a}
+                                type="button"
+                                onClick={() => toggleAllergen(a)}
+                                className="rounded-full border border-primary bg-primary px-2.5 py-0.5 text-xs capitalize text-primary-foreground"
+                                title="Click to remove"
+                            >
+                                {a} ×
+                            </button>
+                        ))}
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <Input
+                            placeholder="Other allergen (free-form)…"
+                            value={allergenInput}
+                            maxLength={24}
+                            onChange={(e) => setAllergenInput(e.target.value)}
+                            onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                    e.preventDefault();
+                                    addFreeformAllergen();
+                                }
+                            }}
+                        />
+                        <Button type="button" variant="outline" size="sm" onClick={addFreeformAllergen} disabled={!allergenInput.trim()}>Add</Button>
+                    </div>
+                </div>
+                <div className="grid gap-2 py-2 max-h-[45vh] overflow-y-auto pr-1">
+                    {rows.length === 0 && (
+                        <p className="text-sm text-muted-foreground">No ingredients yet — add the first one below.</p>
+                    )}
+                    {rows.map((row, idx) => (
+                        <div key={idx} className="flex items-center gap-2">
+                            <div className="flex-1 min-w-0">
+                                <Select
+                                    value={row.inventory_id}
+                                    onValueChange={(v) => setRows(rows.map((r, i) => (i === idx ? { ...r, inventory_id: v } : r)))}
+                                >
+                                    <SelectTrigger><SelectValue placeholder="Ingredient" /></SelectTrigger>
+                                    <SelectContent>
+                                        {ingredients.map((ing) => (
+                                            <SelectItem key={ing.id} value={ing.id}>
+                                                {ing.name}{ing.unit_cost != null ? ` — ${currencySymbol}${ing.unit_cost}/${ing.unit}` : " (no cost yet)"}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                            <Input
+                                type="number"
+                                min="0"
+                                step="any"
+                                className="w-20"
+                                placeholder={`Qty${unitOf(row.inventory_id) ? ` (${unitOf(row.inventory_id)})` : ""}`}
+                                aria-label="Quantity"
+                                value={row.qty}
+                                onChange={(e) => setRows(rows.map((r, i) => (i === idx ? { ...r, qty: e.target.value } : r)))}
+                            />
+                            <Input
+                                className="w-28"
+                                placeholder="Note (opt.)"
+                                aria-label="Unit note"
+                                value={row.note}
+                                onChange={(e) => setRows(rows.map((r, i) => (i === idx ? { ...r, note: e.target.value } : r)))}
+                            />
+                            <Button variant="ghost" size="icon" aria-label="Remove ingredient" onClick={() => setRows(rows.filter((_, i) => i !== idx))}>
+                                <X className="h-4 w-4" />
+                            </Button>
+                        </div>
+                    ))}
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        className="w-fit"
+                        onClick={() => setRows([...rows, { inventory_id: "", qty: "", note: "" }])}
+                        disabled={ingredients.length === 0}
+                    >
+                        <PlusCircle className="mr-2 h-4 w-4" /> Add ingredient
+                    </Button>
+                    {ingredients.length === 0 && (
+                        <p className="text-xs text-muted-foreground">Add inventory items first — recipes reference them.</p>
+                    )}
+                </div>
+                <div className="rounded-md border p-3 text-sm">
+                    <p>
+                        Theoretical cost: <span className="font-medium">{currencySymbol}{estCost.toFixed(2)}</span>
+                        {margin != null && (
+                            <span className="text-muted-foreground"> · margin {margin.toFixed(0)}% at {currencySymbol}{item.price.toFixed(2)}</span>
+                        )}
+                    </p>
+                    {uncosted > 0 && (
+                        <p className="text-xs text-muted-foreground mt-1">{uncosted} ingredient(s) have no recorded purchase cost — receive stock with a unit cost to complete the estimate.</p>
+                    )}
+                </div>
+                {error && <p className="text-sm text-destructive">{error}</p>}
+                <DialogFooter>
+                    <Button variant="ghost" onClick={onClose}>Cancel</Button>
+                    <Button onClick={() => void save()} disabled={busy}>Save recipe</Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+    );
+}
+
+
+function MenuItemForm({ onSubmit, categories, sections = [] }: { onSubmit: (data: MenuItemFormData) => void; categories: string[]; sections?: string[] }) {
     const { register, handleSubmit, control, formState: { errors } } = useForm<MenuItemFormData>({
         resolver: zodResolver(menuItemSchema)
     });
@@ -611,6 +1248,27 @@ function MenuItemForm({ onSubmit, categories }: { onSubmit: (data: MenuItemFormD
                         )}
                     />
                     {errors.category && <p className="text-sm text-destructive mt-1">{errors.category.message}</p>}
+                </div>
+            </div>
+            <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="station" className="text-right">Section</Label>
+                <div className="col-span-3">
+                    {sections.length > 0 ? (
+                        <Controller
+                            name="station"
+                            control={control}
+                            render={({ field }) => (
+                                <StationSelect id="station" value={field.value ?? ""} sections={sections} onChange={field.onChange} />
+                            )}
+                        />
+                    ) : (
+                        <>
+                            <Input id="station" list="station-suggestions-add" maxLength={40} {...register("station")} placeholder="Optional — e.g. tandoor, grill, bar" />
+                            <datalist id="station-suggestions-add">
+                                {STATION_SUGGESTIONS.map((s) => <option key={s} value={s} />)}
+                            </datalist>
+                        </>
+                    )}
                 </div>
             </div>
              <DialogFooter>

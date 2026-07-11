@@ -17,7 +17,7 @@ import { useAuth } from "@/context/AuthContext";
 import { useRealtime } from "@/context/RealtimeContext";
 import { useToast } from "@/hooks/use-toast";
 import { requestBackend } from "@/lib/db";
-import { Activity, RefreshCw, Clock, Package, Users, ArrowUpDown } from "lucide-react";
+import { Activity, RefreshCw, Clock, Package, Users, ArrowUpDown, Camera, Loader2 } from "lucide-react";
 
 type ValetBays = {
   Bay_id: string | undefined;
@@ -39,7 +39,17 @@ type ValetBooking = {
   active?: boolean;
   number_plate?: string | null;
   // notes?: string | null;
+  // Valet ops depth (Wave D)
+  parking_location?: string | null;
+  key_holder?: string | null;
+  key_updated_at?: string | null;
+  condition_notes?: string | null;
+  condition_photo_url?: string | null;
+  eta_minutes?: number | null;
+  requested_at?: string | null;
 };
+
+type ChargeTarget = { table_name: string; covers?: number | null };
 
 type ValetInfoResponse = {
   role: "admin" | "employee" | "valet" | "waiter" | "cashier" | "captain" | "manager";
@@ -186,7 +196,16 @@ export default function ValetDashboardPage() {
   const [newDateTime, setNewDateTime] = useState<string>(() => getCurrentLocalDateTimeValue());
   const [newRecordBayValue, setNewRecordBayValue] = useState<string>("__default_main__");
   const [creating, setCreating] = useState(false);
+  const [scanningPlate, setScanningPlate] = useState(false);
+  const plateScanInputRef = useRef<HTMLInputElement | null>(null);
   const hasShownAccessToastRef = useRef(false);
+  // Valet ops depth (Wave D): parking location / key log / condition / ETA / charge-to-table.
+  const [chargeTargets, setChargeTargets] = useState<ChargeTarget[]>([]);
+  const [draftLocationByBookingId, setDraftLocationByBookingId] = useState<Record<string, string>>({});
+  const [draftNotesByBookingId, setDraftNotesByBookingId] = useState<Record<string, string>>({});
+  const [chargeTableByBookingId, setChargeTableByBookingId] = useState<Record<string, string>>({});
+  const [chargeAmountByBookingId, setChargeAmountByBookingId] = useState<Record<string, string>>({});
+  const [opsBusyId, setOpsBusyId] = useState<string | null>(null);
 
   const canViewValet = user?.role === "valet" || user?.role === "admin";
 
@@ -218,6 +237,22 @@ export default function ValetDashboardPage() {
       setError(message);
     } finally {
       setLoading(false);
+    }
+
+    // Occupied tables for "Charge to table" (best-effort — the board still works without it).
+    try {
+      const targets = await requestBackend<{ tables?: ChargeTarget[] }>({
+        path: "/valet/charge-targets",
+        method: "GET",
+        restaurantId: user.restaurantUsername,
+        employeeId: user.employeeId,
+        outletId: user.outlet_id,
+      });
+      if (targets.ok) {
+        setChargeTargets(Array.isArray(targets.data?.tables) ? targets.data.tables : []);
+      }
+    } catch {
+      // ignore — charge picker just shows no tables
     }
   };
 
@@ -312,6 +347,137 @@ export default function ValetDashboardPage() {
       throw new Error(message || "Failed to update bay.");
     }
     return response.data ?? {};
+  };
+
+  // --- Valet ops depth (Wave D) handlers -------------------------------------
+
+  const saveOps = async (
+    bookingId: string,
+    patch: {
+      parking_location?: string;
+      condition_notes?: string;
+      eta_minutes?: number | null;
+      condition_photo_base64?: string;
+      condition_photo_content_type?: string;
+    },
+    successTitle: string,
+  ) => {
+    if (!user?.restaurantUsername) return;
+    try {
+      setOpsBusyId(bookingId);
+      const response = await requestBackend<{ record?: ValetBooking; error?: string }>({
+        path: `/valet/${encodeURIComponent(bookingId)}/ops`,
+        method: "POST",
+        restaurantId: user.restaurantUsername,
+        employeeId: user.employeeId,
+        outletId: user.outlet_id,
+        body: patch,
+      });
+      if (!response.ok) {
+        throw new Error(response.data?.error ?? response.text ?? "Unable to update valet record.");
+      }
+      const record = response.data?.record ?? {};
+      setData((previous) => {
+        if (!previous) return previous;
+        return {
+          ...previous,
+          bookings: previous.bookings.map((b) =>
+            b.booking_id === bookingId
+              ? {
+                  ...b,
+                  parking_location: record.parking_location ?? ("parking_location" in patch ? patch.parking_location ?? null : b.parking_location),
+                  condition_notes: record.condition_notes ?? ("condition_notes" in patch ? patch.condition_notes ?? null : b.condition_notes),
+                  condition_photo_url: record.condition_photo_url ?? b.condition_photo_url,
+                  eta_minutes: "eta_minutes" in patch ? record.eta_minutes ?? patch.eta_minutes ?? null : b.eta_minutes,
+                }
+              : b,
+          ),
+        };
+      });
+      toast({ title: successTitle, description: `${formatTicket(bookingId)} updated.` });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Unable to update valet record.";
+      toast({ title: "Update Failed", description: message, variant: "destructive" });
+    } finally {
+      setOpsBusyId(null);
+    }
+  };
+
+  const keysAction = async (bookingId: string, action: "take" | "handover") => {
+    if (!user?.restaurantUsername) return;
+    try {
+      setOpsBusyId(bookingId);
+      const response = await requestBackend<{ key_holder?: string | null; key_updated_at?: string | null; error?: string }>({
+        path: `/valet/${encodeURIComponent(bookingId)}/keys`,
+        method: "POST",
+        restaurantId: user.restaurantUsername,
+        employeeId: user.employeeId,
+        outletId: user.outlet_id,
+        body: { action },
+      });
+      if (!response.ok) {
+        throw new Error(response.data?.error ?? response.text ?? "Unable to update key log.");
+      }
+      const holder = response.data?.key_holder ?? null;
+      const at = response.data?.key_updated_at ?? new Date().toISOString();
+      setData((previous) => {
+        if (!previous) return previous;
+        return {
+          ...previous,
+          bookings: previous.bookings.map((b) =>
+            b.booking_id === bookingId ? { ...b, key_holder: holder, key_updated_at: at } : b,
+          ),
+        };
+      });
+      toast({
+        title: action === "take" ? "Keys Taken" : "Keys Handed Over",
+        description: holder ? `Keys now with ${holder}.` : "Keys handed over.",
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Unable to update key log.";
+      toast({ title: "Key Log Failed", description: message, variant: "destructive" });
+    } finally {
+      setOpsBusyId(null);
+    }
+  };
+
+  const chargeToTable = async (bookingId: string) => {
+    if (!user?.restaurantUsername) return;
+    const tableName = (chargeTableByBookingId[bookingId] ?? "").trim();
+    const amount = Number(chargeAmountByBookingId[bookingId]);
+    if (!tableName) {
+      toast({ title: "Pick a table", description: "Choose the occupied table to charge.", variant: "destructive" });
+      return;
+    }
+    if (!Number.isFinite(amount) || amount <= 0) {
+      toast({ title: "Invalid amount", description: "Enter a positive valet fee amount.", variant: "destructive" });
+      return;
+    }
+    try {
+      setOpsBusyId(bookingId);
+      const response = await requestBackend<{ order_id?: string; error?: string }>({
+        path: `/valet/${encodeURIComponent(bookingId)}/charge`,
+        method: "POST",
+        restaurantId: user.restaurantUsername,
+        employeeId: user.employeeId,
+        outletId: user.outlet_id,
+        body: { table_name: tableName, amount },
+      });
+      if (!response.ok) {
+        throw new Error(response.data?.error ?? response.text ?? "Unable to charge valet fee.");
+      }
+      setChargeAmountByBookingId((prev) => {
+        const next = { ...prev };
+        delete next[bookingId];
+        return next;
+      });
+      toast({ title: "Valet Fee Charged", description: `"Valet parking" (${amount}) added to ${tableName}'s bill.` });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Unable to charge valet fee.";
+      toast({ title: "Charge Failed", description: message, variant: "destructive" });
+    } finally {
+      setOpsBusyId(null);
+    }
   };
 
   const handleUpdate = async (
@@ -550,6 +716,87 @@ export default function ValetDashboardPage() {
       toast({ title: "Update Failed", description: message, variant: "destructive" });
     } finally {
       setUpdatingId(null);
+    }
+  };
+
+  // Read a picked photo and downscale it (longest side ~1600px, JPEG) so the
+  // base64 upload to the plate-scan endpoint stays small. Falls back to the raw
+  // data URL if the browser can't decode/redraw the image.
+  const fileToScaledDataUrl = (file: File, maxDim = 1600): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error("Unable to read image"));
+      reader.onload = () => {
+        const dataUrl = String(reader.result ?? "");
+        if (!dataUrl) {
+          reject(new Error("Unable to read image"));
+          return;
+        }
+        const img = new window.Image();
+        img.onerror = () => resolve(dataUrl);
+        img.onload = () => {
+          const largest = Math.max(img.width, img.height);
+          const scale = largest > 0 ? Math.min(1, maxDim / largest) : 1;
+          if (scale >= 1) {
+            resolve(dataUrl);
+            return;
+          }
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.round(img.width * scale));
+          canvas.height = Math.max(1, Math.round(img.height * scale));
+          const ctx = canvas.getContext("2d");
+          if (!ctx) {
+            resolve(dataUrl);
+            return;
+          }
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          resolve(canvas.toDataURL("image/jpeg", 0.85));
+        };
+        img.src = dataUrl;
+      };
+      reader.readAsDataURL(file);
+    });
+
+  // Web mirror of the Flutter app's "Scan plate from photo": read the photo,
+  // POST it to /valet/scan-plate (OpenAI vision server-side), and prefill the
+  // number-plate input. Never blocks manual entry — any failure just asks the
+  // attendant to type it in.
+  const scanPlateFromPhoto = async (file: File) => {
+    if (!user?.restaurantUsername) {
+      return;
+    }
+    try {
+      setScanningPlate(true);
+      const image = await fileToScaledDataUrl(file);
+      const response = await requestBackend<{ plate?: string | null; error?: string }>({
+        path: "/valet/scan-plate",
+        method: "POST",
+        restaurantId: user.restaurantUsername,
+        employeeId: user.employeeId,
+        outletId: user.outlet_id,
+        body: { image },
+      });
+
+      const plate = response.ok ? response.data?.plate ?? null : null;
+      if (plate) {
+        const normalized = String(plate).trim().toUpperCase();
+        setNewVehiclePlate(normalized);
+        toast({ title: "Plate Detected", description: `Detected '${normalized}' — check it, then add.` });
+      } else {
+        toast({
+          title: "No Plate Found",
+          description: "Could not read a plate — please type it in.",
+          variant: "destructive",
+        });
+      }
+    } catch {
+      toast({
+        title: "No Plate Found",
+        description: "Could not read a plate — please type it in.",
+        variant: "destructive",
+      });
+    } finally {
+      setScanningPlate(false);
     }
   };
 
@@ -1231,7 +1478,11 @@ export default function ValetDashboardPage() {
                 .filter((b) => normalizeStage(b.status) === "Request to bring car (from customer)")
                 .slice(0, 12)
                 .map((b) => (
-                  <Badge key={b.booking_id} variant="secondary" className="whitespace-nowrap">{extractVehiclePlate(b)}</Badge>
+                  <Badge key={b.booking_id} variant="secondary" className="whitespace-nowrap">
+                    {extractVehiclePlate(b)}
+                    {b.parking_location ? ` @ ${b.parking_location}` : ""}
+                    {b.eta_minutes ? ` · ETA ${b.eta_minutes}m` : ""}
+                  </Badge>
                 ))}
             </div>
           </CardContent>
@@ -1480,6 +1731,40 @@ export default function ValetDashboardPage() {
                 onChange={(e) => setNewVehiclePlate(e.target.value)}
                 placeholder="KA01AB1234"
               />
+              <input
+                ref={plateScanInputRef}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = "";
+                  if (file) {
+                    scanPlateFromPhoto(file);
+                  }
+                }}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="mt-2 w-full"
+                disabled={scanningPlate}
+                onClick={() => plateScanInputRef.current?.click()}
+              >
+                {scanningPlate ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Reading plate…
+                  </>
+                ) : (
+                  <>
+                    <Camera className="mr-2 h-4 w-4" />
+                    Scan plate from photo
+                  </>
+                )}
+              </Button>
             </div>
             <div>
               <Label htmlFor="valet-datetime">Date & Time</Label>
@@ -1704,6 +1989,171 @@ export default function ValetDashboardPage() {
                         Save
                       </Button>
                     </div>
+
+                    {bookingId ? (
+                      <div className="mt-3 space-y-2 border-t pt-3">
+                        {/* Parking location — any attendant can retrieve */}
+                        <div className="grid gap-2 md:grid-cols-[1.4fr_auto_1fr]">
+                          <div className="flex items-center gap-2">
+                            <Input
+                              placeholder="Parking location (e.g. P2 / Level 1 / Slot 14)"
+                              value={draftLocationByBookingId[bookingId] ?? booking.parking_location ?? ""}
+                              onChange={(e) =>
+                                setDraftLocationByBookingId((prev) => ({ ...prev, [bookingId]: e.target.value }))
+                              }
+                            />
+                            <Button
+                              type="button"
+                              variant="outline"
+                              disabled={opsBusyId === bookingId || draftLocationByBookingId[bookingId] === undefined}
+                              onClick={() =>
+                                saveOps(bookingId, { parking_location: draftLocationByBookingId[bookingId] ?? "" }, "Parking Location Saved")
+                              }
+                            >
+                              Save location
+                            </Button>
+                          </div>
+
+                          {/* Digital key log */}
+                          <Button
+                            type="button"
+                            variant={booking.key_holder ? "secondary" : "outline"}
+                            disabled={opsBusyId === bookingId}
+                            onClick={() => keysAction(bookingId, booking.key_holder ? "handover" : "take")}
+                          >
+                            {booking.key_holder ? `Hand over (with ${booking.key_holder})` : "Take keys"}
+                          </Button>
+
+                          {/* Condition notes */}
+                          <div className="flex items-center gap-2">
+                            <Input
+                              placeholder="Condition notes (scratches, dents...)"
+                              value={draftNotesByBookingId[bookingId] ?? booking.condition_notes ?? ""}
+                              onChange={(e) =>
+                                setDraftNotesByBookingId((prev) => ({ ...prev, [bookingId]: e.target.value }))
+                              }
+                            />
+                            <Button
+                              type="button"
+                              variant="outline"
+                              disabled={opsBusyId === bookingId || draftNotesByBookingId[bookingId] === undefined}
+                              onClick={() =>
+                                saveOps(bookingId, { condition_notes: draftNotesByBookingId[bookingId] ?? "" }, "Condition Notes Saved")
+                              }
+                            >
+                              Save notes
+                            </Button>
+                            <input
+                              type="file"
+                              accept="image/*"
+                              className="hidden"
+                              id={`valet-photo-${bookingId}`}
+                              onChange={(e) => {
+                                const file = e.target.files?.[0];
+                                e.target.value = "";
+                                if (!file) return;
+                                const reader = new FileReader();
+                                reader.onload = () => {
+                                  const result = String(reader.result ?? "");
+                                  const base64 = result.includes(",") ? result.slice(result.indexOf(",") + 1) : result;
+                                  if (!base64) return;
+                                  saveOps(
+                                    bookingId,
+                                    { condition_photo_base64: base64, condition_photo_content_type: file.type || "image/jpeg" },
+                                    "Condition Photo Saved",
+                                  );
+                                };
+                                reader.readAsDataURL(file);
+                              }}
+                            />
+                            <Button
+                              type="button"
+                              variant="outline"
+                              disabled={opsBusyId === bookingId}
+                              onClick={() => document.getElementById(`valet-photo-${bookingId}`)?.click()}
+                            >
+                              Photo
+                            </Button>
+                            {booking.condition_photo_url ? (
+                              <a
+                                href={booking.condition_photo_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-xs text-primary underline whitespace-nowrap"
+                              >
+                                View
+                              </a>
+                            ) : null}
+                          </div>
+                        </div>
+
+                        {/* ETA quick-set when the guest has asked for the car */}
+                        {stage === "Request to bring car (from customer)" || stage === "Request accepted (from valet)" ? (
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-sm text-muted-foreground">ETA to guest:</span>
+                            {[5, 10, 15].map((mins) => (
+                              <Button
+                                key={mins}
+                                type="button"
+                                size="sm"
+                                variant={booking.eta_minutes === mins ? "default" : "outline"}
+                                disabled={opsBusyId === bookingId}
+                                onClick={() => saveOps(bookingId, { eta_minutes: mins }, "ETA Set")}
+                              >
+                                {mins} min
+                              </Button>
+                            ))}
+                            {booking.eta_minutes ? (
+                              <Badge variant="secondary">ETA {booking.eta_minutes} min</Badge>
+                            ) : null}
+                          </div>
+                        ) : null}
+
+                        {/* Valet fee → the table's open bill */}
+                        <div className="flex flex-wrap items-end gap-2">
+                          <div className="min-w-[180px]">
+                            <Label className="text-xs">Charge to table</Label>
+                            <Select
+                              value={chargeTableByBookingId[bookingId] ?? ""}
+                              onValueChange={(value) =>
+                                setChargeTableByBookingId((prev) => ({ ...prev, [bookingId]: value }))
+                              }
+                            >
+                              <SelectTrigger>
+                                <SelectValue placeholder={chargeTargets.length === 0 ? "No occupied tables" : "Pick occupied table"} />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {chargeTargets.map((t) => (
+                                  <SelectItem key={t.table_name} value={t.table_name}>
+                                    {t.table_name}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div className="w-32">
+                            <Label className="text-xs">Fee amount</Label>
+                            <Input
+                              type="number"
+                              min={1}
+                              placeholder="e.g. 100"
+                              value={chargeAmountByBookingId[bookingId] ?? ""}
+                              onChange={(e) =>
+                                setChargeAmountByBookingId((prev) => ({ ...prev, [bookingId]: e.target.value }))
+                              }
+                            />
+                          </div>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            disabled={opsBusyId === bookingId || chargeTargets.length === 0}
+                            onClick={() => chargeToTable(bookingId)}
+                          >
+                            Charge to table
+                          </Button>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 );
               })}
@@ -1739,6 +2189,15 @@ export default function ValetDashboardPage() {
                         <Badge>{formatTicket(bookingId, index)}</Badge>
                       </div>
                       <p className="text-sm text-muted-foreground">Plate: {extractVehiclePlate(booking)}</p>
+                      {booking.parking_location ? (
+                        <p className="text-sm font-semibold">Location: {booking.parking_location}</p>
+                      ) : null}
+                      {booking.key_holder ? (
+                        <p className="text-sm text-muted-foreground">Keys with: {booking.key_holder}</p>
+                      ) : null}
+                      {booking.eta_minutes ? (
+                        <p className="text-sm text-muted-foreground">ETA quoted: {booking.eta_minutes} min</p>
+                      ) : null}
                       <p className="text-sm text-muted-foreground">Bay: {booking.bay_name ?? (booking.bay_id ? (data?.bays ?? []).find((b) => b.Bay_id === booking.bay_id)?.Bay_name : undefined) ?? "Main"}</p>
                       <p className="text-sm text-muted-foreground">Stage: {stage}</p>
                       <p className="text-sm text-muted-foreground">Time: {formatTime(booking.booking_date_time)}</p>
@@ -1780,6 +2239,15 @@ export default function ValetDashboardPage() {
                         <Badge>{formatTicket(bookingId, index)}</Badge>
                       </div>
                       <p className="text-sm text-muted-foreground">Plate: {extractVehiclePlate(booking)}</p>
+                      {booking.parking_location ? (
+                        <p className="text-sm font-semibold">Location: {booking.parking_location}</p>
+                      ) : null}
+                      {booking.key_holder ? (
+                        <p className="text-sm text-muted-foreground">Keys with: {booking.key_holder}</p>
+                      ) : null}
+                      {booking.eta_minutes && stage !== "Parked" ? (
+                        <p className="text-sm text-muted-foreground">ETA quoted: {booking.eta_minutes} min</p>
+                      ) : null}
                       <p className="text-sm text-muted-foreground">Bay: {booking.bay_name ?? (booking.bay_id ? (data?.bays ?? []).find((b) => b.Bay_id === booking.bay_id)?.Bay_name : undefined) ?? "Main"}</p>
                       <p className="text-sm text-muted-foreground">Stage: {stage}</p>
                       <p className="text-sm text-muted-foreground">Time: {formatTime(booking.booking_date_time)}</p>
@@ -1822,6 +2290,12 @@ export default function ValetDashboardPage() {
                         <Badge variant="secondary">{formatTicket(bookingId, index)}</Badge>
                       </div>
                       <p className="text-sm text-muted-foreground">Plate: {extractVehiclePlate(booking)}</p>
+                      {booking.parking_location ? (
+                        <p className="text-sm font-semibold">Location: {booking.parking_location}</p>
+                      ) : null}
+                      {booking.key_holder ? (
+                        <p className="text-sm text-muted-foreground">Keys with: {booking.key_holder}</p>
+                      ) : null}
                       <p className="text-sm text-muted-foreground">Bay: {booking.bay_name ?? (booking.bay_id ? (data?.bays ?? []).find((b) => b.Bay_id === booking.bay_id)?.Bay_name : undefined) ?? "Main"}</p>
                       <p className="text-sm text-muted-foreground">Stage: {stage}</p>
                       <p className="text-sm text-muted-foreground">ETA: {formatTime(booking.booking_date_time)}</p>

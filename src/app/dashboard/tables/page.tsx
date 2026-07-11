@@ -83,8 +83,10 @@ function SortableTable({
     };
 
     const isOccupied = Boolean(occupancy?.is_occupied);
-    const isUnavailable = isOccupied || table.status === "Booked" || table.status === "Occupied";
-    const isReserved = table.status === "Reserved";
+    // A table with an active booking window ("Booked") or an upcoming reservation
+    // ("Reserved") is Reserved (blue) — clearly distinct from physically Occupied
+    // (red) and still orderable/occupiable (the Occupy action below stays enabled).
+    const isReserved = !isOccupied && (table.status === "Reserved" || table.status === "Booked");
     const parsedCoverCount = Math.max(1, Number(coverCount) || 1);
     const isBusy = busyTableName === table.name;
     
@@ -94,7 +96,7 @@ function SortableTable({
             style={style}
             className={cn(
                 "transition-all touch-none min-w-0",
-                isOccupied ? 'bg-red-950/40 border-red-900' : isUnavailable ? 'bg-amber-900/30 border-amber-800' : isReserved ? 'bg-blue-950/30 border-blue-800' : 'bg-slate-800/50 border-slate-700',
+                isOccupied ? 'bg-red-950/40 border-red-900' : isReserved ? 'bg-blue-950/30 border-blue-800' : 'bg-slate-800/50 border-slate-700',
                 isDragging ? 'opacity-50 shadow-2xl z-10' : 'hover:shadow-lg hover:border-slate-600'
             )}
         >
@@ -144,19 +146,20 @@ function SortableTable({
                             variant={isOccupied ? 'destructive' : 'default'}
                             className={cn(
                                 "text-[10px] sm:text-xs",
-                                isOccupied && 'bg-red-600 text-white'
+                                isOccupied && 'bg-red-600 text-white',
+                                !isOccupied && isReserved && 'bg-blue-600 text-white'
                             )}
                         >
-                            {isOccupied ? 'Occupied' : 'Available'}
+                            {isOccupied ? 'Occupied' : isReserved ? 'Reserved' : 'Available'}
                         </Badge>
                         {occupancy ? (
                             <Badge variant="outline" className="text-[10px] sm:text-xs bg-slate-700/50">
                                 {occupancy.num_covers} covers
                             </Badge>
                         ) : null}
-                        {table.status !== "Available" ? (
+                        {!isOccupied && isReserved ? (
                             <Badge variant="secondary" className="text-[10px] sm:text-xs">
-                                Booking: {table.status}
+                                {table.status === "Booked" ? "In booking window" : "Upcoming"}
                             </Badge>
                         ) : null}
                     </div>

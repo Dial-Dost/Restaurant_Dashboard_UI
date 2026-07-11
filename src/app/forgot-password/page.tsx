@@ -60,8 +60,8 @@ function ForgotPasswordContent() {
     try {
       await sendPasswordReset(data.restaurantName, data.employeeId);
       toast({
-        title: "Check your email",
-        description: "If an account with that ID exists, a password reset link has been sent.",
+        title: "Request sent",
+        description: "Your restaurant admin has been notified to reset your password. Ask them for your new password.",
       });
       router.push(`/login/employee?restaurant=${encodeURIComponent(data.restaurantName)}`);
     } catch (error: any) {

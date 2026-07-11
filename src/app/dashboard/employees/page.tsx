@@ -36,7 +36,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { MoreHorizontal, PlusCircle, Trash2 } from "lucide-react";
+import { MoreHorizontal, PlusCircle, Trash2, Crown, KeyRound, LockKeyhole } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -56,6 +56,7 @@ import { addEmployeeToRestaurant, removeEmployeeFromRestaurant } from "@/service
 import {
   User,
   RoleDefinition,
+  PasswordResetRequest,
   getRestaurantUsers,
   getRoles,
   getActions,
@@ -64,6 +65,9 @@ import {
   deleteRole,
   assignRoleToEmployee,
   removeRoleFromEmployee,
+  setUserPassword,
+  getPasswordRequests,
+  dismissPasswordRequest,
 } from "@/lib/db";
 import{ toTitleCase } from "@/lib/utils";
 
@@ -113,6 +117,11 @@ export default function EmployeesPage() {
   const [coreRoles, setCoreRoles] = useState<{ role: string; actions: string[] }[]>([]);
   const [selectedCoreRoleToView, setSelectedCoreRoleToView] = useState<{ role: string; actions: string[] } | null>(null);
   const [isViewCoreRoleDialogOpen, setIsViewCoreRoleDialogOpen] = useState(false);
+
+  const [passwordRequests, setPasswordRequests] = useState<PasswordResetRequest[]>([]);
+  const [resetTarget, setResetTarget] = useState<{ employeeId: string; label: string } | null>(null);
+  const [newPassword, setNewPassword] = useState("");
+  const [isResetDialogOpen, setIsResetDialogOpen] = useState(false);
 
   const allAssignableRoles = useMemo(() => {
     // Represent custom roles by their IDs (so assignment stores IDs). Core roles remain names.
@@ -165,6 +174,46 @@ export default function EmployeesPage() {
     }
   };
 
+  const fetchPasswordRequests = async () => {
+    if (!user?.restaurantUsername) return;
+    try {
+      setPasswordRequests(await getPasswordRequests(user.restaurantUsername));
+    } catch (error) {
+      console.error("fetch_password_requests_failed", error);
+      setPasswordRequests([]);
+    }
+  };
+
+  const openResetPassword = (employeeId: string, label: string) => {
+    setResetTarget({ employeeId, label });
+    setNewPassword("");
+    setIsResetDialogOpen(true);
+  };
+
+  const handleResetPassword = async () => {
+    if (!user?.restaurantUsername || !resetTarget) return;
+    if (newPassword.trim().length < 4) {
+      toast({ title: "Password too short", description: "Use at least 4 characters.", variant: "destructive" });
+      return;
+    }
+    try {
+      await setUserPassword(user.restaurantUsername, resetTarget.employeeId, newPassword.trim());
+      setIsResetDialogOpen(false);
+      setResetTarget(null);
+      setNewPassword("");
+      await fetchPasswordRequests();
+      toast({ title: "Password updated", description: "The new password is active immediately." });
+    } catch (error: any) {
+      toast({ title: "Error", description: error?.message ?? "Unable to set password", variant: "destructive" });
+    }
+  };
+
+  const handleDismissRequest = async (requestId: string) => {
+    if (!user?.restaurantUsername) return;
+    await dismissPasswordRequest(user.restaurantUsername, requestId);
+    await fetchPasswordRequests();
+  };
+
   useEffect(() => {
     if (!user?.restaurantUsername) return;
 
@@ -203,6 +252,15 @@ export default function EmployeesPage() {
       } catch (err) {
         console.error('fetch_actions_failed', err);
         if (isActive) setAccessCatalog([]);
+      }
+
+      try {
+        const reqs = await getPasswordRequests(user.restaurantUsername);
+        if (!isActive) return;
+        setPasswordRequests(Array.isArray(reqs) ? reqs : []);
+      } catch (err) {
+        console.error('fetch_password_requests_failed', err);
+        if (isActive) setPasswordRequests([]);
       }
     })();
 
@@ -424,6 +482,57 @@ export default function EmployeesPage() {
         </Dialog>
       </div>
 
+      {passwordRequests.length > 0 ? (
+        <Card className="border-amber-500/60 bg-amber-500/5">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <LockKeyhole className="h-4 w-4 text-amber-600" />
+              {passwordRequests.length} password reset request{passwordRequests.length > 1 ? "s" : ""}
+            </CardTitle>
+            <CardDescription>Staff who can&apos;t sign in have asked you to reset their password.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {passwordRequests.map((req) => (
+              <div key={req.id} className="flex items-center justify-between gap-2 rounded-md border bg-background p-2">
+                <div>
+                  <p className="font-medium">{req.name}</p>
+                  <p className="text-xs text-muted-foreground">@{req.username}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" onClick={() => openResetPassword(req.employee_id, req.name)}>
+                    <KeyRound className="mr-1 h-4 w-4" /> Reset
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => void handleDismissRequest(req.id)}>Dismiss</Button>
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      ) : null}
+
+      <Dialog open={isResetDialogOpen} onOpenChange={setIsResetDialogOpen}>
+        <DialogContent className="sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle>Reset password</DialogTitle>
+            <DialogDescription>Set a new password for {resetTarget?.label}. They can sign in with it immediately.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-2">
+            <Label htmlFor="new-password">New password</Label>
+            <Input
+              id="new-password"
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              placeholder="At least 4 characters"
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setIsResetDialogOpen(false)}>Cancel</Button>
+            <Button onClick={() => void handleResetPassword()}>Set password</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Card>
         <CardHeader>
           <CardTitle>All Employees</CardTitle>
@@ -456,7 +565,16 @@ export default function EmployeesPage() {
 
                 return (
                   <TableRow key={employee.employee_id ?? employee.employee_Username ?? `emp-${idx}`}>
-                    <TableCell className="font-medium">{`${employee.emp_Fname ?? ''}${employee.emp_Lname ? ` ${employee.emp_Lname}` : ''}`.trim() || employee.employee_id}</TableCell>
+                    <TableCell className="font-medium">
+                      <span className="inline-flex items-center gap-1.5">
+                        {`${employee.emp_Fname ?? ''}${employee.emp_Lname ? ` ${employee.emp_Lname}` : ''}`.trim() || employee.employee_id}
+                        {employee.is_superadmin ? (
+                          <span title="Superadmin (owner)" className="inline-flex">
+                            <Crown className="h-4 w-4 text-amber-500" aria-label="Superadmin" />
+                          </span>
+                        ) : null}
+                      </span>
+                    </TableCell>
                     <TableCell>{employee.employee_Username ?? employee.employee_id}</TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1">
@@ -519,12 +637,24 @@ export default function EmployeesPage() {
                           </DropdownMenuSub>
 
                           <DropdownMenuItem
-                            onClick={() => void handleRemoveEmployee(employee.employee_id)}
-                            className="text-destructive"
+                            onClick={() => openResetPassword(
+                              employee.employee_id,
+                              `${employee.emp_Fname ?? ''}${employee.emp_Lname ? ` ${employee.emp_Lname}` : ''}`.trim() || (employee.employee_Username ?? employee.employee_id),
+                            )}
                           >
-                            <Trash2 className="mr-2 h-4 w-4" />
-                            Remove Employee
+                            <KeyRound className="mr-2 h-4 w-4" />
+                            Reset Password
                           </DropdownMenuItem>
+
+                          {!employee.is_superadmin ? (
+                            <DropdownMenuItem
+                              onClick={() => void handleRemoveEmployee(employee.employee_id)}
+                              className="text-destructive"
+                            >
+                              <Trash2 className="mr-2 h-4 w-4" />
+                              Remove Employee
+                            </DropdownMenuItem>
+                          ) : null}
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </TableCell>
