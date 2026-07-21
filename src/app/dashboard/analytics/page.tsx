@@ -12,7 +12,7 @@ import { useEffect, useState, type ReactNode } from "react"
 import Link from "next/link"
 import { useAuth } from "@/context/AuthContext"
 import { useCurrency } from "@/hooks/use-currency"
-import { getMenuInsights, type MenuInsights, getOperationsAnalytics, type OperationsAnalytics, getApcTrends, type ApcTrendPoint, getAdvancedAnalytics, type AdvancedAnalytics, getOutletsComparison, type OutletComparison, createCampaign, deleteCampaign } from "@/lib/db"
+import { getMenuInsights, type MenuInsights, type PriceSuggestion, applyMenuItemPrice, getOperationsAnalytics, type OperationsAnalytics, getApcTrends, type ApcTrendPoint, getAdvancedAnalytics, type AdvancedAnalytics, getOutletsComparison, type OutletComparison, createCampaign, deleteCampaign } from "@/lib/db"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { useToast } from "@/hooks/use-toast"
@@ -124,6 +124,26 @@ const kpiInView = (key: string, view: ViewId) =>
 const inView = (view: ViewId, home: ViewId, onOverview = false) =>
   view === "everything" || view === home || (view === "overview" && onOverview)
 
+// Permission helpers — same shape the dashboard layout uses to gate modules:
+// the role may be the primary one or any in role_all, and an employee passes an
+// action gate when one of their granted action names contains a keyword.
+// (An empty action list means "unrestricted", matching the layout.)
+type PermUser = { role?: string; role_all?: string[]; actions_set?: string[]; action_names?: string[] } | null | undefined
+
+const hasRole = (user: PermUser, role: string) => {
+  if (!user) return false
+  if (user.role === role) return true
+  return Array.isArray(user.role_all) ? user.role_all.includes(role) : false
+}
+
+const canAccessByAction = (user: PermUser, keywords: string[]) => {
+  if (!user) return false
+  if (Array.isArray(user.actions_set) && user.actions_set.includes("*")) return true
+  const names = (user.action_names ?? []).map((n) => n.trim().toLowerCase()).filter((n) => n.length > 0)
+  if (names.length === 0) return true
+  return names.some((name) => keywords.some((k) => name.includes(k.toLowerCase())))
+}
+
 type KpiSort = "severity" | "name" | "value"
 const KPI_SORTS: { id: KpiSort; label: string }[] = [
   { id: "severity", label: "Severity" },
@@ -230,15 +250,25 @@ function SectionHeaderRow({ children, control }: { children: ReactNode; control:
 function ActionableInsights({ view }: { view: ViewId }) {
   const { user } = useAuth();
   const { currency } = useCurrency();
+  const { toast } = useToast();
   const [data, setData] = useState<MenuInsights | null>(null);
   const [loading, setLoading] = useState(true);
+  const [reload, setReload] = useState(0);
+  // Price suggestion pending confirmation + the row currently being written.
+  const [pendingPrice, setPendingPrice] = useState<PriceSuggestion | null>(null);
+  const [applyingId, setApplyingId] = useState<string | null>(null);
   const money = (n: number | null | undefined) => `${currency}${Number(n ?? 0).toFixed(0)}`;
+  const money2 = (n: number | null | undefined) => `${currency}${Number(n ?? 0).toFixed(2)}`;
 
   // Per-section sort state (defaults = most meaningful metric).
   const [dishSort, setDishSort] = useSectionSort("revenue");
   const [waiterSort, setWaiterSort] = useSectionSort("revenue");
   const [priceSort, setPriceSort] = useSectionSort("delta");
   const [slowSort, setSlowSort] = useSectionSort("quantity", "asc");
+
+  // Applying a suggestion edits the live menu — same gate the Menu module uses
+  // (admins always pass; otherwise the employee needs a menu-ish action).
+  const canEditMenu = hasRole(user, "admin") || canAccessByAction(user, ["menu"]);
 
   useEffect(() => {
     if (!user?.restaurantUsername) return;
@@ -248,7 +278,23 @@ function ActionableInsights({ view }: { view: ViewId }) {
       .then((d) => { if (active) setData(d); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [user?.restaurantUsername]);
+  }, [user?.restaurantUsername, reload]);
+
+  const confirmApplyPrice = async () => {
+    const s = pendingPrice;
+    if (!s?.id || !user?.restaurantUsername) return;
+    setApplyingId(s.id);
+    try {
+      await applyMenuItemPrice(user.restaurantUsername, s.id, s.suggested_price);
+      toast({ title: "Price updated", description: `${s.name} is now ${money2(s.suggested_price)} on the live menu.` });
+      setPendingPrice(null);
+      setReload((n) => n + 1); // refresh insights so the suggestion re-evaluates
+    } catch (err: unknown) {
+      toast({ title: "Unable to update the price", description: String((err as Error)?.message ?? err), variant: "destructive" });
+    } finally {
+      setApplyingId(null);
+    }
+  };
 
   // Per-view slices of this component (after hooks — hook order must not vary).
   const showStats = inView(view, "sales");
@@ -367,6 +413,18 @@ function ActionableInsights({ view }: { view: ViewId }) {
                       <p className="text-xs text-muted-foreground line-through">{money(s.current_price)}</p>
                       <p className={`font-bold ${up ? "text-green-600" : "text-orange-600"}`}>{money(s.suggested_price)}</p>
                     </div>
+                    {canEditMenu && s.id && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="shrink-0 self-center"
+                        disabled={applyingId === s.id}
+                        onClick={() => setPendingPrice(s)}
+                      >
+                        <Check className="mr-1 h-3.5 w-3.5" />
+                        {applyingId === s.id ? "Applying…" : "Apply"}
+                      </Button>
+                    )}
                   </div>
                 );
               })}
@@ -393,6 +451,39 @@ function ActionableInsights({ view }: { view: ViewId }) {
           </Card>
         )}
       </div>
+
+      <Dialog open={pendingPrice != null} onOpenChange={(open) => { if (!open) setPendingPrice(null); }}>
+        <DialogContent className="max-w-md" aria-describedby={undefined}>
+          <DialogHeader>
+            <DialogTitle>Apply this price?</DialogTitle>
+          </DialogHeader>
+          {pendingPrice && (
+            <div className="space-y-3 text-sm">
+              <div className="rounded-lg border p-3">
+                <p className="font-medium">{pendingPrice.name}</p>
+                {pendingPrice.category && <p className="text-xs text-muted-foreground">{pendingPrice.category}</p>}
+                <p className="mt-2 flex items-center gap-2">
+                  <span className="text-muted-foreground line-through">{money2(pendingPrice.current_price)}</span>
+                  <span aria-hidden="true">→</span>
+                  <span className={`text-lg font-bold ${pendingPrice.direction === "increase" ? "text-green-600" : "text-orange-600"}`}>
+                    {money2(pendingPrice.suggested_price)}
+                  </span>
+                </p>
+              </div>
+              <p className="text-muted-foreground">{pendingPrice.reason}</p>
+              <p className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100">
+                This changes the <strong>live menu</strong> straight away — new orders, the guest QR menu and every bill will use the new price. Existing open bills keep the price they were placed at.
+              </p>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPendingPrice(null)} disabled={applyingId != null}>Cancel</Button>
+            <Button onClick={() => { void confirmApplyPrice(); }} disabled={applyingId != null}>
+              {applyingId != null ? "Applying…" : "Apply price"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

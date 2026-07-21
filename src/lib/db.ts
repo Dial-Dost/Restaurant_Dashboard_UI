@@ -13,6 +13,7 @@ import { type Order } from '@/app/dashboard/orders/page';
 import { type Table } from '@/app/dashboard/tables/data';
 import { type AuditLog } from '@/app/dashboard/audit-logs/page';
 import { SELECTED_OUTLET_KEY } from '@/lib/outlet';
+import type { BrandConfig } from '@/lib/brand-fonts';
 
 export type User = {
     id: string;
@@ -666,6 +667,7 @@ const mapTable = (item: any, index: number): Table => {
         capacity: Number.isFinite(capacity) ? capacity : 0,
         status: toTableStatus(item.booked, item.reserved, item.occupied, item.payment_pending),
         qr_token: typeof item.qr_token === 'string' && item.qr_token ? item.qr_token : null,
+        order_otp: typeof item.order_otp === 'string' && item.order_otp ? item.order_otp : null,
     };
 };
 
@@ -2520,7 +2522,9 @@ export const getMonthlyHistory = async (restaurantId: string, months = 36): Prom
 };
 
 export type DishStat = { name: string; category: string; quantity: number; revenue: number; orders: number; current_price: number | null };
-export type PriceSuggestion = { name: string; category: string; current_price: number; suggested_price: number; direction: 'increase' | 'decrease'; reason: string };
+// `id` is the Menu row UUID the suggestion applies to — null only when the sold
+// dish name no longer matches a live menu item (nothing to apply then).
+export type PriceSuggestion = { id: string | null; name: string; category: string; current_price: number; suggested_price: number; direction: 'increase' | 'decrease'; reason: string };
 export type WaiterStat = { employee_id: string; employee_name: string; orders: number; revenue: number };
 export type MenuInsights = {
     period_days: number;
@@ -2542,6 +2546,25 @@ export const getMenuInsights = async (
         { method: 'GET' },
     );
     return data ?? null;
+};
+
+// Apply ONE price suggestion to the live menu. Deliberately not PUT /menu —
+// that route replaces the whole menu and drops any item missing from the
+// payload; this one re-encodes only the price of the given item.
+export const applyMenuItemPrice = async (
+    restaurantId: string,
+    menuItemId: string,
+    price: number,
+): Promise<{ success: boolean; id: string; name: string; price: number }> => {
+    const response = await backendCall(`/menu/${encodeURIComponent(menuItemId)}/price`, restaurantId, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ price }),
+    });
+    if (!response || !response.ok) {
+        throw new Error(response ? await readErrorMessage(response) : 'Unable to update the price');
+    }
+    return (await response.json()) as { success: boolean; id: string; name: string; price: number };
 };
 
 export type OperationsAnalytics = {
@@ -2908,6 +2931,58 @@ export const saveKitchenSections = async (restaurantId: string, sections: string
 // item that pointed at the old one.
 export const renameKitchenSection = async (restaurantId: string, from: string, to: string): Promise<{ success: boolean; updated_items?: number; kitchen_sections?: string[] }> =>
     postJson('/kitchen-sections/rename', restaurantId, { from, to });
+
+// --- Require-table-OTP toggle (boolean in /restaurant/settings) --------------
+// When enabled, guests must enter the 4-digit per-table code shown by staff
+// before the QR order page lets them order. Mirrors kitchen_sections: an unset
+// column reads back as false.
+export const getRequireTableOtp = async (restaurantId: string): Promise<boolean> => {
+    const res = await backendCall('/restaurant/settings', restaurantId, { method: 'GET' });
+    if (!res || !res.ok) return false;
+    try { const j = await res.json(); return j?.require_table_otp === true; } catch { return false; }
+};
+export const setRequireTableOtp = async (restaurantId: string, enabled: boolean): Promise<boolean> => {
+    const res = await backendCall('/restaurant/settings', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ require_table_otp: enabled }),
+    });
+    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to save the table OTP setting');
+    try { const j = await res.json(); return j?.require_table_otp === true; } catch { return enabled; }
+};
+
+// --- Customer-page branding (brand_config) ----------------------------------
+// The rich customer-page customization (font/colours/header/button style) shown
+// on the QR order page. Read the resolved config + the curated font allowlist
+// from /restaurant/settings (admin), and save via POST /restaurant/branding
+// (merge-on-omit: only the keys sent are overwritten). Mirrors the OTP helpers.
+export type BrandConfigSettings = { brand_config: BrandConfig; brand_fonts: string[] };
+export const getBrandConfig = async (restaurantId: string): Promise<BrandConfigSettings> => {
+    const fallback: BrandConfigSettings = {
+        brand_config: { font: 'Inter', header_style: 'gradient', button_shape: 'pill' },
+        brand_fonts: [],
+    };
+    const res = await backendCall('/restaurant/settings', restaurantId, { method: 'GET' });
+    if (!res || !res.ok) return fallback;
+    try {
+        const j = await res.json();
+        return {
+            brand_config: (j?.brand_config && typeof j.brand_config === 'object') ? (j.brand_config as BrandConfig) : fallback.brand_config,
+            brand_fonts: Array.isArray(j?.brand_fonts) ? j.brand_fonts.map((s: unknown) => String(s)) : [],
+        };
+    } catch {
+        return fallback;
+    }
+};
+export const saveBrandConfig = async (restaurantId: string, brandConfig: BrandConfig): Promise<BrandConfig> => {
+    const res = await backendCall('/restaurant/branding', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ brand_config: brandConfig }),
+    });
+    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to save customer-page branding');
+    try { const j = await res.json(); return (j?.brand_config && typeof j.brand_config === 'object') ? (j.brand_config as BrandConfig) : brandConfig; } catch { return brandConfig; }
+};
 
 // --- Inventory categories (managed list in /restaurant/settings) ------------
 // Ordered list of ingredient categories (Vegetable/Meat/Dairy/...); inventory

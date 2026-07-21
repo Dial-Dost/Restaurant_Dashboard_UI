@@ -70,8 +70,32 @@ export const signUpRestaurant = async ({ restaurantName, adminName, adminEmploye
     }
 }
 
+// Fetch the outlets for a restaurant (id + name only). Returns [] on any
+// non-ok/error response and never throws, so the login page can degrade to a
+// single-outlet form when the list is empty or unavailable.
+export const getOutlets = async (restaurant: string): Promise<{ id: string; name: string }[]> => {
+    try {
+        const response = await fetch(
+            `${API_BASE_URL}/auth/outlets?restaurant=${encodeURIComponent(restaurant)}`,
+            { cache: 'no-store' },
+        );
+        if (!response.ok) {
+            return [];
+        }
+        const payload = await response.json();
+        if (!Array.isArray(payload?.outlets)) {
+            return [];
+        }
+        return payload.outlets
+            .filter((o: any) => o && typeof o.id === 'string' && typeof o.name === 'string')
+            .map((o: any) => ({ id: o.id as string, name: o.name as string }));
+    } catch {
+        return [];
+    }
+}
+
 // Employee Sign In
-export const signInEmployee = async (restaurantName: string, employeeUsername: string, password: string) => {
+export const signInEmployee = async (restaurantName: string, employeeUsername: string, password: string, outletId?: string) => {
     const response = await fetch(`${API_BASE_URL}/auth/employee-login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -80,6 +104,7 @@ export const signInEmployee = async (restaurantName: string, employeeUsername: s
             restaurantName,
             employeeUsername,
             password,
+            ...(outletId ? { outletId } : {}),
         }),
     });
 

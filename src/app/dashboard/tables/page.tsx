@@ -157,6 +157,11 @@ function SortableTable({
                                 {occupancy.num_covers} covers
                             </Badge>
                         ) : null}
+                        {isOccupied && table.order_otp ? (
+                            <Badge className="text-[10px] sm:text-xs font-mono font-bold tracking-widest bg-amber-500 text-black hover:bg-amber-500">
+                                OTP {table.order_otp}
+                            </Badge>
+                        ) : null}
                         {!isOccupied && isReserved ? (
                             <Badge variant="secondary" className="text-[10px] sm:text-xs">
                                 {table.status === "Booked" ? "In booking window" : "Upcoming"}

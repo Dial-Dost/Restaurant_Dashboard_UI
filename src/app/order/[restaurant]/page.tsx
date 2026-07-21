@@ -3,9 +3,11 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import { guestBackendBase } from "@/lib/guest-backend";
+import { fontStack, loadBrandFont, readableOn, shapeRadius, type BrandConfig } from "@/lib/brand-fonts";
 
 const BASE = guestBackendBase();
 const DEFAULT_ACCENT = "#ea580c";
+const HEX_RE = /^#[0-9a-fA-F]{6}$/;
 
 type ModOption = { name: string; price: number };
 type ModGroup = { name: string; multi: boolean; required: boolean; options: ModOption[] };
@@ -104,6 +106,14 @@ const STRINGS: Record<Lang, Record<string, string>> = {
     orderSent: "Order sent to the kitchen! 🍽️",
     orderPending: "Order sent — waiting for staff to approve ✅",
     downloadBill: "Download bill (PDF)",
+    tableCode: "Table code",
+    shareCodeHint: "Share this code with your table so friends can order too.",
+    otpTitle: "Enter your table code",
+    otpHelper: "Ask our staff for the 4-digit code for your table.",
+    otpSubmit: "Continue",
+    otpVerifying: "Checking…",
+    otpNotSeated: "Please ask our staff to seat you first, then enter the code.",
+    otpWrong: "That code isn't right — check with staff.",
   },
   hi: {
     loadingMenu: "मेनू लोड हो रहा है…",
@@ -162,6 +172,14 @@ const STRINGS: Record<Lang, Record<string, string>> = {
     orderSent: "ऑर्डर किचन को भेज दिया गया! 🍽️",
     orderPending: "ऑर्डर भेज दिया गया — स्टाफ़ की मंज़ूरी का इंतज़ार है ✅",
     downloadBill: "बिल डाउनलोड करें (PDF)",
+    tableCode: "टेबल कोड",
+    shareCodeHint: "यह कोड अपनी टेबल के साथ साझा करें ताकि दोस्त भी ऑर्डर कर सकें।",
+    otpTitle: "अपनी टेबल का कोड डालें",
+    otpHelper: "अपनी टेबल का 4-अंकों वाला कोड स्टाफ़ से पूछें।",
+    otpSubmit: "आगे बढ़ें",
+    otpVerifying: "जाँच हो रही है…",
+    otpNotSeated: "कृपया पहले स्टाफ़ से टेबल पर बैठाने को कहें, फिर कोड डालें।",
+    otpWrong: "यह कोड सही नहीं है — स्टाफ़ से जाँच करें।",
   },
 };
 type Tr = (key: string) => string;
@@ -191,6 +209,10 @@ function OrderInner() {
   const [restaurantName, setRestaurantName] = useState("");
   const [logoUrl, setLogoUrl] = useState("");
   const [accent, setAccent] = useState(DEFAULT_ACCENT);
+  // Rich customer-page branding (font/colours/header/button style). Null until
+  // the menu loads (or when the tenant never customised) — every use falls back
+  // to today's hardcoded look so existing tenants are visually unchanged.
+  const [brandConfig, setBrandConfig] = useState<BrandConfig | null>(null);
   const [currency, setCurrency] = useState("₹");
   const [payMethods, setPayMethods] = useState<PayMethod[]>(DEFAULT_METHODS);
   const [items, setItems] = useState<MenuItem[]>([]);
@@ -207,6 +229,33 @@ function OrderInner() {
   const [settled, setSettled] = useState(false);
   const [modItem, setModItem] = useState<MenuItem | null>(null);
   const [lang, setLang] = useState<Lang>("en");
+  // Per-table OTP gate: when the tenant requires it, the guest must enter the
+  // 4-digit code staff read off the floor grid before browsing/ordering. The
+  // verified code is remembered per table token so a reload doesn't re-prompt,
+  // and is threaded into the order payload (the order endpoint re-checks it).
+  const [requireOtp, setRequireOtp] = useState(false);
+  const [otpVerified, setOtpVerified] = useState(false);
+  const [verifiedOtp, setVerifiedOtp] = useState("");
+
+  // Restore a previously-verified table OTP (keyed by the signed table token).
+  useEffect(() => {
+    if (!token) return;
+    try {
+      const saved = localStorage.getItem(`otp_ok_${token}`);
+      if (saved) { setVerifiedOtp(saved); setOtpVerified(true); }
+    } catch {/* private mode etc. */}
+  }, [token]);
+
+  const markOtpVerified = useCallback((code: string) => {
+    setVerifiedOtp(code);
+    setOtpVerified(true);
+    try { localStorage.setItem(`otp_ok_${token}`, code); } catch {/* ignore */}
+  }, [token]);
+  const clearOtpVerified = useCallback(() => {
+    setVerifiedOtp("");
+    setOtpVerified(false);
+    try { localStorage.removeItem(`otp_ok_${token}`); } catch {/* ignore */}
+  }, [token]);
 
   // Restore the guest's language choice (after mount — SSR always renders EN).
   useEffect(() => {
@@ -278,12 +327,16 @@ function OrderInner() {
         if (!active) return;
         setRestaurantName(data.restaurant_name ?? restaurant);
         setLogoUrl(typeof data.logo_url === "string" ? data.logo_url : "");
-        // Prefer the logo-derived primary colour; fall back to the configured theme_color.
-        const hex = (v: unknown) => (typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v) ? v : null);
-        const themePref = hex(data.theme_primary) ?? hex(data.theme_color);
+        // brand_config.color_primary wins, then the logo-derived primary, then
+        // the configured theme_color (keeps existing tenants unchanged).
+        const hex = (v: unknown) => (typeof v === "string" && HEX_RE.test(v) ? v : null);
+        const bcfg = data.brand_config && typeof data.brand_config === "object" ? (data.brand_config as BrandConfig) : null;
+        setBrandConfig(bcfg);
+        const themePref = hex(bcfg?.color_primary) ?? hex(data.theme_primary) ?? hex(data.theme_color);
         if (themePref) setAccent(themePref);
         if (typeof data.currency === "string" && data.currency.trim()) setCurrency(data.currency.trim());
         if (Array.isArray(data.payment_methods) && data.payment_methods.length > 0) setPayMethods(data.payment_methods);
+        setRequireOtp(data.require_table_otp === true);
         setItems(Array.isArray(data.items) ? data.items : []);
       } catch (e: any) {
         if (active) setError(e?.message ?? "Failed to load menu");
@@ -302,6 +355,9 @@ function OrderInner() {
     const t = setTimeout(() => setToast(null), 3500);
     return () => clearTimeout(t);
   }, [toast]);
+
+  // Load the tenant's chosen Google Font (once) so the page renders in it.
+  useEffect(() => { if (brandConfig?.font) loadBrandFont(brandConfig.font); }, [brandConfig?.font]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -371,6 +427,8 @@ function OrderInner() {
         note: orderNote.trim() || undefined,
         customer: guestName.trim(),
         customer_phone: phoneDigits,
+        // Re-checked server-side; only present when the OTP gate is in play.
+        ...(verifiedOtp ? { otp: verifiedOtp } : {}),
       };
       const res = await fetch(`${BASE}/qr/${encodeURIComponent(restaurant)}/order`, {
         method: "POST",
@@ -378,7 +436,12 @@ function OrderInner() {
         body: JSON.stringify(payload),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data?.error ?? "Order failed");
+      if (!res.ok) {
+        // A stale/rotated code (e.g. table was released & re-seated) — drop the
+        // saved verification so the guest is re-prompted with the gate.
+        if (data?.code === "otp_required" || data?.code === "otp_wrong") clearOtpVerified();
+        throw new Error(data?.error ?? "Order failed");
+      }
       setBillTotal(Number(data?.bill_total ?? cartTotal));
       void loadBill(); // refresh the authoritative bill (incl. taxes)
       setCart({});
@@ -421,10 +484,45 @@ function OrderInner() {
     );
   }
 
+  // OTP gate: block browsing/ordering until the guest enters the per-table code.
+  if (requireOtp && !otpVerified) {
+    return (
+      <OtpGate
+        restaurant={restaurant}
+        token={token}
+        accent={accent}
+        restaurantName={restaurantName || restaurant}
+        logoUrl={logoUrl}
+        tableLabel={tableLabel}
+        t={t}
+        onVerified={markOtpVerified}
+      />
+    );
+  }
+
+  // Resolve brand_config into concrete style values. Every branch falls back to
+  // the original hardcoded look when brand_config is absent (bc === null), so
+  // existing tenants render byte-identically to before.
+  const bc = brandConfig;
+  const gradEnd = bc?.color_secondary && HEX_RE.test(bc.color_secondary) ? bc.color_secondary : shade(accent, -22);
+  const headerBg = bc?.header_style === "solid" ? accent : `linear-gradient(135deg, ${accent}, ${gradEnd})`;
+  const onAccent = readableOn(accent);
+  const btnRadius = shapeRadius(bc?.button_shape ?? "pill");
+  const pageBg = bc?.color_bg && HEX_RE.test(bc.color_bg) ? bc.color_bg : undefined;
+  const bodyText = bc?.color_text && HEX_RE.test(bc.color_text) ? bc.color_text : undefined;
+  const cardBg = bc?.color_card && HEX_RE.test(bc.color_card) ? bc.color_card : undefined;
+  const pageFont = bc?.font ? fontStack(bc.font) : undefined;
+  // Applied to the accent-coloured action buttons ("Add"/"Customize"): readable
+  // text + the tenant's button shape. Empty (no override) when brand_config is off.
+  const accentBtnStyle: React.CSSProperties = bc ? { color: onAccent, borderRadius: btnRadius } : {};
+
   return (
-    <div className="mx-auto min-h-screen max-w-md bg-neutral-50 pb-28">
+    <div
+      className="mx-auto min-h-screen max-w-md bg-neutral-50 pb-28"
+      style={{ ...(pageBg ? { backgroundColor: pageBg } : {}), ...(pageFont ? { fontFamily: pageFont } : {}) }}
+    >
       <GuestBillReceipt bill={bill} restaurantName={restaurantName || restaurant} logoUrl={logoUrl} tableLabel={tableLabel} currency={currency} />
-      <header className="relative overflow-hidden px-5 pb-6 pt-7 text-white shadow-md" style={{ background: `linear-gradient(135deg, ${accent}, ${shade(accent, -22)})` }}>
+      <header className="relative overflow-hidden px-5 pb-6 pt-7 text-white shadow-md" style={{ background: headerBg, ...(bc ? { color: onAccent } : {}) }}>
         {/* Soft decorative glows for depth. */}
         <div className="pointer-events-none absolute -right-10 -top-12 h-40 w-40 rounded-full bg-white/15 blur-2xl" />
         <div className="pointer-events-none absolute -bottom-16 -left-8 h-40 w-40 rounded-full bg-black/10 blur-2xl" />
@@ -443,6 +541,17 @@ function OrderInner() {
             </div>
           </div>
           <div className="flex flex-col items-end gap-2">
+            {/* Once verified, surface the table's shared OTP so the guest can pass
+                it to friends joining the same table (they enter it to order too). */}
+            {requireOtp && otpVerified && verifiedOtp && (
+              <div
+                className="flex items-center gap-1.5 rounded-full bg-white/95 px-3 py-1 shadow-sm ring-1 ring-white/50"
+                title={t("shareCodeHint")}
+              >
+                <span className="text-[9px] font-bold uppercase tracking-wide text-neutral-400">{t("tableCode")}</span>
+                <span className="text-sm font-extrabold tracking-[0.2em]" style={{ color: accent }}>{verifiedOtp}</span>
+              </div>
+            )}
             <button
               onClick={() => { void loadBill(); setShowBill(true); }}
               className="rounded-full bg-white/20 px-4 py-2 text-sm font-semibold shadow-sm backdrop-blur transition active:scale-95"
@@ -469,7 +578,7 @@ function OrderInner() {
       </header>
 
       {/* Sticky search + category tabs. Tapping a tab shows only that section. */}
-      <div className="sticky top-0 z-10 border-b border-neutral-200 bg-neutral-50/95 backdrop-blur">
+      <div className="sticky top-0 z-10 border-b border-neutral-200 bg-neutral-50/95 backdrop-blur" style={pageBg ? { backgroundColor: pageBg } : undefined}>
         <div className="px-4 pt-3">
           <input
             value={query}
@@ -496,7 +605,7 @@ function OrderInner() {
                   onClick={() => { if (!drag.current.moved) setActiveCat(cat); }}
                   className="whitespace-nowrap rounded-full px-4 py-1.5 text-sm font-medium shadow-sm ring-1 transition"
                   style={on
-                    ? { backgroundColor: accent, color: "white", borderColor: accent, boxShadow: "none" }
+                    ? { backgroundColor: accent, color: bc ? onAccent : "white", borderColor: accent, boxShadow: "none" }
                     : { backgroundColor: "white", color: "#404040", borderColor: "#e5e5e5" }}
                 >
                   {cat}
@@ -515,7 +624,7 @@ function OrderInner() {
           {shown.map((it) => {
             const soldOut = it.available === false;
             return (
-              <div key={it.id} className={`flex items-center gap-3 rounded-2xl bg-white p-3 shadow-sm ${soldOut ? "opacity-60" : ""}`}>
+              <div key={it.id} className={`flex items-center gap-3 rounded-2xl bg-white p-3 shadow-sm ${soldOut ? "opacity-60" : ""}`} style={cardBg ? { backgroundColor: cardBg } : undefined}>
                 {it.image_url ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={it.image_url} alt={it.name} className={`h-16 w-16 flex-shrink-0 rounded-xl object-cover ${soldOut ? "grayscale" : ""}`} />
@@ -523,7 +632,7 @@ function OrderInner() {
                   <div className="flex h-16 w-16 flex-shrink-0 items-center justify-center rounded-xl bg-neutral-100 text-2xl">🍽️</div>
                 )}
                 <div className="min-w-0 flex-1">
-                  <p className="font-semibold text-neutral-800">{it.name}</p>
+                  <p className="font-semibold text-neutral-800" style={bodyText ? { color: bodyText } : undefined}>{it.name}</p>
                   {searching && <p className="text-xs text-neutral-400">{it.category}</p>}
                   <p className="text-sm text-neutral-500">{currency}{Number(it.price).toFixed(2)}</p>
                   {(it.allergens ?? []).length > 0 && (
@@ -537,15 +646,15 @@ function OrderInner() {
                 {soldOut ? (
                   <span className="rounded-full bg-neutral-200 px-3 py-1.5 text-xs font-semibold text-neutral-500">{t("soldOut")}</span>
                 ) : (it.modifiers && it.modifiers.length > 0) ? (
-                  <button onClick={() => addItem(it)} className="rounded-full px-4 py-2 text-sm font-semibold text-white shadow transition active:scale-95" style={{ backgroundColor: accent }}>{t("customize")}</button>
+                  <button onClick={() => addItem(it)} className="rounded-full px-4 py-2 text-sm font-semibold text-white shadow transition active:scale-95" style={{ backgroundColor: accent, ...accentBtnStyle }}>{t("customize")}</button>
                 ) : cart[it.id] ? (
                   <div className="flex items-center gap-2 rounded-full px-2 py-1" style={{ backgroundColor: tint(accent) }}>
                     <button onClick={() => setLineQty(it.id, -1)} className="h-7 w-7 rounded-full bg-white text-lg leading-none shadow" style={{ color: accent }}>−</button>
                     <span className="w-4 text-center font-semibold" style={{ color: accent }}>{cart[it.id].quantity}</span>
-                    <button onClick={() => setLineQty(it.id, 1)} className="h-7 w-7 rounded-full text-lg leading-none text-white shadow" style={{ backgroundColor: accent }}>+</button>
+                    <button onClick={() => setLineQty(it.id, 1)} className="h-7 w-7 rounded-full text-lg leading-none text-white shadow" style={{ backgroundColor: accent, ...(bc ? { color: onAccent } : {}) }}>+</button>
                   </div>
                 ) : (
-                  <button onClick={() => addItem(it)} className="rounded-full px-4 py-2 text-sm font-semibold text-white shadow transition active:scale-95" style={{ backgroundColor: accent }}>{t("add")}</button>
+                  <button onClick={() => addItem(it)} className="rounded-full px-4 py-2 text-sm font-semibold text-white shadow transition active:scale-95" style={{ backgroundColor: accent, ...accentBtnStyle }}>{t("add")}</button>
                 )}
               </div>
             );
@@ -559,7 +668,7 @@ function OrderInner() {
           <button
             onClick={() => setShowCart(true)}
             className="flex w-full items-center justify-between rounded-2xl px-5 py-4 text-white shadow-xl ring-1 ring-black/5 transition active:scale-[0.98]"
-            style={{ background: `linear-gradient(135deg, ${accent}, ${shade(accent, -22)})` }}
+            style={{ background: `linear-gradient(135deg, ${accent}, ${gradEnd})`, ...(bc ? { color: onAccent } : {}) }}
           >
             <span className="flex items-center gap-2 font-semibold">
               <span className="flex h-6 min-w-6 items-center justify-center rounded-full bg-white/25 px-1.5 text-xs font-bold backdrop-blur">{cartCount}</span>
@@ -1375,6 +1484,94 @@ function PaySheet(props: {
         )}
         <button onClick={onClose} className="mt-2 w-full py-2 text-sm text-neutral-500">{t("cancel")}</button>
       </div>
+    </div>
+  );
+}
+
+// Full-screen, branded gate shown when the tenant requires a per-table OTP.
+// The guest enters the 4-digit code staff read off the floor grid; on success
+// the parent persists it and reveals the menu. No re-prompt on reload.
+function OtpGate(props: {
+  restaurant: string;
+  token: string;
+  accent: string;
+  restaurantName: string;
+  logoUrl: string;
+  tableLabel: string;
+  t: Tr;
+  onVerified: (code: string) => void;
+}) {
+  const { restaurant, token, accent, restaurantName, logoUrl, tableLabel, t, onVerified } = props;
+  const [code, setCode] = useState("");
+  const [checking, setChecking] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const submit = async () => {
+    const otp = code.trim();
+    if (otp.length < 4 || checking) return;
+    setChecking(true);
+    setErr(null);
+    try {
+      const res = await fetch(`${BASE}/qr/${encodeURIComponent(restaurant)}/verify-otp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ t: token, otp }),
+      });
+      const data = await res.json().catch(() => null);
+      if (data?.ok) { onVerified(otp); return; }
+      setErr(data?.reason === "not_seated" ? t("otpNotSeated") : t("otpWrong"));
+    } catch {
+      setErr(t("otpWrong"));
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  return (
+    <div className="mx-auto flex min-h-screen max-w-md flex-col items-center justify-center bg-neutral-50 px-6 text-center">
+      {logoUrl ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={logoUrl} alt="logo" className="mb-4 h-16 w-16 rounded-2xl bg-white object-contain p-1.5 shadow ring-1 ring-black/5" />
+      ) : (
+        <div
+          className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl text-3xl text-white shadow"
+          style={{ background: `linear-gradient(135deg, ${accent}, ${shade(accent, -22)})` }}
+        >
+          🔒
+        </div>
+      )}
+      <p className="text-sm font-medium text-neutral-500">{restaurantName}</p>
+      {tableLabel ? (
+        <p className="mt-1 inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold" style={{ backgroundColor: tint(accent), color: accent }}>
+          {t("table")} {tableLabel}
+        </p>
+      ) : null}
+      <h1 className="mt-4 text-2xl font-extrabold tracking-tight text-neutral-800">{t("otpTitle")}</h1>
+      <p className="mt-2 max-w-xs text-sm text-neutral-500">{t("otpHelper")}</p>
+
+      <input
+        value={code}
+        onChange={(e) => { setErr(null); setCode(e.target.value.replace(/\D/g, "").slice(0, 4)); }}
+        onKeyDown={(e) => { if (e.key === "Enter") void submit(); }}
+        inputMode="numeric"
+        autoFocus
+        maxLength={4}
+        placeholder="••••"
+        aria-label={t("otpTitle")}
+        className="mt-6 w-52 rounded-2xl border-2 bg-white py-4 text-center text-3xl font-bold tracking-[0.4em] text-neutral-800 outline-none"
+        style={{ borderColor: accent, caretColor: accent }}
+      />
+
+      {err && <p className="mt-3 max-w-xs text-sm font-medium text-red-600">{err}</p>}
+
+      <button
+        onClick={submit}
+        disabled={checking || code.trim().length < 4}
+        className="mt-6 w-52 rounded-2xl py-4 font-semibold text-white shadow transition active:scale-[0.99] disabled:opacity-50"
+        style={{ background: `linear-gradient(135deg, ${accent}, ${shade(accent, -18)})` }}
+      >
+        {checking ? t("otpVerifying") : t("otpSubmit")}
+      </button>
     </div>
   );
 }

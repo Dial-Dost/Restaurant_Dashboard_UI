@@ -947,6 +947,25 @@ function OrdersDashboard() {
     }
   };
 
+  // What the guest actually pays for this table: the bill's grand_total
+  // (discount + service charge + taxes), NOT total_amt — that field is the
+  // PRE-TAX running sum while the bill is open. Display only; the settle
+  // requests carry no amount. Returns null when the bill can't be read, in
+  // which case the caller simply omits the figure.
+  const fetchTablePayable = async (tableName: string): Promise<number | null> => {
+    if (!user?.restaurantUsername) return null;
+    try {
+      const bill = await getBillForTable(user.restaurantUsername, tableName);
+      const amount = Number(bill?.grand_total ?? bill?.total_amt);
+      return Number.isFinite(amount) && amount > 0 ? Math.round(amount * 100) / 100 : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const payableLine = (payable: number | null) =>
+    payable != null ? `Amount payable: ${currencySymbol}${payable.toFixed(2)} (incl. taxes & charges)\n\n` : "";
+
   const handleWaiterConfirmPayment = async (order: Order, paymentMethod: PaymentMethod) => {
     if (!user?.restaurantUsername || !user.employeeId) return;
     if (!(hasRole("waiter") || hasRole("admin"))) {
@@ -964,8 +983,9 @@ function OrdersDashboard() {
       }
     }
 
+    const payable = await fetchTablePayable(order.table);
     const confirmed = window.confirm(
-      `Confirm payment by ${paymentMethod}? This sends the bill for admin approval.`,
+      `${payableLine(payable)}Confirm payment by ${paymentMethod}? This sends the bill for admin approval.`,
     );
     if (!confirmed) return;
 
@@ -1011,7 +1031,8 @@ function OrdersDashboard() {
       }
     }
 
-    const confirmed = window.confirm('Approve this waiter-confirmed payment?');
+    const payable = await fetchTablePayable(order.table);
+    const confirmed = window.confirm(`${payableLine(payable)}Approve this waiter-confirmed payment?`);
     if (!confirmed) return;
 
     try {

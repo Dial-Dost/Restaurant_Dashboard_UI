@@ -12,6 +12,13 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { ChefHat } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from 'next/link';
@@ -19,7 +26,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { useToast } from '@/hooks/use-toast';
-import { signInEmployee } from '@/services/authService';
+import { signInEmployee, getOutlets } from '@/services/authService';
 import { useAuth } from '@/context/AuthContext';
 
 
@@ -39,6 +46,8 @@ function EmployeeLoginContent() {
   
   const [restaurantName, setRestaurantName] = useState<string | null>(null);
   const [isReady, setIsReady] = useState(false);
+  const [outlets, setOutlets] = useState<{ id: string; name: string }[]>([]);
+  const [selectedOutletId, setSelectedOutletId] = useState<string>("");
 
   useEffect(() => {
     const name = searchParams.get('restaurant');
@@ -48,6 +57,36 @@ function EmployeeLoginContent() {
     }, 0);
     return () => clearTimeout(id);
   }, [searchParams]);
+
+  // Once the restaurant is known, fetch its outlets. A single outlet (or an
+  // empty/failed fetch) keeps the classic single-outlet form; more than one
+  // renders a picker. Restores the last chosen outlet for this restaurant.
+  useEffect(() => {
+    if (!restaurantName) return;
+    let cancelled = false;
+    (async () => {
+      const list = await getOutlets(restaurantName);
+      if (cancelled) return;
+      setOutlets(list);
+      if (list.length > 1) {
+        let preselect = list[0].id;
+        try {
+          const stored = localStorage.getItem(`employeeLoginOutlet:${restaurantName}`);
+          if (stored && list.some((o) => o.id === stored)) {
+            preselect = stored;
+          }
+        } catch {
+          // localStorage may be unavailable; fall back to the default outlet.
+        }
+        setSelectedOutletId(preselect);
+      } else {
+        setSelectedOutletId("");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [restaurantName]);
 
   const { register, handleSubmit, formState: { errors } } = useForm<LoginFormFields>({
     resolver: zodResolver(loginSchema)
@@ -62,8 +101,25 @@ function EmployeeLoginContent() {
       });
       return;
     }
+    const hasOutletPicker = outlets.length > 1;
+    if (hasOutletPicker && !selectedOutletId) {
+      toast({
+        title: "Error",
+        description: "Please select your outlet.",
+        variant: "destructive",
+      });
+      return;
+    }
     try {
-      const user = await signInEmployee(restaurantName, data.employeeUsername, data.password);
+      const outletId = hasOutletPicker ? selectedOutletId : undefined;
+      if (hasOutletPicker) {
+        try {
+          localStorage.setItem(`employeeLoginOutlet:${restaurantName}`, selectedOutletId);
+        } catch {
+          // Ignore persistence failures; login still proceeds.
+        }
+      }
+      const user = await signInEmployee(restaurantName, data.employeeUsername, data.password, outletId);
       // normalize backend response to AuthUser shape
       const authUser = {
         uid: (user.uid ?? user.employeeId) as string,
@@ -122,6 +178,27 @@ function EmployeeLoginContent() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
+              {outlets.length > 1 && (
+                <div className="space-y-2">
+                  <Label htmlFor="outlet">Outlet</Label>
+                  <Select
+                    value={selectedOutletId}
+                    onValueChange={setSelectedOutletId}
+                    disabled={!isReady || !restaurantName}
+                  >
+                    <SelectTrigger id="outlet">
+                      <SelectValue placeholder="Select your outlet" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {outlets.map((o) => (
+                        <SelectItem key={o.id} value={o.id}>
+                          {o.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
               <div className="space-y-2">
                 <Label htmlFor="employeeUsername">Employee Username</Label>
                 <Input
@@ -146,7 +223,7 @@ function EmployeeLoginContent() {
                 <Input id="password" type="password" {...register("password")} disabled={!isReady || !restaurantName} />
                 {errors.password && <p className="text-sm text-destructive mt-1">{errors.password.message}</p>}
               </div>
-               <Button type="submit" className="w-full" disabled={!isReady || !restaurantName}>
+               <Button type="submit" className="w-full" disabled={!isReady || !restaurantName || (outlets.length > 1 && !selectedOutletId)}>
                 Sign In
               </Button>
                <div className="mt-4 text-center text-sm">

@@ -28,9 +28,12 @@ import {
 import { useToast } from "@/hooks/use-toast"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Textarea } from "@/components/ui/textarea"
+import { Switch } from "@/components/ui/switch"
+import { Label } from "@/components/ui/label"
 import { useAuth } from "@/context/AuthContext"
 import { useCurrency } from "@/hooks/use-currency"
-import { getRestaurantProfile, updateRestaurantProfile, RestaurantProfile } from "@/lib/db"
+import { getRestaurantProfile, updateRestaurantProfile, RestaurantProfile, getRequireTableOtp, setRequireTableOtp } from "@/lib/db"
+import { BrandingCustomizer } from "./branding-customizer"
 
 const settingsFormSchema = z.object({
   name: z
@@ -71,6 +74,8 @@ export function SettingsForm() {
   const [feedbackQrDataUrl, setFeedbackQrDataUrl] = useState<string>("")
   const [feedbackQrError, setFeedbackQrError] = useState<string>("")
   const [currentProfile, setCurrentProfile] = useState<RestaurantProfile | null>(null)
+  const [requireOtp, setRequireOtp] = useState(false)
+  const [otpSaving, setOtpSaving] = useState(false)
 
   const hasRole = (role: "admin" | "employee" | "valet" | "waiter" | "cashier" | "captain" | "manager") => {
     if (!user) return false
@@ -155,6 +160,49 @@ export function SettingsForm() {
     }
     form.setValue("currency", currency);
   }, [user, currency, form])
+
+  useEffect(() => {
+    if (!user?.restaurantUsername) return
+    let active = true
+    getRequireTableOtp(user.restaurantUsername)
+      .then((v) => { if (active) setRequireOtp(v) })
+      .catch(() => {/* leave default off */})
+    return () => { active = false }
+  }, [user?.restaurantUsername])
+
+  const handleRequireOtpChange = async (next: boolean) => {
+    if (!user?.restaurantUsername) return
+    if (!hasRole("admin")) {
+      toast({
+        title: "Access denied",
+        description: "You do not have the required role for this action. Required role: admin.",
+        variant: "destructive",
+      })
+      return
+    }
+    const previous = requireOtp
+    setRequireOtp(next) // optimistic
+    setOtpSaving(true)
+    try {
+      const saved = await setRequireTableOtp(user.restaurantUsername, next)
+      setRequireOtp(saved)
+      toast({
+        title: "Settings saved!",
+        description: saved
+          ? "Guests must now enter the table code before ordering."
+          : "Guests can order without a table code.",
+      })
+    } catch (error: any) {
+      setRequireOtp(previous) // revert on failure
+      toast({
+        title: "Couldn't save setting",
+        description: error?.message ?? "Unable to update the table OTP setting.",
+        variant: "destructive",
+      })
+    } finally {
+      setOtpSaving(false)
+    }
+  }
 
   useEffect(() => {
     let active = true
@@ -336,6 +384,38 @@ export function SettingsForm() {
                     />
             </CardContent>
         </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Ordering</CardTitle>
+            <CardDescription>Controls for how guests place orders from the QR menu.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center justify-between gap-4 rounded-lg border p-4">
+              <div className="space-y-0.5">
+                <Label htmlFor="require-table-otp" className="text-sm font-medium">Require table OTP to order</Label>
+                <p className="text-sm text-muted-foreground">
+                  Guests must enter a 4-digit code shown by staff before they can order.
+                </p>
+              </div>
+              <Switch
+                id="require-table-otp"
+                checked={requireOtp}
+                onCheckedChange={handleRequireOtpChange}
+                disabled={otpSaving || !hasRole("admin")}
+                aria-label="Require table OTP to order"
+              />
+            </div>
+          </CardContent>
+        </Card>
+
+        {hasRole("admin") && user?.restaurantUsername ? (
+          <BrandingCustomizer
+            restaurantId={user.restaurantUsername}
+            isAdmin={hasRole("admin")}
+            restaurantName={currentProfile?.restaurant_name || form.watch("name")}
+          />
+        ) : null}
 
         <Card>
           <CardHeader>
