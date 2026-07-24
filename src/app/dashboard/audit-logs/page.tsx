@@ -6,8 +6,18 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useAuth } from '@/context/AuthContext';
-import { getAuditLogs } from '@/lib/db';
+import { getAuditLogs, undoAuditLog } from '@/lib/db';
 import { useToast } from "@/hooks/use-toast";
 
 export type AuditLog = {
@@ -17,10 +27,20 @@ export type AuditLog = {
   category: string;
   details: string;
   timestamp: string;
+  // Additive undo metadata from GET /audit-logs.
+  undoable?: boolean;
+  undo_block_reason?: string | null;
+  undone?: boolean;
+  undo_log_id?: string | null;
+  undo_of?: string | null;
 };
 
 // Mirrors the backend Audit_log_category enum (+ "All").
 const CATEGORIES = ["All", "General", "Bill", "Orders", "Valet", "Inventory", "Tables", "Roles", "Customer", "Bookings", "Menu"];
+
+// "Undo Audited Action". The server independently re-checks this *and* the
+// original action's own permission — this is only a UI convenience filter.
+const UNDO_PERMISSION_ID = '6f2a4c81-9d35-4b7e-a0c2-5e8b1d3f7a94';
 
 export default function AuditLogsPage() {
   const { user } = useAuth();
@@ -32,9 +52,16 @@ export default function AuditLogsPage() {
   const [to, setTo] = useState("");
   const [limit, setLimit] = useState(100);
   const [loading, setLoading] = useState(false);
+  const [confirmLog, setConfirmLog] = useState<AuditLog | null>(null);
+  const [undoing, setUndoing] = useState(false);
   const hasShownAccessToastRef = useRef(false);
 
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = user?.role === 'admin' || (Array.isArray(user?.role_all) && user.role_all.includes('admin'));
+  // Admins always qualify; otherwise the employee must hold the undo action.
+  const canUndo = Boolean(
+    isAdmin ||
+    (Array.isArray(user?.actions_set) && (user.actions_set.includes('*') || user.actions_set.includes(UNDO_PERMISSION_ID)))
+  );
   const hasFilters = category !== 'All' || Boolean(search) || Boolean(from) || Boolean(to);
 
   const load = useCallback(async () => {
@@ -82,6 +109,26 @@ export default function AuditLogsPage() {
   }
 
   const resetFilters = () => { setCategory('All'); setSearch(''); setFrom(''); setTo(''); setLimit(100); };
+
+  const performUndo = async () => {
+    if (!user || !confirmLog) return;
+    setUndoing(true);
+    try {
+      const result = await undoAuditLog(user.restaurantUsername, confirmLog.id);
+      if (result.ok) {
+        toast({ title: 'Action undone', description: `Reversed: ${confirmLog.action}.` });
+        setConfirmLog(null);
+        await load();
+      } else {
+        // The backend's message is already human-readable — show it verbatim.
+        toast({ title: "Couldn't undo", description: result.error, variant: 'destructive' });
+      }
+    } catch (e: any) {
+      toast({ title: "Couldn't undo", description: String(e?.message ?? e), variant: 'destructive' });
+    } finally {
+      setUndoing(false);
+    }
+  };
 
   return (
     <div className="grid gap-4 md:gap-8">
@@ -137,6 +184,7 @@ export default function AuditLogsPage() {
                   <TableHead>Category</TableHead>
                   <TableHead>Action</TableHead>
                   <TableHead>Details</TableHead>
+                  <TableHead className="text-right">Undo</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -145,13 +193,32 @@ export default function AuditLogsPage() {
                     <TableCell className="whitespace-nowrap">{new Date(log.timestamp).toLocaleString()}</TableCell>
                     <TableCell className="font-medium">{log.employee}</TableCell>
                     <TableCell><Badge variant="outline">{log.category}</Badge></TableCell>
-                    <TableCell><Badge variant="secondary">{log.action}</Badge></TableCell>
+                    <TableCell>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <Badge variant="secondary">{log.action}</Badge>
+                        {log.undone ? <Badge variant="outline" className="text-muted-foreground">Undone</Badge> : null}
+                        {log.undo_of ? <Badge variant="outline" className="text-muted-foreground">Undo</Badge> : null}
+                      </div>
+                    </TableCell>
                     <TableCell>{log.details}</TableCell>
+                    <TableCell className="text-right">
+                      {log.undone || log.undo_of ? (
+                        <span className="text-xs text-muted-foreground">—</span>
+                      ) : log.undoable && canUndo ? (
+                        <Button variant="outline" size="sm" onClick={() => setConfirmLog(log)}>Undo</Button>
+                      ) : !log.undoable && log.undo_block_reason ? (
+                        <span className="text-xs text-muted-foreground" title={log.undo_block_reason}>
+                          {log.undo_block_reason}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
                   </TableRow>
                 ))}
                 {logs.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={5} className="py-8 text-center text-sm text-muted-foreground">
+                    <TableCell colSpan={6} className="py-8 text-center text-sm text-muted-foreground">
                       {loading ? "Loading…" : "No matching activity."}
                     </TableCell>
                   </TableRow>
@@ -169,6 +236,36 @@ export default function AuditLogsPage() {
           ) : null}
         </CardContent>
       </Card>
+
+      <AlertDialog open={confirmLog !== null} onOpenChange={(open) => { if (!open && !undoing) setConfirmLog(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Undo this action?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2">
+                <p>This reverses the action below. The original entry is kept, and a new audit entry recording the undo is added.</p>
+                {confirmLog ? (
+                  <div className="rounded-md border p-3 text-sm">
+                    <div><span className="text-muted-foreground">Action: </span><span className="font-medium">{confirmLog.action}</span></div>
+                    <div><span className="text-muted-foreground">By: </span><span className="font-medium">{confirmLog.employee}</span></div>
+                    <div><span className="text-muted-foreground">When: </span><span className="font-medium">{new Date(confirmLog.timestamp).toLocaleString()}</span></div>
+                    {confirmLog.details ? <div className="mt-1 text-muted-foreground">{confirmLog.details}</div> : null}
+                  </div>
+                ) : null}
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={undoing}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={undoing}
+              onClick={(e) => { e.preventDefault(); void performUndo(); }}
+            >
+              {undoing ? 'Undoing…' : 'Undo action'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -834,12 +834,14 @@ function ModifierSheet(props: {
 
   return (
     <div className="fixed inset-0 z-30 flex items-end justify-center bg-black/40" onClick={onClose}>
-      <div className="mx-auto w-full max-w-md rounded-t-3xl bg-white p-5" onClick={(e) => e.stopPropagation()}>
-        <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-neutral-300" />
-        <h2 className="text-lg font-bold">{item.name}</h2>
-        <p className="mb-4 text-sm text-neutral-500">{currency}{item.price.toFixed(2)} {t("base")}</p>
+      <div className="mx-auto flex max-h-[92dvh] w-full max-w-md flex-col rounded-t-3xl bg-white p-5" onClick={(e) => e.stopPropagation()}>
+        <div className="shrink-0">
+          <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-neutral-300" />
+          <h2 className="text-lg font-bold">{item.name}</h2>
+          <p className="mb-4 text-sm text-neutral-500">{currency}{item.price.toFixed(2)} {t("base")}</p>
+        </div>
 
-        <div className="max-h-[50vh] space-y-4 overflow-y-auto">
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch]">
           {groups.map((g, gi) => (
             <div key={gi}>
               <p className="mb-2 text-sm font-semibold text-neutral-700">
@@ -914,17 +916,23 @@ function CartSheet(props: {
   const contactOk = guestName.trim().length > 0 && guestPhone.replace(/\D/g, "").length >= 10;
   return (
     <div className="fixed inset-0 z-30 flex items-end justify-center bg-black/40" onClick={onClose}>
-      <div className="mx-auto w-full max-w-md rounded-t-3xl bg-white p-5" onClick={(e) => e.stopPropagation()}>
-        <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-neutral-300" />
-        <h2 className="mb-1 text-lg font-bold" style={{ color: 'black' }}>
-          {t("yourOrder")}
-        </h2>
-        <p className="mb-4 text-sm text-neutral-500">{t("reviewSubtitle")}</p>
+      <div className="mx-auto flex max-h-[92dvh] w-full max-w-md flex-col rounded-t-3xl bg-white" onClick={(e) => e.stopPropagation()}>
+        <div className="shrink-0 px-5 pt-5">
+          <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-neutral-300" />
+          <h2 className="mb-1 text-lg font-bold" style={{ color: 'black' }}>
+            {t("yourOrder")}
+          </h2>
+          <p className="mb-4 text-sm text-neutral-500">{t("reviewSubtitle")}</p>
+        </div>
 
+        {/* The sheet is capped to the viewport and everything above the pinned
+            footer scrolls, so a long cart stays fully reachable on a phone
+            instead of overflowing off the top of the screen. */}
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 [-webkit-overflow-scrolling:touch]">
         {lines.length === 0 ? (
           <p className="py-8 text-center text-neutral-400">{t("emptyCart")}</p>
         ) : (
-          <div className="max-h-[45vh] space-y-2 overflow-y-auto">
+          <div className="space-y-2">
             {lines.map((l) => (
               <div key={l.key} className="flex items-center gap-3 rounded-xl bg-neutral-50 p-3">
                 <div className="min-w-0 flex-1">
@@ -974,27 +982,32 @@ function CartSheet(props: {
             />
           </>
         )}
-
-        <div className="mt-4 flex items-center justify-between border-t pt-3">
-          <span className="text-sm text-neutral-500">{t("total")}</span>
-          <span className="text-xl font-bold" style={{ color: 'black' }}>
-            {currency}{total.toFixed(2)}
-          </span>
         </div>
 
-        {error && (
-          <div className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-sm font-medium text-red-700">{error}</div>
-        )}
+        {/* Pinned footer: the total and the send button stay visible no matter
+            how many items are in the cart. */}
+        <div className="shrink-0 border-t bg-white px-5 pb-5 pt-3">
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-neutral-500">{t("total")}</span>
+            <span className="text-xl font-bold" style={{ color: 'black' }}>
+              {currency}{total.toFixed(2)}
+            </span>
+          </div>
 
-        <button
-          onClick={onConfirm}
-          disabled={placing || lines.length === 0 || !contactOk}
-          className="mt-4 w-full rounded-2xl py-4 font-semibold text-white shadow transition active:scale-[0.99] disabled:opacity-50"
-          style={{ background: `linear-gradient(135deg, ${accent}, ${shade(accent, -18)})` }}
-        >
-          {placing ? t("sending") : t("sendOrder")}
-        </button>
-        <button onClick={onClose} className="mt-2 w-full py-2 text-sm text-neutral-500">{t("addMore")}</button>
+          {error && (
+            <div className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-sm font-medium text-red-700">{error}</div>
+          )}
+
+          <button
+            onClick={onConfirm}
+            disabled={placing || lines.length === 0 || !contactOk}
+            className="mt-4 w-full rounded-2xl py-4 font-semibold text-white shadow transition active:scale-[0.99] disabled:opacity-50"
+            style={{ background: `linear-gradient(135deg, ${accent}, ${shade(accent, -18)})` }}
+          >
+            {placing ? t("sending") : t("sendOrder")}
+          </button>
+          <button onClick={onClose} className="mt-2 w-full py-2 text-sm text-neutral-500">{t("addMore")}</button>
+        </div>
       </div>
     </div>
   );
@@ -1048,16 +1061,18 @@ function BillSheet(props: {
   };
   return (
     <div className="fixed inset-0 z-30 flex items-end justify-center bg-black/40" onClick={onClose}>
-      <div className="mx-auto w-full max-w-md rounded-t-3xl bg-white p-5" onClick={(e) => e.stopPropagation()}>
-        <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-neutral-300" />
-        <h2 className="mb-1 text-lg font-bold" style={{ color: 'black' }}>{t("yourBill")}</h2>
-        <p className="mb-4 text-sm text-neutral-500">{t("billSubtitle")}</p>
+      <div className="mx-auto flex max-h-[92dvh] w-full max-w-md flex-col overflow-y-auto overscroll-contain rounded-t-3xl bg-white p-5" onClick={(e) => e.stopPropagation()}>
+        <div className="shrink-0">
+          <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-neutral-300" />
+          <h2 className="mb-1 text-lg font-bold" style={{ color: 'black' }}>{t("yourBill")}</h2>
+          <p className="mb-4 text-sm text-neutral-500">{t("billSubtitle")}</p>
+        </div>
 
         {!hasItems ? (
           <p className="py-8 text-center text-neutral-400">{t("emptyBill")}</p>
         ) : (
           <>
-            <div className="max-h-[40vh] space-y-2 overflow-y-auto">
+            <div className="space-y-2">
               {items.map((it, i) => (
                 <div key={`${it.name}-${i}`} className="flex items-center gap-3 rounded-xl bg-neutral-50 p-3">
                   <span className="flex h-7 min-w-7 items-center justify-center rounded-full px-1.5 text-xs font-bold text-white" style={{ backgroundColor: accent }}>{it.quantity}</span>

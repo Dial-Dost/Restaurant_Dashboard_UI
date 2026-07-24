@@ -12,7 +12,7 @@ import { useEffect, useState, type ReactNode } from "react"
 import Link from "next/link"
 import { useAuth } from "@/context/AuthContext"
 import { useCurrency } from "@/hooks/use-currency"
-import { getMenuInsights, type MenuInsights, type PriceSuggestion, applyMenuItemPrice, getOperationsAnalytics, type OperationsAnalytics, getApcTrends, type ApcTrendPoint, getAdvancedAnalytics, type AdvancedAnalytics, getOutletsComparison, type OutletComparison, createCampaign, deleteCampaign } from "@/lib/db"
+import { getMenuInsights, type MenuInsights, type PriceSuggestion, type SuppressedSuggestion, applyMenuItemPrice, getOperationsAnalytics, type OperationsAnalytics, getApcTrends, type ApcTrendPoint, getAdvancedAnalytics, type AdvancedAnalytics, getOutletsComparison, type OutletComparison, createCampaign, deleteCampaign } from "@/lib/db"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { useToast } from "@/hooks/use-toast"
@@ -247,6 +247,21 @@ function SectionHeaderRow({ children, control }: { children: ReactNode; control:
   )
 }
 
+// One muted sentence naming the items the backend is currently holding back,
+// with the cooldown release date when it sent one. Names are capped so the
+// line stays a single readable row.
+const PAUSED_NAMES_SHOWN = 3;
+function pausedSummary(items: SuppressedSuggestion[], count: number): string {
+  const shown = items.slice(0, PAUSED_NAMES_SHOWN).map((s) => {
+    const when = s.reason === "cooldown" && s.retry_after ? new Date(s.retry_after) : null;
+    return when && !Number.isNaN(when.getTime())
+      ? `${s.name} (until ${when.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })})`
+      : s.name;
+  });
+  const more = Math.max(0, count - shown.length);
+  return `Paused: ${shown.join(", ")}${more > 0 ? ` and ${more} more` : ""}.`;
+}
+
 function ActionableInsights({ view }: { view: ViewId }) {
   const { user } = useAuth();
   const { currency } = useCurrency();
@@ -307,7 +322,11 @@ function ActionableInsights({ view }: { view: ViewId }) {
   if (loading) return <Card><CardContent className="py-10 text-center text-muted-foreground">Loading insights…</CardContent></Card>;
   if (!data) return null;
 
-  const hasAny = data.top_dishes.length > 0 || data.price_suggestions.length > 0 || data.top_waiters.length > 0;
+  // Items the backend withheld (recently repriced, drift-capped or floored).
+  // Optional on the wire — older backends simply send nothing.
+  const suppressed = data.suppressed_suggestions ?? { count: 0, items: [] };
+  const hasSuppressed = suppressed.count > 0 && suppressed.items.length > 0;
+  const hasAny = data.top_dishes.length > 0 || data.price_suggestions.length > 0 || data.top_waiters.length > 0 || hasSuppressed;
 
   // Sortable-field definitions per list.
   const dishFields: SortField<MenuInsights["top_dishes"][number]>[] = [
@@ -397,6 +416,13 @@ function ActionableInsights({ view }: { view: ViewId }) {
               <SectionHeaderRow control={<SortControl fields={priceFields} state={priceSort} onChange={setPriceSort} />}>
                 <CardTitle className="flex items-center gap-2"><Lightbulb className="h-5 w-5 text-yellow-500" /> Price suggestions</CardTitle>
                 <CardDescription>Data-driven ideas to grow revenue. Review before applying.</CardDescription>
+                <CardDescription className="mt-1 text-xs">
+                  Once you apply a price, that item is paused until a full period of sales at the new price
+                  exists — so a suggestion is never stacked on top of itself.
+                </CardDescription>
+                {hasSuppressed && (
+                  <p className="mt-1 text-xs text-muted-foreground">{pausedSummary(suppressed.items, suppressed.count)}</p>
+                )}
               </SectionHeaderRow>
             </CardHeader>
             <CardContent className="grid gap-2 md:grid-cols-2">
@@ -429,6 +455,19 @@ function ActionableInsights({ view }: { view: ViewId }) {
                 );
               })}
             </CardContent>
+          </Card>
+        )}
+
+        {showPrices && data.price_suggestions.length === 0 && hasSuppressed && (
+          <Card className="md:col-span-2">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2"><Lightbulb className="h-5 w-5 text-yellow-500" /> Price suggestions</CardTitle>
+              <CardDescription>All price suggestions are in their quiet period.</CardDescription>
+              <CardDescription className="mt-1 text-xs">
+                Recently-adjusted items are paused until a full period of sales at the new price exists.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="text-xs text-muted-foreground">{pausedSummary(suppressed.items, suppressed.count)}</CardContent>
           </Card>
         )}
 

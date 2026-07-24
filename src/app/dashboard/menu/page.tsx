@@ -43,7 +43,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { PlusCircle, MoreVertical, Trash2, Utensils, GripVertical, Upload, ChefHat, X, Pencil, Flame } from "lucide-react";
+import { PlusCircle, MoreVertical, Trash2, Utensils, GripVertical, Upload, ChefHat, X, Pencil, Flame, Search } from "lucide-react";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -90,7 +90,7 @@ type CategoryFormData = z.infer<typeof categorySchema>;
 const isManagedStation = (station: string | null | undefined, sections: string[]) =>
     !!station && sections.some((s) => s.toLowerCase() === station.toLowerCase());
 
-function SortableMenuItem({ item, onRemoveItem, onEditRecipe, costing, currencySymbol, isDragging, sections = [] }: { item: MenuItem, onRemoveItem: (id: string) => void, onEditRecipe?: (item: MenuItem) => void, costing?: MenuCostingItem, currencySymbol: string, isDragging?: boolean, sections?: string[] }) {
+function SortableMenuItem({ item, onRemoveItem, onEditRecipe, costing, currencySymbol, isDragging, sections = [], showCategory = false }: { item: MenuItem, onRemoveItem: (id: string) => void, onEditRecipe?: (item: MenuItem) => void, costing?: MenuCostingItem, currencySymbol: string, isDragging?: boolean, sections?: string[], showCategory?: boolean }) {
     const { attributes, listeners, setNodeRef } = useSortable({
         id: item.id,
         data: { category: item.category },
@@ -117,6 +117,11 @@ function SortableMenuItem({ item, onRemoveItem, onEditRecipe, costing, currencyS
                                 )}
                             >
                                 {item.station}
+                            </Badge>
+                        ) : null}
+                        {showCategory ? (
+                            <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+                                {item.category}
                             </Badge>
                         ) : null}
                     </p>
@@ -235,6 +240,10 @@ export default function MenuPage() {
     const [newSection, setNewSection] = useState("");
     const [sectionBusy, setSectionBusy] = useState(false);
     const [isOrganiseOpen, setIsOrganiseOpen] = useState(false);
+    // Menu search — while a query is active the list goes FLAT across every
+    // category (same idiom as the order-entry search); empty query keeps the
+    // grouped/draggable accordion exactly as before.
+    const [menuSearch, setMenuSearch] = useState("");
 
     const refreshCosting = async (restaurantUsername: string) => {
         try {
@@ -639,6 +648,16 @@ export default function MenuPage() {
   
   const activeItem = activeId ? menuItems.find(item => item.id === activeId) : null;
 
+  const menuQuery = menuSearch.trim().toLowerCase();
+  const isSearching = menuQuery.length > 0;
+  const searchResults = isSearching
+    ? menuItems.filter((item) =>
+        [item.name, item.category, item.station ?? ""].some((field) =>
+            field.toLowerCase().includes(menuQuery),
+        ),
+      )
+    : [];
+
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
         <div className="grid gap-4 md:gap-8">
@@ -764,9 +783,60 @@ export default function MenuPage() {
             <CardDescription>
                 A list of all items on your menu, grouped by category. Drag items to re-categorize or re-order.
             </CardDescription>
+            <div className="relative max-w-sm pt-2">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                    value={menuSearch}
+                    onChange={(e) => setMenuSearch(e.target.value)}
+                    placeholder="Search menu…"
+                    aria-label="Search menu items"
+                    className="pl-9 pr-9"
+                />
+                {isSearching && (
+                    <button
+                        type="button"
+                        aria-label="Clear menu search"
+                        title="Clear search"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground hover:text-foreground"
+                        onClick={() => setMenuSearch("")}
+                    >
+                        <X className="h-4 w-4" />
+                    </button>
+                )}
+            </div>
+            {isSearching && (
+                <p className="text-sm text-muted-foreground">
+                    {searchResults.length} item{searchResults.length === 1 ? "" : "s"} match “{menuSearch.trim()}” across all categories
+                </p>
+            )}
             </CardHeader>
             <CardContent>
-                {categories.length > 0 ? (
+                {isSearching ? (
+                    searchResults.length > 0 ? (
+                        <SortableContext items={searchResults.map(i => i.id)}>
+                            <ul className="space-y-2">
+                                {searchResults.map(item => (
+                                    <SortableMenuItem
+                                        key={item.id}
+                                        item={item}
+                                        onRemoveItem={handleRemoveItem}
+                                        onEditRecipe={setRecipeItem}
+                                        costing={costingById.get(item.id)}
+                                        currencySymbol={currencySymbol}
+                                        isDragging={activeId === item.id}
+                                        sections={sections}
+                                        showCategory
+                                    />
+                                ))}
+                            </ul>
+                        </SortableContext>
+                    ) : (
+                        <div className="text-center text-muted-foreground py-12">
+                            <p className="mb-2">No items match your search.</p>
+                            <Button variant="outline" size="sm" onClick={() => setMenuSearch("")}>Clear search</Button>
+                        </div>
+                    )
+                ) : categories.length > 0 ? (
                     <Accordion type="multiple" defaultValue={categories} className="w-full">
                         {categories.map((category) => (
                             <DroppableCategory

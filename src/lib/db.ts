@@ -678,6 +678,12 @@ const mapAuditLog = (item: any): AuditLog => ({
     category: item.category ?? 'General',
     details: item.details ?? '',
     timestamp: item.timestamp ? new Date(item.timestamp).toISOString() : new Date().toISOString(),
+    // Additive undo metadata from the backend; older payloads simply omit these.
+    undoable: item.undoable === true,
+    undo_block_reason: typeof item.undo_block_reason === 'string' ? item.undo_block_reason : null,
+    undone: item.undone === true,
+    undo_log_id: typeof item.undo_log_id === 'string' ? item.undo_log_id : null,
+    undo_of: typeof item.undo_of === 'string' ? item.undo_of : null,
 });
 
 const mapInventoryItem = (item: any): InventoryItem => ({
@@ -1252,6 +1258,39 @@ export const getAuditLogs = async (
     }
 
     return filtered ? [] : readLocalField<AuditLog[]>(restaurantId, 'auditLogs');
+};
+
+export type UndoAuditLogResult =
+    | { ok: true; data: { success: true; undo_log_id: string; restored?: unknown } }
+    | { ok: false; error: string; reason?: string };
+
+// Reverses a single audited action. The backend is the security boundary and
+// always returns a human-readable `error` string on failure — surface it verbatim.
+export const undoAuditLog = async (restaurantId: string, logId: string): Promise<UndoAuditLogResult> => {
+    const response = await backendCall(
+        `/audit-logs/${encodeURIComponent(logId)}/undo?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' } },
+    );
+
+    if (!response) return { ok: false, error: 'Could not reach the server. Please try again.' };
+
+    let parsed: any = null;
+    try {
+        parsed = await response.json();
+    } catch {
+        parsed = null;
+    }
+
+    if (response.ok && parsed?.success) {
+        return { ok: true, data: parsed };
+    }
+
+    return {
+        ok: false,
+        error: typeof parsed?.error === 'string' && parsed.error ? parsed.error : `Undo failed (${response.status}).`,
+        reason: typeof parsed?.reason === 'string' ? parsed.reason : undefined,
+    };
 };
 
 export const getRestaurantProfile = async (restaurantId: string, employeeId: string): Promise<RestaurantProfile> => {
@@ -2526,6 +2565,10 @@ export type DishStat = { name: string; category: string; quantity: number; reven
 // dish name no longer matches a live menu item (nothing to apply then).
 export type PriceSuggestion = { id: string | null; name: string; category: string; current_price: number; suggested_price: number; direction: 'increase' | 'decrease'; reason: string };
 export type WaiterStat = { employee_id: string; employee_name: string; orders: number; revenue: number };
+// Items the backend deliberately withheld a suggestion for, so the UI can say
+// WHY nothing is being suggested instead of looking like there is no signal.
+// `retry_after` is an ISO date and is only set for the cooldown reason.
+export type SuppressedSuggestion = { id: string | null; name: string; reason: 'cooldown' | 'drift_cap' | 'margin_floor'; retry_after?: string };
 export type MenuInsights = {
     period_days: number;
     total_revenue: number;
@@ -2533,6 +2576,8 @@ export type MenuInsights = {
     top_dishes: DishStat[];
     slow_movers: DishStat[];
     price_suggestions: PriceSuggestion[];
+    // Additive field — older backends omit it, so treat it as optional.
+    suppressed_suggestions?: { count: number; items: SuppressedSuggestion[] };
     top_waiters: WaiterStat[];
 };
 
