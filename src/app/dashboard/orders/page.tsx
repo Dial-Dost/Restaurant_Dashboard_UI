@@ -167,6 +167,12 @@ export interface Order {
 // Un-barked orders sit greyed with idle timers until the expo barks them.
 const isOrderBarked = (o: Order): boolean => (o.barked_at === undefined ? true : o.barked_at !== null);
 
+// Cancelled is a TERMINAL state: no control on any surface may modify the order
+// (status, bark, fire, serve, hold, delete). The one sanctioned reversal is an
+// undo from the Audit Log — the server refuses everything else anyway.
+const isOrderCancelled = (o: Order): boolean => o.status === "Cancelled";
+const CANCELLED_LOCK_REASON = "Cancelled orders are final — reverse from the Audit Log";
+
 const PAYMENT_METHOD_OPTIONS: PaymentMethod[] = [
   "Swiggy",
   "Dine Out",
@@ -762,7 +768,8 @@ function OrdersDashboard() {
       toast({ title: "Order deleted", description: "The order has been successfully deleted." });
     } catch (error) {
       console.error("Failed to delete order", error);
-      toast({ title: "Error", description: "Failed to delete order", variant: "destructive" });
+      // Surface the server's refusal verbatim (e.g. the cancelled-order guard).
+      toast({ title: "Unable to delete order", description: String((error as Error)?.message ?? error), variant: "destructive" });
     }
   }
 
@@ -780,6 +787,8 @@ function OrdersDashboard() {
         return "outline";
       case "Closed":
         return "outline";
+      case "Cancelled":
+        return "destructive";
       default:
         return "outline";
     }
@@ -809,6 +818,8 @@ function OrdersDashboard() {
       setOrders(Array.isArray(refreshed) ? refreshed : []);
     } catch (err) {
       console.error('failed to persist order status', err);
+      // Surface the server's refusal verbatim (e.g. "A cancelled order cannot be modified").
+      toast({ title: "Unable to update status", description: String((err as Error)?.message ?? err), variant: "destructive" });
       // on error, revert optimistic update by reloading
       try {
         const refreshed = await getOrders(user.restaurantUsername);
@@ -867,7 +878,8 @@ function OrdersDashboard() {
       setOrders(Array.isArray(updatedOrders) ? dedupeOrdersById(updatedOrders) : []);
     } catch (err) {
       console.error('failed to set bill verification', err);
-      alert('Unable to create bill. Please try again.');
+      // Surface the server's refusal verbatim (e.g. the cancelled-order guard).
+      toast({ title: "Unable to create bill", description: String((err as Error)?.message ?? err), variant: "destructive" });
     }
   };
 
@@ -1419,7 +1431,7 @@ function OrdersDashboard() {
                   <TableCell>
                     {isWaiterOnly ? null : (
                     <div className="flex items-center justify-end gap-1" onClick={(e) => { e.stopPropagation(); }}>
-                    {order.status === "Preparing" && !isOrderBarked(order) ? (
+                    {order.status === "Preparing" && !isOrderBarked(order) && !isOrderCancelled(order) ? (
                       <Button
                         size="sm"
                         className="h-7 px-2 text-xs"
@@ -1464,6 +1476,9 @@ function OrdersDashboard() {
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" onClick={(e) => { e.stopPropagation(); }}>
                         <DropdownMenuLabel>Actions</DropdownMenuLabel>
+                        {isOrderCancelled(order) ? (
+                          <div className="px-2 pb-1.5 text-xs text-muted-foreground max-w-[15rem]">{CANCELLED_LOCK_REASON}</div>
+                        ) : null}
                         <DropdownMenuItem
                           disabled={
                             order.status === 'Bill Verification'
@@ -1600,7 +1615,7 @@ function OrdersDashboard() {
                         {isAdmin && (
                           <DropdownMenuItem
                             onClick={() => { void handleReopenBill(order); }}
-                            disabled={!order.bill_closed_at || !order.bill_id}
+                            disabled={!order.bill_closed_at || !order.bill_id || order.status === 'Cancelled'}
                           >
                             Re-open Bill (Admin)
                           </DropdownMenuItem>
@@ -1619,6 +1634,7 @@ function OrdersDashboard() {
                             order.status === 'Payment Pending Approval'
                             || order.status === 'Paid'
                             || order.status === 'Closed'
+                            || order.status === 'Cancelled'
                           }
                           className="text-red-600"
                         >
@@ -1872,9 +1888,10 @@ function KitchenDisplay({ orders, restaurantId, onRefresh, managedSections = [],
   const [now, setNow] = useState(() => Date.now());
   const [busyItem, setBusyItem] = useState<string | null>(null);
 
-  // Kitchen tickets = orders still in service; settled/verification orders left out.
+  // Kitchen tickets = orders still in service; settled/verification orders left
+  // out, and cancelled ones can never appear (terminal — no fire/serve/bark).
   const activeOrders = useMemo(
-    () => orders.filter((o) => o.status === "Preparing" || o.status === "Served"),
+    () => orders.filter((o) => !isOrderCancelled(o) && (o.status === "Preparing" || o.status === "Served")),
     [orders],
   );
 
@@ -2199,8 +2216,9 @@ function KitchenKioskDisplay({ station }: { station: string }) {
     return () => { clearInterval(t); };
   }, []);
 
+  // Cancelled tickets are terminal and never reach a station display.
   const activeOrders = useMemo(
-    () => orders.filter((o) => o.status === "Preparing" || o.status === "Served"),
+    () => orders.filter((o) => !isOrderCancelled(o) && (o.status === "Preparing" || o.status === "Served")),
     [orders],
   );
 
@@ -2829,7 +2847,12 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
 
   if (!order) {return null;}
 
+  // Defence in depth: the "Update Order" entry is already disabled for a
+  // cancelled order, but if this dialog is ever reached the editors stay locked.
+  const cancelledLock = isOrderCancelled(order);
+
   const handleAddItem = () => {
+    if (cancelledLock) {return;}
     const itemName = newItemName.trim();
     const selectedMenuItem = menuItems.find(item => item.name.toLowerCase() === itemName.toLowerCase());
     if (!selectedMenuItem) {
@@ -2861,6 +2884,7 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
   };
 
   const handleRemove = (itemId: string) => {
+    if (cancelledLock) {return;}
     setLocalItems(prev => prev.filter(i => i.id !== itemId));
   };
 
@@ -2873,6 +2897,7 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
   const menuOptions = menuItems.map(item => ({ value: item.name.toLowerCase(), label: item.name }));
 
   const handleSave = async () => {
+    if (cancelledLock) {return;}
     const updatedOrder: Order = {
       ...order,
       items: localItems,
@@ -2898,9 +2923,12 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
               {order.status === "Preparing" && !isOrderBarked(order) ? (
                 <Badge variant="outline" className="border-dashed text-muted-foreground text-xs">Not barked</Badge>
               ) : (
-                <Badge variant={order.status === "Preparing" ? "secondary" : order.status === "Served" ? "default" : "outline"} className="text-xs">{order.status}</Badge>
+                <Badge variant={cancelledLock ? "destructive" : order.status === "Preparing" ? "secondary" : order.status === "Served" ? "default" : "outline"} className="text-xs">{order.status}</Badge>
               )}
             </span>
+            {cancelledLock ? (
+              <span className="mt-1 block text-xs text-muted-foreground">{CANCELLED_LOCK_REASON}</span>
+            ) : null}
             {!canEditPrice ? " Price changes are disabled for your role." : ""}
           </DialogDescription>
         </DialogHeader>
@@ -2938,7 +2966,7 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
                     </TableCell>
                     <TableCell className="text-right">{currencySymbol}{(item.price * item.quantity).toFixed(2)}</TableCell>
                     <TableCell className="text-right">
-                      <Button variant="ghost" size="icon" onClick={() => { handleRemove(item.id); }}>
+                      <Button variant="ghost" size="icon" disabled={cancelledLock} onClick={() => { handleRemove(item.id); }}>
                         <Trash2 className="h-4 w-4 text-destructive" />
                       </Button>
                     </TableCell>
@@ -2967,10 +2995,10 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
               className="col-span-4"
             />
             <div className="col-span-2 flex items-center justify-center gap-1" title="Hold this course — fire it from the KDS later">
-              <Switch id="details-item-hold" checked={newItemHold} onCheckedChange={setNewItemHold} />
+              <Switch id="details-item-hold" checked={newItemHold} disabled={cancelledLock} onCheckedChange={setNewItemHold} />
               <Label htmlFor="details-item-hold" className="text-xs font-normal text-muted-foreground">Hold</Label>
             </div>
-            <Button onClick={handleAddItem} className="col-span-1">Add</Button>
+            <Button onClick={handleAddItem} disabled={cancelledLock} className="col-span-1">Add</Button>
           </div>
           <div className="space-y-2 text-sm">
             <div className="flex justify-between border-t pt-2">
@@ -2996,8 +3024,11 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
           </div>
         </div>
         <DialogFooter>
+          {cancelledLock ? (
+            <span className="mr-auto self-center text-xs text-muted-foreground">{CANCELLED_LOCK_REASON}</span>
+          ) : null}
           <Button variant="outline" onClick={handleCancel}>Cancel</Button>
-          <Button onClick={handleSave}>Save Changes</Button>
+          <Button onClick={handleSave} disabled={cancelledLock}>Save Changes</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -3092,7 +3123,7 @@ const OrderViewDialog = React.memo(({ order, open, onOpenChange, onRefreshOrders
               {item.note ? <div className="text-xs text-muted-foreground">Note: {item.note}</div> : null}
             </div>
             <div>
-              {side === 'preparing' ? (
+              {!dndEnabled ? null : side === 'preparing' ? (
                 <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); moveToOther(); }} title="Move to Served">
                   <ChevronUp className="h-4 w-4" />
                 </Button>
@@ -3126,8 +3157,11 @@ const OrderViewDialog = React.memo(({ order, open, onOpenChange, onRefreshOrders
           <DialogDescription>
             <span className="flex items-center gap-2">
               <span>Status:</span>
-              <Badge variant={order.status === 'Preparing' ? 'secondary' : order.status === 'Served' ? 'default' : 'outline'} className="text-xs">{order.status}</Badge>
+              <Badge variant={isOrderCancelled(order) ? 'destructive' : order.status === 'Preparing' ? 'secondary' : order.status === 'Served' ? 'default' : 'outline'} className="text-xs">{order.status}</Badge>
             </span>
+            {isOrderCancelled(order) ? (
+              <span className="mt-1 block text-xs text-muted-foreground">{CANCELLED_LOCK_REASON}</span>
+            ) : null}
           </DialogDescription>
         </DialogHeader>
         <div className="p-4">

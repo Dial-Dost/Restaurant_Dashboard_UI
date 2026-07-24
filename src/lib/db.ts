@@ -2630,6 +2630,60 @@ export const getOperationsAnalytics = async (
     return data ?? null;
 };
 
+// --- Kitchen analytics ------------------------------------------------------
+// Per-dish prep time, per-kitchen-section (station) averages, and an order-level
+// prep summary — all derived server-side from Orders.timing (pause-excluded).
+export interface KitchenOrderSummary {
+    orders_timed: number;
+    avg_prep_ms: number;
+    median_prep_ms: number;
+    p90_prep_ms: number;
+    avg_bark_to_served_ms: number;
+    max_prep_ms: number;
+}
+export interface KitchenDishStat {
+    id: string | null;
+    name: string;
+    station: string;
+    count: number;
+    avg_prep_ms: number;
+    max_prep_ms: number;
+}
+export interface KitchenSectionStat {
+    section: string;
+    dishes: number;
+    items_timed: number;
+    avg_prep_ms: number;
+    max_prep_ms: number;
+}
+export interface KitchenAnalytics {
+    order_summary: KitchenOrderSummary;
+    by_dish: KitchenDishStat[];
+    by_section: KitchenSectionStat[];
+    period_days: number;
+    generated_at: string;
+}
+
+const emptyKitchenAnalytics = (days: number): KitchenAnalytics => ({
+    order_summary: { orders_timed: 0, avg_prep_ms: 0, median_prep_ms: 0, p90_prep_ms: 0, avg_bark_to_served_ms: 0, max_prep_ms: 0 },
+    by_dish: [],
+    by_section: [],
+    period_days: days,
+    generated_at: new Date().toISOString(),
+});
+
+export const getKitchenAnalytics = async (
+    restaurantId: string,
+    days = 30,
+): Promise<KitchenAnalytics> => {
+    const data = await backendJson<KitchenAnalytics>(
+        `/analytics/kitchen?days=${days}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+    return data ?? emptyKitchenAnalytics(days);
+};
+
 // --- Accounting & reporting -------------------------------------------------
 export interface SalesReport {
     from: string; to: string;

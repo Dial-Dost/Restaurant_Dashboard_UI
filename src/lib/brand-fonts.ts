@@ -59,6 +59,28 @@ export function loadBrandFont(family: string | undefined): void {
   document.head.appendChild(link);
 }
 
+// Design-system fonts for the premium dark guest order page: Instrument Serif
+// (display / sheet titles), Roboto (body + the signature thin large numerals) and
+// Material Symbols Outlined (icons). Injected client-side once each, as
+// CSP-friendly stylesheet <link>s (same mechanism as loadBrandFont). Safe to call
+// on every render — it de-dupes by id and no-ops on the server.
+export function loadDesignFonts(): void {
+  if (typeof document === "undefined") {return;}
+  const links: Array<[string, string]> = [
+    ["design-font-instrument-serif", "https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&display=swap"],
+    ["design-font-roboto", "https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;600;700&display=swap"],
+    ["design-font-material-symbols", "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-25..0&display=swap"],
+  ];
+  for (const [id, href] of links) {
+    if (document.getElementById(id)) {continue;}
+    const link = document.createElement("link");
+    link.id = id;
+    link.rel = "stylesheet";
+    link.href = href;
+    document.head.appendChild(link);
+  }
+}
+
 // Pick a readable text colour (near-white or near-black) for text sitting on a
 // solid brand colour — WCAG relative-luminance threshold. Used so a light
 // color_primary doesn't get unreadable white text on it.
@@ -86,3 +108,4 @@ export function shapeRadius(shape: string | undefined): string {
       return "9999px";
   }
 }
+

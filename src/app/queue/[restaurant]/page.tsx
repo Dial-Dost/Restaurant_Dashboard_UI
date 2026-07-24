@@ -68,6 +68,13 @@ function QueueInner() {
   const [menu, setMenu] = useState<MenuItem[]>([]);
   const [token, setToken] = useState<string | null>(null);
   const [entry, setEntry] = useState<Entry | null>(null);
+  // True only when THIS visit actively engaged with the current entry — i.e. the
+  // person joined the queue in this session, or arrived via a party share link
+  // (?token=). It stays FALSE for a token silently resumed from localStorage.
+  // A seated entry only redirects to its table (with the OTP gate) when this is
+  // true, so a fresh walk-in who scans the entrance QR on a device that still
+  // holds a previous party's token is never hijacked to that party's table.
+  const [activeThisSession, setActiveThisSession] = useState(false);
   const [cart, setCart] = useState<Record<string, number>>({});
   const [cartSeeded, setCartSeeded] = useState(false);
   const [activeCat, setActiveCat] = useState<string | null>(null);
@@ -128,6 +135,8 @@ function QueueInner() {
         }
         localStorage.setItem(storeKey, urlToken);
         setToken(urlToken);
+        // Arrived via a share link → a genuine participant in this entry.
+        setActiveThisSession(true);
       } else {
         const t = localStorage.getItem(storeKey);
         if (t) {
@@ -157,6 +166,16 @@ function QueueInner() {
             setToken(null); setEntry(null);
             return;
           }
+          // A seated entry this device did NOT actively engage with this session is
+          // a STALE token — a previous party's token left in this browser, or the
+          // entrance QR scanned on a shared device. Don't adopt it (which would
+          // hijack a fresh walk-in to that party's table + OTP): drop it and show
+          // the join form. (Active waits — waiting/called — still resume normally.)
+          if (d?.status === "seated" && !activeThisSession) {
+            try { localStorage.removeItem(storeKey); } catch {}
+            setToken(null); setEntry(null);
+            return;
+          }
           setEntry(d);
         }
       } catch { /* keep last */ }
@@ -164,7 +183,7 @@ function QueueInner() {
     void tick();
     const id = setInterval(tick, 6000);
     return () => { active = false; clearInterval(id); };
-  }, [token, restaurant, storeKey]);
+  }, [token, restaurant, storeKey, activeThisSession]);
 
   // Seed the cart from a saved pre-order the first time the entry loads.
   useEffect(() => {
@@ -194,12 +213,16 @@ function QueueInner() {
   // Once seated, send the party straight to THEIR table's menu (signed token from
   // the backend) — the queue link becomes the ordering link.
   useEffect(() => {
-    if (entry?.status === "seated" && entry.qr_token && typeof window !== "undefined") {
+    // Only redirect a party that genuinely engaged with this entry this session
+    // (joined here, or arrived via a share link). A seated token merely resumed
+    // from localStorage is stale and must never bounce a fresh visitor to a
+    // table's order+OTP page — the poll effect above clears it instead.
+    if (entry?.status === "seated" && entry.qr_token && activeThisSession && typeof window !== "undefined") {
       const url = `/order/${encodeURIComponent(restaurant)}?t=${encodeURIComponent(entry.qr_token)}`
         + (outlet ? `&outlet=${encodeURIComponent(outlet)}` : "");
       window.location.replace(url);
     }
-  }, [entry?.status, entry?.qr_token, restaurant, outlet]);
+  }, [entry?.status, entry?.qr_token, restaurant, outlet, activeThisSession]);
 
   // A shareable QR of THIS party's queue link so others in the group can scan,
   // watch the same spot in line, and add to the pre-order together.
@@ -224,6 +247,9 @@ function QueueInner() {
       try { localStorage.setItem(storeKey, d.token); localStorage.setItem(ownerKey, d.token); } catch {}
       try { if (typeof Notification !== "undefined" && Notification.permission === "default") {Notification.requestPermission();} } catch {}
       setToken(d.token);
+      // Joined in this session → this device genuinely owns this entry, so the
+      // seated redirect is welcome once they're seated.
+      setActiveThisSession(true);
     } catch { setError("Network error — please try again"); }
     finally { setBusy(false); }
   };

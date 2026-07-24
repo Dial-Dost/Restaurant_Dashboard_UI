@@ -12,7 +12,7 @@ import { useEffect, useState, type ReactNode } from "react"
 import Link from "next/link"
 import { useAuth } from "@/context/AuthContext"
 import { useCurrency } from "@/hooks/use-currency"
-import { getMenuInsights, type MenuInsights, type PriceSuggestion, type SuppressedSuggestion, applyMenuItemPrice, getOperationsAnalytics, type OperationsAnalytics, getApcTrends, type ApcTrendPoint, getAdvancedAnalytics, type AdvancedAnalytics, getOutletsComparison, type OutletComparison, createCampaign, deleteCampaign } from "@/lib/db"
+import { getMenuInsights, type MenuInsights, type PriceSuggestion, type SuppressedSuggestion, applyMenuItemPrice, getOperationsAnalytics, type OperationsAnalytics, getApcTrends, type ApcTrendPoint, getAdvancedAnalytics, type AdvancedAnalytics, getOutletsComparison, type OutletComparison, createCampaign, deleteCampaign, getKitchenAnalytics, type KitchenAnalytics, type KitchenDishStat, type KitchenSectionStat } from "@/lib/db"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { useToast } from "@/hooks/use-toast"
@@ -597,6 +597,172 @@ function OperationsCharts({ view }: { view: ViewId }) {
           )}
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+// Kitchen analytics: per-dish prep time, per-section (station) averages and an
+// order-level prep summary — all from Orders.timing (pause-excluded, server-side).
+// ms are formatted "Xm Ys". Lives in the Operations view.
+function fmtPrepMs(ms: number | null | undefined): string {
+  const total = Math.max(0, Math.round(Number(ms ?? 0) / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}m ${s}s`;
+}
+
+function KitchenAnalyticsView({ view }: { view: ViewId }) {
+  const { user } = useAuth();
+  const [data, setData] = useState<KitchenAnalytics | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [dishSort, setDishSort] = useSectionSort("avg_prep_ms");
+  const [sectionSort, setSectionSort] = useSectionSort("avg_prep_ms");
+
+  useEffect(() => {
+    if (!user?.restaurantUsername) {return;}
+    let active = true;
+    setLoading(true);
+    getKitchenAnalytics(user.restaurantUsername, 30)
+      .then((d) => { if (active) {setData(d);} })
+      .finally(() => { if (active) {setLoading(false);} });
+    return () => { active = false; };
+  }, [user?.restaurantUsername]);
+
+  if (!inView(view, "operations")) {return null;}
+
+  const dishFields: SortField<KitchenDishStat>[] = [
+    { id: "avg_prep_ms", label: "Avg", type: "num", get: (d) => d.avg_prep_ms },
+    { id: "max_prep_ms", label: "Max", type: "num", get: (d) => d.max_prep_ms },
+    { id: "count", label: "Count", type: "num", get: (d) => d.count },
+    { id: "name", label: "Name", type: "text", get: (d) => d.name },
+  ];
+  const sectionFields: SortField<KitchenSectionStat>[] = [
+    { id: "avg_prep_ms", label: "Avg", type: "num", get: (s) => s.avg_prep_ms },
+    { id: "items_timed", label: "Items", type: "num", get: (s) => s.items_timed },
+    { id: "dishes", label: "Dishes", type: "num", get: (s) => s.dishes },
+    { id: "section", label: "Name", type: "text", get: (s) => s.section },
+  ];
+
+  const summary = data?.order_summary;
+  const byDishRaw = data?.by_dish ?? [];
+  const bySectionRaw = data?.by_section ?? [];
+  const hasData = (summary?.orders_timed ?? 0) > 0 || byDishRaw.length > 0 || bySectionRaw.length > 0;
+
+  const byDish = sortRows(byDishRaw, dishFields, dishSort);
+  const bySection = sortRows(bySectionRaw, sectionFields, sectionSort);
+  // Slowest dish by average — flagged wherever it lands after re-sorting.
+  const slowestDish = byDishRaw.reduce<KitchenDishStat | null>((m, d) => (d.avg_prep_ms > (m?.avg_prep_ms ?? -1) ? d : m), null);
+  const maxSectionAvg = Math.max(1, ...bySectionRaw.map((s) => s.avg_prep_ms));
+
+  const spinner = <Card><CardContent className="py-10 text-center text-muted-foreground">Loading kitchen timings…</CardContent></Card>;
+
+  if (loading) {return spinner;}
+  if (!data) {return null;}
+
+  return (
+    <div className="grid gap-4 md:gap-8">
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2"><Flame className="h-5 w-5 text-orange-500" /> Kitchen analytics</CardTitle>
+          <CardDescription>Prep time from bark to served, last 30 days. Pauses are excluded.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {!hasData ? (
+            <p className="py-6 text-center text-sm text-muted-foreground">No timed orders in the last 30 days yet — prep times appear once tickets are barked and served.</p>
+          ) : (
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className="rounded-xl border p-3">
+                <div className="text-xs font-medium text-muted-foreground">Avg prep</div>
+                <div className="mt-1 text-2xl font-bold">{fmtPrepMs(summary?.avg_prep_ms)}</div>
+                <div className="text-[10px] text-muted-foreground">{summary?.orders_timed ?? 0} order{(summary?.orders_timed ?? 0) === 1 ? "" : "s"} timed</div>
+              </div>
+              <div className="rounded-xl border p-3">
+                <div className="text-xs font-medium text-muted-foreground">P90 prep</div>
+                <div className="mt-1 text-2xl font-bold">{fmtPrepMs(summary?.p90_prep_ms)}</div>
+                <div className="text-[10px] text-muted-foreground">slowest 10% cross this</div>
+              </div>
+              <div className="rounded-xl border p-3">
+                <div className="text-xs font-medium text-muted-foreground">Bark → served</div>
+                <div className="mt-1 text-2xl font-bold">{fmtPrepMs(summary?.avg_bark_to_served_ms)}</div>
+                <div className="text-[10px] text-muted-foreground">avg from fire to plate</div>
+              </div>
+              <div className="rounded-xl border p-3">
+                <div className="text-xs font-medium text-muted-foreground">Max prep</div>
+                <div className="mt-1 text-2xl font-bold">{fmtPrepMs(summary?.max_prep_ms)}</div>
+                <div className="text-[10px] text-muted-foreground">median {fmtPrepMs(summary?.median_prep_ms)}</div>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {bySectionRaw.length > 0 && (
+        <Card>
+          <CardHeader>
+            <SectionHeaderRow control={<SortControl fields={sectionFields} state={sectionSort} onChange={setSectionSort} />}>
+              <CardTitle>By kitchen section</CardTitle>
+              <CardDescription>Average prep per station — slowest first.</CardDescription>
+            </SectionHeaderRow>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {bySection.map((s) => (
+              <div key={s.section} className="flex items-center gap-3 text-sm">
+                <div className="w-28 shrink-0 truncate font-medium" title={s.section}>{s.section}</div>
+                <div className="h-2 flex-1 overflow-hidden rounded bg-muted">
+                  <div className="h-full rounded bg-primary" style={{ width: `${Math.max(2, Math.round((s.avg_prep_ms / maxSectionAvg) * 100))}%` }} />
+                </div>
+                <span className="w-16 shrink-0 text-right font-semibold tabular-nums">{fmtPrepMs(s.avg_prep_ms)}</span>
+                <span className="hidden w-24 shrink-0 text-right text-xs text-muted-foreground sm:inline">{s.dishes} dish{s.dishes === 1 ? "" : "es"} · {s.items_timed}</span>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {byDishRaw.length > 0 && (
+        <Card>
+          <CardHeader>
+            <SectionHeaderRow control={<SortControl fields={dishFields} state={dishSort} onChange={setDishSort} />}>
+              <CardTitle>By dish</CardTitle>
+              <CardDescription>Per-dish prep time — the slowest dish is flagged.</CardDescription>
+            </SectionHeaderRow>
+          </CardHeader>
+          <CardContent>
+            <div className="max-h-96 overflow-y-auto">
+              <table className="w-full text-sm">
+                <thead className="text-left text-muted-foreground">
+                  <tr className="border-b">
+                    <th className="py-1 pr-2">Dish</th>
+                    <th className="py-1 pr-2">Section</th>
+                    <th className="py-1 pr-2 text-right">Count</th>
+                    <th className="py-1 pr-2 text-right">Avg</th>
+                    <th className="py-1 text-right">Max</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {byDish.map((d, i) => {
+                    const isSlowest = slowestDish != null && d.name === slowestDish.name && d.station === slowestDish.station;
+                    return (
+                      <tr key={`${d.name}-${d.station}-${i}`} className={`border-b last:border-0 ${isSlowest ? "bg-amber-50 dark:bg-amber-950/40" : ""}`}>
+                        <td className="py-1 pr-2 font-medium">
+                          <span className="flex items-center gap-1.5">
+                            {isSlowest && <Snail className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" />}
+                            <span className="truncate">{d.name}</span>
+                          </span>
+                        </td>
+                        <td className="py-1 pr-2 text-muted-foreground">{d.station}</td>
+                        <td className="py-1 pr-2 text-right tabular-nums">{d.count}</td>
+                        <td className={`py-1 pr-2 text-right font-semibold tabular-nums ${isSlowest ? "text-amber-700 dark:text-amber-300" : ""}`}>{fmtPrepMs(d.avg_prep_ms)}</td>
+                        <td className="py-1 text-right tabular-nums text-muted-foreground">{fmtPrepMs(d.max_prep_ms)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }
@@ -1590,6 +1756,7 @@ export default function AnalyticsPage() {
       <ActionableInsights view={view} />
       <PerformanceTrends view={view} />
       <OperationsCharts view={view} />
+      <KitchenAnalyticsView view={view} />
 
       {/* Mobile bottom sheet for the view picker */}
       {sheetOpen && (

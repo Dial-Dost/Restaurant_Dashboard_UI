@@ -4,7 +4,7 @@
 import type { ReactNode} from 'react';
 import React, { createContext, useState, useContext, useEffect } from 'react';
 import { signOutUser } from '@/services/authService';
-import { User } from '@/lib/db';
+import type { User } from '@/lib/db';
 
 interface AuthUser {
   uid: string;

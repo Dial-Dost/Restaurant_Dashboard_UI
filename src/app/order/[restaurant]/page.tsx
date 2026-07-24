@@ -3,7 +3,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import { guestBackendBase } from "@/lib/guest-backend";
-import { fontStack, loadBrandFont, readableOn, shapeRadius, type BrandConfig } from "@/lib/brand-fonts";
+import { fontStack, loadBrandFont, loadDesignFonts, type BrandConfig } from "@/lib/brand-fonts";
 
 const BASE = guestBackendBase();
 const DEFAULT_ACCENT = "#ea580c";
@@ -114,6 +114,16 @@ const STRINGS: Record<Lang, Record<string, string>> = {
     otpVerifying: "Checking…",
     otpNotSeated: "Please ask our staff to seat you first, then enter the code.",
     otpWrong: "That code isn't right — check with staff.",
+    // Premium dark redesign chrome.
+    eyebrow: "SCAN · CHOOSE · ENJOY",
+    dineIn: "DINE-IN",
+    tapToReview: "TAP TO REVIEW",
+    orderEmpty: "Your order is empty",
+    review: "Review",
+    items: "items",
+    item: "item",
+    popular: "POPULAR",
+    fullMenu: "FULL MENU",
   },
   hi: {
     loadingMenu: "मेनू लोड हो रहा है…",
@@ -180,9 +190,105 @@ const STRINGS: Record<Lang, Record<string, string>> = {
     otpVerifying: "जाँच हो रही है…",
     otpNotSeated: "कृपया पहले स्टाफ़ से टेबल पर बैठाने को कहें, फिर कोड डालें।",
     otpWrong: "यह कोड सही नहीं है — स्टाफ़ से जाँच करें।",
+    // Premium dark redesign chrome.
+    eyebrow: "स्कैन · चुनें · आनंद लें",
+    dineIn: "डाइन-इन",
+    tapToReview: "देखने के लिए टैप करें",
+    orderEmpty: "आपका ऑर्डर खाली है",
+    review: "देखें",
+    items: "आइटम",
+    item: "आइटम",
+    popular: "लोकप्रिय",
+    fullMenu: "पूरा मेनू",
   },
 };
 type Tr = (key: string) => string;
+
+// ---------------------------------------------------------------------------
+// Premium dark "Rustic Fork" design system. The whole page is dark; the accent
+// RAMP + fixed panel material/mood drive every surface via CSS vars. The accent
+// is DERIVED from the restaurant's brand accent (copper is only the fallback) —
+// controlled by the owner via brand_config, not by the guest.
+// Colour helpers (hsl2rgb / rgb2hsl / hex / ramp) are ported from the design
+// prototype so the ramp matches it exactly.
+// ---------------------------------------------------------------------------
+
+// h in degrees, s & l in 0..1 → [r,g,b] 0..255.
+function hsl2rgb(h: number, s: number, l: number): [number, number, number] {
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number) => {
+    const k = (n + h / 30) % 12;
+    return l - a * Math.max(-1, Math.min(k - 3, Math.min(9 - k, 1)));
+  };
+  return [Math.round(f(0) * 255), Math.round(f(8) * 255), Math.round(f(4) * 255)];
+}
+// [r,g,b] 0..255 → [h(deg), s(0..1), l(0..1)].
+function rgb2hsl(r: number, g: number, b: number): [number, number, number] {
+  r /= 255; g /= 255; b /= 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+  let h = 0, s = 0; const l = (mx + mn) / 2;
+  if (mx !== mn) {
+    const d = mx - mn;
+    s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+    if (mx === r) {h = (g - b) / d + (g < b ? 6 : 0);}
+    else if (mx === g) {h = (b - r) / d + 2;}
+    else {h = (r - g) / d + 4;}
+    h *= 60;
+  }
+  return [h, s, l];
+}
+const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
+const hexOf = (rgb: number[]) => "#" + rgb.map((x) => Math.max(0, Math.min(255, Math.round(x))).toString(16).padStart(2, "0")).join("");
+
+interface Ramp {
+  acc: string; accHi: string; accMid: string; accDeep: string; accShadow: string; onAcc: string;
+  accRGB: string; accHiRGB: string; accDeepRGB: string; accShadowRGB: string;
+}
+// The 6-stop ramp, exactly like the prototype: hi L.75, acc L.63, mid L.51,
+// deep L.39, shadow L.27, onAcc (dark ink) L.09. h in deg, s in 0..100.
+function rampHS(h: number, s: number): Ramp {
+  const hi = hsl2rgb(h, clamp01((s + 7) / 100), 0.75);
+  const acc = hsl2rgb(h, clamp01(s / 100), 0.63);
+  const mid = hsl2rgb(h, clamp01((s - 3) / 100), 0.51);
+  const deep = hsl2rgb(h, clamp01((s - 6) / 100), 0.39);
+  const shadow = hsl2rgb(h, clamp01((s - 8) / 100), 0.27);
+  const on = hsl2rgb(h, clamp01((s - 5) / 100), 0.09);
+  return {
+    acc: hexOf(acc), accHi: hexOf(hi), accMid: hexOf(mid), accDeep: hexOf(deep), accShadow: hexOf(shadow), onAcc: hexOf(on),
+    accRGB: acc.join(","), accHiRGB: hi.join(","), accDeepRGB: deep.join(","), accShadowRGB: shadow.join(","),
+  };
+}
+// Resolve a brand hex into {h, s(0..100)} for the ramp. Falls back to copper.
+function hexToHS(hex: string): { h: number; s: number } {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec((hex ?? "").trim());
+  const hp = m?.[1];
+  if (!hp) {return { h: 24, s: 38 };}
+  const n = parseInt(hp, 16);
+  const [h, s] = rgb2hsl((n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff);
+  return { h, s: s * 100 };
+}
+// Fixed panel material (Frosted) + shape mood (Cozy) — the surface look. These
+// drive --panelBg/--blur/--pbA/--rCard/--rCtrl and are NOT guest-editable; only
+// the restaurant's brand accent re-themes the page.
+const PANEL = { panelBg: "rgba(26,26,31,0.55)", blur: "22px", pbA: "0.12" };
+const SHAPE = { rCard: "22px", rCtrl: "13px" };
+
+const GLOBAL_CSS = `
+.ms{font-family:'Material Symbols Outlined';font-weight:400;font-style:normal;line-height:1;-webkit-font-smoothing:antialiased;user-select:none;}
+.rf-sc{scrollbar-width:none;-ms-overflow-style:none;}
+.rf-sc::-webkit-scrollbar{width:0;height:0;}
+.rf-num{font-family:Roboto,system-ui,sans-serif;font-weight:300;letter-spacing:-0.5px;}
+.rf-serif{font-family:'Instrument Serif',Georgia,serif;}
+@keyframes rfFloatOrb{0%,100%{transform:translate(0,0) scale(1);}50%{transform:translate(24px,-20px) scale(1.08);}}
+@keyframes rfSheetUp{from{transform:translateY(100%);}to{transform:translateY(0);}}
+@keyframes rfFadeIn{from{opacity:0;}to{opacity:1;}}
+`;
+
+// Material Symbols icon (falls back to nothing if the font hasn't loaded yet).
+function Icon(props: { name: string; className?: string; style?: React.CSSProperties }) {
+  const cls = props.className ? `ms ${props.className}` : "ms";
+  return <span className={cls} style={props.style} aria-hidden="true">{props.name}</span>;
+}
 
 // Decode the friendly table name from the opaque ?t= token (base64url(name).sig).
 function decodeTableName(token: string): string {
@@ -236,7 +342,6 @@ function OrderInner() {
   const [requireOtp, setRequireOtp] = useState(false);
   const [otpVerified, setOtpVerified] = useState(false);
   const [verifiedOtp, setVerifiedOtp] = useState("");
-
   // Restore a previously-verified table OTP (keyed by the signed table token).
   useEffect(() => {
     if (!token) {return;}
@@ -358,10 +463,41 @@ function OrderInner() {
 
   // Load the tenant's chosen Google Font (once) so the page renders in it.
   useEffect(() => { if (brandConfig?.font) {loadBrandFont(brandConfig.font);} }, [brandConfig?.font]);
+  // Load the design constants (Instrument Serif display, Roboto body/numerals,
+  // Material Symbols icons) — always, they drive the premium dark look.
+  useEffect(() => { loadDesignFonts(); }, []);
+
+  // Resolve the accent RAMP from the restaurant's brand accent (copper is the
+  // ultimate fallback via hexToHS), combined with the fixed panel material +
+  // shape mood → CSS vars.
+  const brandHS = useMemo(() => hexToHS(accent), [accent]);
+  const theme = useMemo(() => {
+    const r = rampHS(brandHS.h, brandHS.s);
+    return { ...r, ...PANEL, ...SHAPE };
+  }, [brandHS]);
+  const themeVars = {
+    "--acc": theme.acc, "--accHi": theme.accHi, "--accMid": theme.accMid,
+    "--accDeep": theme.accDeep, "--accShadow": theme.accShadow, "--onAcc": theme.onAcc,
+    "--accRGB": theme.accRGB, "--accHiRGB": theme.accHiRGB, "--accDeepRGB": theme.accDeepRGB,
+    "--accShadowRGB": theme.accShadowRGB, "--panelBg": theme.panelBg, "--blur": theme.blur,
+    "--pbA": theme.pbA, "--rCard": theme.rCard, "--rCtrl": theme.rCtrl,
+  } as React.CSSProperties;
+  // Body font: the tenant's brand font still applies to body text; the serif
+  // display + thin numerals are design constants layered on top.
+  const bodyFont = brandConfig?.font ? fontStack(brandConfig.font) : "Roboto, system-ui, sans-serif";
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return q ? items.filter((i) => i.name.toLowerCase().includes(q)) : items;
+    // Match either the dish name OR its category, so searching a category name
+    // (e.g. "dimsum") surfaces every item in that category, not just items whose
+    // own name contains the word.
+    return q
+      ? items.filter(
+          (i) =>
+            i.name.toLowerCase().includes(q) ||
+            (i.category ?? "").toLowerCase().includes(q),
+        )
+      : items;
   }, [items, query]);
   const byCategory = useMemo(() => {
     const m: Record<string, MenuItem[]> = {};
@@ -467,14 +603,15 @@ function OrderInner() {
       <Centered>
         <div className="text-center">
           <div className="mb-3 text-5xl">🙏</div>
-          <p className="mb-1 text-lg font-semibold text-neutral-800">{t("thanks")}</p>
-          <p className="text-sm text-neutral-500">{t("settledMsg")}</p>
+          <p className="mb-1 rf-serif text-3xl leading-tight text-[#ECEAE6]">{t("thanks")}</p>
+          <p className="text-sm text-[#9A978F]">{t("settledMsg")}</p>
           {bill && (bill.items?.length ?? 0) > 0 && (
             <button
               onClick={() => { try { window.print(); } catch { /* ignore */ } }}
-              className="mt-4 rounded-2xl border px-5 py-2.5 text-sm font-semibold"
-              style={{ borderColor: accent, color: accent }}
+              className="mt-5 inline-flex items-center gap-2 rounded-xl border px-5 py-3 text-sm font-semibold transition active:scale-[0.98]"
+              style={{ borderColor: `rgba(${theme.accRGB},0.5)`, color: theme.accHi, backgroundColor: `rgba(${theme.accRGB},0.1)` }}
             >
+              <Icon name="download" style={{ fontSize: 18 }} />
               {t("downloadBill")}
             </button>
           )}
@@ -490,7 +627,7 @@ function OrderInner() {
       <OtpGate
         restaurant={restaurant}
         token={token}
-        accent={accent}
+        themeVars={themeVars}
         restaurantName={restaurantName || restaurant}
         logoUrl={logoUrl}
         tableLabel={tableLabel}
@@ -500,94 +637,102 @@ function OrderInner() {
     );
   }
 
-  // Resolve brand_config into concrete style values. Every branch falls back to
-  // the original hardcoded look when brand_config is absent (bc === null), so
-  // existing tenants render byte-identically to before.
-  const bc = brandConfig;
-  const gradEnd = bc?.color_secondary && HEX_RE.test(bc.color_secondary) ? bc.color_secondary : shade(accent, -22);
-  const headerBg = bc?.header_style === "solid" ? accent : `linear-gradient(135deg, ${accent}, ${gradEnd})`;
-  const onAccent = readableOn(accent);
-  const btnRadius = shapeRadius(bc?.button_shape ?? "pill");
-  const pageBg = bc?.color_bg && HEX_RE.test(bc.color_bg) ? bc.color_bg : undefined;
-  const bodyText = bc?.color_text && HEX_RE.test(bc.color_text) ? bc.color_text : undefined;
-  const cardBg = bc?.color_card && HEX_RE.test(bc.color_card) ? bc.color_card : undefined;
-  const pageFont = bc?.font ? fontStack(bc.font) : undefined;
-  // Applied to the accent-coloured action buttons ("Add"/"Customize"): readable
-  // text + the tenant's button shape. Empty (no override) when brand_config is off.
-  const accentBtnStyle: React.CSSProperties = bc ? { color: onAccent, borderRadius: btnRadius } : {};
+  // Premium dark redesign. All colour comes from the accent RAMP (CSS vars in
+  // `themeVars`) derived from the restaurant's brand accent; brand_config.font
+  // still drives body text.
+  const heroImage = logoUrl; // brand logo doubles as the hero cover when present
+  const countLabel = `${cartCount} ${cartCount === 1 ? t("item") : t("items")}`;
 
   return (
     <div
-      className="mx-auto min-h-screen max-w-md bg-neutral-50 pb-28"
-      style={{ ...(pageBg ? { backgroundColor: pageBg } : {}), ...(pageFont ? { fontFamily: pageFont } : {}) }}
+      className="relative mx-auto min-h-screen max-w-md overflow-x-hidden pb-40 text-[#ECEAE6]"
+      style={{ ...themeVars, backgroundColor: "#08080A", fontFamily: bodyFont }}
     >
+      <style>{GLOBAL_CSS}</style>
       <GuestBillReceipt bill={bill} restaurantName={restaurantName || restaurant} logoUrl={logoUrl} tableLabel={tableLabel} currency={currency} />
-      <header className="relative overflow-hidden px-5 pb-6 pt-7 text-white shadow-md" style={{ background: headerBg, ...(bc ? { color: onAccent } : {}) }}>
-        {/* Soft decorative glows for depth. */}
-        <div className="pointer-events-none absolute -right-10 -top-12 h-40 w-40 rounded-full bg-white/15 blur-2xl" />
-        <div className="pointer-events-none absolute -bottom-16 -left-8 h-40 w-40 rounded-full bg-black/10 blur-2xl" />
-        <div className="relative flex items-start justify-between">
-          <div className="flex items-center gap-3">
-            {logoUrl && (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={logoUrl} alt="logo" className="h-14 w-14 rounded-2xl bg-white/95 object-contain p-1.5 shadow-lg ring-1 ring-white/40" />
-            )}
-            <div>
-              <h1 className="text-2xl font-extrabold leading-tight tracking-tight drop-shadow-sm">{restaurantName || restaurant}</h1>
-              <p className="mt-0.5 inline-flex items-center gap-1.5 rounded-full bg-white/15 px-2.5 py-0.5 text-xs font-medium text-white/90 backdrop-blur">
-                <span className="inline-block h-1.5 w-1.5 rounded-full bg-green-300" />
-                {tableLabel ? `${t("table")} ${tableLabel}` : t("yourTable")}
-              </p>
-            </div>
-          </div>
-          <div className="flex flex-col items-end gap-2">
-            {/* Once verified, surface the table's shared OTP so the guest can pass
-                it to friends joining the same table (they enter it to order too). */}
-            {requireOtp && otpVerified && verifiedOtp && (
-              <div
-                className="flex items-center gap-1.5 rounded-full bg-white/95 px-3 py-1 shadow-sm ring-1 ring-white/50"
-                title={t("shareCodeHint")}
-              >
-                <span className="text-[9px] font-bold uppercase tracking-wide text-neutral-400">{t("tableCode")}</span>
-                <span className="text-sm font-extrabold tracking-[0.2em]" style={{ color: accent }}>{verifiedOtp}</span>
-              </div>
-            )}
-            <button
-              onClick={() => { void loadBill(); setShowBill(true); }}
-              className="rounded-full bg-white/20 px-4 py-2 text-sm font-semibold shadow-sm backdrop-blur transition active:scale-95"
-            >
-              {t("bill")} {currency}{billTotal.toFixed(0)}
-            </button>
-            {/* Language toggle — translates the page chrome (dish names stay as entered). */}
-            <div className="flex overflow-hidden rounded-full bg-white/20 text-[11px] font-semibold backdrop-blur">
-              {(["en", "hi"] as const).map((l) => (
-                <button
-                  key={l}
-                  onClick={() => { switchLang(l); }}
-                  aria-pressed={lang === l}
-                  className={`px-2.5 py-1 transition ${lang === l ? "bg-white/90" : "text-white/90"}`}
-                  style={lang === l ? { color: accent } : undefined}
-                >
-                  {l === "en" ? "EN" : "हिंदी"}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-        <p className="relative mt-3 text-xs font-medium uppercase tracking-[0.2em] text-white/70">{t("tagline")}</p>
-      </header>
 
-      {/* Sticky search + category tabs. Tapping a tab shows only that section. */}
-      <div className="sticky top-0 z-10 border-b border-neutral-200 bg-neutral-50/95 backdrop-blur" style={pageBg ? { backgroundColor: pageBg } : undefined}>
-        <div className="px-4 pt-3">
-          <input
-            value={query}
-            onChange={(e) => { setQuery(e.target.value); }}
-            placeholder={t("searchPlaceholder")}
-            className="w-full rounded-full border border-neutral-200 bg-white px-4 py-2 text-sm text-neutral-800 outline-none"
-            style={{ caretColor: accent }}
-          />
+      {/* Near-black base + two floating accent orbs behind everything. */}
+      <div className="pointer-events-none fixed inset-0 z-0" style={{ backgroundColor: "#08080A" }} />
+      <div className="pointer-events-none fixed z-0" style={{ top: -120, left: -80, width: 360, height: 360, borderRadius: "50%", background: "radial-gradient(circle, rgba(var(--accRGB),0.20), transparent 65%)", filter: "blur(30px)", animation: "rfFloatOrb 16s ease-in-out infinite" }} />
+      <div className="pointer-events-none fixed z-0" style={{ bottom: -140, right: -60, width: 340, height: 340, borderRadius: "50%", background: "radial-gradient(circle, rgba(var(--accDeepRGB),0.22), transparent 65%)", filter: "blur(30px)", animation: "rfFloatOrb 20s ease-in-out infinite reverse" }} />
+
+      <div className="relative z-10">
+        {/* HERO */}
+        <header className="relative overflow-hidden" style={{ height: 172 }}>
+          <div className="absolute inset-0" style={{ background: "linear-gradient(150deg, var(--accDeep), #0B0B0D 78%)" }} />
+          {heroImage && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={heroImage} alt="" className="absolute inset-0 h-full w-full object-cover opacity-55" />
+          )}
+          <div className="absolute inset-0" style={{ background: "linear-gradient(180deg, rgba(6,6,7,0.15), rgba(6,6,7,0.4) 45%, rgba(8,8,10,0.96))" }} />
+          <div className="pointer-events-none absolute" style={{ top: -70, right: -40, width: 200, height: 200, borderRadius: "50%", background: "radial-gradient(circle, rgba(var(--accHiRGB),0.3), transparent 62%)", filter: "blur(12px)" }} />
+          <div className="relative flex h-full flex-col justify-between px-5 pb-4 pt-9">
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-1.5 rounded-full border px-3 py-1.5" style={{ backgroundColor: "rgba(10,10,12,0.5)", borderColor: "rgba(255,255,255,0.14)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}>
+                <Icon name="table_restaurant" style={{ fontSize: 13, color: "var(--accHi)" }} />
+                <span className="text-[10.5px] font-bold tracking-wide text-[#F3F1EE]">{tableLabel ? `${t("table")} ${tableLabel} · ${t("dineIn")}` : t("yourTable")}</span>
+              </div>
+            </div>
+            <div>
+              <div className="mb-1 text-[10px] font-bold uppercase tracking-[2px]" style={{ color: "var(--accHi)", textShadow: "0 1px 8px rgba(0,0,0,0.6)" }}>{t("eyebrow")}</div>
+              <h1 className="rf-serif text-[34px] leading-none text-[#F7F5F2]" style={{ textShadow: "0 2px 16px rgba(0,0,0,0.55)" }}>{restaurantName || restaurant}</h1>
+            </div>
+          </div>
+        </header>
+
+        {/* CONTROLS: bill total, shared table code, language. */}
+        <div className="flex items-center gap-2 px-4 pt-3">
+          <button
+            onClick={() => { void loadBill(); setShowBill(true); }}
+            className="flex items-center gap-2 border px-3.5 py-2.5 transition active:scale-95"
+            style={{ backgroundColor: "rgba(14,14,16,0.7)", borderColor: "rgba(255,255,255,0.08)", borderRadius: "var(--rCtrl)" }}
+          >
+            <Icon name="receipt_long" style={{ fontSize: 17, color: "var(--accHi)" }} />
+            <span className="text-[10px] font-bold uppercase tracking-wide text-[#9A978F]">{t("bill")}</span>
+            <span className="rf-num text-[17px] text-[#ECEAE6]">{currency}{billTotal.toFixed(0)}</span>
+          </button>
+          <div className="flex-1" />
+          {requireOtp && otpVerified && verifiedOtp && (
+            <div className="flex items-center gap-1.5 border px-2.5 py-2" title={t("shareCodeHint")} style={{ backgroundColor: "rgba(14,14,16,0.7)", borderColor: "rgba(255,255,255,0.08)", borderRadius: "var(--rCtrl)" }}>
+              <span className="text-[9px] font-bold uppercase tracking-wide text-[#615E57]">{t("tableCode")}</span>
+              <span className="text-sm font-bold tracking-[0.2em]" style={{ color: "var(--accHi)" }}>{verifiedOtp}</span>
+            </div>
+          )}
+          <div className="flex overflow-hidden border text-[11px] font-semibold" style={{ borderColor: "rgba(255,255,255,0.08)", borderRadius: "var(--rCtrl)" }}>
+            {(["en", "hi"] as const).map((l) => (
+              <button
+                key={l}
+                onClick={() => { switchLang(l); }}
+                aria-pressed={lang === l}
+                className="px-2.5 py-2 transition"
+                style={lang === l ? { backgroundColor: "var(--accHi)", color: "var(--onAcc)" } : { backgroundColor: "rgba(14,14,16,0.7)", color: "#9A978F" }}
+              >
+                {l === "en" ? "EN" : "हिं"}
+              </button>
+            ))}
+          </div>
         </div>
+
+        {/* SEARCH */}
+        <div className="px-4 pt-2.5">
+          <div className="flex items-center gap-2 border px-3.5 py-2.5" style={{ backgroundColor: "rgba(14,14,16,0.7)", borderColor: "rgba(255,255,255,0.08)", borderRadius: "var(--rCtrl)" }}>
+            <Icon name="search" style={{ fontSize: 19, color: "#615E57" }} />
+            <input
+              value={query}
+              onChange={(e) => { setQuery(e.target.value); }}
+              placeholder={t("searchPlaceholder")}
+              className="min-w-0 flex-1 bg-transparent text-sm text-[#ECEAE6] outline-none placeholder:text-[#615E57]"
+              style={{ caretColor: "var(--accHi)" }}
+            />
+            {query && (
+              <button onClick={() => { setQuery(""); }} aria-label={t("close")} className="transition active:scale-90">
+                <Icon name="close" style={{ fontSize: 18, color: "#9A978F" }} />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* CATEGORY CHIPS */}
         {!searching && categories.length > 1 && (
           <div
             ref={tabsRef}
@@ -595,7 +740,7 @@ function OrderInner() {
             onPointerMove={onTabsPointerMove}
             onPointerUp={endTabsDrag}
             onPointerLeave={endTabsDrag}
-            className="flex cursor-grab select-none gap-2 overflow-x-auto px-4 py-3 [-webkit-overflow-scrolling:touch] [scrollbar-width:none] [touch-action:pan-x] [&::-webkit-scrollbar]:hidden"
+            className="rf-sc flex cursor-grab select-none gap-2 overflow-x-auto px-4 py-3 [-webkit-overflow-scrolling:touch] [touch-action:pan-x]"
           >
             {categories.map((cat) => {
               const on = cat === active;
@@ -603,10 +748,10 @@ function OrderInner() {
                 <button
                   key={cat}
                   onClick={() => { if (!drag.current.moved) {setActiveCat(cat);} }}
-                  className="whitespace-nowrap rounded-full px-4 py-1.5 text-sm font-medium shadow-sm ring-1 transition"
+                  className="whitespace-nowrap rounded-full px-4 py-2 text-[12.5px] font-semibold transition"
                   style={on
-                    ? { backgroundColor: accent, color: bc ? onAccent : "white", borderColor: accent, boxShadow: "none" }
-                    : { backgroundColor: "white", color: "#404040", borderColor: "#e5e5e5" }}
+                    ? { background: "var(--accHi)", color: "var(--onAcc)", border: "1px solid transparent" }
+                    : { backgroundColor: "rgba(255,255,255,0.04)", color: "#9A978F", border: "1px solid rgba(255,255,255,0.08)" }}
                 >
                   {cat}
                 </button>
@@ -614,75 +759,116 @@ function OrderInner() {
             })}
           </div>
         )}
+
+        {error && (
+          <div className="mx-4 mt-2 rounded-xl border px-4 py-3 text-sm" style={{ backgroundColor: "rgba(201,123,110,0.12)", borderColor: "rgba(201,123,110,0.3)", color: "#E0A79B" }}>{error}</div>
+        )}
+
+        {/* MENU GRID (2 columns) */}
+        <main className="px-4 pb-4 pt-2.5">
+          {!searching && active && (
+            <div className="mb-3 mt-1 px-1 text-[11px] font-bold uppercase tracking-[1.3px] text-[#615E57]">{t("fullMenu")} · {active}</div>
+          )}
+          <div className="grid grid-cols-2 gap-3">
+            {shown.map((it) => {
+              const soldOut = it.available === false;
+              const line = cart[it.id];
+              const monogram = (it.name.trim()[0] ?? "•").toUpperCase();
+              return (
+                <div
+                  key={it.id}
+                  className="relative overflow-hidden"
+                  style={{ borderRadius: "var(--rCard)", background: "var(--panelBg)", backdropFilter: "blur(var(--blur))", WebkitBackdropFilter: "blur(var(--blur))", border: "1.5px solid rgba(255,255,255,var(--pbA))", boxShadow: "0 14px 34px rgba(0,0,0,0.45)", opacity: soldOut ? 0.6 : 1 }}
+                >
+                  <div className="relative flex items-center justify-center" style={{ height: 96, background: "linear-gradient(140deg,#26262B,#111113)", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+                    {it.image_url ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={it.image_url} alt={it.name} className={`absolute inset-0 h-full w-full object-cover ${soldOut ? "grayscale" : ""}`} />
+                    ) : (
+                      <>
+                        <div className="pointer-events-none absolute" style={{ width: 74, height: 74, borderRadius: "50%", background: "radial-gradient(circle, rgba(var(--accDeepRGB),0.55), transparent 70%)" }} />
+                        <span className="rf-serif relative text-[36px] leading-none" style={{ color: "var(--accHi)" }}>{monogram}</span>
+                      </>
+                    )}
+                    {soldOut && (
+                      <div className="absolute right-2 top-2 rounded-[10px] border px-2 py-1 text-[10px] font-bold tracking-wide" style={{ backgroundColor: "rgba(201,123,110,0.16)", borderColor: "rgba(201,123,110,0.35)", color: "#E0A79B" }}>{t("soldOut")}</div>
+                    )}
+                  </div>
+                  <div className="px-3 pb-3 pt-2.5">
+                    <div className="text-[13.5px] font-semibold leading-tight text-[#ECEAE6]" style={{ minHeight: 34 }}>{it.name}</div>
+                    {searching && <div className="mt-0.5 text-[11px] text-[#615E57]">{it.category}</div>}
+                    {(it.allergens ?? []).length > 0 && (
+                      <div className="mt-1.5 flex flex-wrap gap-1">
+                        {(it.allergens ?? []).map((a) => (
+                          <span key={a} className="rounded-full border px-1.5 py-0.5 text-[9px] capitalize leading-none text-[#9A978F]" style={{ borderColor: "rgba(255,255,255,0.1)", backgroundColor: "rgba(255,255,255,0.04)" }}>{a}</span>
+                        ))}
+                      </div>
+                    )}
+                    <div className="mt-2 flex items-end justify-between gap-2">
+                      <div className="rf-num text-[22px] text-[#ECEAE6]">{currency}{Number(it.price).toFixed(0)}</div>
+                      {soldOut ? null : (it.modifiers && it.modifiers.length > 0) ? (
+                        <button onClick={() => { addItem(it); }} className="flex items-center gap-1 px-2.5 py-2 transition active:scale-95" style={{ borderRadius: "var(--rCtrl)", background: "rgba(var(--accRGB),0.16)", border: "1px solid rgba(var(--accRGB),0.3)" }}>
+                          <Icon name="tune" style={{ fontSize: 16, color: "var(--accHi)" }} />
+                          <span className="text-[11px] font-semibold" style={{ color: "var(--accHi)" }}>{t("customize")}</span>
+                        </button>
+                      ) : line ? (
+                        <div className="flex items-center gap-2 p-1" style={{ borderRadius: "var(--rCtrl)", background: "rgba(var(--accRGB),0.14)" }}>
+                          <button onClick={() => { setLineQty(it.id, -1); }} aria-label="remove" className="transition active:scale-90"><Icon name="remove" style={{ fontSize: 20, color: "var(--acc)" }} /></button>
+                          <span className="min-w-[14px] text-center text-[14px] font-bold text-[#ECEAE6]">{line.quantity}</span>
+                          <button onClick={() => { setLineQty(it.id, 1); }} aria-label="add" className="transition active:scale-90"><Icon name="add" style={{ fontSize: 20, color: "var(--accHi)" }} /></button>
+                        </div>
+                      ) : (
+                        <button onClick={() => { addItem(it); }} aria-label={t("add")} className="flex h-[34px] w-[34px] items-center justify-center transition active:scale-95" style={{ borderRadius: "var(--rCtrl)", background: "rgba(var(--accRGB),0.16)", border: "1px solid rgba(var(--accRGB),0.3)" }}>
+                          <Icon name="add" style={{ fontSize: 20, color: "var(--accHi)" }} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {shown.length === 0 && <p className="mt-14 text-center text-sm text-[#615E57]">{t("noItems")}</p>}
+        </main>
       </div>
 
-      {error && <div className="m-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</div>}
-
-      <main className="px-4 pt-4">
-        {!searching && active && <h2 className="mb-3 text-sm font-bold uppercase tracking-wide text-neutral-500">{active}</h2>}
-        <div className="space-y-2">
-          {shown.map((it) => {
-            const soldOut = it.available === false;
-            return (
-              <div key={it.id} className={`flex items-center gap-3 rounded-2xl bg-white p-3 shadow-sm ${soldOut ? "opacity-60" : ""}`} style={cardBg ? { backgroundColor: cardBg } : undefined}>
-                {it.image_url ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={it.image_url} alt={it.name} className={`h-16 w-16 flex-shrink-0 rounded-xl object-cover ${soldOut ? "grayscale" : ""}`} />
-                ) : (
-                  <div className="flex h-16 w-16 flex-shrink-0 items-center justify-center rounded-xl bg-neutral-100 text-2xl">🍽️</div>
-                )}
-                <div className="min-w-0 flex-1">
-                  <p className="font-semibold text-neutral-800" style={bodyText ? { color: bodyText } : undefined}>{it.name}</p>
-                  {searching && <p className="text-xs text-neutral-400">{it.category}</p>}
-                  <p className="text-sm text-neutral-500">{currency}{Number(it.price).toFixed(2)}</p>
-                  {(it.allergens ?? []).length > 0 && (
-                    <p className="mt-1 flex flex-wrap gap-1">
-                      {it.allergens!.map((a) => (
-                        <span key={a} className="rounded-full bg-neutral-100 px-1.5 py-0.5 text-[10px] capitalize leading-none text-neutral-500 ring-1 ring-neutral-200">{a}</span>
-                      ))}
-                    </p>
-                  )}
-                </div>
-                {soldOut ? (
-                  <span className="rounded-full bg-neutral-200 px-3 py-1.5 text-xs font-semibold text-neutral-500">{t("soldOut")}</span>
-                ) : (it.modifiers && it.modifiers.length > 0) ? (
-                  <button onClick={() => { addItem(it); }} className="rounded-full px-4 py-2 text-sm font-semibold text-white shadow transition active:scale-95" style={{ backgroundColor: accent, ...accentBtnStyle }}>{t("customize")}</button>
-                ) : cart[it.id] ? (
-                  <div className="flex items-center gap-2 rounded-full px-2 py-1" style={{ backgroundColor: tint(accent) }}>
-                    <button onClick={() => { setLineQty(it.id, -1); }} className="h-7 w-7 rounded-full bg-white text-lg leading-none shadow" style={{ color: accent }}>−</button>
-                    <span className="w-4 text-center font-semibold" style={{ color: accent }}>{cart[it.id].quantity}</span>
-                    <button onClick={() => { setLineQty(it.id, 1); }} className="h-7 w-7 rounded-full text-lg leading-none text-white shadow" style={{ backgroundColor: accent, ...(bc ? { color: onAccent } : {}) }}>+</button>
-                  </div>
-                ) : (
-                  <button onClick={() => { addItem(it); }} className="rounded-full px-4 py-2 text-sm font-semibold text-white shadow transition active:scale-95" style={{ backgroundColor: accent, ...accentBtnStyle }}>{t("add")}</button>
-                )}
-              </div>
-            );
-          })}
-        </div>
-        {shown.length === 0 && <p className="mt-10 text-center text-neutral-400">{t("noItems")}</p>}
-      </main>
-
-      {cartCount > 0 && !showCart && (
-        <div className="fixed inset-x-0 bottom-0 mx-auto max-w-md p-4">
-          <button
-            onClick={() => { setShowCart(true); }}
-            className="flex w-full items-center justify-between rounded-2xl px-5 py-4 text-white shadow-xl ring-1 ring-black/5 transition active:scale-[0.98]"
-            style={{ background: `linear-gradient(135deg, ${accent}, ${gradEnd})`, ...(bc ? { color: onAccent } : {}) }}
+      {/* FLOATING TOTAL BAR — replaces the old bottom review affordance. */}
+      {!showCart && (
+        <div className="fixed inset-x-0 bottom-0 z-20 mx-auto max-w-md px-4 pb-5 pt-8" style={{ background: "linear-gradient(180deg, transparent, rgba(6,6,7,0.85) 40%)", pointerEvents: "none" }}>
+          <div
+            onClick={() => { if (cartCount > 0) {setShowCart(true);} }}
+            className="flex items-center gap-3 px-4 py-3.5"
+            style={{ pointerEvents: "auto", borderRadius: "var(--rCard)", background: "rgba(24,24,28,0.72)", backdropFilter: "blur(26px) saturate(150%)", WebkitBackdropFilter: "blur(26px) saturate(150%)", border: "1px solid rgba(255,255,255,0.12)", boxShadow: "0 20px 50px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.08)", cursor: cartCount > 0 ? "pointer" : "default" }}
           >
-            <span className="flex items-center gap-2 font-semibold">
-              <span className="flex h-6 min-w-6 items-center justify-center rounded-full bg-white/25 px-1.5 text-xs font-bold backdrop-blur">{cartCount}</span>
-              {t("reviewCart")}
-            </span>
-            <span className="font-bold">{currency}{cartTotal.toFixed(2)} →</span>
-          </button>
+            <div className="relative flex h-11 w-11 flex-shrink-0 items-center justify-center" style={{ borderRadius: 13, background: "linear-gradient(145deg, var(--accHi), var(--accMid))", boxShadow: "0 8px 20px rgba(var(--accShadowRGB),0.55)" }}>
+              <Icon name="shopping_bag" style={{ fontSize: 22, color: "var(--onAcc)" }} />
+              {cartCount > 0 && (
+                <div className="absolute -right-1.5 -top-1.5 flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[11px] font-bold text-white" style={{ backgroundColor: "#C97B6E", border: "2px solid #16161A" }}>{cartCount}</div>
+              )}
+            </div>
+            <div className="min-w-0 flex-1">
+              {cartCount > 0 ? (
+                <>
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-[#9A978F]">{countLabel} · {t("tapToReview")}</div>
+                  <div className="rf-num text-[26px] leading-tight text-[#ECEAE6]">{currency}{cartTotal.toFixed(2)}</div>
+                </>
+              ) : (
+                <div className="text-[13px] text-[#9A978F]">{t("orderEmpty")}</div>
+              )}
+            </div>
+            {cartCount > 0 && (
+              <button onClick={(e) => { e.stopPropagation(); setShowCart(true); }} className="flex items-center gap-1 px-4 py-3 text-sm font-bold transition active:scale-95" style={{ borderRadius: 14, background: "linear-gradient(180deg, var(--accHi), var(--accMid))", color: "var(--onAcc)", boxShadow: "0 10px 24px rgba(var(--accShadowRGB),0.5)" }}>
+                {t("review")}<Icon name="expand_less" style={{ fontSize: 19 }} />
+              </button>
+            )}
+          </div>
         </div>
       )}
 
       {showCart && (
         <CartSheet
           lines={cartLines}
-          accent={accent}
+          accent={theme.acc}
           currency={currency}
           total={cartTotal}
           placing={placing}
@@ -703,7 +889,7 @@ function OrderInner() {
       {modItem && (
         <ModifierSheet
           item={modItem}
-          accent={accent}
+          accent={theme.acc}
           currency={currency}
           onClose={() => { setModItem(null); }}
           onAdd={(line) => { addLine(line); setModItem(null); }}
@@ -712,15 +898,15 @@ function OrderInner() {
       )}
 
       {toast && (
-        <div className="fixed inset-x-0 bottom-24 z-20 mx-auto max-w-md px-4">
-          <div className="rounded-xl bg-green-600 px-4 py-3 text-center text-sm text-white shadow-lg">{toast}</div>
+        <div className="fixed inset-x-0 bottom-28 z-40 mx-auto max-w-md px-4">
+          <div className="rounded-xl px-4 py-3 text-center text-sm font-semibold shadow-lg" style={{ background: "linear-gradient(180deg, var(--accHi), var(--accMid))", color: "var(--onAcc)" }}>{toast}</div>
         </div>
       )}
 
       {showBill && (
         <BillSheet
           bill={bill}
-          accent={accent}
+          accent={theme.acc}
           currency={currency}
           restaurant={restaurant}
           token={token}
@@ -738,7 +924,7 @@ function OrderInner() {
           restaurantName={restaurantName || restaurant}
           token={token}
           tableLabel={tableLabel}
-          accent={accent}
+          accent={theme.acc}
           currency={currency}
           methods={payMethods}
           billTotal={billTotal}
@@ -758,26 +944,9 @@ function OrderInner() {
           }}
         />
       )}
+
     </div>
   );
-}
-
-// Lighten/darken a hex color by a percentage (-100..100) for gradients/tints.
-function shade(hex: string, pct: number): string {
-  const m = /^#([0-9a-fA-F]{6})$/.exec(hex);
-  if (!m) {return hex;}
-  const num = parseInt(m[1], 16);
-  const amt = Math.round(2.55 * pct);
-  const r = Math.min(255, Math.max(0, (num >> 16) + amt));
-  const g = Math.min(255, Math.max(0, ((num >> 8) & 0xff) + amt));
-  const b = Math.min(255, Math.max(0, (num & 0xff) + amt));
-  return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, "0")}`;
-}
-function tint(hex: string): string {
-  const m = /^#([0-9a-fA-F]{6})$/.exec(hex);
-  if (!m) {return "#fff3ec";}
-  const num = parseInt(m[1], 16);
-  return `rgba(${num >> 16}, ${(num >> 8) & 0xff}, ${num & 0xff}, 0.12)`;
 }
 
 function ModifierSheet(props: {
@@ -788,7 +957,7 @@ function ModifierSheet(props: {
   onAdd: (line: CartLine) => void;
   t: Tr;
 }) {
-  const { item, accent, currency, onClose, onAdd, t } = props;
+  const { item, currency, onClose, onAdd, t } = props;
   const groups = item.modifiers ?? [];
   // selection: groupIndex -> set of chosen option names
   const [sel, setSel] = useState<Record<number, string[]>>(() => {
@@ -833,21 +1002,25 @@ function ModifierSheet(props: {
   };
 
   return (
-    <div className="fixed inset-0 z-30 flex items-end justify-center bg-black/40" onClick={onClose}>
-      <div className="mx-auto flex max-h-[92dvh] w-full max-w-md flex-col rounded-t-3xl bg-white p-5" onClick={(e) => { e.stopPropagation(); }}>
+    <div className="fixed inset-0 z-40 flex items-end justify-center" onClick={onClose} style={{ background: "rgba(4,4,6,0.55)", backdropFilter: "blur(2px)", WebkitBackdropFilter: "blur(2px)", animation: "rfFadeIn .2s ease" }}>
+      <div
+        className="rf-sc mx-auto flex max-h-[92dvh] w-full max-w-md flex-col p-5"
+        onClick={(e) => { e.stopPropagation(); }}
+        style={{ borderRadius: "26px 26px 0 0", background: "linear-gradient(180deg,#141416,#0D0D0F)", borderTop: "1px solid rgba(255,255,255,0.1)", boxShadow: "0 -30px 60px rgba(0,0,0,0.6)", animation: "rfSheetUp .32s cubic-bezier(0.22,1,0.36,1)" }}
+      >
         <div className="shrink-0">
-          <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-neutral-300" />
-          <h2 className="text-lg font-bold">{item.name}</h2>
-          <p className="mb-4 text-sm text-neutral-500">{currency}{item.price.toFixed(2)} {t("base")}</p>
+          <div className="mx-auto mb-3 h-1.5 w-10 rounded-full" style={{ background: "rgba(255,255,255,0.15)" }} />
+          <h2 className="rf-serif text-[24px] leading-none text-[#ECEAE6]">{item.name}</h2>
+          <p className="mb-4 mt-1 text-sm text-[#9A978F]">{currency}{item.price.toFixed(2)} {t("base")}</p>
         </div>
 
-        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch]">
+        <div className="rf-sc min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch]">
           {groups.map((g, gi) => (
             <div key={gi}>
-              <p className="mb-2 text-sm font-semibold text-neutral-700">
+              <p className="mb-2 text-sm font-semibold text-[#ECEAE6]">
                 {g.name}
-                {g.required && <span className="ml-1 text-red-500">*</span>}
-                <span className="ml-2 text-xs font-normal text-neutral-400">{g.multi ? t("chooseAny") : t("chooseOne")}</span>
+                {g.required && <span className="ml-1" style={{ color: "#E0A79B" }}>*</span>}
+                <span className="ml-2 text-xs font-normal text-[#615E57]">{g.multi ? t("chooseAny") : t("chooseOne")}</span>
               </p>
               <div className="space-y-1.5">
                 {g.options.map((o) => {
@@ -856,19 +1029,19 @@ function ModifierSheet(props: {
                     <button
                       key={o.name}
                       onClick={() => { toggle(gi, o.name, g.multi); }}
-                      className="flex w-full items-center justify-between rounded-xl border px-4 py-3 text-sm"
-                      style={on ? { borderColor: accent, backgroundColor: tint(accent) } : { borderColor: "#e5e5e5" }}
+                      className="flex w-full items-center justify-between border px-4 py-3 text-sm text-[#ECEAE6]"
+                      style={on ? { borderColor: "rgba(var(--accRGB),0.5)", backgroundColor: "rgba(var(--accRGB),0.14)", borderRadius: "var(--rCtrl)" } : { borderColor: "rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.03)", borderRadius: "var(--rCtrl)" }}
                     >
                       <span className="flex items-center gap-2">
                         <span
                           className={`flex h-4 w-4 items-center justify-center ${g.multi ? "rounded" : "rounded-full"} border`}
-                          style={{ borderColor: on ? accent : "#cbd5e1", backgroundColor: on ? accent : "transparent" }}
+                          style={{ borderColor: on ? "var(--accHi)" : "rgba(255,255,255,0.25)", backgroundColor: on ? "var(--accHi)" : "transparent" }}
                         >
-                          {on && <span className="text-[10px] leading-none text-white">✓</span>}
+                          {on && <Icon name="check" style={{ fontSize: 12, color: "var(--onAcc)" }} />}
                         </span>
                         {o.name}
                       </span>
-                      {o.price > 0 && <span className="text-neutral-500">+{currency}{o.price.toFixed(0)}</span>}
+                      {o.price > 0 && <span className="text-[#9A978F]">+{currency}{o.price.toFixed(0)}</span>}
                     </button>
                   );
                 })}
@@ -877,17 +1050,17 @@ function ModifierSheet(props: {
           ))}
         </div>
 
-        {err && <p className="mt-3 text-sm text-red-600">{err}</p>}
+        {err && <p className="mt-3 text-sm" style={{ color: "#E0A79B" }}>{err}</p>}
 
         <button
           onClick={confirm}
-          className="mt-5 flex w-full items-center justify-between rounded-2xl px-5 py-4 font-semibold text-white shadow"
-          style={{ background: `linear-gradient(135deg, ${accent}, ${shade(accent, -18)})` }}
+          className="mt-5 flex w-full items-center justify-between px-5 py-4 font-bold transition active:scale-[0.99]"
+          style={{ borderRadius: "var(--rCtrl)", background: "linear-gradient(180deg, var(--accHi), var(--accMid))", color: "var(--onAcc)", boxShadow: "0 10px 24px rgba(var(--accShadowRGB),0.5)" }}
         >
           <span>{t("addToOrder")}</span>
-          <span>{currency}{unitPrice.toFixed(2)}</span>
+          <span className="rf-num text-[20px]" style={{ color: "var(--onAcc)" }}>{currency}{unitPrice.toFixed(2)}</span>
         </button>
-        <button onClick={onClose} className="mt-2 w-full py-2 text-sm text-neutral-500">{t("cancel")}</button>
+        <button onClick={onClose} className="mt-2 w-full py-2 text-sm text-[#9A978F]">{t("cancel")}</button>
       </div>
     </div>
   );
@@ -911,40 +1084,43 @@ function CartSheet(props: {
   onConfirm: () => void;
   t: Tr;
 }) {
-  const { lines, accent, currency, total, placing, note, error, onNote, guestName, onGuestName, guestPhone, onGuestPhone, onQty, onClose, onConfirm, t } = props;
+  const { lines, currency, total, placing, note, error, onNote, guestName, onGuestName, guestPhone, onGuestPhone, onQty, onClose, onConfirm, t } = props;
   // Name + phone are required before an order can be sent (customer data capture).
   const contactOk = guestName.trim().length > 0 && guestPhone.replace(/\D/g, "").length >= 10;
+  const inputStyle: React.CSSProperties = { background: "rgba(14,14,16,0.7)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "var(--rCtrl)", color: "#ECEAE6" };
   return (
-    <div className="fixed inset-0 z-30 flex items-end justify-center bg-black/40" onClick={onClose}>
-      <div className="mx-auto flex max-h-[92dvh] w-full max-w-md flex-col rounded-t-3xl bg-white" onClick={(e) => { e.stopPropagation(); }}>
+    <div className="fixed inset-0 z-40 flex items-end justify-center" onClick={onClose} style={{ background: "rgba(4,4,6,0.55)", backdropFilter: "blur(2px)", WebkitBackdropFilter: "blur(2px)", animation: "rfFadeIn .2s ease" }}>
+      <div
+        className="mx-auto flex max-h-[92dvh] w-full max-w-md flex-col"
+        onClick={(e) => { e.stopPropagation(); }}
+        style={{ borderRadius: "26px 26px 0 0", background: "linear-gradient(180deg,#141416,#0D0D0F)", borderTop: "1px solid rgba(255,255,255,0.1)", boxShadow: "0 -30px 60px rgba(0,0,0,0.6)", animation: "rfSheetUp .32s cubic-bezier(0.22,1,0.36,1)" }}
+      >
         <div className="shrink-0 px-5 pt-5">
-          <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-neutral-300" />
-          <h2 className="mb-1 text-lg font-bold" style={{ color: 'black' }}>
-            {t("yourOrder")}
-          </h2>
-          <p className="mb-4 text-sm text-neutral-500">{t("reviewSubtitle")}</p>
+          <div className="mx-auto mb-3 h-1.5 w-10 rounded-full" style={{ background: "rgba(255,255,255,0.15)" }} />
+          <h2 className="rf-serif text-[24px] leading-none text-[#ECEAE6]">{t("yourOrder")}</h2>
+          <p className="mb-4 mt-1 text-sm text-[#9A978F]">{t("reviewSubtitle")}</p>
         </div>
 
         {/* The sheet is capped to the viewport and everything above the pinned
             footer scrolls, so a long cart stays fully reachable on a phone
             instead of overflowing off the top of the screen. */}
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 [-webkit-overflow-scrolling:touch]">
+        <div className="rf-sc min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 [-webkit-overflow-scrolling:touch]">
         {lines.length === 0 ? (
-          <p className="py-8 text-center text-neutral-400">{t("emptyCart")}</p>
+          <p className="py-8 text-center text-[#615E57]">{t("emptyCart")}</p>
         ) : (
           <div className="space-y-2">
             {lines.map((l) => (
-              <div key={l.key} className="flex items-center gap-3 rounded-xl bg-neutral-50 p-3">
+              <div key={l.key} className="flex items-center gap-3 p-3" style={{ borderRadius: "var(--rCtrl)", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.06)" }}>
                 <div className="min-w-0 flex-1">
-                  <p className="font-medium text-neutral-800">{l.name}</p>
-                  <p className="text-sm text-neutral-500">{currency}{l.unitPrice.toFixed(2)}</p>
+                  <p className="font-medium text-[#ECEAE6]">{l.name}</p>
+                  <p className="text-sm text-[#9A978F]">{currency}{l.unitPrice.toFixed(2)}</p>
                 </div>
-                <div className="flex items-center gap-2 rounded-full px-2 py-1" style={{ backgroundColor: tint(accent) }}>
-                  <button onClick={() => { onQty(l.key, -1); }} className="h-7 w-7 rounded-full bg-white text-lg leading-none shadow" style={{ color: accent }}>−</button>
-                  <span className="w-4 text-center font-semibold" style={{ color: accent }}>{l.quantity}</span>
-                  <button onClick={() => { onQty(l.key, 1); }} className="h-7 w-7 rounded-full text-lg leading-none text-white shadow" style={{ backgroundColor: accent }}>+</button>
+                <div className="flex items-center gap-2 p-1" style={{ borderRadius: "var(--rCtrl)", background: "rgba(var(--accRGB),0.14)" }}>
+                  <button onClick={() => { onQty(l.key, -1); }} aria-label="remove" className="transition active:scale-90"><Icon name="remove" style={{ fontSize: 20, color: "var(--acc)" }} /></button>
+                  <span className="min-w-[14px] text-center text-[14px] font-bold text-[#ECEAE6]">{l.quantity}</span>
+                  <button onClick={() => { onQty(l.key, 1); }} aria-label="add" className="transition active:scale-90"><Icon name="add" style={{ fontSize: 20, color: "var(--accHi)" }} /></button>
                 </div>
-                <span className="w-16 text-right font-semibold text-neutral-800">{currency}{(l.unitPrice * l.quantity).toFixed(0)}</span>
+                <span className="rf-num w-16 text-right text-[16px] text-[#ECEAE6]">{currency}{(l.unitPrice * l.quantity).toFixed(0)}</span>
               </div>
             ))}
           </div>
@@ -958,7 +1134,8 @@ function CartSheet(props: {
                 onChange={(e) => { onGuestName(e.target.value); }}
                 maxLength={60}
                 placeholder={t("guestName")}
-                className="w-full rounded-xl border border-neutral-200 p-3 text-sm text-neutral-800 outline-none focus:border-neutral-400"
+                className="w-full p-3 text-sm outline-none placeholder:text-[#615E57]"
+                style={inputStyle}
               />
               <input
                 value={guestPhone}
@@ -966,11 +1143,12 @@ function CartSheet(props: {
                 inputMode="tel"
                 maxLength={16}
                 placeholder={t("guestPhone")}
-                className="w-full rounded-xl border border-neutral-200 p-3 text-sm text-neutral-800 outline-none focus:border-neutral-400"
+                className="w-full p-3 text-sm outline-none placeholder:text-[#615E57]"
+                style={inputStyle}
               />
             </div>
             {!contactOk && (
-              <p className="mt-1 text-xs text-neutral-500">{t("contactHint")}</p>
+              <p className="mt-1 text-xs text-[#9A978F]">{t("contactHint")}</p>
             )}
             <textarea
               value={note}
@@ -978,7 +1156,8 @@ function CartSheet(props: {
               maxLength={500}
               rows={2}
               placeholder={t("notePlaceholder")}
-              className="mt-2 w-full resize-none rounded-xl border border-neutral-200 p-3 text-sm text-neutral-800 outline-none focus:border-neutral-400"
+              className="mt-2 w-full resize-none p-3 text-sm outline-none placeholder:text-[#615E57]"
+              style={inputStyle}
             />
           </>
         )}
@@ -986,27 +1165,25 @@ function CartSheet(props: {
 
         {/* Pinned footer: the total and the send button stay visible no matter
             how many items are in the cart. */}
-        <div className="shrink-0 border-t bg-white px-5 pb-5 pt-3">
+        <div className="shrink-0 px-5 pb-5 pt-3" style={{ borderTop: "1px solid rgba(255,255,255,0.08)" }}>
           <div className="flex items-center justify-between">
-            <span className="text-sm text-neutral-500">{t("total")}</span>
-            <span className="text-xl font-bold" style={{ color: 'black' }}>
-              {currency}{total.toFixed(2)}
-            </span>
+            <span className="text-sm text-[#9A978F]">{t("total")}</span>
+            <span className="rf-num text-[26px] text-[#ECEAE6]">{currency}{total.toFixed(2)}</span>
           </div>
 
           {error && (
-            <div className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-sm font-medium text-red-700">{error}</div>
+            <div className="mt-4 rounded-xl border px-4 py-3 text-sm font-medium" style={{ background: "rgba(201,123,110,0.12)", borderColor: "rgba(201,123,110,0.3)", color: "#E0A79B" }}>{error}</div>
           )}
 
           <button
             onClick={onConfirm}
             disabled={placing || lines.length === 0 || !contactOk}
-            className="mt-4 w-full rounded-2xl py-4 font-semibold text-white shadow transition active:scale-[0.99] disabled:opacity-50"
-            style={{ background: `linear-gradient(135deg, ${accent}, ${shade(accent, -18)})` }}
+            className="mt-4 w-full py-4 font-bold transition active:scale-[0.99] disabled:opacity-50"
+            style={{ borderRadius: "var(--rCtrl)", background: "linear-gradient(180deg, var(--accHi), var(--accMid))", color: "var(--onAcc)", boxShadow: "0 10px 24px rgba(var(--accShadowRGB),0.5)" }}
           >
             {placing ? t("sending") : t("sendOrder")}
           </button>
-          <button onClick={onClose} className="mt-2 w-full py-2 text-sm text-neutral-500">{t("addMore")}</button>
+          <button onClick={onClose} className="mt-2 w-full py-2 text-sm text-[#9A978F]">{t("addMore")}</button>
         </div>
       </div>
     </div>
@@ -1027,7 +1204,7 @@ function BillSheet(props: {
   onDownload: () => void;
   t: Tr;
 }) {
-  const { bill, accent, currency, restaurant, token, onApplied, onClose, onPay, onDownload, t } = props;
+  const { bill, currency, restaurant, token, onApplied, onClose, onPay, onDownload, t } = props;
   const items = bill?.items ?? [];
   const hasItems = items.length > 0;
   const alreadyPaying = bill?.payment_status === "pending_approval" || bill?.payment_status === "approved";
@@ -1060,27 +1237,31 @@ function BillSheet(props: {
     }
   };
   return (
-    <div className="fixed inset-0 z-30 flex items-end justify-center bg-black/40" onClick={onClose}>
-      <div className="mx-auto flex max-h-[92dvh] w-full max-w-md flex-col overflow-y-auto overscroll-contain rounded-t-3xl bg-white p-5" onClick={(e) => { e.stopPropagation(); }}>
+    <div className="fixed inset-0 z-40 flex items-end justify-center" onClick={onClose} style={{ background: "rgba(4,4,6,0.55)", backdropFilter: "blur(2px)", WebkitBackdropFilter: "blur(2px)", animation: "rfFadeIn .2s ease" }}>
+      <div
+        className="rf-sc mx-auto flex max-h-[92dvh] w-full max-w-md flex-col overflow-y-auto overscroll-contain p-5"
+        onClick={(e) => { e.stopPropagation(); }}
+        style={{ borderRadius: "26px 26px 0 0", background: "linear-gradient(180deg,#141416,#0D0D0F)", borderTop: "1px solid rgba(255,255,255,0.1)", boxShadow: "0 -30px 60px rgba(0,0,0,0.6)", animation: "rfSheetUp .32s cubic-bezier(0.22,1,0.36,1)" }}
+      >
         <div className="shrink-0">
-          <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-neutral-300" />
-          <h2 className="mb-1 text-lg font-bold" style={{ color: 'black' }}>{t("yourBill")}</h2>
-          <p className="mb-4 text-sm text-neutral-500">{t("billSubtitle")}</p>
+          <div className="mx-auto mb-3 h-1.5 w-10 rounded-full" style={{ background: "rgba(255,255,255,0.15)" }} />
+          <h2 className="rf-serif text-[24px] leading-none text-[#ECEAE6]">{t("yourBill")}</h2>
+          <p className="mb-4 mt-1 text-sm text-[#9A978F]">{t("billSubtitle")}</p>
         </div>
 
         {!hasItems ? (
-          <p className="py-8 text-center text-neutral-400">{t("emptyBill")}</p>
+          <p className="py-8 text-center text-[#615E57]">{t("emptyBill")}</p>
         ) : (
           <>
             <div className="space-y-2">
               {items.map((it, i) => (
-                <div key={`${it.name}-${i}`} className="flex items-center gap-3 rounded-xl bg-neutral-50 p-3">
-                  <span className="flex h-7 min-w-7 items-center justify-center rounded-full px-1.5 text-xs font-bold text-white" style={{ backgroundColor: accent }}>{it.quantity}</span>
+                <div key={`${it.name}-${i}`} className="flex items-center gap-3 p-3" style={{ borderRadius: "var(--rCtrl)", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.06)" }}>
+                  <span className="flex h-7 min-w-7 items-center justify-center rounded-full px-1.5 text-xs font-bold" style={{ background: "rgba(var(--accRGB),0.16)", color: "var(--accHi)" }}>{it.quantity}</span>
                   <div className="min-w-0 flex-1">
-                    <p className="truncate font-medium text-neutral-800">{it.name}</p>
-                    <p className="text-xs text-neutral-400">{currency}{Number(it.price).toFixed(2)} {t("each")}</p>
+                    <p className="truncate font-medium text-[#ECEAE6]">{it.name}</p>
+                    <p className="text-xs text-[#615E57]">{currency}{Number(it.price).toFixed(2)} {t("each")}</p>
                   </div>
-                  <span className="w-16 text-right font-semibold text-neutral-800">{currency}{(Number(it.price) * Number(it.quantity)).toFixed(0)}</span>
+                  <span className="rf-num w-16 text-right text-[16px] text-[#ECEAE6]">{currency}{(Number(it.price) * Number(it.quantity)).toFixed(0)}</span>
                 </div>
               ))}
             </div>
@@ -1093,65 +1274,65 @@ function BillSheet(props: {
                     value={coupon}
                     onChange={(e) => { setCoupon(e.target.value.toUpperCase()); }}
                     placeholder={t("couponPlaceholder")}
-                    className="min-w-0 flex-1 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-2.5 text-sm font-medium tracking-wide text-neutral-800 outline-none"
-                    style={{ caretColor: accent }}
+                    className="min-w-0 flex-1 px-4 py-2.5 text-sm font-medium tracking-wide outline-none placeholder:text-[#615E57]"
+                    style={{ caretColor: "var(--accHi)", background: "rgba(14,14,16,0.7)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "var(--rCtrl)", color: "#ECEAE6" }}
                   />
                   <button
                     onClick={applyCoupon}
                     disabled={applying || !coupon.trim()}
-                    className="shrink-0 rounded-xl px-4 py-2.5 text-sm font-semibold text-white shadow disabled:opacity-50"
-                    style={{ backgroundColor: accent }}
+                    className="shrink-0 px-4 py-2.5 text-sm font-bold disabled:opacity-50"
+                    style={{ borderRadius: "var(--rCtrl)", background: "linear-gradient(180deg, var(--accHi), var(--accMid))", color: "var(--onAcc)" }}
                   >
                     {applying ? "…" : t("apply")}
                   </button>
                 </div>
                 {couponMsg && (
-                  <p className={`mt-1.5 text-xs font-medium ${couponMsg.ok ? "text-green-600" : "text-red-600"}`}>{couponMsg.text}</p>
+                  <p className="mt-1.5 text-xs font-medium" style={{ color: couponMsg.ok ? "#8FB27C" : "#E0A79B" }}>{couponMsg.text}</p>
                 )}
               </div>
             )}
 
-            <div className="mt-4 space-y-1.5 border-t pt-3 text-sm">
-              <div className="flex items-center justify-between text-neutral-500">
+            <div className="mt-4 space-y-1.5 pt-3 text-sm" style={{ borderTop: "1px solid rgba(255,255,255,0.08)" }}>
+              <div className="flex items-center justify-between text-[#9A978F]">
                 <span>{t("subtotal")}</span>
                 <span>{currency}{Number(bill?.subtotal ?? 0).toFixed(2)}</span>
               </div>
               {Number(bill?.discount ?? 0) > 0 && (
-                <div className="flex items-center justify-between font-medium text-green-600">
+                <div className="flex items-center justify-between font-medium" style={{ color: "#8FB27C" }}>
                   <span>{bill?.coupon_code ? `${t("coupon")} ${bill.coupon_code}` : t("discount")}</span>
                   <span>− {currency}{Number(bill?.discount).toFixed(2)}</span>
                 </div>
               )}
               {Number(bill?.service_charge ?? 0) > 0 && (
-                <div className="flex items-center justify-between text-neutral-500">
+                <div className="flex items-center justify-between text-[#9A978F]">
                   <span>{t("serviceCharge")} ({bill?.service_charge_percent}%)</span>
                   <span>{currency}{Number(bill?.service_charge).toFixed(2)}</span>
                 </div>
               )}
               {(bill?.taxes ?? []).map((t) => (
-                <div key={t.name} className="flex items-center justify-between text-neutral-500">
+                <div key={t.name} className="flex items-center justify-between text-[#9A978F]">
                   <span>{t.name} ({t.percentage}%)</span>
                   <span>{currency}{Number(t.amount).toFixed(2)}</span>
                 </div>
               ))}
-              <div className="flex items-center justify-between border-t pt-2 text-neutral-900">
+              <div className="flex items-center justify-between pt-2 text-[#ECEAE6]" style={{ borderTop: "1px solid rgba(255,255,255,0.08)" }}>
                 <span className="font-semibold">{t("total")}</span>
-                <span className="text-xl font-bold">{currency}{Number(bill?.grand_total ?? 0).toFixed(2)}</span>
+                <span className="rf-num text-[24px]">{currency}{Number(bill?.grand_total ?? 0).toFixed(2)}</span>
               </div>
             </div>
 
             {alreadyPaying ? (
-              <p className="mt-4 rounded-xl bg-amber-50 px-4 py-3 text-center text-sm text-amber-700">
+              <p className="mt-4 rounded-xl border px-4 py-3 text-center text-sm" style={{ background: "rgba(217,169,98,0.1)", borderColor: "rgba(217,169,98,0.3)", color: "#E4C48C" }}>
                 Payment {bill?.payment_status === "approved" ? "approved" : "submitted"} — staff will take it from here.
               </p>
             ) : (
               <button
                 onClick={onPay}
-                className="mt-4 flex w-full items-center justify-between rounded-2xl px-5 py-4 font-semibold text-white shadow"
-                style={{ background: `linear-gradient(135deg, ${accent}, ${shade(accent, -18)})` }}
+                className="mt-4 flex w-full items-center justify-between px-5 py-4 font-bold transition active:scale-[0.99]"
+                style={{ borderRadius: "var(--rCtrl)", background: "linear-gradient(180deg, var(--accHi), var(--accMid))", color: "var(--onAcc)", boxShadow: "0 10px 24px rgba(var(--accShadowRGB),0.5)" }}
               >
                 <span>{t("payNow")}</span>
-                <span>{currency}{Number(bill?.grand_total ?? 0).toFixed(2)}</span>
+                <span className="rf-num text-[20px]" style={{ color: "var(--onAcc)" }}>{currency}{Number(bill?.grand_total ?? 0).toFixed(2)}</span>
               </button>
             )}
           </>
@@ -1159,13 +1340,14 @@ function BillSheet(props: {
         {hasItems && (
           <button
             onClick={onDownload}
-            className="mt-3 w-full rounded-2xl border py-3 text-sm font-semibold"
-            style={{ borderColor: accent, color: accent }}
+            className="mt-3 flex w-full items-center justify-center gap-2 border py-3 text-sm font-semibold"
+            style={{ borderRadius: "var(--rCtrl)", borderColor: "rgba(var(--accRGB),0.5)", color: "var(--accHi)", background: "rgba(var(--accRGB),0.08)" }}
           >
+            <Icon name="download" style={{ fontSize: 17 }} />
             {t("downloadBill")}
           </button>
         )}
-        <button onClick={onClose} className="mt-2 w-full py-2 text-sm text-neutral-500">{t("close")}</button>
+        <button onClick={onClose} className="mt-2 w-full py-2 text-sm text-[#9A978F]">{t("close")}</button>
       </div>
     </div>
   );
@@ -1410,19 +1592,18 @@ function PaySheet(props: {
   };
 
   return (
-    <div className="fixed inset-0 z-30 flex items-end justify-center bg-black/40" onClick={onClose}>
+    <div className="fixed inset-0 z-40 flex items-end justify-center" onClick={onClose} style={{ background: "rgba(4,4,6,0.55)", backdropFilter: "blur(2px)", WebkitBackdropFilter: "blur(2px)", animation: "rfFadeIn .2s ease" }}>
       <div
-        className="mx-auto w-full max-w-md rounded-t-3xl bg-white p-5"
+        className="rf-sc mx-auto max-h-[92dvh] w-full max-w-md overflow-y-auto p-5"
         onClick={(e) => { e.stopPropagation(); }}
+        style={{ borderRadius: "26px 26px 0 0", background: "linear-gradient(180deg,#141416,#0D0D0F)", borderTop: "1px solid rgba(255,255,255,0.1)", boxShadow: "0 -30px 60px rgba(0,0,0,0.6)", animation: "rfSheetUp .32s cubic-bezier(0.22,1,0.36,1)" }}
       >
-        <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-neutral-300" />
+        <div className="mx-auto mb-3 h-1.5 w-10 rounded-full" style={{ background: "rgba(255,255,255,0.15)" }} />
         <div className="flex items-baseline justify-between">
-          <h2 className="text-lg font-bold" style={{ color: 'black' }}>
-            {t("payYourBill")}
-          </h2>
-          <span className="text-2xl font-bold" style={{ color: 'black' }}>{currency}{billTotal.toFixed(2)}</span>
+          <h2 className="rf-serif text-[24px] leading-none text-[#ECEAE6]">{t("payYourBill")}</h2>
+          <span className="rf-num text-[26px] text-[#ECEAE6]">{currency}{billTotal.toFixed(2)}</span>
         </div>
-        <p className="mb-4 text-sm text-neutral-500">
+        <p className="mb-4 mt-1 text-sm text-[#9A978F]">
           {razorpay ? t("paySubtitleOnline") : t("paySubtitleOffline")}
         </p>
 
@@ -1431,16 +1612,16 @@ function PaySheet(props: {
             <button
               onClick={payOnline}
               disabled={onlineLoading || billTotal <= 0}
-              className="mb-4 flex w-full items-center justify-center gap-2 rounded-2xl py-4 font-semibold text-white shadow disabled:opacity-50"
-              style={{ background: `linear-gradient(135deg, ${accent}, ${shade(accent, -18)})` }}
+              className="mb-4 flex w-full items-center justify-center gap-2 py-4 font-bold transition active:scale-[0.99] disabled:opacity-50"
+              style={{ borderRadius: "var(--rCtrl)", background: "linear-gradient(180deg, var(--accHi), var(--accMid))", color: "var(--onAcc)", boxShadow: "0 10px 24px rgba(var(--accShadowRGB),0.5)" }}
             >
               {onlineLoading ? t("opening") : t("payOnlineNow")}
             </button>
             {offlineMethods.length > 0 && (
-              <div className="mb-3 flex items-center gap-3 text-xs text-neutral-400">
-                <div className="h-px flex-1 bg-neutral-200" />
+              <div className="mb-3 flex items-center gap-3 text-xs text-[#615E57]">
+                <div className="h-px flex-1" style={{ background: "rgba(255,255,255,0.1)" }} />
                 {t("orPayAnother")}
-                <div className="h-px flex-1 bg-neutral-200" />
+                <div className="h-px flex-1" style={{ background: "rgba(255,255,255,0.1)" }} />
               </div>
             )}
           </>
@@ -1453,8 +1634,8 @@ function PaySheet(props: {
               <button
                 key={m.id}
                 onClick={() => { setMethod(m.id); }}
-                className="rounded-xl border px-2 py-3 text-sm font-medium"
-                style={on ? { borderColor: accent, backgroundColor: tint(accent), color: accent } : { borderColor: "#e5e5e5", color: "#404040" }}
+                className="border px-2 py-3 text-sm font-medium"
+                style={on ? { borderColor: "rgba(var(--accRGB),0.4)", background: "rgba(var(--accRGB),0.14)", color: "var(--accHi)", borderRadius: "var(--rCtrl)" } : { borderColor: "rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", color: "#9A978F", borderRadius: "var(--rCtrl)" }}
               >
                 {m.label}
               </button>
@@ -1464,7 +1645,7 @@ function PaySheet(props: {
 
         {needsProof && (
           <div className="mt-4">
-            <p className="mb-2 text-sm font-medium">{t("uploadProof")}</p>
+            <p className="mb-2 text-sm font-medium text-[#ECEAE6]">{t("uploadProof")}</p>
             <input
               ref={fileRef}
               type="file"
@@ -1477,27 +1658,29 @@ function PaySheet(props: {
             />
             {imageB64 ? (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={imageB64} alt="proof" className="h-40 w-full rounded-xl object-contain bg-neutral-100" onClick={() => fileRef.current?.click()} />
+              <img src={imageB64} alt="proof" className="h-40 w-full rounded-xl object-contain" style={{ background: "rgba(255,255,255,0.04)" }} onClick={() => fileRef.current?.click()} />
             ) : (
-              <button onClick={() => fileRef.current?.click()} className="flex h-28 w-full items-center justify-center rounded-xl border-2 border-dashed border-neutral-300 text-sm text-neutral-500">
+              <button onClick={() => fileRef.current?.click()} className="flex h-28 w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed text-sm text-[#9A978F]" style={{ borderColor: "rgba(255,255,255,0.15)" }}>
+                <Icon name="add_photo_alternate" style={{ fontSize: 20, color: "var(--accHi)" }} />
                 {t("tapUpload")}
               </button>
             )}
           </div>
         )}
 
-        {err && <p className="mt-3 text-sm text-red-600">{err}</p>}
+        {err && <p className="mt-3 text-sm" style={{ color: "#E0A79B" }}>{err}</p>}
 
         {offlineMethods.length > 0 && (
           <button
             onClick={submit}
             disabled={submitting}
-            className="mt-5 w-full rounded-2xl bg-neutral-900 py-4 font-semibold text-white disabled:opacity-50"
+            className="mt-5 w-full py-4 font-bold text-[#ECEAE6] disabled:opacity-50"
+            style={{ borderRadius: "var(--rCtrl)", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)" }}
           >
             {submitting ? t("submitting") : t("submitPayment")}
           </button>
         )}
-        <button onClick={onClose} className="mt-2 w-full py-2 text-sm text-neutral-500">{t("cancel")}</button>
+        <button onClick={onClose} className="mt-2 w-full py-2 text-sm text-[#9A978F]">{t("cancel")}</button>
       </div>
     </div>
   );
@@ -1509,14 +1692,14 @@ function PaySheet(props: {
 function OtpGate(props: {
   restaurant: string;
   token: string;
-  accent: string;
+  themeVars: React.CSSProperties;
   restaurantName: string;
   logoUrl: string;
   tableLabel: string;
   t: Tr;
   onVerified: (code: string) => void;
 }) {
-  const { restaurant, token, accent, restaurantName, logoUrl, tableLabel, t, onVerified } = props;
+  const { restaurant, token, themeVars, restaurantName, logoUrl, tableLabel, t, onVerified } = props;
   const [code, setCode] = useState("");
   const [checking, setChecking] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -1543,57 +1726,66 @@ function OtpGate(props: {
   };
 
   return (
-    <div className="mx-auto flex min-h-screen max-w-md flex-col items-center justify-center bg-neutral-50 px-6 text-center">
-      {logoUrl ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={logoUrl} alt="logo" className="mb-4 h-16 w-16 rounded-2xl bg-white object-contain p-1.5 shadow ring-1 ring-black/5" />
-      ) : (
-        <div
-          className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl text-3xl text-white shadow"
-          style={{ background: `linear-gradient(135deg, ${accent}, ${shade(accent, -22)})` }}
+    <div
+      className="relative mx-auto flex min-h-screen max-w-md flex-col items-center justify-center overflow-hidden px-6 text-center text-[#ECEAE6]"
+      style={{ ...themeVars, backgroundColor: "#08080A", fontFamily: "Roboto, system-ui, sans-serif" }}
+    >
+      <style>{GLOBAL_CSS}</style>
+      <div className="pointer-events-none fixed" style={{ top: -120, left: -80, width: 360, height: 360, borderRadius: "50%", background: "radial-gradient(circle, rgba(var(--accRGB),0.2), transparent 65%)", filter: "blur(30px)", animation: "rfFloatOrb 16s ease-in-out infinite" }} />
+      <div className="relative flex flex-col items-center">
+        {logoUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={logoUrl} alt="logo" className="mb-4 h-16 w-16 rounded-2xl object-contain p-1.5" style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)" }} />
+        ) : (
+          <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl" style={{ background: "linear-gradient(145deg, var(--accHi), var(--accDeep))" }}>
+            <Icon name="lock" style={{ fontSize: 30, color: "var(--onAcc)" }} />
+          </div>
+        )}
+        <p className="text-sm font-medium text-[#9A978F]">{restaurantName}</p>
+        {tableLabel ? (
+          <p className="mt-1.5 inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold" style={{ background: "rgba(var(--accRGB),0.16)", color: "var(--accHi)" }}>
+            <Icon name="table_restaurant" style={{ fontSize: 13 }} />
+            {t("table")} {tableLabel}
+          </p>
+        ) : null}
+        <h1 className="rf-serif mt-4 text-[30px] leading-tight text-[#ECEAE6]">{t("otpTitle")}</h1>
+        <p className="mt-2 max-w-xs text-sm text-[#9A978F]">{t("otpHelper")}</p>
+
+        <input
+          value={code}
+          onChange={(e) => { setErr(null); setCode(e.target.value.replace(/\D/g, "").slice(0, 4)); }}
+          onKeyDown={(e) => { if (e.key === "Enter") {void submit();} }}
+          inputMode="numeric"
+          autoFocus
+          maxLength={4}
+          placeholder="••••"
+          aria-label={t("otpTitle")}
+          className="rf-num mt-6 w-52 py-4 text-center text-[34px] tracking-[0.4em] text-[#ECEAE6] outline-none"
+          style={{ borderRadius: "var(--rCtrl)", border: "2px solid rgba(var(--accRGB),0.5)", background: "rgba(14,14,16,0.7)", caretColor: "var(--accHi)" }}
+        />
+
+        {err && <p className="mt-3 max-w-xs text-sm font-medium" style={{ color: "#E0A79B" }}>{err}</p>}
+
+        <button
+          onClick={submit}
+          disabled={checking || code.trim().length < 4}
+          className="mt-6 w-52 py-4 font-bold transition active:scale-[0.99] disabled:opacity-50"
+          style={{ borderRadius: "var(--rCtrl)", background: "linear-gradient(180deg, var(--accHi), var(--accMid))", color: "var(--onAcc)", boxShadow: "0 10px 24px rgba(var(--accShadowRGB),0.5)" }}
         >
-          🔒
-        </div>
-      )}
-      <p className="text-sm font-medium text-neutral-500">{restaurantName}</p>
-      {tableLabel ? (
-        <p className="mt-1 inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold" style={{ backgroundColor: tint(accent), color: accent }}>
-          {t("table")} {tableLabel}
-        </p>
-      ) : null}
-      <h1 className="mt-4 text-2xl font-extrabold tracking-tight text-neutral-800">{t("otpTitle")}</h1>
-      <p className="mt-2 max-w-xs text-sm text-neutral-500">{t("otpHelper")}</p>
-
-      <input
-        value={code}
-        onChange={(e) => { setErr(null); setCode(e.target.value.replace(/\D/g, "").slice(0, 4)); }}
-        onKeyDown={(e) => { if (e.key === "Enter") {void submit();} }}
-        inputMode="numeric"
-        autoFocus
-        maxLength={4}
-        placeholder="••••"
-        aria-label={t("otpTitle")}
-        className="mt-6 w-52 rounded-2xl border-2 bg-white py-4 text-center text-3xl font-bold tracking-[0.4em] text-neutral-800 outline-none"
-        style={{ borderColor: accent, caretColor: accent }}
-      />
-
-      {err && <p className="mt-3 max-w-xs text-sm font-medium text-red-600">{err}</p>}
-
-      <button
-        onClick={submit}
-        disabled={checking || code.trim().length < 4}
-        className="mt-6 w-52 rounded-2xl py-4 font-semibold text-white shadow transition active:scale-[0.99] disabled:opacity-50"
-        style={{ background: `linear-gradient(135deg, ${accent}, ${shade(accent, -18)})` }}
-      >
-        {checking ? t("otpVerifying") : t("otpSubmit")}
-      </button>
+          {checking ? t("otpVerifying") : t("otpSubmit")}
+        </button>
+      </div>
     </div>
   );
 }
 
 function Centered({ children }: { children: React.ReactNode }) {
   return (
-    <div className="mx-auto flex min-h-screen max-w-md items-center justify-center p-6 text-center text-neutral-600">
+    <div
+      className="mx-auto flex min-h-screen max-w-md items-center justify-center p-6 text-center text-[#9A978F]"
+      style={{ backgroundColor: "#08080A", fontFamily: "Roboto, system-ui, sans-serif" }}
+    >
+      <style>{GLOBAL_CSS}</style>
       {children}
     </div>
   );
