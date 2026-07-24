@@ -17,17 +17,17 @@ export function SubscriptionBanner() {
   const [info, setInfo] = useState<BillingInfo | null>(null);
 
   useEffect(() => {
-    if (!rid || !isAdmin) return;
+    if (!rid || !isAdmin) {return;}
     let active = true;
     getBilling(rid)
-      .then((d) => { if (active) setInfo(d); })
+      .then((d) => { if (active) {setInfo(d);} })
       .catch(() => { /* best-effort */ });
     return () => { active = false; };
   }, [rid, isAdmin]);
 
-  if (!isAdmin || !info?.configured) return null;
+  if (!isAdmin || !info?.configured) {return null;}
   const sub = info.subscription;
-  if (!sub) return null;
+  if (!sub) {return null;}
 
   const days = sub.trial_ends_at
     ? Math.ceil((new Date(sub.trial_ends_at).getTime() - Date.now()) / 86_400_000)
@@ -44,7 +44,7 @@ export function SubscriptionBanner() {
     message = "Your subscription payment is overdue. Please update your billing.";
     urgent = true;
   }
-  if (!message) return null;
+  if (!message) {return null;}
 
   const cls = urgent
     ? "bg-red-50 border-red-300 text-red-800"

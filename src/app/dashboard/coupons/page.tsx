@@ -26,7 +26,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { PlusCircle, Trash2, Ticket, Pencil, Gift } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/hooks/use-toast";
-import { Coupon, CouponInput, getCoupons, saveCoupon, deleteCoupon, createGiftVoucher } from "@/lib/db";
+import type { Coupon, CouponInput} from "@/lib/db";
+import { getCoupons, saveCoupon, deleteCoupon, createGiftVoucher } from "@/lib/db";
 
 const blank: CouponInput = {
   code: "",
@@ -44,7 +45,7 @@ const blank: CouponInput = {
 
 // ISO <-> input[type=datetime-local] helpers.
 const toLocalInput = (iso: string | null | undefined) => {
-  if (!iso) return "";
+  if (!iso) {return "";}
   const d = new Date(iso);
   const off = d.getTimezoneOffset();
   return new Date(d.getTime() - off * 60000).toISOString().slice(0, 16);
@@ -67,7 +68,7 @@ export default function CouponsPage() {
   const [issuing, setIssuing] = useState(false);
 
   const load = useCallback(async () => {
-    if (!restaurantId) return;
+    if (!restaurantId) {return;}
     try {
       setCoupons(await getCoupons(restaurantId));
     } catch {
@@ -102,7 +103,7 @@ export default function CouponsPage() {
   };
 
   const save = async () => {
-    if (!restaurantId) return;
+    if (!restaurantId) {return;}
     setSaving(true);
     try {
       await saveCoupon(restaurantId, form);
@@ -117,7 +118,7 @@ export default function CouponsPage() {
   };
 
   const remove = async (c: Coupon) => {
-    if (!restaurantId) return;
+    if (!restaurantId) {return;}
     try {
       await deleteCoupon(restaurantId, c.id);
       await load();
@@ -127,9 +128,9 @@ export default function CouponsPage() {
   };
 
   const issueVoucher = async () => {
-    if (!restaurantId) return;
+    if (!restaurantId) {return;}
     const amount = Number(voucherAmount) || 0;
-    if (amount <= 0) return;
+    if (amount <= 0) {return;}
     setIssuing(true);
     try {
       const v = await createGiftVoucher(restaurantId, { amount, ...(voucherCode.trim() ? { code: voucherCode.trim() } : {}) });
@@ -148,7 +149,7 @@ export default function CouponsPage() {
     return <div className="p-4"><p>You do not have permission to view this page. Required role: admin.</p></div>;
   }
 
-  const set = (patch: Partial<CouponInput>) => setForm((f) => ({ ...f, ...patch }));
+  const set = (patch: Partial<CouponInput>) => { setForm((f) => ({ ...f, ...patch })); };
   const numOrNull = (v: string) => (v === "" ? null : Math.max(0, Number(v) || 0));
   const promos = coupons.filter((c) => c.kind !== "gift");
   const vouchers = coupons.filter((c) => c.kind === "gift");
@@ -200,7 +201,7 @@ export default function CouponsPage() {
                       <TableCell>{c.active ? <Badge>Active</Badge> : <Badge variant="secondary">Off</Badge>}</TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-1">
-                          <Button variant="ghost" size="icon" onClick={() => openEdit(c)}><Pencil className="h-4 w-4" /></Button>
+                          <Button variant="ghost" size="icon" onClick={() => { openEdit(c); }}><Pencil className="h-4 w-4" /></Button>
                           <Button variant="ghost" size="icon" className="text-destructive" onClick={() => void remove(c)}><Trash2 className="h-4 w-4" /></Button>
                         </div>
                       </TableCell>
@@ -222,11 +223,11 @@ export default function CouponsPage() {
           <div className="flex flex-wrap items-end gap-2">
             <div className="grid gap-1">
               <Label>Amount (₹)</Label>
-              <Input type="number" min="0" className="w-32" value={voucherAmount} onChange={(e) => setVoucherAmount(e.target.value)} placeholder="500" />
+              <Input type="number" min="0" className="w-32" value={voucherAmount} onChange={(e) => { setVoucherAmount(e.target.value); }} placeholder="500" />
             </div>
             <div className="grid gap-1">
               <Label>Code (optional)</Label>
-              <Input className="w-44 font-mono" value={voucherCode} onChange={(e) => setVoucherCode(e.target.value.toUpperCase())} placeholder="auto-generated" />
+              <Input className="w-44 font-mono" value={voucherCode} onChange={(e) => { setVoucherCode(e.target.value.toUpperCase()); }} placeholder="auto-generated" />
             </div>
             <Button onClick={() => void issueVoucher()} disabled={issuing || (Number(voucherAmount) || 0) <= 0}>
               {issuing ? "Issuing…" : "Issue voucher"}
@@ -273,11 +274,11 @@ export default function CouponsPage() {
             <div className="grid grid-cols-2 gap-3">
               <div className="grid gap-1">
                 <Label>Code</Label>
-                <Input value={form.code} onChange={(e) => set({ code: e.target.value.toUpperCase() })} placeholder="SAVE10" className="font-mono" />
+                <Input value={form.code} onChange={(e) => { set({ code: e.target.value.toUpperCase() }); }} placeholder="SAVE10" className="font-mono" />
               </div>
               <div className="grid gap-1">
                 <Label>Type</Label>
-                <Select value={form.type} onValueChange={(v) => set({ type: v as "percent" | "flat" })}>
+                <Select value={form.type} onValueChange={(v) => { set({ type: v as "percent" | "flat" }); }}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="percent">Percentage (%)</SelectItem>
@@ -288,42 +289,42 @@ export default function CouponsPage() {
             </div>
             <div className="grid gap-1">
               <Label>Description (optional)</Label>
-              <Input value={form.description ?? ""} onChange={(e) => set({ description: e.target.value })} placeholder="e.g., Weekday lunch offer" />
+              <Input value={form.description ?? ""} onChange={(e) => { set({ description: e.target.value }); }} placeholder="e.g., Weekday lunch offer" />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="grid gap-1">
                 <Label>{form.type === "percent" ? "Percent off" : "Amount off (₹)"}</Label>
-                <Input type="number" min="0" value={form.value} onChange={(e) => set({ value: Number(e.target.value) || 0 })} />
+                <Input type="number" min="0" value={form.value} onChange={(e) => { set({ value: Number(e.target.value) || 0 }); }} />
               </div>
               {form.type === "percent" && (
                 <div className="grid gap-1">
                   <Label>Max discount cap (₹)</Label>
-                  <Input type="number" min="0" value={form.max_discount ?? ""} onChange={(e) => set({ max_discount: numOrNull(e.target.value) })} placeholder="no cap" />
+                  <Input type="number" min="0" value={form.max_discount ?? ""} onChange={(e) => { set({ max_discount: numOrNull(e.target.value) }); }} placeholder="no cap" />
                 </div>
               )}
               <div className="grid gap-1">
                 <Label>Min order (₹)</Label>
-                <Input type="number" min="0" value={form.min_order ?? ""} onChange={(e) => set({ min_order: numOrNull(e.target.value) })} placeholder="0" />
+                <Input type="number" min="0" value={form.min_order ?? ""} onChange={(e) => { set({ min_order: numOrNull(e.target.value) }); }} placeholder="0" />
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="grid gap-1">
                 <Label>Total usage limit</Label>
-                <Input type="number" min="0" value={form.usage_limit ?? ""} onChange={(e) => set({ usage_limit: numOrNull(e.target.value) })} placeholder="unlimited" />
+                <Input type="number" min="0" value={form.usage_limit ?? ""} onChange={(e) => { set({ usage_limit: numOrNull(e.target.value) }); }} placeholder="unlimited" />
               </div>
               <div className="grid gap-1">
                 <Label>Per-customer limit</Label>
-                <Input type="number" min="0" value={form.per_customer_limit ?? ""} onChange={(e) => set({ per_customer_limit: numOrNull(e.target.value) })} placeholder="unlimited" />
+                <Input type="number" min="0" value={form.per_customer_limit ?? ""} onChange={(e) => { set({ per_customer_limit: numOrNull(e.target.value) }); }} placeholder="unlimited" />
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="grid gap-1">
                 <Label>Valid from</Label>
-                <Input type="datetime-local" value={toLocalInput(form.valid_from)} onChange={(e) => set({ valid_from: fromLocalInput(e.target.value) })} />
+                <Input type="datetime-local" value={toLocalInput(form.valid_from)} onChange={(e) => { set({ valid_from: fromLocalInput(e.target.value) }); }} />
               </div>
               <div className="grid gap-1">
                 <Label>Valid until</Label>
-                <Input type="datetime-local" value={toLocalInput(form.valid_to)} onChange={(e) => set({ valid_to: fromLocalInput(e.target.value) })} />
+                <Input type="datetime-local" value={toLocalInput(form.valid_to)} onChange={(e) => { set({ valid_to: fromLocalInput(e.target.value) }); }} />
               </div>
             </div>
             <div className="flex items-center justify-between rounded-md border p-3">
@@ -331,11 +332,11 @@ export default function CouponsPage() {
                 <p className="text-sm font-medium">Active</p>
                 <p className="text-xs text-muted-foreground">Customers can redeem this code.</p>
               </div>
-              <Switch checked={form.active !== false} onCheckedChange={(v) => set({ active: v })} />
+              <Switch checked={form.active !== false} onCheckedChange={(v) => { set({ active: v }); }} />
             </div>
           </div>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
+            <Button variant="ghost" onClick={() => { setOpen(false); }}>Cancel</Button>
             <Button onClick={() => void save()} disabled={saving || !form.code.trim()}>{saving ? "Saving…" : "Save coupon"}</Button>
           </DialogFooter>
         </DialogContent>

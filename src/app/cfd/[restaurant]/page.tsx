@@ -14,9 +14,9 @@ const BASE = guestBackendBase();
 const DEFAULT_ACCENT = "#ea580c";
 const POLL_MS = 5000;
 
-type TaxLine = { name: string; percentage: number; amount: number };
-type BillData = {
-  items: Array<{ name: string; price: number; quantity: number }>;
+interface TaxLine { name: string; percentage: number; amount: number }
+interface BillData {
+  items: { name: string; price: number; quantity: number }[];
   subtotal: number;
   discount: number;
   coupon_code: string | null;
@@ -26,7 +26,7 @@ type BillData = {
   tax_total: number;
   grand_total: number;
   payment_status: string | null;
-};
+}
 
 // Decode the friendly table name from the opaque ?t= token (base64url(name).sig).
 function decodeTableName(token: string): string {
@@ -43,7 +43,7 @@ function decodeTableName(token: string): string {
 
 function shade(hex: string, pct: number): string {
   const m = /^#([0-9a-fA-F]{6})$/.exec(hex);
-  if (!m) return hex;
+  if (!m) {return hex;}
   const num = parseInt(m[1], 16);
   const amt = Math.round(2.55 * pct);
   const r = Math.min(255, Math.max(0, (num >> 16) + amt));
@@ -68,19 +68,19 @@ function CfdInner() {
 
   // Branding (same public fetch the reservation/queue pages use).
   useEffect(() => {
-    if (!restaurant) return;
+    if (!restaurant) {return;}
     let active = true;
     (async () => {
       try {
         const res = await fetch(`${BASE}/qr/${encodeURIComponent(restaurant)}/branding`, { cache: "no-store" });
         const data = await res.json();
-        if (!res.ok || !active) return;
+        if (!res.ok || !active) {return;}
         setRestaurantName(typeof data.restaurant_name === "string" ? data.restaurant_name : restaurant);
-        if (typeof data.logo_url === "string") setLogoUrl(data.logo_url);
+        if (typeof data.logo_url === "string") {setLogoUrl(data.logo_url);}
         const hex = (v: unknown) => (typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v) ? v : null);
         const themePref = hex(data.theme_primary) ?? hex(data.theme_color);
-        if (themePref) setAccent(themePref);
-        if (typeof data.currency === "string" && data.currency.trim()) setCurrency(data.currency.trim());
+        if (themePref) {setAccent(themePref);}
+        if (typeof data.currency === "string" && data.currency.trim()) {setCurrency(data.currency.trim());}
       } catch {/* keep defaults */}
     })();
     return () => { active = false; };
@@ -88,7 +88,7 @@ function CfdInner() {
 
   // Live bill — poll every 5s (same endpoint + shape the QR order page reads).
   const loadBill = useCallback(async () => {
-    if (!restaurant || !token) return;
+    if (!restaurant || !token) {return;}
     try {
       const res = await fetch(`${BASE}/qr/${encodeURIComponent(restaurant)}/bill?t=${encodeURIComponent(token)}`, { cache: "no-store" });
       const data = await res.json();
@@ -114,7 +114,7 @@ function CfdInner() {
   useEffect(() => {
     void loadBill();
     const t = setInterval(() => { void loadBill(); }, POLL_MS);
-    return () => clearInterval(t);
+    return () => { clearInterval(t); };
   }, [loadBill]);
 
   const money = (n: number) => `${currency}${n.toFixed(2)}`;

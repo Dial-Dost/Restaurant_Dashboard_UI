@@ -55,18 +55,18 @@ function EmployeeLoginContent() {
       setRestaurantName(name);
       setIsReady(true);
     }, 0);
-    return () => clearTimeout(id);
+    return () => { clearTimeout(id); };
   }, [searchParams]);
 
   // Once the restaurant is known, fetch its outlets. A single outlet (or an
   // empty/failed fetch) keeps the classic single-outlet form; more than one
   // renders a picker. Restores the last chosen outlet for this restaurant.
   useEffect(() => {
-    if (!restaurantName) return;
+    if (!restaurantName) {return;}
     let cancelled = false;
     (async () => {
       const list = await getOutlets(restaurantName);
-      if (cancelled) return;
+      if (cancelled) {return;}
       setOutlets(list);
       if (list.length > 1) {
         let preselect = list[0].id;

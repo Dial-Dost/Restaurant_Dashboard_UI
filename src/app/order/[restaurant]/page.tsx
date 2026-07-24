@@ -9,14 +9,14 @@ const BASE = guestBackendBase();
 const DEFAULT_ACCENT = "#ea580c";
 const HEX_RE = /^#[0-9a-fA-F]{6}$/;
 
-type ModOption = { name: string; price: number };
-type ModGroup = { name: string; multi: boolean; required: boolean; options: ModOption[] };
-type MenuItem = { id: string; name: string; price: number; category: string; image_url?: string; available?: boolean; modifiers?: ModGroup[]; allergens?: string[] };
-type CartLine = { key: string; itemId: string; name: string; unitPrice: number; quantity: number };
-type PayMethod = { id: string; label: string; enabled?: boolean; requires_screenshot?: boolean; online?: boolean };
-type TaxLine = { name: string; percentage: number; amount: number };
-type BillData = {
-  items: Array<{ name: string; price: number; quantity: number }>;
+interface ModOption { name: string; price: number }
+interface ModGroup { name: string; multi: boolean; required: boolean; options: ModOption[] }
+interface MenuItem { id: string; name: string; price: number; category: string; image_url?: string; available?: boolean; modifiers?: ModGroup[]; allergens?: string[] }
+interface CartLine { key: string; itemId: string; name: string; unitPrice: number; quantity: number }
+interface PayMethod { id: string; label: string; enabled?: boolean; requires_screenshot?: boolean; online?: boolean }
+interface TaxLine { name: string; percentage: number; amount: number }
+interface BillData {
+  items: { name: string; price: number; quantity: number }[];
   subtotal: number;
   discount: number;
   coupon_code: string | null;
@@ -26,7 +26,7 @@ type BillData = {
   tax_total: number;
   grand_total: number;
   payment_status: string | null;
-};
+}
 
 // Fallback if the restaurant hasn't configured methods (or the API omits them).
 const DEFAULT_METHODS: PayMethod[] = [
@@ -239,7 +239,7 @@ function OrderInner() {
 
   // Restore a previously-verified table OTP (keyed by the signed table token).
   useEffect(() => {
-    if (!token) return;
+    if (!token) {return;}
     try {
       const saved = localStorage.getItem(`otp_ok_${token}`);
       if (saved) { setVerifiedOtp(saved); setOtpVerified(true); }
@@ -261,7 +261,7 @@ function OrderInner() {
   useEffect(() => {
     try {
       const saved = localStorage.getItem(LANG_KEY);
-      if (saved === "en" || saved === "hi") setLang(saved);
+      if (saved === "en" || saved === "hi") {setLang(saved);}
     } catch {/* private mode etc. */}
   }, []);
   const switchLang = (l: Lang) => {
@@ -277,20 +277,20 @@ function OrderInner() {
   const drag = useRef({ down: false, startX: 0, startScroll: 0, moved: false });
   const onTabsPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     const el = tabsRef.current;
-    if (!el) return;
+    if (!el) {return;}
     drag.current = { down: true, startX: e.clientX, startScroll: el.scrollLeft, moved: false };
   };
   const onTabsPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     const el = tabsRef.current;
-    if (!el || !drag.current.down) return;
+    if (!el || !drag.current.down) {return;}
     const dx = e.clientX - drag.current.startX;
-    if (Math.abs(dx) > 4) drag.current.moved = true;
+    if (Math.abs(dx) > 4) {drag.current.moved = true;}
     el.scrollLeft = drag.current.startScroll - dx;
   };
   const endTabsDrag = () => { drag.current.down = false; };
 
   const loadBill = useCallback(async () => {
-    if (!token) return;
+    if (!token) {return;}
     try {
       const res = await fetch(`${BASE}/qr/${encodeURIComponent(restaurant)}/bill?t=${encodeURIComponent(token)}`, {
         cache: "no-store",
@@ -323,8 +323,8 @@ function OrderInner() {
       try {
         const res = await fetch(`${BASE}/qr/${encodeURIComponent(restaurant)}/menu`, { cache: "no-store" });
         const data = await res.json();
-        if (!res.ok) throw new Error(data?.error ?? "Failed to load menu");
-        if (!active) return;
+        if (!res.ok) {throw new Error(data?.error ?? "Failed to load menu");}
+        if (!active) {return;}
         setRestaurantName(data.restaurant_name ?? restaurant);
         setLogoUrl(typeof data.logo_url === "string" ? data.logo_url : "");
         // brand_config.color_primary wins, then the logo-derived primary, then
@@ -333,15 +333,15 @@ function OrderInner() {
         const bcfg = data.brand_config && typeof data.brand_config === "object" ? (data.brand_config as BrandConfig) : null;
         setBrandConfig(bcfg);
         const themePref = hex(bcfg?.color_primary) ?? hex(data.theme_primary) ?? hex(data.theme_color);
-        if (themePref) setAccent(themePref);
-        if (typeof data.currency === "string" && data.currency.trim()) setCurrency(data.currency.trim());
-        if (Array.isArray(data.payment_methods) && data.payment_methods.length > 0) setPayMethods(data.payment_methods);
+        if (themePref) {setAccent(themePref);}
+        if (typeof data.currency === "string" && data.currency.trim()) {setCurrency(data.currency.trim());}
+        if (Array.isArray(data.payment_methods) && data.payment_methods.length > 0) {setPayMethods(data.payment_methods);}
         setRequireOtp(data.require_table_otp === true);
         setItems(Array.isArray(data.items) ? data.items : []);
       } catch (e: any) {
-        if (active) setError(e?.message ?? "Failed to load menu");
+        if (active) {setError(e?.message ?? "Failed to load menu");}
       } finally {
-        if (active) setLoading(false);
+        if (active) {setLoading(false);}
       }
     })();
     loadBill();
@@ -351,13 +351,13 @@ function OrderInner() {
   }, [restaurant, loadBill]);
 
   useEffect(() => {
-    if (!toast) return;
-    const t = setTimeout(() => setToast(null), 3500);
-    return () => clearTimeout(t);
+    if (!toast) {return;}
+    const t = setTimeout(() => { setToast(null); }, 3500);
+    return () => { clearTimeout(t); };
   }, [toast]);
 
   // Load the tenant's chosen Google Font (once) so the page renders in it.
-  useEffect(() => { if (brandConfig?.font) loadBrandFont(brandConfig.font); }, [brandConfig?.font]);
+  useEffect(() => { if (brandConfig?.font) {loadBrandFont(brandConfig.font);} }, [brandConfig?.font]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -365,7 +365,7 @@ function OrderInner() {
   }, [items, query]);
   const byCategory = useMemo(() => {
     const m: Record<string, MenuItem[]> = {};
-    for (const it of items) (m[it.category || "Menu"] ??= []).push(it);
+    for (const it of items) {(m[it.category || "Menu"] ??= []).push(it);}
     return m;
   }, [items]);
   const categories = useMemo(() => Object.keys(byCategory).sort(), [byCategory]);
@@ -378,20 +378,20 @@ function OrderInner() {
   const cartCount = cartLines.reduce((s, l) => s + l.quantity, 0);
 
   const setLineQty = (key: string, d: number) =>
-    setCart((c) => {
+    { setCart((c) => {
       const line = c[key];
-      if (!line) return c;
+      if (!line) {return c;}
       const q = line.quantity + d;
       const next = { ...c };
-      if (q <= 0) delete next[key];
-      else next[key] = { ...line, quantity: q };
+      if (q <= 0) {delete next[key];}
+      else {next[key] = { ...line, quantity: q };}
       return next;
-    });
+    }); };
   const addLine = (line: CartLine) =>
-    setCart((c) => {
+    { setCart((c) => {
       const ex = c[line.key];
       return { ...c, [line.key]: ex ? { ...ex, quantity: ex.quantity + line.quantity } : line };
-    });
+    }); };
   // Add a plain item (no modifiers) keyed by its id; modifier items open the sheet.
   const addItem = (it: MenuItem) => {
     if (it.modifiers && it.modifiers.length > 0) {
@@ -439,7 +439,7 @@ function OrderInner() {
       if (!res.ok) {
         // A stale/rotated code (e.g. table was released & re-seated) — drop the
         // saved verification so the guest is re-prompted with the gate.
-        if (data?.code === "otp_required" || data?.code === "otp_wrong") clearOtpVerified();
+        if (data?.code === "otp_required" || data?.code === "otp_wrong") {clearOtpVerified();}
         throw new Error(data?.error ?? "Order failed");
       }
       setBillTotal(Number(data?.bill_total ?? cartTotal));
@@ -458,7 +458,7 @@ function OrderInner() {
   if (!token) {
     return <Centered>{t("scanPrompt")}</Centered>;
   }
-  if (loading) return <Centered>{t("loadingMenu")}</Centered>;
+  if (loading) {return <Centered>{t("loadingMenu")}</Centered>;}
 
   // Once the bill is settled, ordering is locked — the guest must re-scan the QR
   // (which starts a fresh table session) to order again.
@@ -563,7 +563,7 @@ function OrderInner() {
               {(["en", "hi"] as const).map((l) => (
                 <button
                   key={l}
-                  onClick={() => switchLang(l)}
+                  onClick={() => { switchLang(l); }}
                   aria-pressed={lang === l}
                   className={`px-2.5 py-1 transition ${lang === l ? "bg-white/90" : "text-white/90"}`}
                   style={lang === l ? { color: accent } : undefined}
@@ -582,7 +582,7 @@ function OrderInner() {
         <div className="px-4 pt-3">
           <input
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => { setQuery(e.target.value); }}
             placeholder={t("searchPlaceholder")}
             className="w-full rounded-full border border-neutral-200 bg-white px-4 py-2 text-sm text-neutral-800 outline-none"
             style={{ caretColor: accent }}
@@ -602,7 +602,7 @@ function OrderInner() {
               return (
                 <button
                   key={cat}
-                  onClick={() => { if (!drag.current.moved) setActiveCat(cat); }}
+                  onClick={() => { if (!drag.current.moved) {setActiveCat(cat);} }}
                   className="whitespace-nowrap rounded-full px-4 py-1.5 text-sm font-medium shadow-sm ring-1 transition"
                   style={on
                     ? { backgroundColor: accent, color: bc ? onAccent : "white", borderColor: accent, boxShadow: "none" }
@@ -646,15 +646,15 @@ function OrderInner() {
                 {soldOut ? (
                   <span className="rounded-full bg-neutral-200 px-3 py-1.5 text-xs font-semibold text-neutral-500">{t("soldOut")}</span>
                 ) : (it.modifiers && it.modifiers.length > 0) ? (
-                  <button onClick={() => addItem(it)} className="rounded-full px-4 py-2 text-sm font-semibold text-white shadow transition active:scale-95" style={{ backgroundColor: accent, ...accentBtnStyle }}>{t("customize")}</button>
+                  <button onClick={() => { addItem(it); }} className="rounded-full px-4 py-2 text-sm font-semibold text-white shadow transition active:scale-95" style={{ backgroundColor: accent, ...accentBtnStyle }}>{t("customize")}</button>
                 ) : cart[it.id] ? (
                   <div className="flex items-center gap-2 rounded-full px-2 py-1" style={{ backgroundColor: tint(accent) }}>
-                    <button onClick={() => setLineQty(it.id, -1)} className="h-7 w-7 rounded-full bg-white text-lg leading-none shadow" style={{ color: accent }}>−</button>
+                    <button onClick={() => { setLineQty(it.id, -1); }} className="h-7 w-7 rounded-full bg-white text-lg leading-none shadow" style={{ color: accent }}>−</button>
                     <span className="w-4 text-center font-semibold" style={{ color: accent }}>{cart[it.id].quantity}</span>
-                    <button onClick={() => setLineQty(it.id, 1)} className="h-7 w-7 rounded-full text-lg leading-none text-white shadow" style={{ backgroundColor: accent, ...(bc ? { color: onAccent } : {}) }}>+</button>
+                    <button onClick={() => { setLineQty(it.id, 1); }} className="h-7 w-7 rounded-full text-lg leading-none text-white shadow" style={{ backgroundColor: accent, ...(bc ? { color: onAccent } : {}) }}>+</button>
                   </div>
                 ) : (
-                  <button onClick={() => addItem(it)} className="rounded-full px-4 py-2 text-sm font-semibold text-white shadow transition active:scale-95" style={{ backgroundColor: accent, ...accentBtnStyle }}>{t("add")}</button>
+                  <button onClick={() => { addItem(it); }} className="rounded-full px-4 py-2 text-sm font-semibold text-white shadow transition active:scale-95" style={{ backgroundColor: accent, ...accentBtnStyle }}>{t("add")}</button>
                 )}
               </div>
             );
@@ -666,7 +666,7 @@ function OrderInner() {
       {cartCount > 0 && !showCart && (
         <div className="fixed inset-x-0 bottom-0 mx-auto max-w-md p-4">
           <button
-            onClick={() => setShowCart(true)}
+            onClick={() => { setShowCart(true); }}
             className="flex w-full items-center justify-between rounded-2xl px-5 py-4 text-white shadow-xl ring-1 ring-black/5 transition active:scale-[0.98]"
             style={{ background: `linear-gradient(135deg, ${accent}, ${gradEnd})`, ...(bc ? { color: onAccent } : {}) }}
           >
@@ -694,7 +694,7 @@ function OrderInner() {
           onGuestName={setGuestName}
           guestPhone={guestPhone}
           onGuestPhone={setGuestPhone}
-          onClose={() => setShowCart(false)}
+          onClose={() => { setShowCart(false); }}
           onConfirm={placeOrder}
           t={t}
         />
@@ -705,7 +705,7 @@ function OrderInner() {
           item={modItem}
           accent={accent}
           currency={currency}
-          onClose={() => setModItem(null)}
+          onClose={() => { setModItem(null); }}
           onAdd={(line) => { addLine(line); setModItem(null); }}
           t={t}
         />
@@ -725,7 +725,7 @@ function OrderInner() {
           restaurant={restaurant}
           token={token}
           onApplied={() => void loadBill()}
-          onClose={() => setShowBill(false)}
+          onClose={() => { setShowBill(false); }}
           onPay={() => { setShowBill(false); setShowPay(true); }}
           onDownload={() => { try { window.print(); } catch { /* ignore */ } }}
           t={t}
@@ -743,7 +743,7 @@ function OrderInner() {
           methods={payMethods}
           billTotal={billTotal}
           t={t}
-          onClose={() => setShowPay(false)}
+          onClose={() => { setShowPay(false); }}
           onPaid={(msg, feedbackUrl) => {
             setShowPay(false);
             setSettled(true); // lock ordering — a new order needs a fresh QR scan
@@ -765,7 +765,7 @@ function OrderInner() {
 // Lighten/darken a hex color by a percentage (-100..100) for gradients/tints.
 function shade(hex: string, pct: number): string {
   const m = /^#([0-9a-fA-F]{6})$/.exec(hex);
-  if (!m) return hex;
+  if (!m) {return hex;}
   const num = parseInt(m[1], 16);
   const amt = Math.round(2.55 * pct);
   const r = Math.min(255, Math.max(0, (num >> 16) + amt));
@@ -775,7 +775,7 @@ function shade(hex: string, pct: number): string {
 }
 function tint(hex: string): string {
   const m = /^#([0-9a-fA-F]{6})$/.exec(hex);
-  if (!m) return "#fff3ec";
+  if (!m) {return "#fff3ec";}
   const num = parseInt(m[1], 16);
   return `rgba(${num >> 16}, ${(num >> 8) & 0xff}, ${num & 0xff}, 0.12)`;
 }
@@ -794,21 +794,21 @@ function ModifierSheet(props: {
   const [sel, setSel] = useState<Record<number, string[]>>(() => {
     const init: Record<number, string[]> = {};
     groups.forEach((g, i) => {
-      if (!g.multi && g.required && g.options[0]) init[i] = [g.options[0].name];
-      else init[i] = [];
+      if (!g.multi && g.required && g.options[0]) {init[i] = [g.options[0].name];}
+      else {init[i] = [];}
     });
     return init;
   });
   const [err, setErr] = useState<string | null>(null);
 
   const toggle = (gi: number, name: string, multi: boolean) =>
-    setSel((s) => {
+    { setSel((s) => {
       const cur = s[gi] ?? [];
       if (multi) {
         return { ...s, [gi]: cur.includes(name) ? cur.filter((n) => n !== name) : [...cur, name] };
       }
       return { ...s, [gi]: cur.includes(name) ? [] : [name] };
-    });
+    }); };
 
   const optByName = (g: ModGroup, name: string) => g.options.find((o) => o.name === name);
   const delta = groups.reduce((sum, g, i) => sum + (sel[i] ?? []).reduce((s, n) => s + (optByName(g, n)?.price ?? 0), 0), 0);
@@ -834,7 +834,7 @@ function ModifierSheet(props: {
 
   return (
     <div className="fixed inset-0 z-30 flex items-end justify-center bg-black/40" onClick={onClose}>
-      <div className="mx-auto flex max-h-[92dvh] w-full max-w-md flex-col rounded-t-3xl bg-white p-5" onClick={(e) => e.stopPropagation()}>
+      <div className="mx-auto flex max-h-[92dvh] w-full max-w-md flex-col rounded-t-3xl bg-white p-5" onClick={(e) => { e.stopPropagation(); }}>
         <div className="shrink-0">
           <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-neutral-300" />
           <h2 className="text-lg font-bold">{item.name}</h2>
@@ -855,7 +855,7 @@ function ModifierSheet(props: {
                   return (
                     <button
                       key={o.name}
-                      onClick={() => toggle(gi, o.name, g.multi)}
+                      onClick={() => { toggle(gi, o.name, g.multi); }}
                       className="flex w-full items-center justify-between rounded-xl border px-4 py-3 text-sm"
                       style={on ? { borderColor: accent, backgroundColor: tint(accent) } : { borderColor: "#e5e5e5" }}
                     >
@@ -916,7 +916,7 @@ function CartSheet(props: {
   const contactOk = guestName.trim().length > 0 && guestPhone.replace(/\D/g, "").length >= 10;
   return (
     <div className="fixed inset-0 z-30 flex items-end justify-center bg-black/40" onClick={onClose}>
-      <div className="mx-auto flex max-h-[92dvh] w-full max-w-md flex-col rounded-t-3xl bg-white" onClick={(e) => e.stopPropagation()}>
+      <div className="mx-auto flex max-h-[92dvh] w-full max-w-md flex-col rounded-t-3xl bg-white" onClick={(e) => { e.stopPropagation(); }}>
         <div className="shrink-0 px-5 pt-5">
           <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-neutral-300" />
           <h2 className="mb-1 text-lg font-bold" style={{ color: 'black' }}>
@@ -940,9 +940,9 @@ function CartSheet(props: {
                   <p className="text-sm text-neutral-500">{currency}{l.unitPrice.toFixed(2)}</p>
                 </div>
                 <div className="flex items-center gap-2 rounded-full px-2 py-1" style={{ backgroundColor: tint(accent) }}>
-                  <button onClick={() => onQty(l.key, -1)} className="h-7 w-7 rounded-full bg-white text-lg leading-none shadow" style={{ color: accent }}>−</button>
+                  <button onClick={() => { onQty(l.key, -1); }} className="h-7 w-7 rounded-full bg-white text-lg leading-none shadow" style={{ color: accent }}>−</button>
                   <span className="w-4 text-center font-semibold" style={{ color: accent }}>{l.quantity}</span>
-                  <button onClick={() => onQty(l.key, 1)} className="h-7 w-7 rounded-full text-lg leading-none text-white shadow" style={{ backgroundColor: accent }}>+</button>
+                  <button onClick={() => { onQty(l.key, 1); }} className="h-7 w-7 rounded-full text-lg leading-none text-white shadow" style={{ backgroundColor: accent }}>+</button>
                 </div>
                 <span className="w-16 text-right font-semibold text-neutral-800">{currency}{(l.unitPrice * l.quantity).toFixed(0)}</span>
               </div>
@@ -955,14 +955,14 @@ function CartSheet(props: {
             <div className="mt-4 grid grid-cols-2 gap-2">
               <input
                 value={guestName}
-                onChange={(e) => onGuestName(e.target.value)}
+                onChange={(e) => { onGuestName(e.target.value); }}
                 maxLength={60}
                 placeholder={t("guestName")}
                 className="w-full rounded-xl border border-neutral-200 p-3 text-sm text-neutral-800 outline-none focus:border-neutral-400"
               />
               <input
                 value={guestPhone}
-                onChange={(e) => onGuestPhone(e.target.value)}
+                onChange={(e) => { onGuestPhone(e.target.value); }}
                 inputMode="tel"
                 maxLength={16}
                 placeholder={t("guestPhone")}
@@ -974,7 +974,7 @@ function CartSheet(props: {
             )}
             <textarea
               value={note}
-              onChange={(e) => onNote(e.target.value)}
+              onChange={(e) => { onNote(e.target.value); }}
               maxLength={500}
               rows={2}
               placeholder={t("notePlaceholder")}
@@ -1037,7 +1037,7 @@ function BillSheet(props: {
 
   const applyCoupon = async () => {
     const code = coupon.trim();
-    if (!code) return;
+    if (!code) {return;}
     setApplying(true);
     setCouponMsg(null);
     try {
@@ -1061,7 +1061,7 @@ function BillSheet(props: {
   };
   return (
     <div className="fixed inset-0 z-30 flex items-end justify-center bg-black/40" onClick={onClose}>
-      <div className="mx-auto flex max-h-[92dvh] w-full max-w-md flex-col overflow-y-auto overscroll-contain rounded-t-3xl bg-white p-5" onClick={(e) => e.stopPropagation()}>
+      <div className="mx-auto flex max-h-[92dvh] w-full max-w-md flex-col overflow-y-auto overscroll-contain rounded-t-3xl bg-white p-5" onClick={(e) => { e.stopPropagation(); }}>
         <div className="shrink-0">
           <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-neutral-300" />
           <h2 className="mb-1 text-lg font-bold" style={{ color: 'black' }}>{t("yourBill")}</h2>
@@ -1091,7 +1091,7 @@ function BillSheet(props: {
                 <div className="flex gap-2">
                   <input
                     value={coupon}
-                    onChange={(e) => setCoupon(e.target.value.toUpperCase())}
+                    onChange={(e) => { setCoupon(e.target.value.toUpperCase()); }}
                     placeholder={t("couponPlaceholder")}
                     className="min-w-0 flex-1 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-2.5 text-sm font-medium tracking-wide text-neutral-800 outline-none"
                     style={{ caretColor: accent }}
@@ -1184,7 +1184,7 @@ function GuestBillReceipt(props: {
   currency: string;
 }) {
   const { bill, restaurantName, logoUrl, tableLabel, currency } = props;
-  if (!bill) return null;
+  if (!bill) {return null;}
   const items = bill.items ?? [];
   const money = (n: number) => `${currency}${Number(n || 0).toFixed(2)}`;
   const cell = { padding: "2px 0" };
@@ -1259,12 +1259,12 @@ function GuestBillReceipt(props: {
 
 function loadRazorpay(): Promise<boolean> {
   return new Promise((resolve) => {
-    if (typeof window === "undefined") return resolve(false);
-    if ((window as unknown as { Razorpay?: unknown }).Razorpay) return resolve(true);
+    if (typeof window === "undefined") {resolve(false); return;}
+    if ((window as unknown as { Razorpay?: unknown }).Razorpay) {resolve(true); return;}
     const s = document.createElement("script");
     s.src = "https://checkout.razorpay.com/v1/checkout.js";
-    s.onload = () => resolve(true);
-    s.onerror = () => resolve(false);
+    s.onload = () => { resolve(true); };
+    s.onerror = () => { resolve(false); };
     document.body.appendChild(s);
   });
 }
@@ -1311,7 +1311,7 @@ function PaySheet(props: {
         );
       }
       const ready = await loadRazorpay();
-      if (!ready) throw new Error("Couldn't load the payment gateway. Check your connection.");
+      if (!ready) {throw new Error("Couldn't load the payment gateway. Check your connection.");}
       const RZP = (window as unknown as { Razorpay: new (o: Record<string, unknown>) => { open: () => void } }).Razorpay;
       const rzp = new RZP({
         key: order.key_id,
@@ -1321,7 +1321,7 @@ function PaySheet(props: {
         name: restaurantName,
         description: tableLabel ? `Table ${tableLabel}` : "Order",
         theme: { color: accent },
-        modal: { ondismiss: () => setOnlineLoading(false) },
+        modal: { ondismiss: () => { setOnlineLoading(false); } },
         handler: async (resp: Record<string, string>) => {
           try {
             const vr = await fetch(`${BASE}/qr/${encodeURIComponent(restaurant)}/razorpay/verify`, {
@@ -1330,7 +1330,7 @@ function PaySheet(props: {
               body: JSON.stringify({ t: token, ...resp }),
             });
             const vd = await vr.json();
-            if (!vr.ok) throw new Error(vd?.error ?? "Payment verification failed");
+            if (!vr.ok) {throw new Error(vd?.error ?? "Payment verification failed");}
             onPaid("Payment successful! 🎉", vd?.feedback_url);
           } catch (e) {
             setErr(e instanceof Error ? e.message : "Payment verification failed");
@@ -1400,7 +1400,7 @@ function PaySheet(props: {
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data?.error ?? "Payment failed");
+      if (!res.ok) {throw new Error(data?.error ?? "Payment failed");}
       onPaid(undefined, data?.feedback_url);
     } catch (e: any) {
       setErr(e?.message ?? "Payment failed");
@@ -1413,7 +1413,7 @@ function PaySheet(props: {
     <div className="fixed inset-0 z-30 flex items-end justify-center bg-black/40" onClick={onClose}>
       <div
         className="mx-auto w-full max-w-md rounded-t-3xl bg-white p-5"
-        onClick={(e) => e.stopPropagation()}
+        onClick={(e) => { e.stopPropagation(); }}
       >
         <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-neutral-300" />
         <div className="flex items-baseline justify-between">
@@ -1452,7 +1452,7 @@ function PaySheet(props: {
             return (
               <button
                 key={m.id}
-                onClick={() => setMethod(m.id)}
+                onClick={() => { setMethod(m.id); }}
                 className="rounded-xl border px-2 py-3 text-sm font-medium"
                 style={on ? { borderColor: accent, backgroundColor: tint(accent), color: accent } : { borderColor: "#e5e5e5", color: "#404040" }}
               >
@@ -1472,7 +1472,7 @@ function PaySheet(props: {
               className="hidden"
               onChange={(e) => {
                 const f = e.target.files?.[0];
-                if (f) pickImage(f);
+                if (f) {pickImage(f);}
               }}
             />
             {imageB64 ? (
@@ -1523,7 +1523,7 @@ function OtpGate(props: {
 
   const submit = async () => {
     const otp = code.trim();
-    if (otp.length < 4 || checking) return;
+    if (otp.length < 4 || checking) {return;}
     setChecking(true);
     setErr(null);
     try {
@@ -1567,7 +1567,7 @@ function OtpGate(props: {
       <input
         value={code}
         onChange={(e) => { setErr(null); setCode(e.target.value.replace(/\D/g, "").slice(0, 4)); }}
-        onKeyDown={(e) => { if (e.key === "Enter") void submit(); }}
+        onKeyDown={(e) => { if (e.key === "Enter") {void submit();} }}
         inputMode="numeric"
         autoFocus
         maxLength={4}

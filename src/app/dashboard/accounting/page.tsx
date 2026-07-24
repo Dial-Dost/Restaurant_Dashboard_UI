@@ -63,7 +63,7 @@ function AccountingInner() {
   const money = (n: number | null | undefined) => `${currency}${Number(n ?? 0).toFixed(0)}`
 
   const load = useCallback(async () => {
-    if (!rid) return
+    if (!rid) {return}
     setLoading(true)
     try {
       const [s, g, p, e, d] = await Promise.all([
@@ -132,8 +132,8 @@ function AccountingInner() {
   }
 
   const exportSalesCsv = () => {
-    if (!sales) return
-    const rows: Array<Array<string | number>> = [
+    if (!sales) {return}
+    const rows: (string | number)[][] = [
       ["Date", "Bills", "Sales", "Tax", "Refunds"],
       ...sales.by_day.map((d) => [d.date, d.bills, d.sales, d.tax, d.refund]),
       ["Total", sales.bill_count, sales.total_sales, sales.total_tax, sales.total_refund],
@@ -154,9 +154,9 @@ function AccountingInner() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-lg font-semibold md:text-2xl">Accounting</h1>
         <div className="flex flex-wrap items-center gap-2">
-          <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="w-auto" />
+          <Input type="date" value={from} onChange={(e) => { setFrom(e.target.value); }} className="w-auto" />
           <span className="text-muted-foreground">→</span>
-          <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="w-auto" />
+          <Input type="date" value={to} onChange={(e) => { setTo(e.target.value); }} className="w-auto" />
           <Button variant="outline" size="sm" onClick={exportSalesCsv} disabled={!sales}>
             <Download className="mr-1 h-4 w-4" /> Sales CSV
           </Button>
@@ -315,10 +315,10 @@ function AccountingInner() {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
-            <Input placeholder="Category" value={exCategory} onChange={(e) => setExCategory(e.target.value)} />
-            <Input placeholder="Amount" type="number" value={exAmount} onChange={(e) => setExAmount(e.target.value)} />
-            <Input placeholder="Vendor (optional)" value={exVendor} onChange={(e) => setExVendor(e.target.value)} />
-            <Input placeholder="Note (optional)" value={exNote} onChange={(e) => setExNote(e.target.value)} />
+            <Input placeholder="Category" value={exCategory} onChange={(e) => { setExCategory(e.target.value); }} />
+            <Input placeholder="Amount" type="number" value={exAmount} onChange={(e) => { setExAmount(e.target.value); }} />
+            <Input placeholder="Vendor (optional)" value={exVendor} onChange={(e) => { setExVendor(e.target.value); }} />
+            <Input placeholder="Note (optional)" value={exNote} onChange={(e) => { setExNote(e.target.value); }} />
             <Button onClick={onAddExpense} disabled={adding}>
               <Plus className="mr-1 h-4 w-4" /> {adding ? "Adding…" : "Add"}
             </Button>
@@ -370,7 +370,7 @@ function BalanceSheetSection({ rid, money }: { rid: string; money: (n: number | 
   const [loading, setLoading] = useState(true)
 
   const load = useCallback(async () => {
-    if (!rid) return
+    if (!rid) {return}
     setLoading(true)
     try { setData(await getBalanceSheet(rid, asOf)) } finally { setLoading(false) }
   }, [rid, asOf])
@@ -392,7 +392,7 @@ function BalanceSheetSection({ rid, money }: { rid: string; money: (n: number | 
             <CardTitle>Balance sheet</CardTitle>
             <CardDescription>What the outlet owns vs owes, snapshotted from POS data.</CardDescription>
           </div>
-          <Input type="date" value={asOf} onChange={(e) => setAsOf(e.target.value)} className="w-auto" />
+          <Input type="date" value={asOf} onChange={(e) => { setAsOf(e.target.value); }} className="w-auto" />
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -441,7 +441,7 @@ function ReconciliationSection({ rid, money }: { rid: string; money: (n: number 
   const [saving, setSaving] = useState<string | null>(null)
 
   const load = useCallback(async () => {
-    if (!rid) return
+    if (!rid) {return}
     setLoading(true)
     try {
       const d = await getReconciliation(rid, date)
@@ -482,7 +482,7 @@ function ReconciliationSection({ rid, money }: { rid: string; money: (n: number 
             <CardTitle>Reconciliation</CardTitle>
             <CardDescription>Match each mode&apos;s POS takings against what actually settled (bank / aggregator / cash count).</CardDescription>
           </div>
-          <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-auto" />
+          <Input type="date" value={date} onChange={(e) => { setDate(e.target.value); }} className="w-auto" />
         </div>
       </CardHeader>
       <CardContent>
@@ -510,12 +510,12 @@ function ReconciliationSection({ rid, money }: { rid: string; money: (n: number 
                   <Input
                     type="number" min="0" placeholder="Actual received" className="w-36"
                     value={actuals[r.method] ?? ""}
-                    onChange={(e) => setActuals((a) => ({ ...a, [r.method]: e.target.value }))}
+                    onChange={(e) => { setActuals((a) => ({ ...a, [r.method]: e.target.value })); }}
                   />
                   <Input
                     placeholder="Note (optional)" className="min-w-32 flex-1"
                     value={notes[r.method] ?? ""}
-                    onChange={(e) => setNotes((n) => ({ ...n, [r.method]: e.target.value }))}
+                    onChange={(e) => { setNotes((n) => ({ ...n, [r.method]: e.target.value })); }}
                   />
                   <Button size="sm" disabled={saving === r.method} onClick={() => void save(r.method)}>
                     {saving === r.method ? "Saving…" : "Save"}
@@ -540,7 +540,7 @@ function PayrollSection({ rid, money, onPaid }: { rid: string; money: (n: number
   const [busy, setBusy] = useState(false)
 
   const load = useCallback(async () => {
-    if (!rid) return
+    if (!rid) {return}
     setLoading(true)
     try { setData(await getPayroll(rid, month)) } finally { setLoading(false) }
   }, [rid, month])
@@ -582,8 +582,8 @@ function PayrollSection({ rid, money, onPaid }: { rid: string; money: (n: number
   }
 
   const pay = async (r: PayrollRow) => {
-    if (r.computed_pay == null) return
-    if (!window.confirm(`Record salary of ${money(r.computed_pay)} for ${r.name} (${month})? This also books a Payroll expense.`)) return
+    if (r.computed_pay == null) {return}
+    if (!window.confirm(`Record salary of ${money(r.computed_pay)} for ${r.name} (${month})? This also books a Payroll expense.`)) {return}
     setBusy(true)
     try {
       await payPayroll(rid, { emp_id: r.emp_id, period: month, amount: r.computed_pay })
@@ -621,7 +621,7 @@ function PayrollSection({ rid, money, onPaid }: { rid: string; money: (n: number
             </CardDescription>
           </div>
           <div className="flex items-center gap-2">
-            <Input type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="w-44" />
+            <Input type="month" value={month} onChange={(e) => { setMonth(e.target.value); }} className="w-44" />
             <Button variant="outline" size="sm" onClick={() => void exportCsv()} disabled={!data || data.rows.length === 0}>
               <Download className="mr-1 h-4 w-4" /> CSV
             </Button>
@@ -659,7 +659,7 @@ function PayrollSection({ rid, money, onPaid }: { rid: string; money: (n: number
                   ) : (
                     <>
                       <span className="font-semibold">{r.computed_pay != null ? money(r.computed_pay) : "—"}</span>
-                      <Button size="sm" variant="outline" onClick={() => (editing === r.emp_id ? setEditing(null) : startEdit(r))}>
+                      <Button size="sm" variant="outline" onClick={() => { editing === r.emp_id ? setEditing(null) : startEdit(r); }}>
                         {r.profile ? "Edit salary" : "Set salary"}
                       </Button>
                       {r.computed_pay != null && r.computed_pay > 0 && (
@@ -673,23 +673,23 @@ function PayrollSection({ rid, money, onPaid }: { rid: string; money: (n: number
                   <div className="mt-3 grid gap-2 border-t pt-3 sm:grid-cols-4 lg:grid-cols-8">
                     <select
                       value={form.pay_type}
-                      onChange={(e) => setForm((f) => ({ ...f, pay_type: e.target.value }))}
+                      onChange={(e) => { setForm((f) => ({ ...f, pay_type: e.target.value })); }}
                       className="h-9 rounded-md border border-input bg-background px-2 text-sm outline-none focus:border-ring"
                     >
                       <option value="monthly">Monthly</option>
                       <option value="hourly">Hourly</option>
                     </select>
                     {form.pay_type === "monthly" ? (
-                      <Input type="number" min="0" placeholder="Base salary / month" value={form.base_salary} onChange={(e) => setForm((f) => ({ ...f, base_salary: e.target.value }))} />
+                      <Input type="number" min="0" placeholder="Base salary / month" value={form.base_salary} onChange={(e) => { setForm((f) => ({ ...f, base_salary: e.target.value })); }} />
                     ) : (
-                      <Input type="number" min="0" placeholder="Rate / hour" value={form.hourly_rate} onChange={(e) => setForm((f) => ({ ...f, hourly_rate: e.target.value }))} />
+                      <Input type="number" min="0" placeholder="Rate / hour" value={form.hourly_rate} onChange={(e) => { setForm((f) => ({ ...f, hourly_rate: e.target.value })); }} />
                     )}
-                    <Input type="number" min="0" placeholder="Allowances" value={form.allowances} onChange={(e) => setForm((f) => ({ ...f, allowances: e.target.value }))} />
-                    <Input type="number" min="0" placeholder="Deductions" value={form.deductions} onChange={(e) => setForm((f) => ({ ...f, deductions: e.target.value }))} />
-                    <Input type="number" min="0" max="100" placeholder="PF %" title="Provident fund % of gross" value={form.pf_pct} onChange={(e) => setForm((f) => ({ ...f, pf_pct: e.target.value }))} />
-                    <Input type="number" min="0" max="100" placeholder="ESI %" title="ESI % of gross" value={form.esi_pct} onChange={(e) => setForm((f) => ({ ...f, esi_pct: e.target.value }))} />
+                    <Input type="number" min="0" placeholder="Allowances" value={form.allowances} onChange={(e) => { setForm((f) => ({ ...f, allowances: e.target.value })); }} />
+                    <Input type="number" min="0" placeholder="Deductions" value={form.deductions} onChange={(e) => { setForm((f) => ({ ...f, deductions: e.target.value })); }} />
+                    <Input type="number" min="0" max="100" placeholder="PF %" title="Provident fund % of gross" value={form.pf_pct} onChange={(e) => { setForm((f) => ({ ...f, pf_pct: e.target.value })); }} />
+                    <Input type="number" min="0" max="100" placeholder="ESI %" title="ESI % of gross" value={form.esi_pct} onChange={(e) => { setForm((f) => ({ ...f, esi_pct: e.target.value })); }} />
                     <Button size="sm" disabled={busy} onClick={() => void saveProfile(r.emp_id)}>Save</Button>
-                    <Button size="sm" variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
+                    <Button size="sm" variant="ghost" onClick={() => { setEditing(null); }}>Cancel</Button>
                   </div>
                 )}
               </div>

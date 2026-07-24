@@ -1,5 +1,5 @@
 
-export type Table = {
+export interface Table {
   id: number;
   name: string;
   capacity: number;
@@ -9,4 +9,4 @@ export type Table = {
   // Per-table 4-digit order OTP (present only while occupied + gate enabled) —
   // staff read it out to the guest so they can enter it on the QR order page.
   order_otp?: string | null;
-};
+}

@@ -21,7 +21,7 @@ function isoDaysAgo(days: number): string {
 }
 
 function fmtTime(iso: string | null): string {
-  if (!iso) return "—"
+  if (!iso) {return "—"}
   const d = new Date(iso)
   return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString()
 }
@@ -48,7 +48,7 @@ export default function CashPage() {
   const money = (n: number | null | undefined) => `${currency}${Number(n ?? 0).toFixed(2)}`
 
   const load = useCallback(async () => {
-    if (!rid) return
+    if (!rid) {return}
     setLoading(true)
     try {
       const [cur, hist] = await Promise.all([
@@ -127,7 +127,7 @@ export default function CashPage() {
             <div className="space-y-1">
               <Label htmlFor="float">Opening float ({currency})</Label>
               <Input id="float" type="number" inputMode="decimal" className="w-48" placeholder="0.00"
-                value={openingFloat} onChange={(e) => setOpeningFloat(e.target.value)} />
+                value={openingFloat} onChange={(e) => { setOpeningFloat(e.target.value); }} />
             </div>
             <Button onClick={onOpen} disabled={busy}><Unlock className="mr-2 h-4 w-4" /> Open register</Button>
           </CardContent>
@@ -158,17 +158,17 @@ export default function CashPage() {
                 <div className="space-y-1">
                   <Label htmlFor="counted">Counted cash ({currency})</Label>
                   <Input id="counted" type="number" inputMode="decimal" placeholder="0.00"
-                    value={countedCash} onChange={(e) => setCountedCash(e.target.value)} />
+                    value={countedCash} onChange={(e) => { setCountedCash(e.target.value); }} />
                 </div>
                 <div className="space-y-1">
                   <Label htmlFor="payouts">Cash paid out ({currency})</Label>
                   <Input id="payouts" type="number" inputMode="decimal" placeholder="0.00"
-                    value={payouts} onChange={(e) => setPayouts(e.target.value)} />
+                    value={payouts} onChange={(e) => { setPayouts(e.target.value); }} />
                 </div>
               </div>
               <div className="space-y-1">
                 <Label htmlFor="notes">Notes (optional)</Label>
-                <Input id="notes" placeholder="e.g. ₹200 short, gave change from till" value={notes} onChange={(e) => setNotes(e.target.value)} />
+                <Input id="notes" placeholder="e.g. ₹200 short, gave change from till" value={notes} onChange={(e) => { setNotes(e.target.value); }} />
               </div>
               {variancePreview !== null && (
                 <div className={`rounded-md px-3 py-2 text-sm font-medium ${variancePreview === 0 ? "bg-green-100 text-green-800" : "bg-amber-100 text-amber-900"}`}>
@@ -188,8 +188,8 @@ export default function CashPage() {
             <CardDescription>Closed registers with their cash variance (Z-reports).</CardDescription>
           </div>
           <div className="flex items-end gap-2">
-            <Input type="date" className="w-36" value={from} onChange={(e) => setFrom(e.target.value)} />
-            <Input type="date" className="w-36" value={to} onChange={(e) => setTo(e.target.value)} />
+            <Input type="date" className="w-36" value={from} onChange={(e) => { setFrom(e.target.value); }} />
+            <Input type="date" className="w-36" value={to} onChange={(e) => { setTo(e.target.value); }} />
           </div>
         </CardHeader>
         <CardContent>

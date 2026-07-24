@@ -32,7 +32,8 @@ import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { useAuth } from "@/context/AuthContext"
 import { useCurrency } from "@/hooks/use-currency"
-import { getRestaurantProfile, updateRestaurantProfile, RestaurantProfile, getRequireTableOtp, setRequireTableOtp } from "@/lib/db"
+import type { RestaurantProfile} from "@/lib/db";
+import { getRestaurantProfile, updateRestaurantProfile, getRequireTableOtp, setRequireTableOtp } from "@/lib/db"
 import { BrandingCustomizer } from "./branding-customizer"
 
 const settingsFormSchema = z.object({
@@ -78,8 +79,8 @@ export function SettingsForm() {
   const [otpSaving, setOtpSaving] = useState(false)
 
   const hasRole = (role: "admin" | "employee" | "valet" | "waiter" | "cashier" | "captain" | "manager") => {
-    if (!user) return false
-    if (user.role === role) return true
+    if (!user) {return false}
+    if (user.role === role) {return true}
     return Array.isArray(user.role_all) ? user.role_all.includes(role) : false
   }
 
@@ -138,7 +139,7 @@ export function SettingsForm() {
       phone: "",
       email: "",
       hours: "",
-      currency: currency,
+      currency,
     }
   })
 
@@ -153,7 +154,7 @@ export function SettingsForm() {
               phone: profile.outlet_phone || "",
               email: profile.email || "",
               hours: profile.outlet_hours || "",
-              currency: currency
+              currency
           });
         }
         fetchProfile();
@@ -162,16 +163,16 @@ export function SettingsForm() {
   }, [user, currency, form])
 
   useEffect(() => {
-    if (!user?.restaurantUsername) return
+    if (!user?.restaurantUsername) {return}
     let active = true
     getRequireTableOtp(user.restaurantUsername)
-      .then((v) => { if (active) setRequireOtp(v) })
+      .then((v) => { if (active) {setRequireOtp(v)} })
       .catch(() => {/* leave default off */})
     return () => { active = false }
   }, [user?.restaurantUsername])
 
   const handleRequireOtpChange = async (next: boolean) => {
-    if (!user?.restaurantUsername) return
+    if (!user?.restaurantUsername) {return}
     if (!hasRole("admin")) {
       toast({
         title: "Access denied",
@@ -221,11 +222,11 @@ export function SettingsForm() {
           width: 280,
           margin: 2,
         })
-        if (!active) return
+        if (!active) {return}
         setFeedbackQrDataUrl(dataUrl)
         setFeedbackQrError("")
       } catch (error) {
-        if (!active) return
+        if (!active) {return}
         setFeedbackQrDataUrl("")
         setFeedbackQrError("Unable to generate QR code")
       }
@@ -239,7 +240,7 @@ export function SettingsForm() {
 
   // important: need to update this function according to the new RestaurantProfileRecord class
   async function onSubmit(data: SettingsFormValues) {
-    if(!user?.restaurantUsername) return;
+    if(!user?.restaurantUsername) {return;}
     if (!hasRole("admin")) {
       toast({
         title: "Access denied",
@@ -441,7 +442,7 @@ export function SettingsForm() {
                 />
                 <div className="flex flex-wrap gap-2">
                   <Button type="button" variant="outline" onClick={async () => {
-                    if (!feedbackFormUrl) return
+                    if (!feedbackFormUrl) {return}
                     try {
                       await navigator.clipboard.writeText(feedbackFormUrl)
                       toast({ title: "Link copied", description: "Feedback link copied to clipboard." })

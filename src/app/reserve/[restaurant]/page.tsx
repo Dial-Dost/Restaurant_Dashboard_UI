@@ -21,30 +21,30 @@ function dmy(iso: string): string {
 // Same lazy checkout.js loader as the ordering/billing pages.
 function loadRazorpay(): Promise<boolean> {
   return new Promise((resolve) => {
-    if (typeof window === "undefined") return resolve(false);
-    if ((window as unknown as { Razorpay?: unknown }).Razorpay) return resolve(true);
+    if (typeof window === "undefined") {resolve(false); return;}
+    if ((window as unknown as { Razorpay?: unknown }).Razorpay) {resolve(true); return;}
     const s = document.createElement("script");
     s.src = "https://checkout.razorpay.com/v1/checkout.js";
-    s.onload = () => resolve(true);
-    s.onerror = () => resolve(false);
+    s.onload = () => { resolve(true); };
+    s.onerror = () => { resolve(false); };
     document.body.appendChild(s);
   });
 }
 
 // Reservation-deposit checkout state (set when the backend answers the reserve
 // request with deposit_required).
-type DepositInfo = {
+interface DepositInfo {
   booking_id: string;
   order_id: string;
   key_id: string;
   amount: number;
   table_name: string | null;
   min_spend?: number;
-};
+}
 
 function shade(hex: string, pct: number): string {
   const m = /^#([0-9a-fA-F]{6})$/.exec(hex);
-  if (!m) return hex;
+  if (!m) {return hex;}
   const num = parseInt(m[1], 16);
   const amt = Math.round(2.55 * pct);
   const r = Math.min(255, Math.max(0, (num >> 16) + amt));
@@ -88,7 +88,7 @@ export default function ReservePage() {
           // from the ordering page; falls back to theme_color.
           const hex = (v: unknown) => (typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v) ? v : null);
           const themePref = hex(data?.theme_secondary) ?? hex(data?.theme_color);
-          if (themePref) setAccent(themePref);
+          if (themePref) {setAccent(themePref);}
         }
       } catch {/* ignore */}
     })();
@@ -117,7 +117,7 @@ export default function ReservePage() {
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data?.error ?? "Could not create the reservation");
+      if (!res.ok) {throw new Error(data?.error ?? "Could not create the reservation");}
       const minSpend = Number(data?.min_spend) > 0 ? Number(data.min_spend) : undefined;
       if (data?.deposit_required && data?.order_id && data?.key_id && data?.booking_id) {
         const info: DepositInfo = {
@@ -147,7 +147,7 @@ export default function ReservePage() {
     setDepositErr(null);
     try {
       const ready = await loadRazorpay();
-      if (!ready) throw new Error("Couldn't load the payment gateway. Check your connection and retry.");
+      if (!ready) {throw new Error("Couldn't load the payment gateway. Check your connection and retry.");}
       const RZP = (window as unknown as { Razorpay: new (o: Record<string, unknown>) => { open: () => void } }).Razorpay;
       const rzp = new RZP({
         key: info.key_id,
@@ -172,7 +172,7 @@ export default function ReservePage() {
               body: JSON.stringify({ booking_id: info.booking_id, ...resp }),
             });
             const vd = await vr.json();
-            if (!vr.ok) throw new Error(vd?.error ?? "Deposit verification failed");
+            if (!vr.ok) {throw new Error(vd?.error ?? "Deposit verification failed");}
             setDeposit(null);
             setDone({ table_name: info.table_name, deposit_paid: true, min_spend: info.min_spend });
           } catch (e) {
@@ -262,36 +262,36 @@ export default function ReservePage() {
 
       <div className="space-y-4 p-5">
         <Field label="Your name">
-          <input value={name} onChange={(e) => setName(e.target.value)} className={inputCls} placeholder="Full name" />
+          <input value={name} onChange={(e) => { setName(e.target.value); }} className={inputCls} placeholder="Full name" />
         </Field>
         <Field label="Phone number">
-          <input value={phone} onChange={(e) => setPhone(e.target.value)} className={inputCls} placeholder="10-digit mobile" inputMode="tel" />
+          <input value={phone} onChange={(e) => { setPhone(e.target.value); }} className={inputCls} placeholder="10-digit mobile" inputMode="tel" />
         </Field>
         <Field label="Email (optional)">
-          <input value={email} onChange={(e) => setEmail(e.target.value)} className={inputCls} placeholder="you@email.com" inputMode="email" />
+          <input value={email} onChange={(e) => { setEmail(e.target.value); }} className={inputCls} placeholder="you@email.com" inputMode="email" />
         </Field>
 
         <div className="flex gap-3">
           <Field label="Date" className="flex-1">
-            <input type="date" value={date} min={todayStr()} onChange={(e) => setDate(e.target.value)} className={inputCls} />
+            <input type="date" value={date} min={todayStr()} onChange={(e) => { setDate(e.target.value); }} className={inputCls} />
             <p className="mt-1 text-xs text-neutral-400">{dmy(date)}</p>
           </Field>
           <Field label="Time" className="flex-1">
-            <input type="time" value={time} onChange={(e) => setTime(e.target.value)} className={inputCls} />
+            <input type="time" value={time} onChange={(e) => { setTime(e.target.value); }} className={inputCls} />
           </Field>
         </div>
 
         <Field label="Party size">
           <div className="flex items-center gap-4" style={{ color: "black" }}>
-            <button onClick={() => setParty((p) => Math.max(1, p - 1))} className="h-10 w-10 rounded-full bg-white text-xl shadow ring-1 ring-neutral-200">−</button>
+            <button onClick={() => { setParty((p) => Math.max(1, p - 1)); }} className="h-10 w-10 rounded-full bg-white text-xl shadow ring-1 ring-neutral-200">−</button>
             <span className="w-10 text-center text-xl font-bold">{party}</span>
-            <button onClick={() => setParty((p) => Math.min(30, p + 1))} className="h-10 w-10 rounded-full bg-orange-600 text-xl text-white shadow">+</button>
+            <button onClick={() => { setParty((p) => Math.min(30, p + 1)); }} className="h-10 w-10 rounded-full bg-orange-600 text-xl text-white shadow">+</button>
             <span className="text-sm text-neutral-500">{party > 1 ? "guests" : "guest"}</span>
           </div>
         </Field>
 
         <Field label="Special requests (optional)">
-          <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} className={inputCls} placeholder="High chair, window seat, allergies…" />
+          <textarea value={notes} onChange={(e) => { setNotes(e.target.value); }} rows={2} className={inputCls} placeholder="High chair, window seat, allergies…" />
         </Field>
 
         {err && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{err}</p>}

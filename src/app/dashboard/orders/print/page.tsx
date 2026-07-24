@@ -4,27 +4,28 @@ import { useEffect, Suspense, useState } from 'react';
 import QRCode from 'qrcode';
 import { useSearchParams } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
-import { getRestaurantProfile, getRestaurantLogo, getBillByOrder, getBillForTable, RestaurantProfile, requestBackend } from '@/lib/db';
+import type { RestaurantProfile} from '@/lib/db';
+import { getRestaurantProfile, getRestaurantLogo, getBillByOrder, getBillForTable, requestBackend } from '@/lib/db';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import Image from 'next/image';
 
-type OrderItem = {
+interface OrderItem {
     id: string;
     name: string;
     quantity: number;
     price: number;
     orderedAt: string;
-};
+}
 
-type Tax = {
+interface Tax {
     id: string;
     name: string;
     percentage: number;
     amount: number;
-};
+}
 
-type Order = {
+interface Order {
   id: string;
   table: string;
   customer: string;
@@ -38,7 +39,7 @@ type Order = {
   roundOff?: number;
   status: string;
   currencySymbol: string;
-};
+}
 
 function PrintPageContents() {
     const searchParams = useSearchParams();
@@ -72,7 +73,7 @@ function PrintPageContents() {
         };
 
         const parsed = resolveOrder();
-        if (!parsed) return;
+        if (!parsed) {return;}
 
         // fetch restaurant profile, logo and bill info
         (async () => {
@@ -167,7 +168,7 @@ function PrintPageContents() {
                                 onClick={async () => {
                                     // Passed logoBase64 to the encoder
                                     const esc = await generateEscPos(user, profile, cashierName, bill, order, logoBase64);
-                                    if (!esc) return;
+                                    if (!esc) {return;}
 
                                     // Convert ESC/POS > readable text preview
                                     const decoded = new TextDecoder().decode(esc);
@@ -178,7 +179,7 @@ function PrintPageContents() {
                                         if (typeof window !== 'undefined' && typeof window.btoa === 'function') {
                                             let binary = '';
                                             const len = bytes.byteLength;
-                                            for (let i = 0; i < len; i++) binary += String.fromCharCode(bytes[i]);
+                                            for (let i = 0; i < len; i++) {binary += String.fromCharCode(bytes[i]);}
                                             return window.btoa(binary);
                                         }
                                         // fallback (node)
@@ -356,7 +357,7 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
                 }
             }
 
-            if (!order) return null;
+            if (!order) {return null;}
         }
 
         const pkg = await import('@point-of-sale/receipt-printer-encoder');
@@ -373,7 +374,7 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
             feedBeforeCut: 4, 
         });
         
-        if (typeof (encoder as any).initialize === 'function') (encoder as any).initialize();
+        if (typeof (encoder).initialize === 'function') {(encoder).initialize();}
 
         // ----------------------------------------------------
         // Layout Config & Helpers
@@ -398,13 +399,13 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
 
             words.forEach(word => {
                 if ((currentLine + word).length > maxLen) {
-                    if (currentLine) lines.push(currentLine.trim());
+                    if (currentLine) {lines.push(currentLine.trim());}
                     currentLine = word + ' ';
                 } else {
                     currentLine += word + ' ';
                 }
             });
-            if (currentLine) lines.push(currentLine.trim());
+            if (currentLine) {lines.push(currentLine.trim());}
 
             return lines.length > 0 ? lines : [''];
         };
@@ -421,8 +422,8 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
             try {
                 // 1. Load image asynchronously to get true dimensions
                 const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-                    const i = document.createElement('img') as HTMLImageElement;
-                    i.onload = () => resolve(i);
+                    const i = document.createElement('img');
+                    i.onload = () => { resolve(i); };
                     i.onerror = reject;
                     i.src = `data:image/png;base64,${logoBase64}`;
                 });
@@ -478,7 +479,7 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
         const orderDate = new Date().toLocaleString(); 
         encoder.line(leftRight(`Date: ${orderDate}`, `Dine In: ${order.table || 'N/A'}`, MAX_CHARS));
         
-        let displayId = bill.bill_no || '';
+        const displayId = bill.bill_no || '';
         // if (displayId.length > 18) {
         //     const parts = displayId.split('-');
         //     displayId = parts.length > 1 ? `${parts[0]}-${parts[1].substring(0, 1)}` : displayId.substring(0, 10);

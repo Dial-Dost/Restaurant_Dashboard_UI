@@ -20,7 +20,7 @@ import { useAuth } from '@/context/AuthContext';
 import { getAuditLogs, undoAuditLog } from '@/lib/db';
 import { useToast } from "@/hooks/use-toast";
 
-export type AuditLog = {
+export interface AuditLog {
   id: string;
   employee: string;
   action: string;
@@ -33,7 +33,7 @@ export type AuditLog = {
   undone?: boolean;
   undo_log_id?: string | null;
   undo_of?: string | null;
-};
+}
 
 // Mirrors the backend Audit_log_category enum (+ "All").
 const CATEGORIES = ["All", "General", "Bill", "Orders", "Valet", "Inventory", "Tables", "Roles", "Customer", "Bookings", "Menu"];
@@ -65,7 +65,7 @@ export default function AuditLogsPage() {
   const hasFilters = category !== 'All' || Boolean(search) || Boolean(from) || Boolean(to);
 
   const load = useCallback(async () => {
-    if (!user) return;
+    if (!user) {return;}
     setLoading(true);
     try {
       const rows = await getAuditLogs(user.restaurantUsername, {
@@ -85,13 +85,13 @@ export default function AuditLogsPage() {
 
   // Debounced fetch — reruns whenever any filter (or the load-more limit) changes.
   useEffect(() => {
-    if (!isAdmin) return;
+    if (!isAdmin) {return;}
     const t = setTimeout(() => { void load(); }, 300);
-    return () => clearTimeout(t);
+    return () => { clearTimeout(t); };
   }, [load, isAdmin]);
 
   useEffect(() => {
-    if (!user || isAdmin || hasShownAccessToastRef.current) return;
+    if (!user || isAdmin || hasShownAccessToastRef.current) {return;}
     toast({
       title: 'Access denied',
       description: 'You do not have the required role for this page. Required role: admin.',
@@ -111,7 +111,7 @@ export default function AuditLogsPage() {
   const resetFilters = () => { setCategory('All'); setSearch(''); setFrom(''); setTo(''); setLimit(100); };
 
   const performUndo = async () => {
-    if (!user || !confirmLog) return;
+    if (!user || !confirmLog) {return;}
     setUndoing(true);
     try {
       const result = await undoAuditLog(user.restaurantUsername, confirmLog.id);
@@ -205,7 +205,7 @@ export default function AuditLogsPage() {
                       {log.undone || log.undo_of ? (
                         <span className="text-xs text-muted-foreground">—</span>
                       ) : log.undoable && canUndo ? (
-                        <Button variant="outline" size="sm" onClick={() => setConfirmLog(log)}>Undo</Button>
+                        <Button variant="outline" size="sm" onClick={() => { setConfirmLog(log); }}>Undo</Button>
                       ) : !log.undoable && log.undo_block_reason ? (
                         <span className="text-xs text-muted-foreground" title={log.undo_block_reason}>
                           {log.undo_block_reason}
@@ -229,7 +229,7 @@ export default function AuditLogsPage() {
 
           {logs.length >= limit ? (
             <div className="mt-4 flex justify-center">
-              <Button variant="outline" size="sm" disabled={loading} onClick={() => setLimit((l) => l + 100)}>
+              <Button variant="outline" size="sm" disabled={loading} onClick={() => { setLimit((l) => l + 100); }}>
                 {loading ? "Loading…" : "Load more"}
               </Button>
             </div>
@@ -237,7 +237,7 @@ export default function AuditLogsPage() {
         </CardContent>
       </Card>
 
-      <AlertDialog open={confirmLog !== null} onOpenChange={(open) => { if (!open && !undoing) setConfirmLog(null); }}>
+      <AlertDialog open={confirmLog !== null} onOpenChange={(open) => { if (!open && !undoing) {setConfirmLog(null);} }}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Undo this action?</AlertDialogTitle>

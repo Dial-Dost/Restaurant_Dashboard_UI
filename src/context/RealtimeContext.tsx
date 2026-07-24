@@ -5,10 +5,10 @@ import { initSocket, getSocket, disconnectSocket } from "../lib/socket";
 
 type EventPayload = any;
 
-type RealtimeContextValue = {
+interface RealtimeContextValue {
   connected: boolean;
   lastEvent?: { event: string; payload: EventPayload } | null;
-};
+}
 
 const RealtimeContext = createContext<RealtimeContextValue | undefined>(undefined);
 
@@ -18,19 +18,19 @@ export function RealtimeProvider({ children, restaurantId }: { children: ReactNo
   const socketRef = useRef<any>(null);
 
   useEffect(() => {
-    if (!restaurantId) return;
+    if (!restaurantId) {return;}
     // The backend authenticates the socket from this token (it derives the
     // tenant from the session, not from restaurantId).
     let token: string | undefined;
     try {
       const raw = typeof window !== 'undefined' ? window.localStorage.getItem('authUser') : null;
-      if (raw) token = JSON.parse(raw)?.token ?? undefined;
+      if (raw) {token = JSON.parse(raw)?.token ?? undefined;}
     } catch { /* ignore */ }
     const socket = initSocket({ restaurantId, token });
     socketRef.current = socket;
 
-    const onConnect = () => setConnected(true);
-    const onDisconnect = () => setConnected(false);
+    const onConnect = () => { setConnected(true); };
+    const onDisconnect = () => { setConnected(false); };
 
     socket.on("connect", onConnect);
     socket.on("disconnect", onDisconnect);
@@ -68,8 +68,8 @@ export function RealtimeProvider({ children, restaurantId }: { children: ReactNo
     socket.emit("join", restaurantId);
 
     return () => {
-      if (!socket) return;
-      for (const e of events) socket.off(e);
+      if (!socket) {return;}
+      for (const e of events) {socket.off(e);}
       socket.off("connect", onConnect);
       socket.off("disconnect", onDisconnect);
       try {

@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 
 export async function POST(req: Request) {
     try {
-        const body = await req.json().catch(() => null) as any;
+        const body = await req.json().catch(() => null);
         const authUser = body?.authUser ?? null;
         if (!authUser) {
             return NextResponse.json({ ok: false, error: 'authUser is required' }, { status: 400 });

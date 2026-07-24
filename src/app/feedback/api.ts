@@ -8,25 +8,25 @@ const BACKEND_URL = guestBackendBase();
 
 // Theme token shape shared with the old app (themeFromImage.ts) — only the type
 // was used by the form; the image-extraction code itself was never invoked.
-export type ThemeTokens = {
+export interface ThemeTokens {
   background: string;
   surface: string;
   text: string;
   accent: string;
   mutedText: string;
   ring: string;
-};
+}
 
-export type CategoryQuestion = {
+export interface CategoryQuestion {
   id: number;
   key: string;
   label: string;
-};
+}
 
-export type QuestionState = {
+export interface QuestionState {
   mainQuestion: string;
   followUpQuestion: string | null;
-};
+}
 
 export async function fetchMainQuestion(restaurantId: string, category: number, outletId: string): Promise<string> {
   const response = await fetch(`${BACKEND_URL}/get_main_feedback_question`, {
@@ -128,7 +128,7 @@ export async function verifyValetAndAdvanceStage(payload: {
   };
 }
 
-export type SubmitFeedbackPayload = {
+export interface SubmitFeedbackPayload {
   restaurantId: string;
   employeeId: string;
   outletId: string;
@@ -144,15 +144,15 @@ export type SubmitFeedbackPayload = {
     text: string;
     accent: string;
   };
-  category_ratings: Array<{
+  category_ratings: {
     key: string;
     label: string;
     rating: number;
     question: string;
     follow_up: string | null;
     follow_up_answer?: string | null;
-  }>;
-};
+  }[];
+}
 
 export async function submitFeedback(payload: SubmitFeedbackPayload): Promise<void> {
   const response = await fetch(`${BACKEND_URL}/feedback/submit`, {
@@ -171,30 +171,30 @@ export async function submitFeedback(payload: SubmitFeedbackPayload): Promise<vo
   }
 }
 
-export type FeedbackFormConfig = {
+export interface FeedbackFormConfig {
   title: string;
   subtitle: string;
   valet_enabled: boolean;
   require_image: boolean;
   review_url: string;
-  categories: Array<{ key: string; label: string }>;
-};
+  categories: { key: string; label: string }[];
+}
 
-export type RestaurantBranding = {
+export interface RestaurantBranding {
   logo_url: string | null;
   theme_color: string | null;
   theme_primary: string | null;
   theme_secondary: string | null;
   restaurant_name: string;
   feedback_config: FeedbackFormConfig;
-};
+}
 
 // Public, no-auth: the restaurant's branding + feedback form configuration, so
 // the form themes itself and honors the owner's settings (valet gate, categories…).
 export async function fetchBranding(restaurantId: string): Promise<RestaurantBranding | null> {
   try {
     const res = await fetch(`${BACKEND_URL}/qr/${encodeURIComponent(restaurantId)}/branding`, { cache: "no-store" });
-    if (!res.ok) return null;
+    if (!res.ok) {return null;}
     return (await res.json()) as RestaurantBranding;
   } catch {
     return null;

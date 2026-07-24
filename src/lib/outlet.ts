@@ -8,7 +8,7 @@ export const SELECTED_OUTLET_KEY = 'selectedOutletId';
 /** The selected outlet id from localStorage, or null on the server / when unset. */
 export const getSelectedOutletId = (): string | null => {
   try {
-    if (typeof window === 'undefined') return null;
+    if (typeof window === 'undefined') {return null;}
     return window.localStorage.getItem(SELECTED_OUTLET_KEY);
   } catch {
     return null;

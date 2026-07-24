@@ -140,7 +140,7 @@ export default function BookingsPage() {
     (async () => {
       try {
         const data = await getBookingsData(user.restaurantUsername);
-        if (!isActive) return;
+        if (!isActive) {return;}
         const mapped: Booking[] = (Array.isArray(data) ? data : []).map((item: Booking) => ({
           ...item,
           id: createBookingId(item.id),
@@ -148,16 +148,16 @@ export default function BookingsPage() {
         setBookings(mapped);
       } catch (error) {
         console.error("Failed to load bookings", error);
-        if (isActive) setBookings([]);
+        if (isActive) {setBookings([]);}
       }
 
       try {
         const t = await getTablesData(user.restaurantUsername);
-        if (!isActive) return;
+        if (!isActive) {return;}
         setTables(Array.isArray(t) ? t : []);
       } catch (error) {
         console.error("Failed to load tables", error);
-        if (isActive) setTables([]);
+        if (isActive) {setTables([]);}
       }
     })();
 
@@ -165,7 +165,7 @@ export default function BookingsPage() {
   }, [user?.restaurantUsername]);
 
   const handleAddBooking = async (data: BookingFormData) => {
-    if (!user || !user.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
 
     const sanitizedContact = data.contact.replace(/[^0-9+]/g, "").trim() || data.contact;
     const reservationDate = new Date();
@@ -218,7 +218,7 @@ export default function BookingsPage() {
   }
 
   const handleCancelBooking = async (booking: Booking) => {
-    if (!user || !user.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
 
     try {
       const response = await requestBackend({
@@ -244,7 +244,7 @@ export default function BookingsPage() {
   }
 
   const handleStatusChange = async (booking: Booking, status: Booking['status']) => {
-    if (!user || !user.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
 
     try {
       const response = await requestBackend({
@@ -290,7 +290,7 @@ export default function BookingsPage() {
             </DialogHeader>
             <BookingForm
               onSubmit={handleAddBooking}
-              afterSubmit={() => setIsDialogOpen(false)}
+              afterSubmit={() => { setIsDialogOpen(false); }}
               tables={tables}
             />
           </DialogContent>
@@ -391,7 +391,7 @@ export default function BookingsPage() {
 // Delivery visibility for automated guest messaging (confirmations, reminders,
 // WhatsApp replies). Admin-only endpoint — the card hides itself when the
 // backend refuses (non-admin) or there is nothing to show yet.
-type OutboundMessage = {
+interface OutboundMessage {
   id: string;
   channel: string;
   to_phone: string | null;
@@ -402,7 +402,7 @@ type OutboundMessage = {
   error: string | null;
   provider: string | null;
   created_at: string;
-};
+}
 
 function RecentMessagesCard() {
   const { user } = useAuth();
@@ -411,7 +411,7 @@ function RecentMessagesCard() {
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
-      if (!user?.restaurantUsername) return;
+      if (!user?.restaurantUsername) {return;}
       const response = await requestBackend<OutboundMessage[]>({
         path: "/messages",
         method: "GET",
@@ -427,7 +427,7 @@ function RecentMessagesCard() {
     };
   }, [user?.restaurantUsername]);
 
-  if (!messages || messages.length === 0) return null;
+  if (!messages || messages.length === 0) {return null;}
 
   const statusStyles: Record<string, string> = {
     sent: "border-green-300 bg-green-50 text-green-800",
@@ -504,7 +504,7 @@ function RecentMessagesCard() {
 // Reservation-deposit state badge: pending (unpaid Razorpay order), paid,
 // refund_due (early cancel — refund manually from Razorpay) or forfeited.
 function DepositBadge({ deposit }: { deposit?: Booking["deposit"] }) {
-  if (!deposit) return null;
+  if (!deposit) {return null;}
   const styles: Record<string, string> = {
     pending: "border-amber-300 bg-amber-50 text-amber-800",
     paid: "border-green-300 bg-green-50 text-green-800",

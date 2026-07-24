@@ -40,7 +40,7 @@ export default function PlatformLoginPage() {
 						type="email"
 						autoComplete="username"
 						value={email}
-						onChange={(e) => setEmail(e.target.value)}
+						onChange={(e) => { setEmail(e.target.value); }}
 						className="w-full rounded-md border px-3 py-2 text-sm"
 						required
 					/>
@@ -52,7 +52,7 @@ export default function PlatformLoginPage() {
 						type="password"
 						autoComplete="current-password"
 						value={password}
-						onChange={(e) => setPassword(e.target.value)}
+						onChange={(e) => { setPassword(e.target.value); }}
 						className="w-full rounded-md border px-3 py-2 text-sm"
 						required
 					/>

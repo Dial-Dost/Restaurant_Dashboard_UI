@@ -5,7 +5,7 @@
 
 // A tenant's customer-page customization. Mirrors the backend BrandConfig shape
 // (all keys optional; the read layer applies defaults for font/header/button).
-export type BrandConfig = {
+export interface BrandConfig {
   font?: string;
   color_primary?: string;
   color_secondary?: string;
@@ -14,7 +14,7 @@ export type BrandConfig = {
   color_card?: string;
   header_style?: "gradient" | "solid";
   button_shape?: "rounded" | "pill" | "square";
-};
+}
 
 // The curated font allowlist the backend accepts (kept here as a client-side
 // fallback for the dropdown when /restaurant/settings doesn't return one).
@@ -47,11 +47,11 @@ export function fontStack(family: string | undefined): string {
 // server. A stylesheet <link> is CSP-friendly for the app pages (dashboard +
 // guest order page are normal Next pages, not sandboxed artifacts).
 export function loadBrandFont(family: string | undefined): void {
-  if (typeof document === "undefined") return;
+  if (typeof document === "undefined") {return;}
   const f = (family ?? "").trim();
-  if (!f || !BRAND_FONTS.includes(f)) return;
+  if (!f || !BRAND_FONTS.includes(f)) {return;}
   const id = `brand-font-${f.replace(/\s+/g, "-").toLowerCase()}`;
-  if (document.getElementById(id)) return;
+  if (document.getElementById(id)) {return;}
   const link = document.createElement("link");
   link.id = id;
   link.rel = "stylesheet";
@@ -64,7 +64,7 @@ export function loadBrandFont(family: string | undefined): void {
 // color_primary doesn't get unreadable white text on it.
 export function readableOn(hex: string | undefined): string {
   const m = /^#?([0-9a-fA-F]{6})$/.exec((hex ?? "").trim());
-  if (!m) return "#ffffff";
+  if (!m) {return "#ffffff";}
   const n = parseInt(m[1], 16);
   const srgb = [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff].map((c) => {
     const s = c / 255;

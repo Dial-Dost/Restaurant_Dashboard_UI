@@ -15,7 +15,7 @@ import { type AuditLog } from '@/app/dashboard/audit-logs/page';
 import { SELECTED_OUTLET_KEY } from '@/lib/outlet';
 import type { BrandConfig } from '@/lib/brand-fonts';
 
-export type User = {
+export interface User {
     id: string;
     res_id: string;
     outlet_id: string;
@@ -28,17 +28,17 @@ export type User = {
     role_all?: string[];
     action_list: string[];
     is_superadmin?: boolean;
-};
+}
 
-export type PasswordResetRequest = {
+export interface PasswordResetRequest {
     id: string;
     employee_id: string;
     username: string;
     name: string;
     created_at: string;
-};
+}
 
-export type RestaurantProfile = {
+export interface RestaurantProfile {
     restaurant_name: string;
     outlet_add: string;
     outlet_phone: string;
@@ -52,25 +52,25 @@ export type RestaurantProfile = {
 
     outlet_id: string;
     outlet_name: string;
-};
+}
 
-export type RoleDefinition = {
+export interface RoleDefinition {
     id: string;
     role_name: string;
     actions_performable: string[];
-};
+}
 
-export type TableAssignmentDefinition = {
+export interface TableAssignmentDefinition {
     id: string;
     table_name: string;
     employee_id: string;
     employee_name: string;
     employee_role: string;
-};
+}
 
 export type ApcZone = 'red' | 'yellow' | 'green';
 
-export type OrderApcInsight = {
+export interface OrderApcInsight {
     order_id: string;
     table_name: string;
     created_at: string;
@@ -80,9 +80,9 @@ export type OrderApcInsight = {
     zone: ApcZone;
     assigned_employee_id: string | null;
     assigned_employee_name: string | null;
-};
+}
 
-export type EmployeeApcIncentive = {
+export interface EmployeeApcIncentive {
     employee_id: string;
     employee_name: string;
     employee_role: string;
@@ -91,9 +91,9 @@ export type EmployeeApcIncentive = {
     covers_count: number;
     mean_apc: number;
     zone: ApcZone;
-};
+}
 
-export type MonthlyApcInsight = {
+export interface MonthlyApcInsight {
     month: string;
     period?: 'day' | 'week' | 'month';
     period_start?: string;
@@ -104,7 +104,7 @@ export type MonthlyApcInsight = {
     yellow_band_percent: number;
     orders: OrderApcInsight[];
     employee_incentives: EmployeeApcIncentive[];
-};
+}
 
 export type PaymentMethod =
     | 'Swiggy'
@@ -119,18 +119,18 @@ export type PaymentMethod =
 
 // One row of a split-tender payment ({method, amount}); the rows must sum to
 // the bill's grand total (backend-validated).
-export type PaymentSplit = { method: string; amount: number };
+export interface PaymentSplit { method: string; amount: number }
 
-type OutletData = {
+interface OutletData {
     outlet_add: string;
     outlet_phone: string;
     email: string;
     outlet_hours: string;
     outlet_id: string;
     outlet_name: string;
-};
+}
 
-type RestaurantData = {
+interface RestaurantData {
     profile: RestaurantProfile;
     outlet: OutletData;
     bookings: Booking[];
@@ -141,15 +141,15 @@ type RestaurantData = {
     orders: Order[];
     tables: Table[];
     auditLogs: AuditLog[]
-};
+}
 
-type RestaurantRecord = {
+interface RestaurantRecord {
     res_id: string;
     res_username: string;
     Restaurant_name: string;
     users: User[];
     data: RestaurantData;
-};
+}
 
 const API_BASE_URL = (
     process.env.NEXT_PUBLIC_BACKEND_URL ??
@@ -163,7 +163,7 @@ const RECEPTION_SERVER_BASE_URL = (
     API_BASE_URL
 ).replace(/\/$/, '');
 
-export type BackendRequestParams = {
+export interface BackendRequestParams {
     path: string;
     method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
     restaurantId?: string;
@@ -174,14 +174,14 @@ export type BackendRequestParams = {
     body?: unknown;
     baseUrl?: string;
     parseJson?: boolean;
-};
+}
 
-export type BackendRequestResult<T = unknown> = {
+export interface BackendRequestResult<T = unknown> {
     ok: boolean;
     status: number;
     data: T | null;
     text: string;
-};
+}
 
 const restaurantStore = new Map<string, RestaurantRecord>();
 
@@ -243,7 +243,7 @@ const ensureLocalRestaurant = (restaurant_username: string, restaurantName?: str
 };
 
 const stableTableId = (tableName: string, fallback = 1): number => {
-    if (!tableName) return fallback;
+    if (!tableName) {return fallback;}
     let hash = 0;
     for (let i = 0; i < tableName.length; i += 1) {
         hash = ((hash << 5) - hash + tableName.charCodeAt(i)) | 0;
@@ -273,22 +273,22 @@ const toTableStatus = (booked: unknown, reserved: unknown, occupied?: unknown, p
     // A table physically occupied by walk-ins (e.g. seated from the waitlist) has
     // no Booking row, so it must be read from is_occupied / payment_pending too —
     // otherwise it would wrongly show as free and could be double-seated.
-    if (Boolean(occupied) || Boolean(paymentPending)) return 'Occupied';
+    if (Boolean(occupied) || Boolean(paymentPending)) {return 'Occupied';}
     // A table inside an ACTIVE booking window (get-tables booked=true) is NOT
     // physically occupied — it is "Booked" (an in-progress reservation). It must
     // stay visually distinct from Occupied and remain orderable/occupiable.
-    if (Boolean(booked)) return 'Booked';
+    if (Boolean(booked)) {return 'Booked';}
     // An upcoming (future-window) booking marks the table "Reserved".
-    if (Boolean(reserved)) return 'Reserved';
+    if (Boolean(reserved)) {return 'Reserved';}
     return 'Available';
 };
 
-type FrontendAuthContext = {
+interface FrontendAuthContext {
     outletId: string | null;
     actionList: string[];
     employeeId: string | null;
     token: string | null;
-};
+}
 
 const getPathWithoutQuery = (path: string): string => {
     const index = path.indexOf('?');
@@ -316,7 +316,7 @@ const getFrontendAuthContext = async (): Promise<FrontendAuthContext> => {
             // nextCookies() may be a Promise; await it just in case.
             const ckAny: any = await nextCookies();
             const cookie = (typeof ckAny.get === 'function' ? ckAny.get('authUser') : ckAny?.cookies?.get?.('authUser'))?.value ?? null;
-            if (!cookie) return { outletId: null, actionList: [], employeeId: null, token: null };
+            if (!cookie) {return { outletId: null, actionList: [], employeeId: null, token: null };}
             const parsed = JSON.parse(decodeURIComponent(cookie)) as {
                 outlet_id?: unknown;
                 outletId?: unknown;
@@ -409,7 +409,7 @@ const getFrontendAuthContext = async (): Promise<FrontendAuthContext> => {
 // '@/lib/outlet' (this is a "use server" file and may only export async fns).
 const getSelectedOutletId = (): string | null => {
     try {
-        if (typeof window === 'undefined') return null;
+        if (typeof window === 'undefined') {return null;}
         const v = window.localStorage.getItem(SELECTED_OUTLET_KEY);
         return v && v.trim().length > 0 ? v.trim() : null;
     } catch {
@@ -816,7 +816,7 @@ const addToLocalField = async (
 
 const seedDefaultRestaurant = () => {
     const id = getRestaurantUsernameFromName('CSR Organics');
-    if (restaurantStore.has(id)) return;
+    if (restaurantStore.has(id)) {return;}
     restaurantStore.set(id, {
         res_id: '12fa3af0-f13d-4dfc-9b79-a6d634aa07dc',
         res_username: id,
@@ -867,7 +867,7 @@ export const findRestaurantByName = async (name: string) => {
         headers: { "X-Restaurant-Username": normalized, "content-type": "application/json" },
     });
 
-    if (!probe || !probe.ok) {
+    if (!probe?.ok) {
         return null;
     }
 
@@ -982,7 +982,7 @@ export const addEmployee = async (restaurantId: string, employee: User, outletId
         throw new Error(await readErrorMessage(resp));
     }
 
-    const payload = await resp.json().catch(() => null) as any;
+    const payload = await resp.json().catch(() => null);
     const created = payload?.user ?? null;
     if (created) {
         const restaurant = ensureLocalRestaurant(restaurantId);
@@ -1164,8 +1164,8 @@ export const getTables = async (restaurantId: string): Promise<Table[]> => {
 
 export const occupyTable = async (restaurantId: string, tableName: string, numCovers?: number | null, linkedOrderId?: string | null) => {
     const payload: any = { table_name: tableName };
-    if (typeof numCovers === 'number' && numCovers >= 1) payload.num_covers = numCovers;
-    if (typeof linkedOrderId === 'string' && linkedOrderId.trim().length > 0) payload.order_id = linkedOrderId;
+    if (typeof numCovers === 'number' && numCovers >= 1) {payload.num_covers = numCovers;}
+    if (typeof linkedOrderId === 'string' && linkedOrderId.trim().length > 0) {payload.order_id = linkedOrderId;}
 
     const response = await backendCall('/occupy-table', restaurantId, {
         method: 'POST',
@@ -1231,7 +1231,7 @@ export const getBillForTable = async (restaurantId: string, tableName: string) =
     const response = await backendCall(`/bill-for-table?table_name=${encodeURIComponent(tableName)}`, restaurantId, {
         method: 'GET',
     });
-    if (!response || !response.ok) return null;
+    if (!response?.ok) {return null;}
     try { return await response.json(); } catch { return null; }
 };
 
@@ -1241,11 +1241,11 @@ export const getAuditLogs = async (
 ): Promise<AuditLog[]> => {
     const qs = new URLSearchParams({ restaurantId });
     qs.set('limit', String(Math.max(1, opts.limit ?? 100)));
-    if (opts.offset) qs.set('offset', String(opts.offset));
-    if (opts.category && opts.category !== 'All') qs.set('category', opts.category);
-    if (opts.search) qs.set('search', opts.search);
-    if (opts.from) qs.set('from', opts.from);
-    if (opts.to) qs.set('to', opts.to);
+    if (opts.offset) {qs.set('offset', String(opts.offset));}
+    if (opts.category && opts.category !== 'All') {qs.set('category', opts.category);}
+    if (opts.search) {qs.set('search', opts.search);}
+    if (opts.from) {qs.set('from', opts.from);}
+    if (opts.to) {qs.set('to', opts.to);}
     const filtered = Boolean((opts.category && opts.category !== 'All') || opts.search || opts.from || opts.to || opts.offset);
 
     const data = await backendJson<any[]>(`/audit-logs?${qs.toString()}`, restaurantId, { method: 'GET' });
@@ -1253,7 +1253,7 @@ export const getAuditLogs = async (
     if (Array.isArray(data)) {
         const mapped = data.map(mapAuditLog);
         // Only cache the full (unfiltered) list so a filtered fetch never clobbers it.
-        if (!filtered) await writeLocalField(restaurantId, 'auditLogs', mapped);
+        if (!filtered) {await writeLocalField(restaurantId, 'auditLogs', mapped);}
         return mapped;
     }
 
@@ -1273,7 +1273,7 @@ export const undoAuditLog = async (restaurantId: string, logId: string): Promise
         { method: 'POST', headers: { 'Content-Type': 'application/json' } },
     );
 
-    if (!response) return { ok: false, error: 'Could not reach the server. Please try again.' };
+    if (!response) {return { ok: false, error: 'Could not reach the server. Please try again.' };}
 
     let parsed: any = null;
     try {
@@ -1425,8 +1425,8 @@ export const createBill = async (
         body: JSON.stringify(bill),
     });
 
-    if (!response) return null;
-    if (!response.ok) return null;
+    if (!response) {return null;}
+    if (!response.ok) {return null;}
     try {
         return await response.json();
     } catch {
@@ -1449,7 +1449,7 @@ export const replaceBill = async (
         body: JSON.stringify(payload),
     });
 
-    if (!response) return null;
+    if (!response) {return null;}
     if (!response.ok) {
         const msg = await readErrorMessage(response);
         throw new Error(msg);
@@ -1555,19 +1555,19 @@ export const closeBillByOrder = async (
 
 export const getBillByOrder = async (restaurantId: string, orderId: string) => {
     const response = await backendCall(`/bills/order/${encodeURIComponent(orderId)}`, restaurantId, { method: 'GET' });
-    if (!response || !response.ok) return null;
+    if (!response?.ok) {return null;}
     try { return await response.json(); } catch { return null; }
 };
 
 export const getRestaurantLogo = async (restaurantId: string): Promise<string | null> => {
     const response = await backendCall('/restaurant/logo', restaurantId, { method: 'GET' });
-    if (!response || !response.ok) return null;
+    if (!response?.ok) {return null;}
     try { const data = await response.json(); return data?.logo_base64 ?? null; } catch { return null; }
 };
 
 export const getOutletDefaultTax = async (restaurantId: string): Promise<Record<string, number> | null> => {
     const response = await backendCall('/outlets/default-tax', restaurantId, { method: 'GET' });
-    if (!response || !response.ok) return null;
+    if (!response?.ok) {return null;}
     try {
         const data = await response.json();
         return data?.default_tax ?? null;
@@ -1826,29 +1826,29 @@ export const getRoles = async (restaurantId: string): Promise<RoleDefinition[]> 
     return Array.isArray(data) ? data : [];
 };
 
-export type ActionRow = {
+export interface ActionRow {
     id: string;
     action_name: string;
     action_desc?: string | null;
     group?: string | null;
-};
+}
 
-export type CoreRoleRow = {
+export interface CoreRoleRow {
     role: string;
     actions: string[]; // '*' indicates all actions
-};
+}
 
 export const getActions = async (
     restaurantId: string,
     actionList: string[]
-): Promise<Array<{ group: string; actions: { id: string; name: string; desc?: string | null }[] }>> => {
+): Promise<{ group: string; actions: { id: string; name: string; desc?: string | null }[] }[]> => {
     const data = await backendJson<ActionRow[]>(
         `/actions?restaurantId=${encodeURIComponent(restaurantId)}`,
         restaurantId,
         { method: 'GET', headers: { 'Content-Type': 'application/json', 'X-Action-List': actionList.join(',') } },
     );
 
-    if (!Array.isArray(data)) return [];
+    if (!Array.isArray(data)) {return [];}
 
     const map: Record<string, { id: string; name: string; desc?: string | null }[]> = {};
     for (const a of data) {
@@ -1985,13 +1985,13 @@ export const setUserPassword = async (
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ employeeId, password }),
     });
-    if (!response?.ok) throw new Error(response ? await readErrorMessage(response) : 'Unable to set password');
+    if (!response?.ok) {throw new Error(response ? await readErrorMessage(response) : 'Unable to set password');}
 };
 
 // Admin: pending forgot-password requests for the restaurant.
 export const getPasswordRequests = async (restaurantId: string): Promise<PasswordResetRequest[]> => {
     const data = await backendJson<{ requests: PasswordResetRequest[] }>('/restaurant/password-requests', restaurantId, { method: 'GET' });
-    return Array.isArray(data?.requests) ? data!.requests : [];
+    return Array.isArray(data?.requests) ? data.requests : [];
 };
 
 // Admin: dismiss a pending password request without resetting.
@@ -2001,9 +2001,9 @@ export const dismissPasswordRequest = async (restaurantId: string, requestId: st
 };
 
 // --- Attendance / working hours --------------------------------------------
-export type MyAttendance = { clocked_in: boolean; since: string | null; today_minutes: number; pending_approval?: boolean };
-export type AttendanceSummaryRow = { emp_id: string; name: string; minutes: number; shifts: number; open: boolean };
-export type PendingClockIn = { id: string; emp_id: string; name: string; clock_in: string; clock_out: string | null };
+export interface MyAttendance { clocked_in: boolean; since: string | null; today_minutes: number; pending_approval?: boolean }
+export interface AttendanceSummaryRow { emp_id: string; name: string; minutes: number; shifts: number; open: boolean }
+export interface PendingClockIn { id: string; emp_id: string; name: string; clock_in: string; clock_out: string | null }
 
 export const getMyAttendance = async (restaurantId: string): Promise<MyAttendance> => {
     const d = await backendJson<MyAttendance>('/attendance/me', restaurantId, { method: 'GET' });
@@ -2012,7 +2012,7 @@ export const getMyAttendance = async (restaurantId: string): Promise<MyAttendanc
 
 export const reviewClockIn = async (restaurantId: string, attendanceId: string, approve: boolean): Promise<void> => {
     const r = await backendCall(`/attendance/${encodeURIComponent(attendanceId)}/${approve ? 'approve' : 'reject'}`, restaurantId, { method: 'POST' });
-    if (!r || !r.ok) throw new Error(r ? await readErrorMessage(r) : 'Unable to review clock-in');
+    if (!r?.ok) {throw new Error(r ? await readErrorMessage(r) : 'Unable to review clock-in');}
 };
 
 export const clockIn = async (restaurantId: string): Promise<boolean> => {
@@ -2039,8 +2039,8 @@ export const getAttendanceSummary = async (
 };
 
 // --- Inventory ops: vendors, receive, wastage, movements -------------------
-export type Vendor = { id: string; name: string; phone?: string | null; email?: string | null; notes?: string | null };
-export type StockMovement = {
+export interface Vendor { id: string; name: string; phone?: string | null; email?: string | null; notes?: string | null }
+export interface StockMovement {
     id: string;
     inventory_id: string;
     item_name: string | null;
@@ -2050,21 +2050,21 @@ export type StockMovement = {
     vendor_id: string | null;
     unit_cost: number | null;
     created_at: string;
-};
+}
 
 export const getVendors = async (restaurantId: string): Promise<Vendor[]> => {
     const d = await backendJson<{ vendors: Vendor[] }>('/vendors', restaurantId, { method: 'GET' });
-    return Array.isArray(d?.vendors) ? d!.vendors : [];
+    return Array.isArray(d?.vendors) ? d.vendors : [];
 };
 
 export const addVendor = async (restaurantId: string, vendor: { name: string; phone?: string; email?: string; notes?: string }): Promise<void> => {
     const r = await backendCall('/vendors', restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(vendor) });
-    if (!r?.ok) throw new Error(r ? await readErrorMessage(r) : 'Unable to add vendor');
+    if (!r?.ok) {throw new Error(r ? await readErrorMessage(r) : 'Unable to add vendor');}
 };
 
 export const deleteVendor = async (restaurantId: string, id: string): Promise<void> => {
     const r = await backendCall(`/vendors/${encodeURIComponent(id)}`, restaurantId, { method: 'DELETE' });
-    if (!r?.ok) throw new Error(r ? await readErrorMessage(r) : 'Unable to delete vendor');
+    if (!r?.ok) {throw new Error(r ? await readErrorMessage(r) : 'Unable to delete vendor');}
 };
 
 export const receiveStock = async (
@@ -2072,7 +2072,7 @@ export const receiveStock = async (
     body: { inventory_id: string; qty: number; vendor_id?: string; unit_cost?: number; note?: string },
 ): Promise<void> => {
     const r = await backendCall('/inventory/receive', restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (!r?.ok) throw new Error(r ? await readErrorMessage(r) : 'Unable to receive stock');
+    if (!r?.ok) {throw new Error(r ? await readErrorMessage(r) : 'Unable to receive stock');}
 };
 
 export const recordWastage = async (
@@ -2080,13 +2080,13 @@ export const recordWastage = async (
     body: { inventory_id: string; qty: number; reason?: string },
 ): Promise<void> => {
     const r = await backendCall('/inventory/wastage', restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (!r?.ok) throw new Error(r ? await readErrorMessage(r) : 'Unable to record wastage');
+    if (!r?.ok) {throw new Error(r ? await readErrorMessage(r) : 'Unable to record wastage');}
 };
 
 export const getStockMovements = async (restaurantId: string, from?: string, to?: string): Promise<StockMovement[]> => {
     const qs = from && to ? `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}` : '';
     const d = await backendJson<{ movements: StockMovement[] }>(`/inventory/movements${qs}`, restaurantId, { method: 'GET' });
-    return Array.isArray(d?.movements) ? d!.movements : [];
+    return Array.isArray(d?.movements) ? d.movements : [];
 };
 
 // Issue stock from the store to the kitchen (logged as a kind='issue' movement;
@@ -2096,7 +2096,7 @@ export const issueStock = async (
     body: { inventory_id: string; qty: number; note?: string },
 ): Promise<void> => {
     const r = await backendCall('/inventory/issue', restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (!r?.ok) throw new Error(r ? await readErrorMessage(r) : 'Unable to issue stock');
+    if (!r?.ok) {throw new Error(r ? await readErrorMessage(r) : 'Unable to issue stock');}
 };
 
 // Set (or clear, with null) an inventory item's expiry date.
@@ -2110,23 +2110,23 @@ export const setInventoryExpiry = async (
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ inventory_id: inventoryId, expiry_date: expiryDate }),
     });
-    if (!r?.ok) throw new Error(r ? await readErrorMessage(r) : 'Unable to set expiry');
+    if (!r?.ok) {throw new Error(r ? await readErrorMessage(r) : 'Unable to set expiry');}
 };
 
 // Vendor price history for one ingredient (costed purchases, oldest first).
-export type PricePoint = { date: string; qty: number; unit_cost: number; vendor: string | null };
+export interface PricePoint { date: string; qty: number; unit_cost: number; vendor: string | null }
 export const getPriceHistory = async (restaurantId: string, inventoryId: string): Promise<PricePoint[]> => {
     const d = await backendJson<{ points: PricePoint[] }>(
         `/inventory/price-history?inventory_id=${encodeURIComponent(inventoryId)}`,
         restaurantId,
         { method: 'GET' },
     );
-    return Array.isArray(d?.points) ? d!.points : [];
+    return Array.isArray(d?.points) ? d.points : [];
 };
 
 // --- Recipe/BOM costing -------------------------------------------------------
-export type MenuCostingIngredient = { inventory_id: string; name: string; unit: string; qty: number; note: string | null; unit_cost: number | null; line_cost: number | null };
-export type MenuCostingItem = {
+export interface MenuCostingIngredient { inventory_id: string; name: string; unit: string; qty: number; note: string | null; unit_cost: number | null; line_cost: number | null }
+export interface MenuCostingItem {
     id: string;
     name: string;
     category: string;
@@ -2135,19 +2135,19 @@ export type MenuCostingItem = {
     margin_pct: number | null;
     missing_costs: number;
     ingredients: MenuCostingIngredient[];
-};
-export type MenuCosting = {
+}
+export interface MenuCosting {
     items: MenuCostingItem[];
     ingredients: { id: string; name: string; unit: string; unit_cost: number | null }[];
-};
+}
 export const getMenuCosting = async (restaurantId: string): Promise<MenuCosting> => {
     const d = await backendJson<MenuCosting>('/menu/costing', restaurantId, { method: 'GET' });
     return d ?? { items: [], ingredients: [] };
 };
 
 // --- Purchase orders --------------------------------------------------------
-export type PurchaseOrderItem = { inventory_id: string; name: string; qty_ordered: number; unit_cost: number; qty_received: number };
-export type PurchaseOrder = {
+export interface PurchaseOrderItem { inventory_id: string; name: string; qty_ordered: number; unit_cost: number; qty_received: number }
+export interface PurchaseOrder {
     id: string;
     vendor_id: string | null;
     vendor_name: string | null;
@@ -2160,15 +2160,15 @@ export type PurchaseOrder = {
     created_by: string | null;
     ordered_at: string | null;
     received_at: string | null;
-};
+}
 
 export const getPurchaseOrders = async (restaurantId: string, opts?: { status?: string; from?: string; to?: string }): Promise<PurchaseOrder[]> => {
     const params = new URLSearchParams({ restaurantId });
-    if (opts?.status) params.set('status', opts.status);
-    if (opts?.from) params.set('from', opts.from);
-    if (opts?.to) params.set('to', opts.to);
+    if (opts?.status) {params.set('status', opts.status);}
+    if (opts?.from) {params.set('from', opts.from);}
+    if (opts?.to) {params.set('to', opts.to);}
     const d = await backendJson<{ orders: PurchaseOrder[] }>(`/purchase-orders?${params.toString()}`, restaurantId, { method: 'GET' });
-    return Array.isArray(d?.orders) ? d!.orders : [];
+    return Array.isArray(d?.orders) ? d.orders : [];
 };
 
 export const createPurchaseOrder = async (
@@ -2176,52 +2176,52 @@ export const createPurchaseOrder = async (
     body: {
         vendor_id?: string;
         vendor_name?: string;
-        items: Array<{ inventory_id: string; name: string; qty_ordered: number; unit_cost: number }>;
+        items: { inventory_id: string; name: string; qty_ordered: number; unit_cost: number }[];
         notes?: string;
         expected_date?: string;
         status?: 'draft' | 'ordered';
     },
 ): Promise<PurchaseOrder> => {
     const res = await backendCall('/purchase-orders', restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to create purchase order');
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to create purchase order');}
     return res.json() as Promise<PurchaseOrder>;
 };
 
 export const setPurchaseOrderStatus = async (restaurantId: string, id: string, status: 'draft' | 'ordered' | 'cancelled'): Promise<PurchaseOrder> => {
     const res = await backendCall(`/purchase-orders/${encodeURIComponent(id)}/status`, restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) });
-    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to update purchase order');
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to update purchase order');}
     return res.json() as Promise<PurchaseOrder>;
 };
 
-export const receivePurchaseOrder = async (restaurantId: string, id: string, lines: Array<{ inventory_id: string; qty_received: number }>, qualityRating?: number | null): Promise<PurchaseOrder> => {
+export const receivePurchaseOrder = async (restaurantId: string, id: string, lines: { inventory_id: string; qty_received: number }[], qualityRating?: number | null): Promise<PurchaseOrder> => {
     const body: Record<string, unknown> = { lines };
-    if (typeof qualityRating === 'number' && qualityRating >= 1 && qualityRating <= 5) body.quality_rating = qualityRating;
+    if (typeof qualityRating === 'number' && qualityRating >= 1 && qualityRating <= 5) {body.quality_rating = qualityRating;}
     const res = await backendCall(`/purchase-orders/${encodeURIComponent(id)}/receive`, restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to receive purchase order');
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to receive purchase order');}
     return res.json() as Promise<PurchaseOrder>;
 };
 
 // --- Marketing campaigns ------------------------------------------------------
-export type Campaign = { id: string; name: string; cost: number; starts_at: string; ends_at: string; notes: string | null; created_at: string };
+export interface Campaign { id: string; name: string; cost: number; starts_at: string; ends_at: string; notes: string | null; created_at: string }
 
 export const createCampaign = async (restaurantId: string, input: { name: string; cost: number; starts_at: string; ends_at: string; notes?: string }): Promise<Campaign> => {
     const res = await backendCall('/campaigns', restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
-    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to create campaign');
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to create campaign');}
     return res.json() as Promise<Campaign>;
 };
 
 export const deleteCampaign = async (restaurantId: string, id: string): Promise<void> => {
     const res = await backendCall(`/campaigns/${encodeURIComponent(id)}`, restaurantId, { method: 'DELETE' });
-    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to delete campaign');
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to delete campaign');}
 };
 
 export const deletePurchaseOrder = async (restaurantId: string, id: string): Promise<void> => {
     const res = await backendCall(`/purchase-orders/${encodeURIComponent(id)}`, restaurantId, { method: 'DELETE' });
-    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to delete purchase order');
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to delete purchase order');}
 };
 
 // --- Coupons ----------------------------------------------------------------
-export type Coupon = {
+export interface Coupon {
     id: string;
     code: string;
     description: string | null;
@@ -2238,9 +2238,9 @@ export type Coupon = {
     // 'promo' (default) or 'gift' — gift vouchers carry a spendable balance.
     kind?: 'promo' | 'gift';
     balance?: number | null;
-};
+}
 
-export type CouponInput = {
+export interface CouponInput {
     id?: string;
     code: string;
     description?: string | null;
@@ -2253,45 +2253,45 @@ export type CouponInput = {
     valid_from?: string | null;
     valid_to?: string | null;
     active?: boolean;
-};
+}
 
 export const getCoupons = async (restaurantId: string): Promise<Coupon[]> => {
     const d = await backendJson<{ coupons: Coupon[] }>('/coupons', restaurantId, { method: 'GET' });
-    return Array.isArray(d?.coupons) ? d!.coupons : [];
+    return Array.isArray(d?.coupons) ? d.coupons : [];
 };
 
 export const saveCoupon = async (restaurantId: string, coupon: CouponInput): Promise<Coupon> => {
     const r = await backendCall('/coupons', restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(coupon) });
-    if (!r?.ok) throw new Error(r ? await readErrorMessage(r) : 'Unable to save coupon');
+    if (!r?.ok) {throw new Error(r ? await readErrorMessage(r) : 'Unable to save coupon');}
     const data = await r.json().catch(() => null) as { coupon?: Coupon } | null;
-    return data?.coupon as Coupon;
+    return data?.coupon!;
 };
 
 export const deleteCoupon = async (restaurantId: string, id: string): Promise<void> => {
     const r = await backendCall(`/coupons/${encodeURIComponent(id)}`, restaurantId, { method: 'DELETE' });
-    if (!r?.ok) throw new Error(r ? await readErrorMessage(r) : 'Unable to delete coupon');
+    if (!r?.ok) {throw new Error(r ? await readErrorMessage(r) : 'Unable to delete coupon');}
 };
 
 // Issue a gift voucher (admin) — a kind='gift' coupon with a spendable balance.
 export const createGiftVoucher = async (restaurantId: string, input: { amount: number; code?: string }): Promise<Coupon> => {
     const r = await backendCall('/vouchers', restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
-    if (!r?.ok) throw new Error(r ? await readErrorMessage(r) : 'Unable to issue voucher');
+    if (!r?.ok) {throw new Error(r ? await readErrorMessage(r) : 'Unable to issue voucher');}
     const data = await r.json().catch(() => null) as { coupon?: Coupon } | null;
-    return data?.coupon as Coupon;
+    return data?.coupon!;
 };
 
 // --- Loyalty points ----------------------------------------------------------
-export type LoyaltyAccount = {
+export interface LoyaltyAccount {
     phone: string;
     balance: number;
     point_value: number;
     earn_per_100: number;
-    history: Array<{ points: number; kind: string; note: string | null; bill_id: string | null; created_at: string }>;
-};
+    history: { points: number; kind: string; note: string | null; bill_id: string | null; created_at: string }[];
+}
 
 export const getLoyalty = async (restaurantId: string, phone: string): Promise<LoyaltyAccount> => {
     const r = await backendCall(`/loyalty/${encodeURIComponent(phone)}`, restaurantId, { method: 'GET' });
-    if (!r?.ok) throw new Error(r ? await readErrorMessage(r) : 'Unable to load loyalty account');
+    if (!r?.ok) {throw new Error(r ? await readErrorMessage(r) : 'Unable to load loyalty account');}
     return await r.json() as LoyaltyAccount;
 };
 
@@ -2392,7 +2392,7 @@ export const getMonthlyApcInsight = async (
     return data ?? null;
 };
 
-export type ApcTrendPoint = { month: string; period_start: string; total_revenue: number; total_covers: number; monthly_apc: number; bills: number };
+export interface ApcTrendPoint { month: string; period_start: string; total_revenue: number; total_covers: number; monthly_apc: number; bills: number }
 
 export const getApcTrends = async (restaurantId: string, months = 12): Promise<ApcTrendPoint[]> => {
     const data = await backendJson<{ series: ApcTrendPoint[] }>(
@@ -2400,11 +2400,11 @@ export const getApcTrends = async (restaurantId: string, months = 12): Promise<A
         restaurantId,
         { method: 'GET' },
     );
-    return Array.isArray(data?.series) ? data!.series : [];
+    return Array.isArray(data?.series) ? data.series : [];
 };
 
-export type KpiCard = { key: string; label: string; value: number | null; unit: string; status: 'blue' | 'green' | 'amber' | 'red' | 'grey' };
-export type AdvancedAnalytics = {
+export interface KpiCard { key: string; label: string; value: number | null; unit: string; status: 'blue' | 'green' | 'amber' | 'red' | 'grey' }
+export interface AdvancedAnalytics {
     window_days: number;
     discounts: { total_bills: number; discount_bills: number; utilization_pct: number; total_discount: number; redemptions: number };
     staff: { name: string; feedbacks: number; avg_rating: number | null; complaint_pct: number }[];
@@ -2445,7 +2445,7 @@ export type AdvancedAnalytics = {
     };
     profit?: { revenue: number; expenses: number; margin_pct: number | null };
     kpis: KpiCard[];
-};
+}
 
 export const getAdvancedAnalytics = async (restaurantId: string, days = 90): Promise<AdvancedAnalytics | null> => {
     const data = await backendJson<AdvancedAnalytics>(
@@ -2457,10 +2457,10 @@ export const getAdvancedAnalytics = async (restaurantId: string, days = 90): Pro
 };
 
 // --- Multi-outlet comparison ---------------------------------------------------
-export type OutletComparison = {
+export interface OutletComparison {
     days: number;
-    outlets: Array<{ outlet_id: string; name: string; revenue: number; bills: number; orders: number; avg_rating: number | null }>;
-};
+    outlets: { outlet_id: string; name: string; revenue: number; bills: number; orders: number; avg_rating: number | null }[];
+}
 
 export const getOutletsComparison = async (restaurantId: string, days = 30): Promise<OutletComparison | null> => {
     const data = await backendJson<OutletComparison>(
@@ -2473,7 +2473,7 @@ export const getOutletsComparison = async (restaurantId: string, days = 30): Pro
 
 // --- Guest CRM insights ----------------------------------------------------------
 export type CustomerSegment = 'new' | 'regular' | 'high-spend' | 'dormant';
-export type CustomerInsight = {
+export interface CustomerInsight {
     customer_id: string;
     name: string;
     phone: string;
@@ -2483,8 +2483,8 @@ export type CustomerInsight = {
     avg_rating: number | null;
     feedbacks: number;
     segment: CustomerSegment;
-    history: Array<{ day: string; orders: number; spend: number }>;
-};
+    history: { day: string; orders: number; spend: number }[];
+}
 
 export const getCustomerInsights = async (restaurantId: string): Promise<CustomerInsight[]> => {
     const data = await backendJson<{ customers: CustomerInsight[] }>(
@@ -2492,12 +2492,12 @@ export const getCustomerInsights = async (restaurantId: string): Promise<Custome
         restaurantId,
         { method: 'GET' },
     );
-    return Array.isArray(data?.customers) ? data!.customers : [];
+    return Array.isArray(data?.customers) ? data.customers : [];
 };
 
 // --- Payroll ------------------------------------------------------------------
-export type PayrollProfile = { emp_id: string; pay_type: 'monthly' | 'hourly'; base_salary: number; hourly_rate: number; allowances: number; deductions: number; pf_pct: number; esi_pct: number };
-export type PayrollRow = {
+export interface PayrollProfile { emp_id: string; pay_type: 'monthly' | 'hourly'; base_salary: number; hourly_rate: number; allowances: number; deductions: number; pf_pct: number; esi_pct: number }
+export interface PayrollRow {
     emp_id: string;
     name: string;
     role: string;
@@ -2509,8 +2509,8 @@ export type PayrollRow = {
     paid: boolean;
     paid_amount: number | null;
     paid_at: string | null;
-};
-export type PayrollData = { period: string; rows: PayrollRow[]; total_due: number; total_paid: number };
+}
+export interface PayrollData { period: string; rows: PayrollRow[]; total_due: number; total_paid: number }
 
 export const getPayroll = async (restaurantId: string, month: string): Promise<PayrollData | null> => {
     const data = await backendJson<PayrollData>(
@@ -2523,22 +2523,22 @@ export const getPayroll = async (restaurantId: string, month: string): Promise<P
 
 export const setPayrollProfile = async (restaurantId: string, input: { emp_id: string; pay_type: string; base_salary: number; hourly_rate: number; allowances: number; deductions: number; pf_pct: number; esi_pct: number }): Promise<void> => {
     const res = await backendCall('/payroll/profile', restaurantId, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
-    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to save payroll profile');
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to save payroll profile');}
 };
 
 // Payroll register CSV (string) for the month — gross + PF/ESI statutory split.
 export const getPayrollCsv = async (restaurantId: string, month: string): Promise<string> => {
     const res = await backendCall(`/payroll.csv?restaurantId=${encodeURIComponent(restaurantId)}&month=${encodeURIComponent(month)}`, restaurantId, { method: 'GET' });
-    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to export payroll');
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to export payroll');}
     return res.text();
 };
 
 export const payPayroll = async (restaurantId: string, input: { emp_id: string; period: string; amount: number; note?: string }): Promise<void> => {
     const res = await backendCall('/payroll/pay', restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
-    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to record payment');
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to record payment');}
 };
 
-export type MonthlyHistoryRow = {
+export interface MonthlyHistoryRow {
     month: string;
     revenue: number;
     bills: number;
@@ -2549,7 +2549,7 @@ export type MonthlyHistoryRow = {
     avg_rating: number | null;
     new_customers: number;
     avg_tat_min: number | null;
-};
+}
 
 export const getMonthlyHistory = async (restaurantId: string, months = 36): Promise<MonthlyHistoryRow[]> => {
     const data = await backendJson<{ series: MonthlyHistoryRow[] }>(
@@ -2557,19 +2557,19 @@ export const getMonthlyHistory = async (restaurantId: string, months = 36): Prom
         restaurantId,
         { method: 'GET' },
     );
-    return Array.isArray(data?.series) ? data!.series : [];
+    return Array.isArray(data?.series) ? data.series : [];
 };
 
-export type DishStat = { name: string; category: string; quantity: number; revenue: number; orders: number; current_price: number | null };
+export interface DishStat { name: string; category: string; quantity: number; revenue: number; orders: number; current_price: number | null }
 // `id` is the Menu row UUID the suggestion applies to — null only when the sold
 // dish name no longer matches a live menu item (nothing to apply then).
-export type PriceSuggestion = { id: string | null; name: string; category: string; current_price: number; suggested_price: number; direction: 'increase' | 'decrease'; reason: string };
-export type WaiterStat = { employee_id: string; employee_name: string; orders: number; revenue: number };
+export interface PriceSuggestion { id: string | null; name: string; category: string; current_price: number; suggested_price: number; direction: 'increase' | 'decrease'; reason: string }
+export interface WaiterStat { employee_id: string; employee_name: string; orders: number; revenue: number }
 // Items the backend deliberately withheld a suggestion for, so the UI can say
 // WHY nothing is being suggested instead of looking like there is no signal.
 // `retry_after` is an ISO date and is only set for the cooldown reason.
-export type SuppressedSuggestion = { id: string | null; name: string; reason: 'cooldown' | 'drift_cap' | 'margin_floor'; retry_after?: string };
-export type MenuInsights = {
+export interface SuppressedSuggestion { id: string | null; name: string; reason: 'cooldown' | 'drift_cap' | 'margin_floor'; retry_after?: string }
+export interface MenuInsights {
     period_days: number;
     total_revenue: number;
     total_items_sold: number;
@@ -2579,7 +2579,7 @@ export type MenuInsights = {
     // Additive field — older backends omit it, so treat it as optional.
     suppressed_suggestions?: { count: number; items: SuppressedSuggestion[] };
     top_waiters: WaiterStat[];
-};
+}
 
 export const getMenuInsights = async (
     restaurantId: string,
@@ -2606,17 +2606,17 @@ export const applyMenuItemPrice = async (
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ price }),
     });
-    if (!response || !response.ok) {
+    if (!response?.ok) {
         throw new Error(response ? await readErrorMessage(response) : 'Unable to update the price');
     }
     return (await response.json()) as { success: boolean; id: string; name: string; price: number };
 };
 
-export type OperationsAnalytics = {
+export interface OperationsAnalytics {
     days: number;
-    by_hour: Array<{ hour: number; orders: number; revenue: number }>;
-    by_weekday: Array<{ weekday: number; label: string; orders: number; revenue: number }>;
-};
+    by_hour: { hour: number; orders: number; revenue: number }[];
+    by_weekday: { weekday: number; label: string; orders: number; revenue: number }[];
+}
 
 export const getOperationsAnalytics = async (
     restaurantId: string,
@@ -2631,22 +2631,22 @@ export const getOperationsAnalytics = async (
 };
 
 // --- Accounting & reporting -------------------------------------------------
-export type SalesReport = {
+export interface SalesReport {
     from: string; to: string;
     total_sales: number; total_tax: number; total_refund: number; net_sales: number; bill_count: number;
-    by_day: Array<{ date: string; sales: number; tax: number; refund: number; bills: number }>;
-    by_method: Array<{ method: string; sales: number; bills: number }>;
-};
-export type GstReport = {
+    by_day: { date: string; sales: number; tax: number; refund: number; bills: number }[];
+    by_method: { method: string; sales: number; bills: number }[];
+}
+export interface GstReport {
     from: string; to: string; total_taxable: number; total_tax: number;
-    by_rate: Array<{ name: string; percentage: number; taxable: number; tax: number }>;
-};
-export type ProfitAndLoss = {
+    by_rate: { name: string; percentage: number; taxable: number; tax: number }[];
+}
+export interface ProfitAndLoss {
     from: string; to: string;
     gross_sales: number; refunds: number; tax_collected: number; net_revenue: number; total_expenses: number; net_profit: number;
-    expenses_by_category: Array<{ category: string; amount: number }>;
-};
-export type ExpenseRow = { id: string; spent_on: string; category: string; vendor: string | null; amount: number; note: string | null; created_at: string };
+    expenses_by_category: { category: string; amount: number }[];
+}
+export interface ExpenseRow { id: string; spent_on: string; category: string; vendor: string | null; amount: number; note: string | null; created_at: string }
 
 const qFromTo = (from?: string, to?: string) => `${from ? `&from=${encodeURIComponent(from)}` : ''}${to ? `&to=${encodeURIComponent(to)}` : ''}`;
 
@@ -2658,38 +2658,38 @@ export const getProfitAndLoss = async (restaurantId: string, from?: string, to?:
     backendJson<ProfitAndLoss>(`/reports/pnl?restaurantId=${encodeURIComponent(restaurantId)}${qFromTo(from, to)}`, restaurantId, { method: 'GET' });
 // Money given away as discounts/coupons/vouchers. Bill totals are stored net of
 // discount, so these figures are context — never subtract them from sales again.
-export type DiscountsReport = {
+export interface DiscountsReport {
     from: string; to: string;
     bill_count: number; discounted_bills: number;
     total_discount: number; manual_discount: number; coupon_discount: number;
     estimated_bills: number; total_sales: number; gift_redemption_total: number;
-    by_coupon: Array<{ code: string; kind: 'promo' | 'gift'; uses: number; amount: number }>;
+    by_coupon: { code: string; kind: 'promo' | 'gift'; uses: number; amount: number }[];
     notes: string[];
-};
+}
 export const getDiscountsReport = async (restaurantId: string, from?: string, to?: string) =>
     backendJson<DiscountsReport>(`/reports/discounts?restaurantId=${encodeURIComponent(restaurantId)}${qFromTo(from, to)}`, restaurantId, { method: 'GET' });
 export const getExpenses = async (restaurantId: string, from?: string, to?: string) =>
     backendJson<{ expenses: ExpenseRow[] }>(`/expenses?restaurantId=${encodeURIComponent(restaurantId)}${qFromTo(from, to)}`, restaurantId, { method: 'GET' });
 
 // --- Balance sheet (pragmatic snapshot) ---------------------------------------
-export type BalanceSheet = {
+export interface BalanceSheet {
     as_of: string;
     assets: { cash_in_hand: number; receivables: number; inventory_value: number; total: number };
     liabilities: { payables: number; unpaid_payroll: number; total: number };
     equity: number;
     notes: string[];
-};
+}
 export const getBalanceSheet = async (restaurantId: string, asOf?: string) =>
     backendJson<BalanceSheet>(`/reports/balance-sheet?restaurantId=${encodeURIComponent(restaurantId)}${asOf ? `&as_of=${encodeURIComponent(asOf)}` : ''}`, restaurantId, { method: 'GET' });
 
 // --- Bank / settlement reconciliation -----------------------------------------
-export type ReconciliationRow = {
+export interface ReconciliationRow {
     method: string;
     expected: number;
     actual: number | null;
     status: 'matched' | 'variance' | null;
     note: string | null;
-};
+}
 export const getReconciliation = async (restaurantId: string, date?: string) =>
     backendJson<{ date: string; rows: ReconciliationRow[] }>(`/reconciliation?restaurantId=${encodeURIComponent(restaurantId)}${date ? `&date=${encodeURIComponent(date)}` : ''}`, restaurantId, { method: 'GET' });
 
@@ -2698,14 +2698,14 @@ export const saveReconciliation = async (
     input: { date: string; method: string; actual: number; note?: string },
 ): Promise<ReconciliationRow & { date: string }> => {
     const res = await backendCall('/reconciliation', restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
-    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to save reconciliation');
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to save reconciliation');}
     return res.json();
 };
 
 // Tally-compatible voucher XML (string) for import into Tally.
 export const getTallyXml = async (restaurantId: string, from?: string, to?: string): Promise<string> => {
     const res = await backendCall(`/reports/tally.xml?restaurantId=${encodeURIComponent(restaurantId)}${qFromTo(from, to)}`, restaurantId, { method: 'GET' });
-    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to build Tally export');
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to build Tally export');}
     return res.text();
 };
 
@@ -2718,18 +2718,18 @@ export const addExpense = async (
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
     });
-    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to add expense');
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to add expense');}
     return res.json();
 };
 
 export const deleteExpense = async (restaurantId: string, id: string) => {
     const res = await backendCall(`/expenses/${encodeURIComponent(id)}`, restaurantId, { method: 'DELETE' });
-    if (!res || !res.ok) throw new Error('Unable to delete expense');
+    if (!res?.ok) {throw new Error('Unable to delete expense');}
     return { acknowledged: true };
 };
 
 // --- Cash register / day-close ----------------------------------------------
-export type CashSession = {
+export interface CashSession {
     id: string;
     opened_at: string;
     opened_by: string | null;
@@ -2744,7 +2744,7 @@ export type CashSession = {
     variance: number | null;
     notes: string | null;
     status: 'open' | 'closed';
-};
+}
 export type CurrentCashSession = CashSession & { live_cash_sales: number; live_cash_refunds: number; live_expected: number };
 
 export const getCurrentCashSession = async (restaurantId: string) =>
@@ -2759,7 +2759,7 @@ export const openCashSession = async (restaurantId: string, openingFloat: number
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ opening_float: openingFloat }),
     });
-    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to open cash session');
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to open cash session');}
     return res.json() as Promise<CashSession>;
 };
 
@@ -2772,15 +2772,15 @@ export const closeCashSession = async (
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
     });
-    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to close cash session');
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to close cash session');}
     return res.json() as Promise<CashSession>;
 };
 
 // --- Subscription & billing (tenant self-serve) -----------------------------
-export type BillingPlan = { id: string; code: string; name: string; price_cents: number; features: Record<string, unknown>; limits: Record<string, unknown>; active: boolean };
-export type BillingSubscription = { res_id: string; plan_id: string | null; status: string; trial_ends_at: string | null; current_period_end: string | null; pending_plan_id: string | null };
-export type BillingInvoice = { id: string; plan_id: string | null; amount_cents: number; status: string; period_start: string | null; period_end: string | null; note: string | null; created_at: string };
-export type BillingInfo = {
+export interface BillingPlan { id: string; code: string; name: string; price_cents: number; features: Record<string, unknown>; limits: Record<string, unknown>; active: boolean }
+export interface BillingSubscription { res_id: string; plan_id: string | null; status: string; trial_ends_at: string | null; current_period_end: string | null; pending_plan_id: string | null }
+export interface BillingInvoice { id: string; plan_id: string | null; amount_cents: number; status: string; period_start: string | null; period_end: string | null; note: string | null; created_at: string }
+export interface BillingInfo {
     configured: boolean;
     online_pay: boolean;
     subscription: BillingSubscription | null;
@@ -2788,23 +2788,23 @@ export type BillingInfo = {
     pending_plan: BillingPlan | null;
     plans: BillingPlan[];
     invoices: BillingInvoice[];
-};
+}
 
 export const getBilling = async (restaurantId: string): Promise<BillingInfo> => {
     const data = await backendJson<BillingInfo>(`/billing?restaurantId=${encodeURIComponent(restaurantId)}`, restaurantId, { method: 'GET' });
-    if (!data) throw new Error('Unable to load billing');
+    if (!data) {throw new Error('Unable to load billing');}
     return data;
 };
 
 export const changePlan = async (restaurantId: string, planId: string): Promise<{ mode: 'upgrade' | 'downgrade_scheduled' | 'noop'; invoice?: BillingInvoice; plan: BillingPlan }> => {
     const res = await backendCall('/billing/change-plan', restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan_id: planId }) });
-    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to change plan');
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to change plan');}
     return res.json();
 };
 
 export const billingPayCreate = async (restaurantId: string, invoiceId: string): Promise<{ order_id: string; amount: number; currency: string; key_id: string; invoice_id: string }> => {
     const res = await backendCall('/billing/pay/create', restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ invoice_id: invoiceId }) });
-    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to start payment');
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to start payment');}
     return res.json();
 };
 
@@ -2813,12 +2813,12 @@ export const billingPayVerify = async (
     body: { invoice_id: string; razorpay_order_id: string; razorpay_payment_id: string; razorpay_signature: string },
 ): Promise<{ ok: boolean }> => {
     const res = await backendCall('/billing/pay/verify', restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Payment verification failed');
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Payment verification failed');}
     return res.json();
 };
 
 // --- Waitlist / queue (staff) -----------------------------------------------
-export type WaitlistEntry = {
+export interface WaitlistEntry {
     id: string;
     name: string;
     phone: string | null;
@@ -2826,43 +2826,43 @@ export type WaitlistEntry = {
     status: 'waiting' | 'called' | 'seated' | 'cancelled' | 'no_show';
     position: number;
     minutes_waiting: number;
-    pre_order: Array<{ id: string; name: string; price: number; quantity: number; note?: string }>;
-    party_members?: Array<{ name: string; phone: string; joined_at: string }>;
+    pre_order: { id: string; name: string; price: number; quantity: number; note?: string }[];
+    party_members?: { name: string; phone: string; joined_at: string }[];
     table_name: string | null;
     created_at: string;
     called_at: string | null;
-};
+}
 
 export const getWaitlist = async (restaurantId: string): Promise<WaitlistEntry[]> => {
     const d = await backendJson<{ entries: WaitlistEntry[] }>(`/waitlist?restaurantId=${encodeURIComponent(restaurantId)}`, restaurantId, { method: 'GET' });
-    return Array.isArray(d?.entries) ? d!.entries : [];
+    return Array.isArray(d?.entries) ? d.entries : [];
 };
 
 export const callWaitlistEntry = async (restaurantId: string, id: string) => {
     const res = await backendCall(`/waitlist/${encodeURIComponent(id)}/call`, restaurantId, { method: 'POST' });
-    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to call this party');
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to call this party');}
     return res.json();
 };
 
 export const seatWaitlistEntry = async (restaurantId: string, id: string, tableName: string) => {
     const res = await backendCall(`/waitlist/${encodeURIComponent(id)}/seat`, restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ table_name: tableName }) });
-    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to seat this party');
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to seat this party');}
     return res.json();
 };
 
 export const cancelWaitlistEntry = async (restaurantId: string, id: string, status: 'cancelled' | 'no_show' = 'cancelled') => {
     const res = await backendCall(`/waitlist/${encodeURIComponent(id)}/cancel`, restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) });
-    if (!res || !res.ok) throw new Error('Unable to update the queue');
+    if (!res?.ok) {throw new Error('Unable to update the queue');}
     return { ok: true };
 };
 
 // --- Multi-outlet -----------------------------------------------------------
-export type OutletRow = { id: string; outlet_name: string; outlet_add: string | null; outlet_phone: string | null; outlet_hours: string | null; is_active: boolean; is_default: boolean };
-export type OutletsRollup = {
+export interface OutletRow { id: string; outlet_name: string; outlet_add: string | null; outlet_phone: string | null; outlet_hours: string | null; is_active: boolean; is_default: boolean }
+export interface OutletsRollup {
     days: number;
-    outlets: Array<{ outlet_id: string; name: string; revenue: number; orders: number }>;
+    outlets: { outlet_id: string; name: string; revenue: number; orders: number }[];
     totals: { revenue: number; orders: number; outlets: number };
-};
+}
 
 export const getOutlets = async (restaurantId: string) =>
     backendJson<{ outlets: OutletRow[] }>(`/outlets?restaurantId=${encodeURIComponent(restaurantId)}`, restaurantId, { method: 'GET' });
@@ -2871,35 +2871,35 @@ export const getOutletsRollup = async (restaurantId: string, days = 30) =>
 
 export const addOutlet = async (restaurantId: string, body: { name: string; address?: string; phone?: string; hours?: string }) => {
     const res = await backendCall('/outlets', restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to add outlet');
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to add outlet');}
     return res.json();
 };
 export const updateOutlet = async (restaurantId: string, id: string, body: { name?: string; address?: string; phone?: string; hours?: string }) => {
     const res = await backendCall(`/outlets/${encodeURIComponent(id)}`, restaurantId, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to update outlet');
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to update outlet');}
     return { acknowledged: true };
 };
 export const setOutletActive = async (restaurantId: string, id: string, active: boolean) => {
     const res = await backendCall(`/outlets/${encodeURIComponent(id)}/active`, restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active }) });
-    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to update outlet');
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to update outlet');}
     return { acknowledged: true };
 };
 export const deleteOutlet = async (restaurantId: string, id: string) => {
     const res = await backendCall(`/outlets/${encodeURIComponent(id)}`, restaurantId, { method: 'DELETE' });
-    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to delete outlet');
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to delete outlet');}
     return { acknowledged: true };
 };
 
 // --- POS everyday ops (discount / split / merge / refund) -------------------
 const postJson = async (path: string, restaurantId: string, body: unknown) => {
     const res = await backendCall(path, restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Request failed');
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Request failed');}
     try { return await res.json(); } catch { return {}; }
 };
 
 // May come back applied ({applied: true}) or parked for manager approval
 // ({pending: true, request_id}) when the restaurant's threshold is exceeded.
-export type BillDiscountResult = {
+export interface BillDiscountResult {
     success?: boolean;
     applied?: boolean;
     discount_type?: 'percent' | 'flat' | null;
@@ -2908,11 +2908,11 @@ export type BillDiscountResult = {
     request_id?: string;
     amount?: number;
     threshold?: number;
-};
+}
 export const setBillDiscount = async (restaurantId: string, tableName: string, type: 'percent' | 'flat', value: number): Promise<BillDiscountResult> =>
     postJson('/bills/discount', restaurantId, { table_name: tableName, type, value });
 
-export type DiscountRequest = {
+export interface DiscountRequest {
     id: string;
     bill_id: string;
     table_name: string | null;
@@ -2925,10 +2925,10 @@ export type DiscountRequest = {
     decided_by: string | null;
     decided_at: string | null;
     created_at: string;
-};
-export const getDiscountRequests = async (restaurantId: string, status: string = 'pending'): Promise<DiscountRequest[]> => {
+}
+export const getDiscountRequests = async (restaurantId: string, status = 'pending'): Promise<DiscountRequest[]> => {
     const res = await backendCall(`/discount-requests?status=${encodeURIComponent(status)}`, restaurantId, { method: 'GET' });
-    if (!res || !res.ok) return [];
+    if (!res?.ok) {return [];}
     try { const j = await res.json(); return Array.isArray(j?.requests) ? j.requests : []; } catch { return []; }
 };
 export const decideDiscountRequest = async (restaurantId: string, requestId: string, approve: boolean): Promise<{ success: boolean; request?: DiscountRequest }> =>
@@ -2948,11 +2948,11 @@ export const fireOrderItems = async (restaurantId: string, orderId: string, item
 export const barkOrder = async (restaurantId: string, orderId: string): Promise<{ success: boolean; barked_at?: string; already_barked?: boolean }> =>
     postJson(`/orders/${encodeURIComponent(orderId)}/bark`, restaurantId, {});
 
-export type ExpoItem = { name: string; qty: number; station: string | null; status: 'served' | 'preparing' | 'held' | 'unbarked' };
-export type ExpoTable = { table: string; items: ExpoItem[]; ready_count: number; pending_count: number; source?: string | null };
+export interface ExpoItem { name: string; qty: number; station: string | null; status: 'served' | 'preparing' | 'held' | 'unbarked' }
+export interface ExpoTable { table: string; items: ExpoItem[]; ready_count: number; pending_count: number; source?: string | null }
 export const getKdsExpo = async (restaurantId: string): Promise<{ tables: ExpoTable[] }> => {
     const res = await backendCall('/kds/expo', restaurantId, { method: 'GET' });
-    if (!res || !res.ok) return { tables: [] };
+    if (!res?.ok) {return { tables: [] };}
     try { const j = await res.json(); return { tables: Array.isArray(j?.tables) ? j.tables : [] }; } catch { return { tables: [] }; }
 };
 // --- Kitchen sections (managed list in /restaurant/settings) ----------------
@@ -2960,7 +2960,7 @@ export const getKdsExpo = async (restaurantId: string): Promise<{ tables: ExpoTa
 // at one via their `station` and the KDS offers one display per section.
 export const getKitchenSections = async (restaurantId: string): Promise<string[]> => {
     const res = await backendCall('/restaurant/settings', restaurantId, { method: 'GET' });
-    if (!res || !res.ok) return [];
+    if (!res?.ok) {return [];}
     try { const j = await res.json(); return Array.isArray(j?.kitchen_sections) ? j.kitchen_sections.map((s: unknown) => String(s)) : []; } catch { return []; }
 };
 export const saveKitchenSections = async (restaurantId: string, sections: string[]): Promise<string[]> => {
@@ -2969,7 +2969,7 @@ export const saveKitchenSections = async (restaurantId: string, sections: string
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ kitchen_sections: sections }),
     });
-    if (!res || !res.ok) throw new Error('Unable to save kitchen sections');
+    if (!res?.ok) {throw new Error('Unable to save kitchen sections');}
     try { const j = await res.json(); return Array.isArray(j?.kitchen_sections) ? j.kitchen_sections.map((s: unknown) => String(s)) : sections; } catch { return sections; }
 };
 // Rename a section — the backend also cascades the new name onto every menu
@@ -2983,7 +2983,7 @@ export const renameKitchenSection = async (restaurantId: string, from: string, t
 // column reads back as false.
 export const getRequireTableOtp = async (restaurantId: string): Promise<boolean> => {
     const res = await backendCall('/restaurant/settings', restaurantId, { method: 'GET' });
-    if (!res || !res.ok) return false;
+    if (!res?.ok) {return false;}
     try { const j = await res.json(); return j?.require_table_otp === true; } catch { return false; }
 };
 export const setRequireTableOtp = async (restaurantId: string, enabled: boolean): Promise<boolean> => {
@@ -2992,7 +2992,7 @@ export const setRequireTableOtp = async (restaurantId: string, enabled: boolean)
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ require_table_otp: enabled }),
     });
-    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to save the table OTP setting');
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to save the table OTP setting');}
     try { const j = await res.json(); return j?.require_table_otp === true; } catch { return enabled; }
 };
 
@@ -3001,14 +3001,14 @@ export const setRequireTableOtp = async (restaurantId: string, enabled: boolean)
 // on the QR order page. Read the resolved config + the curated font allowlist
 // from /restaurant/settings (admin), and save via POST /restaurant/branding
 // (merge-on-omit: only the keys sent are overwritten). Mirrors the OTP helpers.
-export type BrandConfigSettings = { brand_config: BrandConfig; brand_fonts: string[] };
+export interface BrandConfigSettings { brand_config: BrandConfig; brand_fonts: string[] }
 export const getBrandConfig = async (restaurantId: string): Promise<BrandConfigSettings> => {
     const fallback: BrandConfigSettings = {
         brand_config: { font: 'Inter', header_style: 'gradient', button_shape: 'pill' },
         brand_fonts: [],
     };
     const res = await backendCall('/restaurant/settings', restaurantId, { method: 'GET' });
-    if (!res || !res.ok) return fallback;
+    if (!res?.ok) {return fallback;}
     try {
         const j = await res.json();
         return {
@@ -3025,7 +3025,7 @@ export const saveBrandConfig = async (restaurantId: string, brandConfig: BrandCo
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ brand_config: brandConfig }),
     });
-    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to save customer-page branding');
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to save customer-page branding');}
     try { const j = await res.json(); return (j?.brand_config && typeof j.brand_config === 'object') ? (j.brand_config as BrandConfig) : brandConfig; } catch { return brandConfig; }
 };
 
@@ -3035,7 +3035,7 @@ export const saveBrandConfig = async (restaurantId: string, brandConfig: BrandCo
 // unset column reads back as the defaults, an explicit [] clears it.
 export const getInventoryCategories = async (restaurantId: string): Promise<string[]> => {
     const res = await backendCall('/restaurant/settings', restaurantId, { method: 'GET' });
-    if (!res || !res.ok) return [];
+    if (!res?.ok) {return [];}
     try { const j = await res.json(); return Array.isArray(j?.inventory_categories) ? j.inventory_categories.map((s: unknown) => String(s)) : []; } catch { return []; }
 };
 export const saveInventoryCategories = async (restaurantId: string, categories: string[]): Promise<string[]> => {
@@ -3044,7 +3044,7 @@ export const saveInventoryCategories = async (restaurantId: string, categories: 
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ inventory_categories: categories }),
     });
-    if (!res || !res.ok) throw new Error(res ? await readErrorMessage(res) : 'Unable to save inventory categories');
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to save inventory categories');}
     try { const j = await res.json(); return Array.isArray(j?.inventory_categories) ? j.inventory_categories.map((s: unknown) => String(s)) : categories; } catch { return categories; }
 };
 // Rename a category — the backend also cascades the new name onto every
@@ -3052,7 +3052,7 @@ export const saveInventoryCategories = async (restaurantId: string, categories: 
 export const renameInventoryCategory = async (restaurantId: string, from: string, to: string): Promise<{ success: boolean; updated_items?: number; inventory_categories?: string[] }> =>
     postJson('/inventory-categories/rename', restaurantId, { from, to });
 
-export type SplitPart = { label: string; subtotal: number; total: number };
+export interface SplitPart { label: string; subtotal: number; total: number }
 export const splitBill = async (restaurantId: string, tableName: string, parts: number): Promise<{ grand_total: number; parts: SplitPart[] }> =>
     postJson('/bills/split', restaurantId, { table_name: tableName, mode: 'even', parts });
 export const mergeTables = async (restaurantId: string, fromTable: string, toTable: string) =>

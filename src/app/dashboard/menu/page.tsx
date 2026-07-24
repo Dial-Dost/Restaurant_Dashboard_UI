@@ -47,7 +47,8 @@ import { PlusCircle, MoreVertical, Trash2, Utensils, GripVertical, Upload, ChefH
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { DndContext, closestCenter, useSensor, useSensors, PointerSensor, DragEndEvent, DragOverlay, DragStartEvent } from "@dnd-kit/core";
+import type { DragEndEvent, DragStartEvent } from "@dnd-kit/core";
+import { DndContext, closestCenter, useSensor, useSensors, PointerSensor, DragOverlay } from "@dnd-kit/core";
 import { useDroppable } from "@dnd-kit/core";
 import { SortableContext, useSortable, arrayMove } from "@dnd-kit/sortable";
 import { cn } from "@/lib/utils";
@@ -125,7 +126,7 @@ function SortableMenuItem({ item, onRemoveItem, onEditRecipe, costing, currencyS
                             </Badge>
                         ) : null}
                     </p>
-                    {costing && costing.cost != null && (
+                    {costing?.cost != null && (
                         <p className="text-xs text-muted-foreground">
                             Cost {currencySymbol}{costing.cost.toFixed(2)}
                             {costing.margin_pct != null && (
@@ -149,12 +150,12 @@ function SortableMenuItem({ item, onRemoveItem, onEditRecipe, costing, currencyS
                     <DropdownMenuContent align="end">
                         <DropdownMenuLabel>Actions</DropdownMenuLabel>
                         {onEditRecipe && (
-                            <DropdownMenuItem onClick={() => onEditRecipe(item)}>
+                            <DropdownMenuItem onClick={() => { onEditRecipe(item); }}>
                                 <ChefHat className="mr-2 h-4 w-4" />
                                 <span>Recipe &amp; cost</span>
                             </DropdownMenuItem>
                         )}
-                        <DropdownMenuItem className="text-destructive" onClick={() => onRemoveItem(item.id)}>
+                        <DropdownMenuItem className="text-destructive" onClick={() => { onRemoveItem(item.id); }}>
                             <Trash2 className="mr-2 h-4 w-4" />
                             <span>Delete</span>
                         </DropdownMenuItem>
@@ -183,7 +184,7 @@ function DroppableCategory({ category, items, onRemoveItem, onRemoveCategory, on
                                                     tabIndex={0}
                                                     aria-label={`Category actions for ${category}`}
                                                     className="inline-flex h-10 w-10 items-center justify-center rounded-md hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                                                    onClick={(event) => event.stopPropagation()}
+                                                    onClick={(event) => { event.stopPropagation(); }}
                                                     onKeyDown={(event) => {
                                                         if (event.key === 'Enter' || event.key === ' ') {
                                                             event.preventDefault();
@@ -194,10 +195,10 @@ function DroppableCategory({ category, items, onRemoveItem, onRemoveCategory, on
                                                         <MoreVertical className="h-4 w-4" />
                                                 </span>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" onClick={(event) => event.stopPropagation()}>
+                    <DropdownMenuContent align="end" onClick={(event) => { event.stopPropagation(); }}>
                         <DropdownMenuLabel>Category Actions</DropdownMenuLabel>
                         <DropdownMenuSeparator />
-                        <DropdownMenuItem className="text-destructive" onClick={() => onRemoveCategory(category)}>
+                        <DropdownMenuItem className="text-destructive" onClick={() => { onRemoveCategory(category); }}>
                             <Trash2 className="mr-2 h-4 w-4" />
                             <span>Delete Category</span>
                         </DropdownMenuItem>
@@ -269,19 +270,19 @@ export default function MenuPage() {
 
   const sensors = useSensors(useSensor(PointerSensor));
 
-  const groupedItems = menuItems.reduce((acc, item) => {
+  const groupedItems = menuItems.reduce<Record<string, MenuItem[]>>((acc, item) => {
     (acc[item.category] = acc[item.category] || []).push(item);
     return acc;
-  }, {} as Record<string, MenuItem[]>);
+  }, {});
   
   const updateMenuItems = async (updatedItems: MenuItem[]) => {
-    if (!user) return;
+    if (!user) {return;}
     setMenuItems(updatedItems);
     await saveMenuItems(user.restaurantUsername, updatedItems);
   }
 
   const handleAddItem = async (data: MenuItemFormData) => {
-    if (!user) return;
+    if (!user) {return;}
     const newItem: MenuItem = {
       id: (menuItems.length + 1).toString() + Date.now(),
       ...data,
@@ -292,7 +293,7 @@ export default function MenuPage() {
   };
   
   const handleAddCategory = async (data: CategoryFormData) => {
-    if (!user) return;
+    if (!user) {return;}
     if (!categories.find(c => c.toLowerCase() === data.name.toLowerCase())) {
         await addMenuCategory(user.restaurantUsername, data.name);
         setCategories([...categories, data.name]);
@@ -306,7 +307,7 @@ export default function MenuPage() {
   }
 
     const handleRemoveCategory = async (categoryName: string) => {
-        if (!user?.restaurantUsername) return;
+        if (!user?.restaurantUsername) {return;}
 
         const itemCount = menuItems.filter((item) => item.category === categoryName).length;
         const shouldDelete = window.confirm(
@@ -315,7 +316,7 @@ export default function MenuPage() {
                 : `Delete category "${categoryName}"?`,
         );
 
-        if (!shouldDelete) return;
+        if (!shouldDelete) {return;}
 
         try {
             await removeMenuCategory(user.restaurantUsername, categoryName);
@@ -329,9 +330,9 @@ export default function MenuPage() {
 
     // --- Kitchen sections (managed list; each section = one KDS display) ----
     const handleAddSection = async () => {
-        if (!user) return;
+        if (!user) {return;}
         const name = newSection.trim().replace(/\s+/g, " ").slice(0, 32);
-        if (!name) return;
+        if (!name) {return;}
         if (sections.some((s) => s.toLowerCase() === name.toLowerCase())) {
             setNewSection("");
             return;
@@ -348,9 +349,9 @@ export default function MenuPage() {
     };
 
     const handleRenameSection = async (from: string) => {
-        if (!user) return;
+        if (!user) {return;}
         const to = window.prompt(`Rename kitchen section "${from}" to:`, from)?.trim().replace(/\s+/g, " ").slice(0, 32) ?? "";
-        if (!to || to === from) return;
+        if (!to || to === from) {return;}
         setSectionBusy(true);
         try {
             const result = await renameKitchenSection(user.restaurantUsername, from, to);
@@ -366,13 +367,13 @@ export default function MenuPage() {
     };
 
     const handleDeleteSection = async (name: string) => {
-        if (!user) return;
+        if (!user) {return;}
         const count = menuItems.filter((it) => (it.station ?? "").toLowerCase() === name.toLowerCase()).length;
         if (!window.confirm(
             count > 0
                 ? `Remove kitchen section "${name}"? ${count} item${count === 1 ? "" : "s"} keep the label but show as unassigned until re-organised.`
                 : `Remove kitchen section "${name}"?`,
-        )) return;
+        )) {return;}
         setSectionBusy(true);
         try {
             setSections(await saveKitchenSections(user.restaurantUsername, sections.filter((s) => s.toLowerCase() !== name.toLowerCase())));
@@ -387,7 +388,7 @@ export default function MenuPage() {
     // save: only id/name/price/category/station travel, so recipes, modifiers,
     // allergens and images are untouched server-side.
     const handleOrganiseSave = async (assignments: Record<string, string | null>) => {
-        if (!user) return;
+        if (!user) {return;}
         const minimal = menuItems.map((it) => ({
             id: it.id,
             name: it.name,
@@ -464,7 +465,7 @@ export default function MenuPage() {
 
             let itemName = "";
             for (let i = 0; i < row.length; i += 1) {
-                if (i === priceIdx) continue;
+                if (i === priceIdx) {continue;}
                 const cell = row[i];
                 if (cell && !/^\d+(\.\d+)?$/.test(cell)) {
                     itemName = cell.replace(/\s+/g, " ").trim();
@@ -488,7 +489,7 @@ export default function MenuPage() {
     };
 
     const handleImportMenuFile = async (file: File) => {
-        if (!user?.restaurantUsername) return;
+        if (!user?.restaurantUsername) {return;}
 
         setIsImporting(true);
         try {
@@ -532,10 +533,10 @@ export default function MenuPage() {
             if (nameKey && priceKey) {
                 for (const row of rows) {
                     const itemName = String(row[nameKey] ?? "").trim();
-                    if (!itemName) continue;
+                    if (!itemName) {continue;}
 
                     const rawPrice = parsePriceValue(row[priceKey]);
-                    if (rawPrice == null) continue;
+                    if (rawPrice == null) {continue;}
 
                     const categoryRaw = categoryKey ? String(row[categoryKey] ?? "").trim() : "";
                     const category = categoryRaw || "General";
@@ -618,7 +619,7 @@ export default function MenuPage() {
     const activeId = active.id.toString();
     const overId = over.id.toString();
     const activeItem = menuItems.find(item => item.id === activeId);
-    if (!activeItem) return;
+    if (!activeItem) {return;}
 
     const overIsCategory = categories.includes(overId);
     let newItems: MenuItem[] = menuItems;
@@ -630,7 +631,7 @@ export default function MenuPage() {
         const overItem = menuItems.find(item => item.id === overId);
         const overIndex = overItem ? menuItems.findIndex(item => item.id === overId) : -1;
 
-        if (overItem && activeItem.category === overItem.category) {
+        if (activeItem.category === overItem?.category) {
             // Reorder within the same category
             if (activeIndex !== overIndex) {
                 newItems = arrayMove(menuItems, activeIndex, overIndex);
@@ -677,7 +678,7 @@ export default function MenuPage() {
                                     aria-label="Import menu file"
                                     onChange={(event) => {
                                         const file = event.target.files?.[0];
-                                        if (!file) return;
+                                        if (!file) {return;}
                                         void handleImportMenuFile(file);
                                     }}
                                 />
@@ -723,7 +724,7 @@ export default function MenuPage() {
                         Each item routes to its kitchen section, and every section gets its own display on the Orders page. Rename cascades to all items in the section.
                     </CardDescription>
                 </div>
-                <Button variant="outline" size="sm" onClick={() => setIsOrganiseOpen(true)} disabled={menuItems.length === 0}>
+                <Button variant="outline" size="sm" onClick={() => { setIsOrganiseOpen(true); }} disabled={menuItems.length === 0}>
                     <ChefHat className="mr-2 h-4 w-4" /> Organise by kitchen
                 </Button>
             </CardHeader>
@@ -763,7 +764,7 @@ export default function MenuPage() {
                         placeholder="New section (e.g. Tandoor)"
                         value={newSection}
                         maxLength={32}
-                        onChange={(e) => setNewSection(e.target.value)}
+                        onChange={(e) => { setNewSection(e.target.value); }}
                         onKeyDown={(e) => {
                             if (e.key === "Enter") {
                                 e.preventDefault();
@@ -787,7 +788,7 @@ export default function MenuPage() {
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                     value={menuSearch}
-                    onChange={(e) => setMenuSearch(e.target.value)}
+                    onChange={(e) => { setMenuSearch(e.target.value); }}
                     placeholder="Search menu…"
                     aria-label="Search menu items"
                     className="pl-9 pr-9"
@@ -798,7 +799,7 @@ export default function MenuPage() {
                         aria-label="Clear menu search"
                         title="Clear search"
                         className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground hover:text-foreground"
-                        onClick={() => setMenuSearch("")}
+                        onClick={() => { setMenuSearch(""); }}
                     >
                         <X className="h-4 w-4" />
                     </button>
@@ -833,7 +834,7 @@ export default function MenuPage() {
                     ) : (
                         <div className="text-center text-muted-foreground py-12">
                             <p className="mb-2">No items match your search.</p>
-                            <Button variant="outline" size="sm" onClick={() => setMenuSearch("")}>Clear search</Button>
+                            <Button variant="outline" size="sm" onClick={() => { setMenuSearch(""); }}>Clear search</Button>
                         </div>
                     )
                 ) : categories.length > 0 ? (
@@ -873,7 +874,7 @@ export default function MenuPage() {
             <OrganiseByKitchenDialog
                 items={menuItems}
                 sections={sections}
-                onClose={() => setIsOrganiseOpen(false)}
+                onClose={() => { setIsOrganiseOpen(false); }}
                 onSave={handleOrganiseSave}
             />
         )}
@@ -883,7 +884,7 @@ export default function MenuPage() {
                 ingredients={costing.ingredients}
                 currencySymbol={currencySymbol}
                 sections={sections}
-                onClose={() => setRecipeItem(null)}
+                onClose={() => { setRecipeItem(null); }}
                 onSave={async (recipe, station, allergens) => {
                     await addMenuItem(user.restaurantUsername, { ...recipeItem, recipe, station, allergens });
                     setRecipeItem(null);
@@ -909,7 +910,7 @@ function StationSelect({ value, sections, onChange, id }: { value: string; secti
     const current = value.trim();
     const unlisted = current && !sections.some((s) => s.toLowerCase() === current.toLowerCase());
     return (
-        <Select value={current || NO_STATION} onValueChange={(v) => onChange(v === NO_STATION ? "" : v)}>
+        <Select value={current || NO_STATION} onValueChange={(v) => { onChange(v === NO_STATION ? "" : v); }}>
             <SelectTrigger id={id} className={cn(unlisted && "border-dashed border-amber-400 text-amber-700 dark:text-amber-400")}>
                 <SelectValue placeholder="No section" />
             </SelectTrigger>
@@ -958,7 +959,7 @@ function OrganiseByKitchenDialog({
     // Group by current section: managed sections first (in managed order), then
     // any unmanaged station labels still on items, then Unassigned.
     const managedLower = sections.map((s) => s.toLowerCase());
-    const groups: Array<{ label: string; unmanaged: boolean; rows: MenuItem[] }> = sections.map((s) => ({ label: s, unmanaged: false, rows: [] as MenuItem[] }));
+    const groups: { label: string; unmanaged: boolean; rows: MenuItem[] }[] = sections.map((s) => ({ label: s, unmanaged: false, rows: [] as MenuItem[] }));
     const extra = new Map<string, MenuItem[]>();
     const unassigned: MenuItem[] = [];
     for (const it of visible) {
@@ -992,7 +993,7 @@ function OrganiseByKitchenDialog({
     };
 
     return (
-        <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+        <Dialog open onOpenChange={(o) => { if (!o) {onClose();} }}>
             <DialogContent className="sm:max-w-[640px]">
                 <DialogHeader>
                     <DialogTitle>Organise menu by kitchen</DialogTitle>
@@ -1003,7 +1004,7 @@ function OrganiseByKitchenDialog({
                 <Input
                     placeholder="Search items, categories or sections…"
                     value={search}
-                    onChange={(e) => setSearch(e.target.value)}
+                    onChange={(e) => { setSearch(e.target.value); }}
                 />
                 <div className="max-h-[55vh] space-y-4 overflow-y-auto pr-1">
                     {groups.filter((g) => g.rows.length > 0 || !g.unmanaged).map((g) => (
@@ -1027,7 +1028,7 @@ function OrganiseByKitchenDialog({
                                                 <StationSelect
                                                     value={stationOf(it)}
                                                     sections={sections}
-                                                    onChange={(v) => setAssignments((prev) => ({ ...prev, [it.id]: v || null }))}
+                                                    onChange={(v) => { setAssignments((prev) => ({ ...prev, [it.id]: v || null })); }}
                                                 />
                                             </div>
                                         </li>
@@ -1083,12 +1084,12 @@ function RecipeDialog({
 
     const toggleAllergen = (tag: string) => {
         const t = tag.trim().toLowerCase().slice(0, 24);
-        if (!t) return;
+        if (!t) {return;}
         setAllergens((prev) => (prev.includes(t) ? prev.filter((a) => a !== t) : [...prev, t]));
     };
     const addFreeformAllergen = () => {
         const t = allergenInput.trim().toLowerCase().slice(0, 24);
-        if (t && !allergens.includes(t)) setAllergens((prev) => [...prev, t]);
+        if (t && !allergens.includes(t)) {setAllergens((prev) => [...prev, t]);}
         setAllergenInput("");
     };
 
@@ -1099,10 +1100,10 @@ function RecipeDialog({
     let uncosted = 0;
     for (const r of rows) {
         const qty = Number(r.qty);
-        if (!r.inventory_id || !Number.isFinite(qty) || qty <= 0) continue;
+        if (!r.inventory_id || !Number.isFinite(qty) || qty <= 0) {continue;}
         const uc = costOf(r.inventory_id);
-        if (uc == null) uncosted += 1;
-        else estCost += qty * uc;
+        if (uc == null) {uncosted += 1;}
+        else {estCost += qty * uc;}
     }
     const margin = item.price > 0 ? ((item.price - estCost) / item.price) * 100 : null;
 
@@ -1110,7 +1111,7 @@ function RecipeDialog({
         const recipe: RecipeIngredient[] = [];
         for (const r of rows) {
             const qty = Number(r.qty);
-            if (!r.inventory_id) continue;
+            if (!r.inventory_id) {continue;}
             if (!Number.isFinite(qty) || qty <= 0) {
                 setError("Every ingredient needs a positive quantity.");
                 return;
@@ -1128,7 +1129,7 @@ function RecipeDialog({
     };
 
     return (
-        <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+        <Dialog open onOpenChange={(o) => { if (!o) {onClose();} }}>
             <DialogContent className="sm:max-w-[560px]">
                 <DialogHeader>
                     <DialogTitle>Recipe &amp; cost — {item.name}</DialogTitle>
@@ -1147,7 +1148,7 @@ function RecipeDialog({
                                 list="station-suggestions"
                                 placeholder="e.g. tandoor, grill, bar (KOT routing)"
                                 value={station}
-                                onChange={(e) => setStation(e.target.value)}
+                                onChange={(e) => { setStation(e.target.value); }}
                                 maxLength={40}
                             />
                             <datalist id="station-suggestions">
@@ -1165,7 +1166,7 @@ function RecipeDialog({
                                 <button
                                     key={a}
                                     type="button"
-                                    onClick={() => toggleAllergen(a)}
+                                    onClick={() => { toggleAllergen(a); }}
                                     className={cn(
                                         "rounded-full border px-2.5 py-0.5 text-xs capitalize transition-colors",
                                         on ? "border-primary bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-accent",
@@ -1179,7 +1180,7 @@ function RecipeDialog({
                             <button
                                 key={a}
                                 type="button"
-                                onClick={() => toggleAllergen(a)}
+                                onClick={() => { toggleAllergen(a); }}
                                 className="rounded-full border border-primary bg-primary px-2.5 py-0.5 text-xs capitalize text-primary-foreground"
                                 title="Click to remove"
                             >
@@ -1192,7 +1193,7 @@ function RecipeDialog({
                             placeholder="Other allergen (free-form)…"
                             value={allergenInput}
                             maxLength={24}
-                            onChange={(e) => setAllergenInput(e.target.value)}
+                            onChange={(e) => { setAllergenInput(e.target.value); }}
                             onKeyDown={(e) => {
                                 if (e.key === "Enter") {
                                     e.preventDefault();
@@ -1212,7 +1213,7 @@ function RecipeDialog({
                             <div className="flex-1 min-w-0">
                                 <Select
                                     value={row.inventory_id}
-                                    onValueChange={(v) => setRows(rows.map((r, i) => (i === idx ? { ...r, inventory_id: v } : r)))}
+                                    onValueChange={(v) => { setRows(rows.map((r, i) => (i === idx ? { ...r, inventory_id: v } : r))); }}
                                 >
                                     <SelectTrigger><SelectValue placeholder="Ingredient" /></SelectTrigger>
                                     <SelectContent>
@@ -1232,16 +1233,16 @@ function RecipeDialog({
                                 placeholder={`Qty${unitOf(row.inventory_id) ? ` (${unitOf(row.inventory_id)})` : ""}`}
                                 aria-label="Quantity"
                                 value={row.qty}
-                                onChange={(e) => setRows(rows.map((r, i) => (i === idx ? { ...r, qty: e.target.value } : r)))}
+                                onChange={(e) => { setRows(rows.map((r, i) => (i === idx ? { ...r, qty: e.target.value } : r))); }}
                             />
                             <Input
                                 className="w-28"
                                 placeholder="Note (opt.)"
                                 aria-label="Unit note"
                                 value={row.note}
-                                onChange={(e) => setRows(rows.map((r, i) => (i === idx ? { ...r, note: e.target.value } : r)))}
+                                onChange={(e) => { setRows(rows.map((r, i) => (i === idx ? { ...r, note: e.target.value } : r))); }}
                             />
-                            <Button variant="ghost" size="icon" aria-label="Remove ingredient" onClick={() => setRows(rows.filter((_, i) => i !== idx))}>
+                            <Button variant="ghost" size="icon" aria-label="Remove ingredient" onClick={() => { setRows(rows.filter((_, i) => i !== idx)); }}>
                                 <X className="h-4 w-4" />
                             </Button>
                         </div>
@@ -1250,7 +1251,7 @@ function RecipeDialog({
                         variant="outline"
                         size="sm"
                         className="w-fit"
-                        onClick={() => setRows([...rows, { inventory_id: "", qty: "", note: "" }])}
+                        onClick={() => { setRows([...rows, { inventory_id: "", qty: "", note: "" }]); }}
                         disabled={ingredients.length === 0}
                     >
                         <PlusCircle className="mr-2 h-4 w-4" /> Add ingredient

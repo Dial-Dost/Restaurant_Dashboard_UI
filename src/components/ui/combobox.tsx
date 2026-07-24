@@ -19,12 +19,12 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover"
 
-type ComboboxOption = {
+interface ComboboxOption {
     value: string
     label: string
 }
 
-type ComboboxProps = {
+interface ComboboxProps {
     options: ComboboxOption[];
     value: string;
     onChange: (value: string) => void;

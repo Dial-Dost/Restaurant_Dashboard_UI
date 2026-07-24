@@ -23,18 +23,18 @@ const FEATURE_LABELS: Record<string, string> = {
 
 function loadRazorpay(): Promise<boolean> {
   return new Promise((resolve) => {
-    if (typeof window === "undefined") return resolve(false)
-    if ((window as any).Razorpay) return resolve(true)
+    if (typeof window === "undefined") {resolve(false); return;}
+    if ((window as any).Razorpay) {resolve(true); return;}
     const s = document.createElement("script")
     s.src = "https://checkout.razorpay.com/v1/checkout.js"
-    s.onload = () => resolve(true)
-    s.onerror = () => resolve(false)
+    s.onload = () => { resolve(true); }
+    s.onerror = () => { resolve(false); }
     document.body.appendChild(s)
   })
 }
 
 function daysUntil(iso: string | null): number | null {
-  if (!iso) return null
+  if (!iso) {return null}
   const ms = new Date(iso).getTime() - Date.now()
   return Number.isNaN(ms) ? null : Math.ceil(ms / 86_400_000)
 }
@@ -60,7 +60,7 @@ export default function BillingPage() {
   const money = (cents: number) => `₹${(Number(cents || 0) / 100).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`
 
   const load = useCallback(async () => {
-    if (!rid) return
+    if (!rid) {return}
     setLoading(true)
     try {
       setInfo(await getBilling(rid))

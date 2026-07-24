@@ -61,7 +61,7 @@ export function BillActions({
     catch (e) { fail(e) } finally { setBusy(false) }
   }
   const doMerge = async () => {
-    if (!mergeSrc.trim()) return
+    if (!mergeSrc.trim()) {return}
     setBusy(true)
     try { await mergeTables(restaurantId, mergeSrc.trim(), tableName); toast({ title: `Merged ${mergeSrc.trim()} into ${tableName}` }); onChanged(); close() }
     catch (e) { fail(e) } finally { setBusy(false) }
@@ -75,14 +75,14 @@ export function BillActions({
     } catch (e) { fail(e) } finally { setBusy(false) }
   }
   const lookupLoyalty = async () => {
-    if (!loyaltyPhone.trim()) return
+    if (!loyaltyPhone.trim()) {return}
     setBusy(true)
     try { setLoyaltyAccount(await getLoyalty(restaurantId, loyaltyPhone.trim())) }
     catch (e) { setLoyaltyAccount(null); fail(e) } finally { setBusy(false) }
   }
   const doRedeemLoyalty = async () => {
     const pts = Math.floor(Number(loyaltyPoints) || 0)
-    if (!loyaltyAccount || pts <= 0) return
+    if (!loyaltyAccount || pts <= 0) {return}
     setBusy(true)
     try {
       const r = await redeemLoyalty(restaurantId, { phone: loyaltyAccount.phone, points: pts, table_name: tableName })
@@ -100,24 +100,24 @@ export function BillActions({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuItem onClick={() => setDialog("discount")}>Discount</DropdownMenuItem>
-          <DropdownMenuItem onClick={() => setDialog("loyalty")}>Loyalty</DropdownMenuItem>
-          <DropdownMenuItem onClick={() => setDialog("split")}>Split bill</DropdownMenuItem>
-          <DropdownMenuItem onClick={() => setDialog("merge")}>Merge a table in…</DropdownMenuItem>
-          {isAdmin && <DropdownMenuItem onClick={() => setDialog("refund")} className="text-red-600">Refund</DropdownMenuItem>}
+          <DropdownMenuItem onClick={() => { setDialog("discount"); }}>Discount</DropdownMenuItem>
+          <DropdownMenuItem onClick={() => { setDialog("loyalty"); }}>Loyalty</DropdownMenuItem>
+          <DropdownMenuItem onClick={() => { setDialog("split"); }}>Split bill</DropdownMenuItem>
+          <DropdownMenuItem onClick={() => { setDialog("merge"); }}>Merge a table in…</DropdownMenuItem>
+          {isAdmin && <DropdownMenuItem onClick={() => { setDialog("refund"); }} className="text-red-600">Refund</DropdownMenuItem>}
         </DropdownMenuContent>
       </DropdownMenu>
 
-      <Dialog open={dialog !== null} onOpenChange={(v) => { if (!v) close() }}>
+      <Dialog open={dialog !== null} onOpenChange={(v) => { if (!v) {close()} }}>
         <DialogContent>
           {dialog === "discount" && (
             <>
               <DialogHeader><DialogTitle>Discount · Table {tableName}</DialogTitle></DialogHeader>
               <div className="flex gap-2">
-                <Button variant={discountType === "percent" ? "default" : "outline"} size="sm" onClick={() => setDiscountType("percent")}>% off</Button>
-                <Button variant={discountType === "flat" ? "default" : "outline"} size="sm" onClick={() => setDiscountType("flat")}>Flat</Button>
+                <Button variant={discountType === "percent" ? "default" : "outline"} size="sm" onClick={() => { setDiscountType("percent"); }}>% off</Button>
+                <Button variant={discountType === "flat" ? "default" : "outline"} size="sm" onClick={() => { setDiscountType("flat"); }}>Flat</Button>
               </div>
-              <Input type="number" placeholder={discountType === "percent" ? "Percent off (0–100)" : "Amount off"} value={discountValue} onChange={(e) => setDiscountValue(e.target.value)} />
+              <Input type="number" placeholder={discountType === "percent" ? "Percent off (0–100)" : "Amount off"} value={discountValue} onChange={(e) => { setDiscountValue(e.target.value); }} />
               <DialogFooter>
                 <Button variant="ghost" onClick={() => applyDiscount(true)} disabled={busy}>Remove</Button>
                 <Button onClick={() => applyDiscount(false)} disabled={busy}>Apply</Button>
@@ -130,7 +130,7 @@ export function BillActions({
               {!splitResult ? (
                 <>
                   <Label>Number of ways</Label>
-                  <Input type="number" value={splitN} onChange={(e) => setSplitN(e.target.value)} />
+                  <Input type="number" value={splitN} onChange={(e) => { setSplitN(e.target.value); }} />
                   <DialogFooter><Button onClick={doSplit} disabled={busy}>Split</Button></DialogFooter>
                 </>
               ) : (
@@ -148,7 +148,7 @@ export function BillActions({
             <>
               <DialogHeader><DialogTitle>Merge a table into {tableName}</DialogTitle></DialogHeader>
               <Label>Other table to merge in</Label>
-              <Input value={mergeSrc} onChange={(e) => setMergeSrc(e.target.value)} placeholder="e.g. T2" />
+              <Input value={mergeSrc} onChange={(e) => { setMergeSrc(e.target.value); }} placeholder="e.g. T2" />
               <DialogFooter><Button onClick={doMerge} disabled={busy}>Merge</Button></DialogFooter>
             </>
           )}
@@ -170,7 +170,7 @@ export function BillActions({
                     )}
                   </div>
                   <Label>Points to redeem</Label>
-                  <Input type="number" min="0" value={loyaltyPoints} onChange={(e) => setLoyaltyPoints(e.target.value)} placeholder={`up to ${loyaltyAccount.balance}`} />
+                  <Input type="number" min="0" value={loyaltyPoints} onChange={(e) => { setLoyaltyPoints(e.target.value); }} placeholder={`up to ${loyaltyAccount.balance}`} />
                   {Number(loyaltyPoints) > 0 && (
                     <p className="text-xs text-muted-foreground">= ₹{(Math.floor(Number(loyaltyPoints) || 0) * loyaltyAccount.point_value).toFixed(2)} off this bill</p>
                   )}
@@ -185,7 +185,7 @@ export function BillActions({
             <>
               <DialogHeader><DialogTitle>Refund · Table {tableName}</DialogTitle></DialogHeader>
               <p className="text-sm text-muted-foreground">Refunds the most recent settled bill for this table. This cannot be undone.</p>
-              <Input value={refundReason} onChange={(e) => setRefundReason(e.target.value)} placeholder="Reason (optional)" />
+              <Input value={refundReason} onChange={(e) => { setRefundReason(e.target.value); }} placeholder="Reason (optional)" />
               <DialogFooter><Button variant="destructive" onClick={doRefund} disabled={busy}>Refund</Button></DialogFooter>
             </>
           )}

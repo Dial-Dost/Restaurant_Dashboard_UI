@@ -48,7 +48,8 @@ import {
 } from "@/lib/db";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/hooks/use-toast";
-import { DndContext, closestCenter, useSensor, useSensors, PointerSensor, DragEndEvent, DragOverlay, DragStartEvent } from "@dnd-kit/core";
+import type { DragEndEvent, DragStartEvent } from "@dnd-kit/core";
+import { DndContext, closestCenter, useSensor, useSensors, PointerSensor, DragOverlay } from "@dnd-kit/core";
 import { SortableContext, useSortable, arrayMove } from "@dnd-kit/sortable";
 
 function SortableTable({
@@ -105,7 +106,7 @@ function SortableTable({
                     <button {...listeners} {...attributes} className="cursor-grab p-1 shrink-0">
                         <GripVertical className="h-4 w-4 text-muted-foreground" />
                     </button>
-                    <button type="button" className="truncate text-left hover:underline" title={table.name} onClick={() => onOpenOrders(table.name)}>
+                    <button type="button" className="truncate text-left hover:underline" title={table.name} onClick={() => { onOpenOrders(table.name); }}>
                         {table.name}
                     </button>
                 </CardTitle>
@@ -118,7 +119,7 @@ function SortableTable({
                     <DropdownMenuContent align="end">
                         <AlertDialog>
                             <AlertDialogTrigger asChild>
-                                <DropdownMenuItem onSelect={(e) => e.preventDefault()} className="text-destructive">
+                                <DropdownMenuItem onSelect={(e) => { e.preventDefault(); }} className="text-destructive">
                                     <Trash2 className="mr-2 h-4 w-4" />
                                     Delete
                                 </DropdownMenuItem>
@@ -132,7 +133,7 @@ function SortableTable({
                                 </AlertDialogHeader>
                                 <AlertDialogFooter>
                                     <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                    <AlertDialogAction onClick={() => onRemove(table.id)} className="bg-destructive hover:bg-destructive/90 text-destructive-foreground">Delete</AlertDialogAction>
+                                    <AlertDialogAction onClick={() => { onRemove(table.id); }} className="bg-destructive hover:bg-destructive/90 text-destructive-foreground">Delete</AlertDialogAction>
                                 </AlertDialogFooter>
                             </AlertDialogContent>
                         </AlertDialog>
@@ -185,7 +186,7 @@ function SortableTable({
                             type="number"
                             min={1}
                             value={coverCount}
-                            onChange={(event) => setCoverCount(event.target.value)}
+                            onChange={(event) => { setCoverCount(event.target.value); }}
                             className="h-8 text-sm"
                         />
                     </div>
@@ -193,7 +194,7 @@ function SortableTable({
                         variant={isOccupied ? "outline" : "default"}
                         className="col-span-1 self-end h-8 text-xs"
                         disabled={isBusy}
-                        onClick={() => (isOccupied ? onUpdateCovers(table.name, parsedCoverCount) : onOccupy(table.name, parsedCoverCount))}
+                        onClick={() => { isOccupied ? onUpdateCovers(table.name, parsedCoverCount) : onOccupy(table.name, parsedCoverCount); }}
                     >
                         {isOccupied ? "Update" : "Occupy"}
                     </Button>
@@ -203,13 +204,13 @@ function SortableTable({
                         variant="outline"
                         className="w-full h-8 text-xs"
                         disabled={isBusy}
-                        onClick={() => onRelease(table.name)}
+                        onClick={() => { onRelease(table.name); }}
                     >
                         Release
                     </Button>
                 ) : null}
                 {isOccupied ? (
-                    <Button variant="ghost" className="w-full h-8 text-xs" onClick={() => onOpenOrders(table.name, (occupancy as any)?.linkedOrderId ?? null)}>
+                    <Button variant="ghost" className="w-full h-8 text-xs" onClick={() => { onOpenOrders(table.name, (occupancy as any)?.linkedOrderId ?? null); }}>
                         {(occupancy as any)?.linkedOrderId ? 'View Order' : 'Take Orders'}
                     </Button>
                 ) : null}
@@ -231,8 +232,8 @@ export default function TablesPage() {
   const { toast } = useToast();
 
     const hasRole = (role: "admin" | "employee" | "valet" | "waiter" | "cashier" | "captain" | "manager") => {
-        if (!user) return false;
-        if (user.role === role) return true;
+        if (!user) {return false;}
+        if (user.role === role) {return true;}
         return Array.isArray(user.role_all) ? user.role_all.includes(role) : false;
     };
 
@@ -303,17 +304,17 @@ export default function TablesPage() {
             console.error("Failed to load tables", error);
         });
 
-        const handler = () => { loadTables().catch((err) => console.error('tables:changed handler failed', err)); };
+        const handler = () => { loadTables().catch((err) => { console.error('tables:changed handler failed', err); }); };
         if (typeof window !== 'undefined') {
             window.addEventListener('tables:changed', handler as EventListener);
         }
         return () => {
-            if (typeof window !== 'undefined') window.removeEventListener('tables:changed', handler as EventListener);
+            if (typeof window !== 'undefined') {window.removeEventListener('tables:changed', handler as EventListener);}
         };
     }, [user?.restaurantUsername]);
 
   const handleAddTable = async () => {
-        if (!ensureAdmin()) return;
+        if (!ensureAdmin()) {return;}
 
     if (newTableName && newTableCapacity && user?.restaurantUsername) {
       const trimmedName = newTableName.trim();
@@ -363,11 +364,11 @@ export default function TablesPage() {
   };
 
     const handleRemoveTable = async (tableId: number) => {
-        if (!ensureAdmin()) return;
+        if (!ensureAdmin()) {return;}
 
-        if (!user?.restaurantUsername) return;
+        if (!user?.restaurantUsername) {return;}
         const removed = tablesData.find(t => t.id === tableId);
-        if (!removed) return;
+        if (!removed) {return;}
 
         const response = await requestBackend({
             path: `/table/${encodeURIComponent(removed.name)}`,
@@ -435,14 +436,14 @@ export default function TablesPage() {
 
     const activeTable = activeId ? tablesData.find(t => t.id === activeId) : null;
 
-  const groupedTables = tablesData.reduce((acc, table) => {
+  const groupedTables = tablesData.reduce<Record<number, Table[]>>((acc, table) => {
     const capacity = table.capacity;
     if (!acc[capacity]) {
         acc[capacity] = [];
     }
     acc[capacity].push(table);
     return acc;
-  }, {} as Record<number, Table[]>);
+  }, {});
 
   const sortedCapacities = Object.keys(groupedTables).map(Number).sort((a, b) => a - b);
   const totalTables = tablesData.length;
@@ -450,12 +451,12 @@ export default function TablesPage() {
     const openOrdersForTable = (tableName: string, linkedOrderId?: string | null) => {
         const params = new URLSearchParams();
         params.set('table', tableName);
-        if (linkedOrderId) params.set('highlightOrder', linkedOrderId);
+        if (linkedOrderId) {params.set('highlightOrder', linkedOrderId);}
         router.push(`/dashboard/orders?${params.toString()}`);
     };
 
     const handleOccupyTable = async (tableName: string, numCovers: number) => {
-        if (!user?.restaurantUsername) return;
+        if (!user?.restaurantUsername) {return;}
         setBusyTableName(tableName);
         try {
             await occupyTable(user.restaurantUsername, tableName, numCovers);
@@ -476,7 +477,7 @@ export default function TablesPage() {
     };
 
     const handleUpdateTableCovers = async (tableName: string, numCovers: number) => {
-        if (!user?.restaurantUsername) return;
+        if (!user?.restaurantUsername) {return;}
         setBusyTableName(tableName);
         try {
             await updateTableCovers(user.restaurantUsername, tableName, numCovers);
@@ -497,7 +498,7 @@ export default function TablesPage() {
     };
 
     const handleReleaseTable = async (tableName: string) => {
-        if (!user?.restaurantUsername) return;
+        if (!user?.restaurantUsername) {return;}
         setBusyTableName(tableName);
         try {
             await releaseTable(user.restaurantUsername, tableName);
@@ -544,7 +545,7 @@ export default function TablesPage() {
                     <Input
                     id="name"
                     value={newTableName}
-                    onChange={(e) => setNewTableName(e.target.value)}
+                    onChange={(e) => { setNewTableName(e.target.value); }}
                     className="col-span-3"
                     placeholder="e.g., T11"
                     />
@@ -557,7 +558,7 @@ export default function TablesPage() {
                     id="capacity"
                     type="number"
                     value={newTableCapacity}
-                    onChange={(e) => setNewTableCapacity(e.target.value)}
+                    onChange={(e) => { setNewTableCapacity(e.target.value); }}
                     className="col-span-3"
                     placeholder="e.g., 4"
                     />
@@ -612,7 +613,7 @@ export default function TablesPage() {
                 ) : (
                     <div className="text-center text-muted-foreground py-12">
                         <p className="mb-4">You have no tables configured for your restaurant.</p>
-                        <Button onClick={() => setIsDialogOpen(true)}>Add Your First Table</Button>
+                        <Button onClick={() => { setIsDialogOpen(true); }}>Add Your First Table</Button>
                     </div>
                 )}
              </SortableContext>

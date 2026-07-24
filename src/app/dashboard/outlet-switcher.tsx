@@ -20,15 +20,15 @@ export function OutletSwitcher() {
   const [outlets, setOutlets] = useState<OutletRow[]>([])
   const [selected, setSelected] = useState<string>("")
 
-  const roles = [user?.role, ...(Array.isArray(user?.role_all) ? user!.role_all : [])]
+  const roles = [user?.role, ...(Array.isArray(user?.role_all) ? user.role_all : [])]
   const canSwitch = roles.includes("admin") || roles.includes("manager")
 
   useEffect(() => {
-    if (!user?.restaurantUsername || !canSwitch) return
+    if (!user?.restaurantUsername || !canSwitch) {return}
     let active = true
     getOutlets(user.restaurantUsername)
       .then((o) => {
-        if (!active) return
+        if (!active) {return}
         const list = o?.outlets ?? []
         setOutlets(list)
         const stored = typeof window !== "undefined" ? window.localStorage.getItem(SELECTED_OUTLET_KEY) : null
@@ -39,12 +39,12 @@ export function OutletSwitcher() {
     return () => { active = false }
   }, [user?.restaurantUsername, canSwitch])
 
-  if (!canSwitch || outlets.length < 2) return null
+  if (!canSwitch || outlets.length < 2) {return null}
 
   const onChange = (id: string) => {
     setSelected(id)
     try { window.localStorage.setItem(SELECTED_OUTLET_KEY, id) } catch { /* ignore */ }
-    if (typeof window !== "undefined") window.location.reload()
+    if (typeof window !== "undefined") {window.location.reload()}
   }
 
   const isAll = selected === ALL_OUTLETS

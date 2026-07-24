@@ -4,7 +4,8 @@
 // Restaurant_Feedback_UI Vite app (src/App.tsx) so the form no longer needs its
 // own server. Same URL params (rid/eid/oid + restaurantId/employeeId/outletId),
 // same localStorage keys, same valet gate → categories → NPS → submit flow.
-import { FormEvent, Suspense, useEffect, useMemo, useState, type CSSProperties } from "react";
+import type { FormEvent} from "react";
+import { Suspense, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useSearchParams } from "next/navigation";
 import { DM_Sans } from "next/font/google";
 import {
@@ -33,12 +34,12 @@ type FollowUpSuggestionCommittedMap = Record<number, boolean>;
 type FollowUpSuggestionErrorMap = Record<number, string>;
 type FollowUpDynamicPromptMap = Record<number, string>;
 type FollowUpDynamicPromptLoadingMap = Record<number, boolean>;
-type SubmissionSummary = {
+interface SubmissionSummary {
   submittedAt: string;
   customerName: string | null;
   ratedCount: number;
   averageScore: number;
-};
+}
 
 const DEFAULT_CATEGORIES: CategoryQuestion[] = [
   { id: 1, key: "initial_greeting", label: "Initial Greeting" },
@@ -148,7 +149,7 @@ function StarRating({
             type="button"
             key={star}
             className={styles.star}
-            onClick={() => onChange(star)}
+            onClick={() => { onChange(star); }}
             aria-label={`Rate ${star} out of 5`}
             style={{ color: active ? accent : text, opacity: active ? 1 : 0.33 }}
           >
@@ -215,15 +216,15 @@ function FeedbackForm({
   // Persist only NON-empty values so we never cache a fallback/blank tenant that a
   // later visitor (without ?rid=) would inherit.
   useEffect(() => {
-    if (restaurantId.trim()) localStorage.setItem("feedbackRestaurantId", restaurantId);
+    if (restaurantId.trim()) {localStorage.setItem("feedbackRestaurantId", restaurantId);}
   }, [restaurantId]);
 
   useEffect(() => {
-    if (employeeId.trim()) localStorage.setItem("feedbackEmployeeId", employeeId);
+    if (employeeId.trim()) {localStorage.setItem("feedbackEmployeeId", employeeId);}
   }, [employeeId]);
 
   useEffect(() => {
-    if (outletId.trim()) localStorage.setItem("feedbackOutletId", outletId);
+    if (outletId.trim()) {localStorage.setItem("feedbackOutletId", outletId);}
   }, [outletId]);
 
   // Load the restaurant's branding + feedback config so the form themes itself and
@@ -232,7 +233,7 @@ function FeedbackForm({
     let active = true;
     fetchBranding(restaurantId.trim())
       .then((b) => {
-        if (!active) return;
+        if (!active) {return;}
         const cfg = b?.feedback_config ?? DEFAULT_CONFIG;
         setConfig(cfg);
         setBrandLogo(b?.logo_url ?? null);
@@ -241,7 +242,7 @@ function FeedbackForm({
           setCategories(cfg.categories.map((c, i) => ({ id: i + 1, key: c.key, label: c.label })));
         }
         // Skip the valet gate entirely when the restaurant doesn't use valet.
-        if (!cfg.valet_enabled) setValetGateComplete(true);
+        if (!cfg.valet_enabled) {setValetGateComplete(true);}
         // Apply the restaurant's accent over the same neutral surfaces the order/queue
         // pages use — identical theming across all three customer-facing surfaces.
         // Same precedence as the order/queue pages: logo-derived primary → the
@@ -645,7 +646,7 @@ function FeedbackForm({
                 Vehicle Number (if you used valet)
                 <input
                   value={numberPlate}
-                  onChange={(e) => setNumberPlate(e.target.value.toUpperCase())}
+                  onChange={(e) => { setNumberPlate(e.target.value.toUpperCase()); }}
                   placeholder="e.g. KA01AB1234"
                 />
               </label>
@@ -674,7 +675,7 @@ function FeedbackForm({
             <div className={styles.headerGrid}>
               <label className={styles.field}>
                 Your Name (optional)
-                <input value={customerName} onChange={(e) => setCustomerName(e.target.value)} />
+                <input value={customerName} onChange={(e) => { setCustomerName(e.target.value); }} />
               </label>
             </div>
 
@@ -800,7 +801,7 @@ function FeedbackForm({
                             type="button"
                             className={styles.followUpSend}
                             disabled={!!followUpDynamicPromptLoading[category.id]}
-                            onClick={() => onCommitLowRatingSuggestion(category.id)}
+                            onClick={() => { onCommitLowRatingSuggestion(category.id); }}
                           >
                             Send
                           </button>
@@ -826,7 +827,7 @@ function FeedbackForm({
                     key={score}
                     type="button"
                     aria-pressed={nps === score}
-                    onClick={() => setNps((current) => (current === score ? null : score))}
+                    onClick={() => { setNps((current) => (current === score ? null : score)); }}
                     style={{
                       minWidth: 34,
                       padding: "8px 0",
@@ -848,7 +849,7 @@ function FeedbackForm({
               <textarea
                 rows={4}
                 value={comments}
-                onChange={(e) => setComments(e.target.value)}
+                onChange={(e) => { setComments(e.target.value); }}
                 placeholder="Share details about your meal, staff interaction, or atmosphere."
               />
             </label>

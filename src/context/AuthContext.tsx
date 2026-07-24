@@ -1,11 +1,12 @@
 
 "use client";
 
-import React, { createContext, useState, useContext, ReactNode, useEffect } from 'react';
+import type { ReactNode} from 'react';
+import React, { createContext, useState, useContext, useEffect } from 'react';
 import { signOutUser } from '@/services/authService';
 import { User } from '@/lib/db';
 
-type AuthUser = {
+interface AuthUser {
   uid: string;
   employeeId: string; // employee UUID
   employeeUsername?: string;
@@ -31,7 +32,7 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const safeJsonParse = (str: string | null) => {
-  if (!str) return null;
+  if (!str) {return null;}
   try {
     return JSON.parse(str);
   } catch (e) {
@@ -46,7 +47,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   useEffect(() => {
     const storedUser = safeJsonParse(localStorage.getItem('authUser'));
     React.startTransition(() => {
-      if (storedUser) setUser(storedUser);
+      if (storedUser) {setUser(storedUser);}
       setLoading(false);
     });
   }, []);

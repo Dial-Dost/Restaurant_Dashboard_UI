@@ -40,7 +40,7 @@ type DetailKey = 'revenue' | 'bookings' | 'customers' | 'tables' | 'apc';
 const normalizeActionName = (value: string) => value.trim().toLowerCase();
 
 const hasKeywordAction = (actionNames: Set<string>, keywords: string[]) => {
-  if (keywords.length === 0) return true;
+  if (keywords.length === 0) {return true;}
   for (const actionName of actionNames) {
     if (keywords.some((keyword) => actionName.includes(keyword.toLowerCase()))) {
       return true;
@@ -154,21 +154,21 @@ export default function Dashboard() {
   );
   const hasAllActions = Array.isArray(user?.actions_set) && user.actions_set.includes('*');
   const hasRole = (role: string) => {
-    if (!user) return false;
-    if (user.role === role) return true;
+    if (!user) {return false;}
+    if (user.role === role) {return true;}
     return Array.isArray(user.role_all) ? user.role_all.includes(role) : false;
   };
   const canAccessByAction = (keywords: string[]) => {
-    if (hasAllActions) return true;
-    if (actionNames.size === 0) return true;
+    if (hasAllActions) {return true;}
+    if (actionNames.size === 0) {return true;}
     return hasKeywordAction(actionNames, keywords);
   };
   const isValet = hasRole('valet') && !hasRole('admin');
   const isWaiterOnly = hasRole('waiter') && !hasRole('admin');
   const canOpenSection = (href: string, keywords: string[]) => {
-    if (!user) return false;
-    if (isValet) return false;
-    if (isWaiterOnly) return href === '/dashboard/orders';
+    if (!user) {return false;}
+    if (isValet) {return false;}
+    if (isWaiterOnly) {return href === '/dashboard/orders';}
     return canAccessByAction(keywords);
   };
   const canOpenAnalytics = canOpenSection('/dashboard/analytics', ['analytics', 'apc', 'report']);
@@ -361,7 +361,7 @@ export default function Dashboard() {
         </Button>
       </div>
       <div className="grid gap-4 md:grid-cols-2 md:gap-8 lg:grid-cols-5">
-        <ClickableCard label="Total revenue breakdown" onClick={() => setDetail('revenue')}>
+        <ClickableCard label="Total revenue breakdown" onClick={() => { setDetail('revenue'); }}>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">
               Total Revenue
@@ -375,7 +375,7 @@ export default function Dashboard() {
             </p>
           </CardContent>
         </ClickableCard>
-        <ClickableCard label="Bookings breakdown" onClick={() => setDetail('bookings')}>
+        <ClickableCard label="Bookings breakdown" onClick={() => { setDetail('bookings'); }}>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">
               Bookings
@@ -389,7 +389,7 @@ export default function Dashboard() {
             </p>
           </CardContent>
         </ClickableCard>
-        <ClickableCard label="New customers breakdown" onClick={() => setDetail('customers')}>
+        <ClickableCard label="New customers breakdown" onClick={() => { setDetail('customers'); }}>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">New Customers</CardTitle>
             <CircleUser className="h-4 w-4 text-muted-foreground" />
@@ -401,7 +401,7 @@ export default function Dashboard() {
             </p>
           </CardContent>
         </ClickableCard>
-        <ClickableCard label="Active tables breakdown" onClick={() => setDetail('tables')}>
+        <ClickableCard label="Active tables breakdown" onClick={() => { setDetail('tables'); }}>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Active Tables</CardTitle>
             <Activity className="h-4 w-4 text-muted-foreground" />
@@ -413,7 +413,7 @@ export default function Dashboard() {
             </p>
           </CardContent>
         </ClickableCard>
-        <ClickableCard label="My average per cover breakdown" onClick={() => setDetail('apc')}>
+        <ClickableCard label="My average per cover breakdown" onClick={() => { setDetail('apc'); }}>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">My Avg APC</CardTitle>
             <DollarSign className="h-4 w-4 text-muted-foreground" />
@@ -454,7 +454,7 @@ export default function Dashboard() {
               role="button"
               tabIndex={0}
               aria-label={`${tile.label} — ${tile.hint}`}
-              onClick={() => router.push(tile.href)}
+              onClick={() => { router.push(tile.href); }}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' || event.key === ' ') {
                   event.preventDefault();
@@ -477,7 +477,7 @@ export default function Dashboard() {
           ))}
         </div>
       )}
-      <Dialog open={detail !== null} onOpenChange={(open) => { if (!open) setDetail(null); }}>
+      <Dialog open={detail !== null} onOpenChange={(open) => { if (!open) {setDetail(null);} }}>
         <DialogContent className="sm:max-w-[480px]">
           <DialogHeader>
             <DialogTitle>{activeDetail?.title}</DialogTitle>
@@ -486,7 +486,7 @@ export default function Dashboard() {
           {activeDetail?.body}
           {activeDetail?.link && (
             <DialogFooter>
-              <Button asChild size="sm" className="gap-1" onClick={() => setDetail(null)}>
+              <Button asChild size="sm" className="gap-1" onClick={() => { setDetail(null); }}>
                 <Link href={activeDetail.link.href}>
                   {activeDetail.link.label}
                   <ArrowUpRight className="h-4 w-4" />

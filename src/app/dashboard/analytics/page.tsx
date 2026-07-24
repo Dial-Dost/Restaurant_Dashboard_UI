@@ -131,16 +131,16 @@ const inView = (view: ViewId, home: ViewId, onOverview = false) =>
 type PermUser = { role?: string; role_all?: string[]; actions_set?: string[]; action_names?: string[] } | null | undefined
 
 const hasRole = (user: PermUser, role: string) => {
-  if (!user) return false
-  if (user.role === role) return true
+  if (!user) {return false}
+  if (user.role === role) {return true}
   return Array.isArray(user.role_all) ? user.role_all.includes(role) : false
 }
 
 const canAccessByAction = (user: PermUser, keywords: string[]) => {
-  if (!user) return false
-  if (Array.isArray(user.actions_set) && user.actions_set.includes("*")) return true
+  if (!user) {return false}
+  if (Array.isArray(user.actions_set) && user.actions_set.includes("*")) {return true}
   const names = (user.action_names ?? []).map((n) => n.trim().toLowerCase()).filter((n) => n.length > 0)
-  if (names.length === 0) return true
+  if (names.length === 0) {return true}
   return names.some((name) => keywords.some((k) => name.includes(k.toLowerCase())))
 }
 
@@ -157,9 +157,9 @@ const SEVERITY_RANK: Record<string, number> = { red: 0, amber: 1, green: 2, blue
 type Kpi = AdvancedAnalytics["kpis"][number]
 function sortKpis(kpis: Kpi[], sort: KpiSort): Kpi[] {
   const arr = [...kpis]
-  if (sort === "severity") arr.sort((a, b) => (SEVERITY_RANK[a.status] ?? 5) - (SEVERITY_RANK[b.status] ?? 5))
-  else if (sort === "name") arr.sort((a, b) => a.label.localeCompare(b.label))
-  else arr.sort((a, b) => (b.value ?? -Infinity) - (a.value ?? -Infinity))
+  if (sort === "severity") {arr.sort((a, b) => (SEVERITY_RANK[a.status] ?? 5) - (SEVERITY_RANK[b.status] ?? 5))}
+  else if (sort === "name") {arr.sort((a, b) => a.label.localeCompare(b.label))}
+  else {arr.sort((a, b) => (b.value ?? -Infinity) - (a.value ?? -Infinity))}
   return arr
 }
 
@@ -168,7 +168,7 @@ function sortKpis(kpis: Kpi[], sort: KpiSort): Kpi[] {
 // fields; a field maps a row to a comparable primitive (number | string).
 // Sorting is client-side on the already-fetched array — never a refetch.
 type SortDir = "asc" | "desc"
-type SortField<T> = {
+interface SortField<T> {
   id: string
   label: string
   // string => localeCompare; number-ish => numeric (nulls sink to the bottom
@@ -178,21 +178,21 @@ type SortField<T> = {
 }
 
 // A section's sort choice: which field + which direction, plus its default.
-type SortState = { field: string; dir: SortDir }
+interface SortState { field: string; dir: SortDir }
 
 // Order an array by the chosen field+direction. Stable within ties (keeps the
 // server's order). Nullish numeric/text values always sort last.
 function sortRows<T>(rows: T[], fields: SortField<T>[], state: SortState): T[] {
   const f = fields.find((x) => x.id === state.field) ?? fields[0]
-  if (!f) return rows
+  if (!f) {return rows}
   const dir = state.dir === "asc" ? 1 : -1
   return [...rows].sort((a, b) => {
     const av = f.get(a), bv = f.get(b)
     const aNull = av == null || av === "", bNull = bv == null || bv === ""
-    if (aNull && bNull) return 0
-    if (aNull) return 1 // nulls always last, ignoring dir
-    if (bNull) return -1
-    if (f.type === "text") return String(av).localeCompare(String(bv)) * dir
+    if (aNull && bNull) {return 0}
+    if (aNull) {return 1} // nulls always last, ignoring dir
+    if (bNull) {return -1}
+    if (f.type === "text") {return String(av).localeCompare(String(bv)) * dir}
     return (Number(av) - Number(bv)) * dir
   })
 }
@@ -214,7 +214,7 @@ function SortControl<T>({ fields, state, onChange }: { fields: SortField<T>[]; s
             <button
               key={f.id}
               type="button"
-              onClick={() => onChange({ ...state, field: f.id })}
+              onClick={() => { onChange({ ...state, field: f.id }); }}
               className={`rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors ${state.field === f.id ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}
             >
               {f.label}
@@ -224,7 +224,7 @@ function SortControl<T>({ fields, state, onChange }: { fields: SortField<T>[]; s
       )}
       <button
         type="button"
-        onClick={() => onChange({ ...state, dir: state.dir === "asc" ? "desc" : "asc" })}
+        onClick={() => { onChange({ ...state, dir: state.dir === "asc" ? "desc" : "asc" }); }}
         title={state.dir === "asc" ? "Ascending — click for descending" : "Descending — click for ascending"}
         aria-label={state.dir === "asc" ? "Sorted ascending" : "Sorted descending"}
         className="flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
@@ -286,18 +286,18 @@ function ActionableInsights({ view }: { view: ViewId }) {
   const canEditMenu = hasRole(user, "admin") || canAccessByAction(user, ["menu"]);
 
   useEffect(() => {
-    if (!user?.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
     let active = true;
     setLoading(true);
     getMenuInsights(user.restaurantUsername, 30)
-      .then((d) => { if (active) setData(d); })
-      .finally(() => { if (active) setLoading(false); });
+      .then((d) => { if (active) {setData(d);} })
+      .finally(() => { if (active) {setLoading(false);} });
     return () => { active = false; };
   }, [user?.restaurantUsername, reload]);
 
   const confirmApplyPrice = async () => {
     const s = pendingPrice;
-    if (!s?.id || !user?.restaurantUsername) return;
+    if (!s?.id || !user?.restaurantUsername) {return;}
     setApplyingId(s.id);
     try {
       await applyMenuItemPrice(user.restaurantUsername, s.id, s.suggested_price);
@@ -317,10 +317,10 @@ function ActionableInsights({ view }: { view: ViewId }) {
   const showWaiters = inView(view, "staff");
   const showPrices = inView(view, "menu");
   const showSlow = inView(view, "menu");
-  if (!showStats && !showDishes && !showWaiters && !showPrices && !showSlow) return null;
+  if (!showStats && !showDishes && !showWaiters && !showPrices && !showSlow) {return null;}
 
-  if (loading) return <Card><CardContent className="py-10 text-center text-muted-foreground">Loading insights…</CardContent></Card>;
-  if (!data) return null;
+  if (loading) {return <Card><CardContent className="py-10 text-center text-muted-foreground">Loading insights…</CardContent></Card>;}
+  if (!data) {return null;}
 
   // Items the backend withheld (recently repriced, drift-capped or floored).
   // Optional on the wire — older backends simply send nothing.
@@ -445,7 +445,7 @@ function ActionableInsights({ view }: { view: ViewId }) {
                         variant="outline"
                         className="shrink-0 self-center"
                         disabled={applyingId === s.id}
-                        onClick={() => setPendingPrice(s)}
+                        onClick={() => { setPendingPrice(s); }}
                       >
                         <Check className="mr-1 h-3.5 w-3.5" />
                         {applyingId === s.id ? "Applying…" : "Apply"}
@@ -491,7 +491,7 @@ function ActionableInsights({ view }: { view: ViewId }) {
         )}
       </div>
 
-      <Dialog open={pendingPrice != null} onOpenChange={(open) => { if (!open) setPendingPrice(null); }}>
+      <Dialog open={pendingPrice != null} onOpenChange={(open) => { if (!open) {setPendingPrice(null);} }}>
         <DialogContent className="max-w-md" aria-describedby={undefined}>
           <DialogHeader>
             <DialogTitle>Apply this price?</DialogTitle>
@@ -516,7 +516,7 @@ function ActionableInsights({ view }: { view: ViewId }) {
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setPendingPrice(null)} disabled={applyingId != null}>Cancel</Button>
+            <Button variant="outline" onClick={() => { setPendingPrice(null); }} disabled={applyingId != null}>Cancel</Button>
             <Button onClick={() => { void confirmApplyPrice(); }} disabled={applyingId != null}>
               {applyingId != null ? "Applying…" : "Apply price"}
             </Button>
@@ -535,16 +535,16 @@ function OperationsCharts({ view }: { view: ViewId }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!user?.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
     let active = true;
     setLoading(true);
     getOperationsAnalytics(user.restaurantUsername, 30)
-      .then((d) => { if (active) setData(d); })
-      .finally(() => { if (active) setLoading(false); });
+      .then((d) => { if (active) {setData(d);} })
+      .finally(() => { if (active) {setLoading(false);} });
     return () => { active = false; };
   }, [user?.restaurantUsername]);
 
-  if (!inView(view, "operations")) return null;
+  if (!inView(view, "operations")) {return null;}
 
   const byHour = (data?.by_hour ?? []).map((h) => ({ time: `${String(h.hour).padStart(2, "0")}:00`, orders: h.orders }));
   const byWeekday = (data?.by_weekday ?? []).map((w) => ({ day: w.label, orders: w.orders }));
@@ -609,18 +609,18 @@ function PerformanceTrends({ view }: { view: ViewId }) {
   const money = (n: number | null | undefined) => `${currency}${Number(n ?? 0).toFixed(0)}`;
 
   useEffect(() => {
-    if (!user?.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
     let active = true;
     setLoading(true);
     getApcTrends(user.restaurantUsername, 12)
-      .then((d) => { if (active) setData(d); })
-      .finally(() => { if (active) setLoading(false); });
+      .then((d) => { if (active) {setData(d);} })
+      .finally(() => { if (active) {setLoading(false);} });
     return () => { active = false; };
   }, [user?.restaurantUsername]);
 
   const showRevenue = inView(view, "sales", true); // headline chart on Overview
   const showApc = inView(view, "sales");
-  if (!showRevenue && !showApc) return null;
+  if (!showRevenue && !showApc) {return null;}
 
   const series = data ?? [];
   const hasData = series.some((p) => p.total_revenue > 0 || p.bills > 0);
@@ -723,8 +723,8 @@ const KPI_MEANINGS: Record<string, string> = {
 }
 
 type DrillUnit = "money" | "pct" | "min" | "rating" | "count"
-type DrillRow = { name: string; value: number }
-type DrillSpec = { type: "pie" | "bar" | "none"; rows: DrillRow[]; unit: DrillUnit }
+interface DrillRow { name: string; value: number }
+interface DrillSpec { type: "pie" | "bar" | "none"; rows: DrillRow[]; unit: DrillUnit }
 
 // Maps a KPI key -> the chart + rows to show. Empty `rows` on a pie/bar renders
 // a graceful "no breakdown yet"; `type: "none"` renders the value + meaning.
@@ -733,7 +733,7 @@ function kpiDrilldownSpec(kpi: Kpi, data: AdvancedAnalytics): DrillSpec {
   switch (kpi.key) {
     case "profit_margin": {
       const p = data.profit
-      if (!p) return { type: "none", rows: [], unit: "money" }
+      if (!p) {return { type: "none", rows: [], unit: "money" }}
       return {
         type: "pie",
         unit: "money",
@@ -746,7 +746,7 @@ function kpiDrilldownSpec(kpi: Kpi, data: AdvancedAnalytics): DrillSpec {
     case "discount_utilization":
     case "offer_redemption": {
       const offers = data.offers ?? []
-      if (offers.length > 0) return { type: "pie", unit: "count", rows: offers.map((o) => ({ name: o.code, value: num(o.used) })) }
+      if (offers.length > 0) {return { type: "pie", unit: "count", rows: offers.map((o) => ({ name: o.code, value: num(o.used) })) }}
       const d = data.discounts // fallback when no coupons exist yet
       return {
         type: "bar",
@@ -770,7 +770,7 @@ function kpiDrilldownSpec(kpi: Kpi, data: AdvancedAnalytics): DrillSpec {
     case "menu_bad_share": {
       const classes = data.menu_classes ?? []
       const counts: Record<string, number> = {}
-      for (const m of classes) counts[m.class] = (counts[m.class] ?? 0) + 1
+      for (const m of classes) {counts[m.class] = (counts[m.class] ?? 0) + 1}
       const order = ["STAR", "GREAT", "MID", "BAD"]
       return { type: "pie", unit: "count", rows: order.filter((c) => counts[c] > 0).map((c) => ({ name: c, value: counts[c] })) }
     }
@@ -802,7 +802,7 @@ function formatDrill(n: number, unit: DrillUnit, money: (v: number) => string): 
 // Theme-aware tooltip (the built-in recharts one is not) — mirrors the card
 // tooltip styling used elsewhere on the page.
 function DrillTooltip({ active, payload, fmt }: { active?: boolean; payload?: any[]; fmt: (n: number) => string }) {
-  if (!active || !payload?.length) return null
+  if (!active || !payload?.length) {return null}
   const p = payload[0]
   return (
     <div className="rounded-lg border border-border/50 bg-background px-2.5 py-1.5 text-xs shadow-xl">
@@ -848,7 +848,7 @@ function KpiDrilldown({ kpi, data, money, onOpenChange }: {
 }) {
   const spec = kpi ? kpiDrilldownSpec(kpi, data) : null
   const link = kpi ? KPI_LINKS[kpi.key] : undefined
-  const val = !kpi || kpi.value == null ? "—" : `${kpi.value}${kpi.unit}`
+  const val = kpi?.value == null ? "—" : `${kpi.value}${kpi.unit}`
   const fmt = (n: number) => (spec ? formatDrill(n, spec.unit, money) : String(n))
   // Bars: worst/biggest first, capped at 8. Pies keep composition order.
   const rows = spec ? (spec.type === "bar" ? [...spec.rows].sort((a, b) => b.value - a.value).slice(0, 8) : spec.rows) : []
@@ -971,17 +971,17 @@ function AdvancedAnalyticsView({ view, kpiSort }: { view: ViewId; kpiSort: KpiSo
   const [offerSort, setOfferSort] = useSectionSort("redemption_pct");
 
   useEffect(() => {
-    if (!user?.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
     let active = true;
     setLoading(true);
     getAdvancedAnalytics(user.restaurantUsername, 90)
-      .then((d) => { if (active) setData(d); })
-      .finally(() => { if (active) setLoading(false); });
+      .then((d) => { if (active) {setData(d);} })
+      .finally(() => { if (active) {setLoading(false);} });
     return () => { active = false; };
   }, [user?.restaurantUsername, refresh]);
 
   const addCampaign = async () => {
-    if (!user?.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
     if (!campForm.name.trim() || !campForm.starts_at || !campForm.ends_at) {
       toast({ title: "Name, start and end dates are required", variant: "destructive" });
       return;
@@ -1003,7 +1003,7 @@ function AdvancedAnalyticsView({ view, kpiSort }: { view: ViewId; kpiSort: KpiSo
   };
 
   const removeCampaign = async (id: string) => {
-    if (!user?.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
     try {
       await deleteCampaign(user.restaurantUsername, id);
       setRefresh((r) => r + 1);
@@ -1012,8 +1012,8 @@ function AdvancedAnalyticsView({ view, kpiSort }: { view: ViewId; kpiSort: KpiSo
     }
   };
 
-  if (loading) return <Card><CardContent className="py-10 text-center text-sm text-muted-foreground">Loading KPIs…</CardContent></Card>;
-  if (!data) return null;
+  if (loading) {return <Card><CardContent className="py-10 text-center text-sm text-muted-foreground">Loading KPIs…</CardContent></Card>;}
+  if (!data) {return null;}
 
   const kpiVal = (k: AdvancedAnalytics["kpis"][number]) => k.value == null ? "—" : `${k.value}${k.unit}`;
 
@@ -1074,7 +1074,7 @@ function AdvancedAnalyticsView({ view, kpiSort }: { view: ViewId; kpiSort: KpiSo
     { id: "code", label: "Code", type: "text", get: (o) => o.code },
   ];
   // Shared field set for the three demographics groups (label + count).
-  type DemoRow = { label: string; n: number };
+  interface DemoRow { label: string; n: number }
   const demoFields: SortField<DemoRow>[] = [
     { id: "n", label: "Count", type: "num", get: (g) => g.n },
     { id: "label", label: "Name", type: "text", get: (g) => g.label },
@@ -1107,7 +1107,7 @@ function AdvancedAnalyticsView({ view, kpiSort }: { view: ViewId; kpiSort: KpiSo
               <button
                 key={k.key}
                 type="button"
-                onClick={() => setActiveKpi(k)}
+                onClick={() => { setActiveKpi(k); }}
                 title={`View ${k.label} breakdown`}
                 className={`h-full cursor-pointer rounded-xl border p-3 text-left transition-shadow hover:shadow-md hover:ring-1 hover:ring-primary/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary ${KPI_COLORS[k.status] ?? KPI_COLORS.grey}`}
               >
@@ -1124,7 +1124,7 @@ function AdvancedAnalyticsView({ view, kpiSort }: { view: ViewId; kpiSort: KpiSo
       </Card>
       )}
 
-      <KpiDrilldown kpi={activeKpi} data={data} money={money} onOpenChange={(o) => { if (!o) setActiveKpi(null); }} />
+      <KpiDrilldown kpi={activeKpi} data={data} money={money} onOpenChange={(o) => { if (!o) {setActiveKpi(null);} }} />
 
       <div className="grid gap-4 md:grid-cols-2">
         {inView(view, "discounts") && (
@@ -1358,10 +1358,10 @@ function AdvancedAnalyticsView({ view, kpiSort }: { view: ViewId; kpiSort: KpiSo
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
-              <Input className="col-span-2 sm:col-span-2" placeholder="Campaign name" value={campForm.name} onChange={(e) => setCampForm((f) => ({ ...f, name: e.target.value }))} />
-              <Input type="number" min="0" placeholder={`Cost (${currency})`} value={campForm.cost} onChange={(e) => setCampForm((f) => ({ ...f, cost: e.target.value }))} />
-              <Input type="date" value={campForm.starts_at} onChange={(e) => setCampForm((f) => ({ ...f, starts_at: e.target.value }))} />
-              <Input type="date" value={campForm.ends_at} onChange={(e) => setCampForm((f) => ({ ...f, ends_at: e.target.value }))} />
+              <Input className="col-span-2 sm:col-span-2" placeholder="Campaign name" value={campForm.name} onChange={(e) => { setCampForm((f) => ({ ...f, name: e.target.value })); }} />
+              <Input type="number" min="0" placeholder={`Cost (${currency})`} value={campForm.cost} onChange={(e) => { setCampForm((f) => ({ ...f, cost: e.target.value })); }} />
+              <Input type="date" value={campForm.starts_at} onChange={(e) => { setCampForm((f) => ({ ...f, starts_at: e.target.value })); }} />
+              <Input type="date" value={campForm.ends_at} onChange={(e) => { setCampForm((f) => ({ ...f, ends_at: e.target.value })); }} />
             </div>
             <Button size="sm" disabled={campBusy} onClick={() => void addCampaign()}>{campBusy ? "Adding…" : "Add campaign"}</Button>
             {(data.campaigns ?? []).length === 0 ? (
@@ -1451,14 +1451,14 @@ function OutletsComparisonCard({ view }: { view: ViewId }) {
   const money = (n: number | null | undefined) => `${currency}${Number(n ?? 0).toFixed(0)}`;
 
   useEffect(() => {
-    if (!user?.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
     let active = true;
-    getOutletsComparison(user.restaurantUsername, 30).then((d) => { if (active) setData(d); });
+    getOutletsComparison(user.restaurantUsername, 30).then((d) => { if (active) {setData(d);} });
     return () => { active = false; };
   }, [user?.restaurantUsername]);
 
-  if (!inView(view, "sales", true)) return null;
-  if (!data || data.outlets.length < 2) return null;
+  if (!inView(view, "sales", true)) {return null;}
+  if (!data || data.outlets.length < 2) {return null;}
 
   const outletFields: SortField<OutletComparison["outlets"][number]>[] = [
     { id: "revenue", label: "Revenue", type: "num", get: (o) => o.revenue },
@@ -1522,9 +1522,9 @@ export default function AnalyticsPage() {
   useEffect(() => {
     try {
       const v = localStorage.getItem("analytics.view");
-      if (v && VIEWS.some((x) => x.id === v)) setView(v as ViewId);
+      if (v && VIEWS.some((x) => x.id === v)) {setView(v as ViewId);}
       const s = localStorage.getItem("analytics.kpiSort");
-      if (s && KPI_SORTS.some((x) => x.id === s)) setKpiSort(s as KpiSort);
+      if (s && KPI_SORTS.some((x) => x.id === s)) {setKpiSort(s as KpiSort);}
     } catch { /* storage unavailable (private mode) — keep defaults */ }
   }, []);
 
@@ -1556,7 +1556,7 @@ export default function AnalyticsPage() {
               <button
                 key={v.id}
                 type="button"
-                onClick={() => pickView(v.id)}
+                onClick={() => { pickView(v.id); }}
                 className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${view === v.id ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground"}`}
               >
                 {v.label}
@@ -1564,7 +1564,7 @@ export default function AnalyticsPage() {
             ))}
           </div>
           {/* Narrow screens: button opening a bottom-sheet view picker */}
-          <Button variant="outline" size="sm" className="md:hidden" onClick={() => setSheetOpen(true)}>
+          <Button variant="outline" size="sm" className="md:hidden" onClick={() => { setSheetOpen(true); }}>
             View: {viewLabel} <ChevronDown className="ml-1 h-4 w-4" />
           </Button>
           <div className="ml-auto flex items-center gap-1.5">
@@ -1574,7 +1574,7 @@ export default function AnalyticsPage() {
                 <button
                   key={s.id}
                   type="button"
-                  onClick={() => pickSort(s.id)}
+                  onClick={() => { pickSort(s.id); }}
                   className={`rounded-md px-2 py-1 text-xs font-medium transition-colors ${kpiSort === s.id ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}
                 >
                   {s.label}
@@ -1594,7 +1594,7 @@ export default function AnalyticsPage() {
       {/* Mobile bottom sheet for the view picker */}
       {sheetOpen && (
         <div className="fixed inset-0 z-50 md:hidden" role="dialog" aria-modal="true" aria-label="Choose analytics view">
-          <div className="absolute inset-0 bg-black/40" onClick={() => setSheetOpen(false)} aria-hidden="true" />
+          <div className="absolute inset-0 bg-black/40" onClick={() => { setSheetOpen(false); }} aria-hidden="true" />
           <div className="absolute inset-x-0 bottom-0 max-h-[75vh] overflow-y-auto rounded-t-2xl border-t bg-background p-4 pb-8 shadow-2xl">
             <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-muted-foreground/30" />
             <p className="mb-2 text-sm font-semibold">Show</p>
@@ -1603,7 +1603,7 @@ export default function AnalyticsPage() {
                 <button
                   key={v.id}
                   type="button"
-                  onClick={() => pickView(v.id)}
+                  onClick={() => { pickView(v.id); }}
                   className={`flex items-center justify-between rounded-lg px-3 py-2.5 text-left text-sm ${view === v.id ? "bg-primary/10 font-semibold text-primary" : "hover:bg-muted"}`}
                 >
                   <span>{v.label}</span>

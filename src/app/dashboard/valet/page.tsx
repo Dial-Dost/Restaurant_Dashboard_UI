@@ -19,15 +19,15 @@ import { useToast } from "@/hooks/use-toast";
 import { requestBackend } from "@/lib/db";
 import { Activity, RefreshCw, Clock, Package, Users, ArrowUpDown, Camera, Loader2 } from "lucide-react";
 
-type ValetBays = {
+interface ValetBays {
   Bay_id: string | undefined;
   Bay_name: string;
   current_capacity: number;
   total_capacity: number;
   restaurant_id?: string | undefined;
-};
+}
 
-type ValetBooking = {
+interface ValetBooking {
   booking_id?: string;
   customer_name?: string;
   bay_name?: string | null;
@@ -47,16 +47,16 @@ type ValetBooking = {
   condition_photo_url?: string | null;
   eta_minutes?: number | null;
   requested_at?: string | null;
-};
+}
 
-type ChargeTarget = { table_name: string; covers?: number | null };
+interface ChargeTarget { table_name: string; covers?: number | null }
 
-type ValetInfoResponse = {
+interface ValetInfoResponse {
   role: "admin" | "employee" | "valet" | "waiter" | "cashier" | "captain" | "manager";
   generated_at: string;
   bays: ValetBays[];
   bookings: ValetBooking[];
-};
+}
 
 const VALET_STAGES = [
   "Vehicle added",
@@ -72,19 +72,19 @@ type ValetStage = (typeof VALET_STAGES)[number];
 function normalizeStage(status?: string): ValetStage {
   const normalized = (status ?? "").trim().toLowerCase();
 
-  if (normalized === "vehicle added") return "Vehicle added";
-  if (normalized === "parked") return "Parked";
-  if (normalized === "request to bring car") return "Request to bring car (from customer)";
-  if (normalized === "request to bring car (from customer)") return "Request to bring car (from customer)";
-  if (normalized === "request accepted") return "Request accepted (from valet)";
-  if (normalized === "request accepted (from valet)") return "Request accepted (from valet)";
-  if (normalized === "car arrived at entrance") return "Car arrived at entrance";
-  if (normalized === "customer took car") return "Customer took car";
+  if (normalized === "vehicle added") {return "Vehicle added";}
+  if (normalized === "parked") {return "Parked";}
+  if (normalized === "request to bring car") {return "Request to bring car (from customer)";}
+  if (normalized === "request to bring car (from customer)") {return "Request to bring car (from customer)";}
+  if (normalized === "request accepted") {return "Request accepted (from valet)";}
+  if (normalized === "request accepted (from valet)") {return "Request accepted (from valet)";}
+  if (normalized === "car arrived at entrance") {return "Car arrived at entrance";}
+  if (normalized === "customer took car") {return "Customer took car";}
 
   // Backward compatibility with older statuses.
-  if (normalized === "retrieved") return "Customer took car";
-  if (normalized === "arrived") return "Car arrived at entrance";
-  if (normalized === "in_valet") return "Parked";
+  if (normalized === "retrieved") {return "Customer took car";}
+  if (normalized === "arrived") {return "Car arrived at entrance";}
+  if (normalized === "in_valet") {return "Parked";}
 
   return "Vehicle added";
 }
@@ -146,8 +146,8 @@ function extractVehiclePlate(booking: ValetBooking): string {
   }
 
   const notes = (booking as any).notes ?? "";
-  const match = String(notes).match(/vehicle\s*plate\s*:\s*(.+)$/i);
-  if (!match || !match[1]) {
+  const match = /vehicle\s*plate\s*:\s*(.+)$/i.exec(String(notes));
+  if (!match?.[1]) {
     return "N/A";
   }
   return match[1].trim();
@@ -175,7 +175,7 @@ export default function ValetDashboardPage() {
   const [spaceAvailableDisplay, setSpaceAvailableDisplay] = useState(0);
   const [maxBaysDisplay, setMaxBaysDisplay] = useState(0);
   const [spaceInitializedForRestaurant, setSpaceInitializedForRestaurant] = useState<string | null>(null);
-  const [managedBays, setManagedBays] = useState<Array<{ name: string; total_capacity: number }>>([{ name: "Main", total_capacity: 5 }]);
+  const [managedBays, setManagedBays] = useState<{ name: string; total_capacity: number }[]>([{ name: "Main", total_capacity: 5 }]);
   const [baysInitializedForRestaurant, setBaysInitializedForRestaurant] = useState<string | null>(null);
   const [baysLoading, setBaysLoading] = useState<boolean>(true);
   const [newBayCapacity, setNewBayCapacity] = useState<number | string>(5);
@@ -230,7 +230,7 @@ export default function ValetDashboardPage() {
         throw new Error(response.text || "Unable to load valet dashboard data.");
       }
 
-      const payload = (response.data ?? null) as ValetInfoResponse;
+      const payload = (response.data ?? null)!;
       setData(payload);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Unable to load valet dashboard data.";
@@ -265,7 +265,7 @@ export default function ValetDashboardPage() {
   const { lastEvent } = useRealtime();
 
   useEffect(() => {
-    if (!lastEvent) return;
+    if (!lastEvent) {return;}
     const relevant = [
       "valet:created",
       "valet:updated",
@@ -362,7 +362,7 @@ export default function ValetDashboardPage() {
     },
     successTitle: string,
   ) => {
-    if (!user?.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
     try {
       setOpsBusyId(bookingId);
       const response = await requestBackend<{ record?: ValetBooking; error?: string }>({
@@ -378,7 +378,7 @@ export default function ValetDashboardPage() {
       }
       const record = response.data?.record ?? {};
       setData((previous) => {
-        if (!previous) return previous;
+        if (!previous) {return previous;}
         return {
           ...previous,
           bookings: previous.bookings.map((b) =>
@@ -404,7 +404,7 @@ export default function ValetDashboardPage() {
   };
 
   const keysAction = async (bookingId: string, action: "take" | "handover") => {
-    if (!user?.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
     try {
       setOpsBusyId(bookingId);
       const response = await requestBackend<{ key_holder?: string | null; key_updated_at?: string | null; error?: string }>({
@@ -421,7 +421,7 @@ export default function ValetDashboardPage() {
       const holder = response.data?.key_holder ?? null;
       const at = response.data?.key_updated_at ?? new Date().toISOString();
       setData((previous) => {
-        if (!previous) return previous;
+        if (!previous) {return previous;}
         return {
           ...previous,
           bookings: previous.bookings.map((b) =>
@@ -442,7 +442,7 @@ export default function ValetDashboardPage() {
   };
 
   const chargeToTable = async (bookingId: string) => {
-    if (!user?.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
     const tableName = (chargeTableByBookingId[bookingId] ?? "").trim();
     const amount = Number(chargeAmountByBookingId[bookingId]);
     if (!tableName) {
@@ -539,12 +539,12 @@ export default function ValetDashboardPage() {
         if (prevBayId && prevBayId !== normalizedBayId) {
           if (counted(prevState)) {
             const idx = updatedBaysLocal.findIndex((b) => b.Bay_id === prevBayId);
-            if (idx >= 0) updatedBaysLocal[idx].current_capacity = Math.max(0, (updatedBaysLocal[idx].current_capacity ?? 0) - 1);
+            if (idx >= 0) {updatedBaysLocal[idx].current_capacity = Math.max(0, (updatedBaysLocal[idx].current_capacity ?? 0) - 1);}
           }
 
           if (normalizedBayId && counted(stage)) {
             const idx2 = updatedBaysLocal.findIndex((b) => b.Bay_id === normalizedBayId);
-            if (idx2 >= 0) updatedBaysLocal[idx2].current_capacity = (updatedBaysLocal[idx2].current_capacity ?? 0) + 1;
+            if (idx2 >= 0) {updatedBaysLocal[idx2].current_capacity = (updatedBaysLocal[idx2].current_capacity ?? 0) + 1;}
           }
         } else {
           if (prevBayId && prevBayId === normalizedBayId) {
@@ -566,7 +566,7 @@ export default function ValetDashboardPage() {
       // Persist changes to server for any bay with a changed current_capacity
       let adjustmentResults: any[] = [];
       try {
-        const adjustments: Array<Promise<any>> = [];
+        const adjustments: Promise<any>[] = [];
         for (const ub of updatedBaysLocal) {
           const prev = prevBays.find((b) => String(b.Bay_id) === String(ub.Bay_id));
           const prevVal = prev ? Number(prev.current_capacity ?? 0) : 0;
@@ -643,7 +643,7 @@ export default function ValetDashboardPage() {
         const updatedBays = (previous.bays ?? []).map((bay) => {
           const copy = { ...bay };
           const srv = serverAdjustmentsMap.get(String(copy.Bay_id));
-          if (srv && srv.current_capacity !== undefined) {
+          if (srv?.current_capacity !== undefined) {
             copy.current_capacity = Number(srv.current_capacity ?? copy.current_capacity ?? 0);
           }
           return copy;
@@ -725,7 +725,7 @@ export default function ValetDashboardPage() {
   const fileToScaledDataUrl = (file: File, maxDim = 1600): Promise<string> =>
     new Promise((resolve, reject) => {
       const reader = new FileReader();
-      reader.onerror = () => reject(new Error("Unable to read image"));
+      reader.onerror = () => { reject(new Error("Unable to read image")); };
       reader.onload = () => {
         const dataUrl = String(reader.result ?? "");
         if (!dataUrl) {
@@ -733,7 +733,7 @@ export default function ValetDashboardPage() {
           return;
         }
         const img = new window.Image();
-        img.onerror = () => resolve(dataUrl);
+        img.onerror = () => { resolve(dataUrl); };
         img.onload = () => {
           const largest = Math.max(img.width, img.height);
           const scale = largest > 0 ? Math.min(1, maxDim / largest) : 1;
@@ -1021,14 +1021,14 @@ export default function ValetDashboardPage() {
       // Date filter (compare YYYY-MM-DD)
       if (recordDate) {
         const raw = booking.booking_date_time;
-        if (!raw) return false;
+        if (!raw) {return false;}
         const d = new Date(raw);
-        if (Number.isNaN(d.getTime())) return false;
-        if (d.toISOString().slice(0, 10) !== recordDate) return false;
+        if (Number.isNaN(d.getTime())) {return false;}
+        if (d.toISOString().slice(0, 10) !== recordDate) {return false;}
       }
 
       // Search query
-      if (!query) return true;
+      if (!query) {return true;}
 
       const searchable = [
         booking.customer_name ?? "",
@@ -1109,8 +1109,8 @@ export default function ValetDashboardPage() {
   }, [data?.bays, managedBays]);
 
   useEffect(() => {
-    if (!user?.restaurantUsername) return;
-    if (baysInitializedForRestaurant === user.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
+    if (baysInitializedForRestaurant === user.restaurantUsername) {return;}
 
     const bayKey = `valet-bays:${user.restaurantUsername}`;
     const savedBaysRaw = window.localStorage.getItem(bayKey);
@@ -1122,18 +1122,18 @@ export default function ValetDashboardPage() {
         if (Array.isArray(parsed)) {
           const cleaned = parsed
             .map((value) => {
-              if (typeof value === "string") return { name: value.trim(), total_capacity: 5 };
+              if (typeof value === "string") {return { name: value.trim(), total_capacity: 5 };}
               if (typeof value === "object" && value !== null) {
-                const n = (value as any).name ?? (value as any).Bay_name ?? "";
-                const cap = Number((value as any).total_capacity ?? (value as any).totalCapacity ?? 5) || 5;
+                const n = (value).name ?? (value).Bay_name ?? "";
+                const cap = Number((value).total_capacity ?? (value).totalCapacity ?? 5) || 5;
                 return { name: String(n).trim(), total_capacity: cap };
               }
               return null;
             })
-            .filter((v) => v && v.name.length > 0) as Array<{ name: string; total_capacity: number }>;
+            .filter((v) => v && v.name.length > 0) as { name: string; total_capacity: number }[];
 
           const ensuredMain = cleaned.some((c) => c.name === "Main") ? cleaned : [{ name: "Main", total_capacity: 5 }, ...cleaned];
-          Promise.resolve().then(() => setManagedBays(ensuredMain));
+          Promise.resolve().then(() => { setManagedBays(ensuredMain); });
         }
       } catch {
         // ignore parse errors
@@ -1187,7 +1187,7 @@ export default function ValetDashboardPage() {
         setManagedBays(finalServerBays.map((b) => ({ name: b.name, total_capacity: b.total_capacity })));
         setData((prev) => {
           const mapped = finalServerBays.map((b) => ({ Bay_id: b.Bay_id ?? String(b.name), Bay_name: b.name, total_capacity: b.total_capacity, current_capacity: 0, restaurant_id: b.restaurant_id } as ValetBays));
-          if (!prev) return { role: user?.role ?? "valet", generated_at: new Date().toISOString(), bays: mapped, bookings: [] };
+          if (!prev) {return { role: user?.role ?? "valet", generated_at: new Date().toISOString(), bays: mapped, bookings: [] };}
           return { ...prev, bays: mapped };
         });
 
@@ -1275,7 +1275,7 @@ export default function ValetDashboardPage() {
           if (user?.restaurantUsername) {
             const bayKey = `valet-bays:${user.restaurantUsername}`;
             const raw = window.localStorage.getItem(bayKey);
-            let arr: Array<{ name: string; total_capacity: number }> = [];
+            let arr: { name: string; total_capacity: number }[] = [];
             if (raw) {
               try { arr = JSON.parse(raw); } catch { arr = []; }
             }
@@ -1303,14 +1303,14 @@ export default function ValetDashboardPage() {
     const proceed = window.confirm(
       `Removing bay '${bayName}' will delete all valet entries assigned to it. Do you want to proceed?`,
     );
-    if (!proceed) return;
+    if (!proceed) {return;}
 
     // Try to remove from server and cascade-delete valet_state records
     try {
       const serverMatch = (data?.bays ?? []).find((b) => String(b.Bay_name) === bayName);
       const payload: Record<string, unknown> = {};
-      if (serverMatch && serverMatch.Bay_id) payload.Bay_id = serverMatch.Bay_id;
-      else payload.Bay_name = bayName;
+      if (serverMatch?.Bay_id) {payload.Bay_id = serverMatch.Bay_id;}
+      else {payload.Bay_name = bayName;}
 
       const resp = await requestBackend<{ error?: string }>({
         path: "/delete-valet-bay",
@@ -1330,7 +1330,7 @@ export default function ValetDashboardPage() {
       // On success: remove locally and clear related bookings
       setManagedBays((prev) => prev.filter((bay) => bay.name !== bayName));
       setData((prev) => {
-        if (!prev) return prev;
+        if (!prev) {return prev;}
         const filteredBays = (prev.bays ?? []).filter((b) => String(b.Bay_name) !== bayName);
         const filteredBookings = (prev.bookings ?? []).filter((bk) => {
           const bayDisplay = bk.bay_name ?? (bk.bay_id ? (prev.bays ?? []).find((b) => b.Bay_id === bk.bay_id)?.Bay_name : "");
@@ -1403,9 +1403,9 @@ export default function ValetDashboardPage() {
 
   // Keep the visible space available in sync when server-side capacities change.
   useEffect(() => {
-    if (!user?.restaurantUsername) return;
-    if (spaceInitializedForRestaurant !== user.restaurantUsername) return;
-    Promise.resolve().then(() => setSpaceAvailableDisplay(Math.max(0, stats.spaceAvailable)));
+    if (!user?.restaurantUsername) {return;}
+    if (spaceInitializedForRestaurant !== user.restaurantUsername) {return;}
+    Promise.resolve().then(() => { setSpaceAvailableDisplay(Math.max(0, stats.spaceAvailable)); });
   }, [user?.restaurantUsername, stats.spaceAvailable, spaceInitializedForRestaurant]);
 
   useEffect(() => {
@@ -1585,7 +1585,7 @@ export default function ValetDashboardPage() {
                 id="new-bay"
                 placeholder="e.g. Bay A2"
                 value={newBayName}
-                onChange={(e) => setNewBayName(e.target.value)}
+                onChange={(e) => { setNewBayName(e.target.value); }}
               />
             </div>
             <div className="w-36">
@@ -1595,7 +1595,7 @@ export default function ValetDashboardPage() {
                 type="number"
                 min={1}
                 value={String(newBayCapacity)}
-                onChange={(e) => setNewBayCapacity(e.target.value ? Number(e.target.value) : "")}
+                onChange={(e) => { setNewBayCapacity(e.target.value ? Number(e.target.value) : ""); }}
               />
             </div>
             <Button type="button" variant="outline" onClick={addBay}>Add Bay</Button>
@@ -1606,8 +1606,8 @@ export default function ValetDashboardPage() {
               <div key={bay.name} className="flex items-center gap-2 rounded-full border px-3 py-1 text-sm">
                 {editingBay === bay.name ? (
                   <div className="flex items-center gap-2">
-                    <Input value={editingBayName} onChange={(e) => setEditingBayName(e.target.value)} className="w-36" />
-                    <Input type="number" value={String(editingBayCapacity)} onChange={(e) => setEditingBayCapacity(e.target.value ? Number(e.target.value) : "")} className="w-24" />
+                    <Input value={editingBayName} onChange={(e) => { setEditingBayName(e.target.value); }} className="w-36" />
+                    <Input type="number" value={String(editingBayCapacity)} onChange={(e) => { setEditingBayCapacity(e.target.value ? Number(e.target.value) : ""); }} className="w-24" />
                       <Button size="sm" onClick={async () => {
                       const newName = editingBayName.trim();
                       const cap = Number(editingBayCapacity);
@@ -1625,7 +1625,7 @@ export default function ValetDashboardPage() {
                       try {
                         // If there is a server record for this bay, call update; else create new
                         const serverMatch = (data?.bays ?? []).find((sb) => String(sb.Bay_name) === bay.name || String(sb.Bay_id) === bay.name);
-                        if (serverMatch && serverMatch.Bay_id) {
+                        if (serverMatch?.Bay_id) {
                           const resp = await requestBackend<{ Bay_id?: string; Bay_name?: string; total_capacity?: number; current_capacity?: number }>({
                             path: "/update-valet-bay",
                             method: "POST",
@@ -1660,7 +1660,7 @@ export default function ValetDashboardPage() {
                             // update managedBays and data.bays with server-confirmed values
                             setManagedBays((prev) => prev.map((p) => (p.name === bay.name ? { name: newName, total_capacity: cap } : p)));
                             setData((prev) => {
-                              if (!prev) return prev;
+                              if (!prev) {return prev;}
                               const updated = { Bay_id: json?.Bay_id ?? serverMatch.Bay_id, Bay_name: json?.Bay_name ?? newName, total_capacity: json?.total_capacity ?? cap, current_capacity: serverCurrent, restaurant_id: user?.restaurantUsername } as ValetBays;
                               const filtered = (prev.bays ?? []).filter((b) => String(b.Bay_id) !== updated.Bay_id);
                               return { ...prev, bays: [updated, ...filtered] };
@@ -1680,7 +1680,7 @@ export default function ValetDashboardPage() {
                             const added = { Bay_id: json?.Bay_id ?? undefined, Bay_name: newName, total_capacity: cap, current_capacity: json?.current_capacity ?? 0, restaurant_id: user?.restaurantUsername } as ValetBays;
                             setManagedBays((prev) => [...prev, { name: added.Bay_name, total_capacity: added.total_capacity }]);
                             setData((prev) => {
-                              if (!prev) return prev;
+                              if (!prev) {return prev;}
                               const filtered = (prev.bays ?? []).filter((b) => String(b.Bay_name) !== newName);
                               return { ...prev, bays: [added, ...filtered] };
                             });
@@ -1692,7 +1692,7 @@ export default function ValetDashboardPage() {
 
                       setEditingBay(null);
                     }}>Save</Button>
-                    <Button size="sm" variant="ghost" onClick={() => setEditingBay(null)}>Cancel</Button>
+                    <Button size="sm" variant="ghost" onClick={() => { setEditingBay(null); }}>Cancel</Button>
                   </div>
                 ) : (
                   <>
@@ -1719,7 +1719,7 @@ export default function ValetDashboardPage() {
               <Input
                 id="valet-guest-name"
                 value={newGuestName}
-                onChange={(e) => setNewGuestName(e.target.value)}
+                onChange={(e) => { setNewGuestName(e.target.value); }}
                 placeholder="Customer name (optional)"
               />
             </div>
@@ -1728,7 +1728,7 @@ export default function ValetDashboardPage() {
               <Input
                 id="valet-plate"
                 value={newVehiclePlate}
-                onChange={(e) => setNewVehiclePlate(e.target.value)}
+                onChange={(e) => { setNewVehiclePlate(e.target.value); }}
                 placeholder="KA01AB1234"
               />
               <input
@@ -1772,12 +1772,12 @@ export default function ValetDashboardPage() {
                 id="valet-datetime"
                 type="datetime-local"
                 value={newDateTime}
-                onChange={(e) => setNewDateTime(e.target.value)}
+                onChange={(e) => { setNewDateTime(e.target.value); }}
               />
             </div>
             <div>
               <Label htmlFor="valet-bay">Bay</Label>
-              <Select value={newRecordBayValue} onValueChange={(value) => setNewRecordBayValue(value)}>
+              <Select value={newRecordBayValue} onValueChange={(value) => { setNewRecordBayValue(value); }}>
                 <SelectTrigger id="valet-bay">
                   <SelectValue placeholder="Select Bay" />
                 </SelectTrigger>
@@ -1816,12 +1816,12 @@ export default function ValetDashboardPage() {
                 id="record-search"
                 placeholder="Search by name, ticket, plate, stage or bay"
                 value={recordSearchQuery}
-                onChange={(e) => setRecordSearchQuery(e.target.value)}
+                onChange={(e) => { setRecordSearchQuery(e.target.value); }}
               />
             </div>
             <div>
               <Label>Filter stage</Label>
-              <Select value={recordStageFilter} onValueChange={(value) => setRecordStageFilter(value as "all" | ValetStage)}>
+              <Select value={recordStageFilter} onValueChange={(value) => { setRecordStageFilter(value as "all" | ValetStage); }}>
                 <SelectTrigger>
                   <SelectValue placeholder="All stages" />
                 </SelectTrigger>
@@ -1855,13 +1855,13 @@ export default function ValetDashboardPage() {
                   id="record-date"
                   type="date"
                   value={recordDate}
-                  onChange={(e) => setRecordDate(e.target.value)}
+                  onChange={(e) => { setRecordDate(e.target.value); }}
                 />
                 <Button
                   type="button"
                   variant="outline"
                   title={sortAsc ? "Sort ascending" : "Sort descending"}
-                  onClick={() => setSortAsc((s) => !s)}
+                  onClick={() => { setSortAsc((s) => !s); }}
                 >
                   <ArrowUpDown className="h-4 w-4" />
                 </Button>
@@ -1916,7 +1916,7 @@ export default function ValetDashboardPage() {
                         variant="outline"
                         disabled={!bookingId || updatingId === bookingId || getStageIndex(stageValue) === 0}
                         onClick={() => {
-                          if (!bookingId) return;
+                          if (!bookingId) {return;}
                           const next = moveStage(stageValue, -1);
                           setDraftStageByBookingId((prev) => ({ ...prev, [bookingId]: next }));
                         }}
@@ -1928,7 +1928,7 @@ export default function ValetDashboardPage() {
                         variant="outline"
                         disabled={!bookingId || updatingId === bookingId || getStageIndex(stageValue) === VALET_STAGES.length - 1}
                         onClick={() => {
-                          if (!bookingId) return;
+                          if (!bookingId) {return;}
                           const next = moveStage(stageValue, 1);
                           setDraftStageByBookingId((prev) => ({ ...prev, [bookingId]: next }));
                         }}
@@ -1941,7 +1941,7 @@ export default function ValetDashboardPage() {
                       <Select
                         value={stageValue}
                         onValueChange={(value) => {
-                          if (!bookingId) return;
+                          if (!bookingId) {return;}
                           setDraftStageByBookingId((prev) => ({ ...prev, [bookingId]: value as ValetStage }));
                         }}
                       >
@@ -1958,7 +1958,7 @@ export default function ValetDashboardPage() {
                       <Select
                         value={tableValue}
                         onValueChange={(value) => {
-                          if (!bookingId) return;
+                          if (!bookingId) {return;}
                           if (baysLoading) {
                             toast({ title: "Bays still loading", description: "Please wait until bays finish loading before assigning.", variant: "destructive" });
                             return;
@@ -1999,7 +1999,7 @@ export default function ValetDashboardPage() {
                               placeholder="Parking location (e.g. P2 / Level 1 / Slot 14)"
                               value={draftLocationByBookingId[bookingId] ?? booking.parking_location ?? ""}
                               onChange={(e) =>
-                                setDraftLocationByBookingId((prev) => ({ ...prev, [bookingId]: e.target.value }))
+                                { setDraftLocationByBookingId((prev) => ({ ...prev, [bookingId]: e.target.value })); }
                               }
                             />
                             <Button
@@ -2030,7 +2030,7 @@ export default function ValetDashboardPage() {
                               placeholder="Condition notes (scratches, dents...)"
                               value={draftNotesByBookingId[bookingId] ?? booking.condition_notes ?? ""}
                               onChange={(e) =>
-                                setDraftNotesByBookingId((prev) => ({ ...prev, [bookingId]: e.target.value }))
+                                { setDraftNotesByBookingId((prev) => ({ ...prev, [bookingId]: e.target.value })); }
                               }
                             />
                             <Button
@@ -2051,12 +2051,12 @@ export default function ValetDashboardPage() {
                               onChange={(e) => {
                                 const file = e.target.files?.[0];
                                 e.target.value = "";
-                                if (!file) return;
+                                if (!file) {return;}
                                 const reader = new FileReader();
                                 reader.onload = () => {
                                   const result = String(reader.result ?? "");
                                   const base64 = result.includes(",") ? result.slice(result.indexOf(",") + 1) : result;
-                                  if (!base64) return;
+                                  if (!base64) {return;}
                                   saveOps(
                                     bookingId,
                                     { condition_photo_base64: base64, condition_photo_content_type: file.type || "image/jpeg" },
@@ -2116,7 +2116,7 @@ export default function ValetDashboardPage() {
                             <Select
                               value={chargeTableByBookingId[bookingId] ?? ""}
                               onValueChange={(value) =>
-                                setChargeTableByBookingId((prev) => ({ ...prev, [bookingId]: value }))
+                                { setChargeTableByBookingId((prev) => ({ ...prev, [bookingId]: value })); }
                               }
                             >
                               <SelectTrigger>
@@ -2139,7 +2139,7 @@ export default function ValetDashboardPage() {
                               placeholder="e.g. 100"
                               value={chargeAmountByBookingId[bookingId] ?? ""}
                               onChange={(e) =>
-                                setChargeAmountByBookingId((prev) => ({ ...prev, [bookingId]: e.target.value }))
+                                { setChargeAmountByBookingId((prev) => ({ ...prev, [bookingId]: e.target.value })); }
                               }
                             />
                           </div>
@@ -2205,7 +2205,7 @@ export default function ValetDashboardPage() {
                   );
                 })}
                 {pickupQueue.length > 5 ? (
-                  <Button type="button" variant="outline" onClick={() => setShowAllPickup((prev) => !prev)}>
+                  <Button type="button" variant="outline" onClick={() => { setShowAllPickup((prev) => !prev); }}>
                     {showAllPickup ? "Show Less" : `Show All (${pickupQueue.length})`}
                   </Button>
                 ) : null}
@@ -2255,7 +2255,7 @@ export default function ValetDashboardPage() {
                   );
                 })}
                 {activeCarQueue.length > 5 ? (
-                  <Button type="button" variant="outline" onClick={() => setShowAllParked((prev) => !prev)}>
+                  <Button type="button" variant="outline" onClick={() => { setShowAllParked((prev) => !prev); }}>
                     {showAllParked ? "Show Less" : `Show All (${activeCarQueue.length})`}
                   </Button>
                 ) : null}
@@ -2303,7 +2303,7 @@ export default function ValetDashboardPage() {
                   );
                 })}
                 {incomingCarQueue.length > 5 ? (
-                  <Button type="button" variant="outline" onClick={() => setShowAllIncoming((prev) => !prev)}>
+                  <Button type="button" variant="outline" onClick={() => { setShowAllIncoming((prev) => !prev); }}>
                     {showAllIncoming ? "Show Less" : `Show All (${incomingCarQueue.length})`}
                   </Button>
                 ) : null}

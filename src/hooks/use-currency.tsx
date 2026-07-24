@@ -1,14 +1,15 @@
 
 "use client";
 
-import React, { createContext, useState, useContext, ReactNode, useEffect, useMemo } from 'react';
+import type { ReactNode} from 'react';
+import React, { createContext, useState, useContext, useEffect, useMemo } from 'react';
 
 type CurrencyCode = 'INR' | 'USD' | 'GBP' | 'EUR';
 
-type CurrencyInfo = {
+interface CurrencyInfo {
     symbol: string;
     label: string;
-};
+}
 
 export const currencyOptions: Record<CurrencyCode, CurrencyInfo> = {
     'INR': { symbol: '₹', label: 'Indian Rupee (INR)' },

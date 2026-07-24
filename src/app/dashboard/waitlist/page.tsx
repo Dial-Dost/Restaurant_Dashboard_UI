@@ -30,7 +30,7 @@ export default function WaitlistPage() {
   const freeTables = useMemo(() => tables.filter((t) => t.status === "Available").map((t) => t.name), [tables])
 
   const load = useCallback(async () => {
-    if (!rid) return
+    if (!rid) {return}
     try {
       const [w, t] = await Promise.all([getWaitlist(rid), getTables(rid).catch(() => [] as Table[])])
       setEntries(w)
@@ -44,7 +44,7 @@ export default function WaitlistPage() {
   // Live-ish: poll while the page is open (also covers the realtime waitlist:updated events).
   useEffect(() => {
     const id = setInterval(() => { void load() }, 8000)
-    return () => clearInterval(id)
+    return () => { clearInterval(id); }
   }, [load])
 
   // Entrance "Join the queue" QR: encodes this dashboard's own /queue/<slug> URL
@@ -53,22 +53,22 @@ export default function WaitlistPage() {
   const [qrUrl, setQrUrl] = useState("")
   const [qrPng, setQrPng] = useState("")
   useEffect(() => {
-    if (!rid || typeof window === "undefined") return
+    if (!rid || typeof window === "undefined") {return}
     const outlet = getSelectedOutletId()
     const url = `${window.location.origin}/queue/${encodeURIComponent(rid)}${outlet ? `?outlet=${encodeURIComponent(outlet)}` : ""}`
     setQrUrl(url)
-    QRCode.toDataURL(url, { width: 512, margin: 2 }).then(setQrPng).catch(() => setQrPng(""))
+    QRCode.toDataURL(url, { width: 512, margin: 2 }).then(setQrPng).catch(() => { setQrPng(""); })
   }, [rid])
 
   const downloadQr = () => {
-    if (!qrPng) return
+    if (!qrPng) {return}
     const a = document.createElement("a")
     a.href = qrPng
     a.download = `queue-qr-${rid || "restaurant"}.png`
     a.click()
   }
   const printQr = () => {
-    if (!qrPng) return
+    if (!qrPng) {return}
     const w = window.open("", "_blank", "width=520,height=680")
     if (!w) { toast({ title: "Pop-up blocked", description: "Allow pop-ups to print, or use Download.", variant: "destructive" }); return }
     const name = user?.restaurantName ?? "our restaurant"
@@ -88,7 +88,7 @@ export default function WaitlistPage() {
     setBusyId(id)
     try {
       await fn()
-      if (ok) toast({ title: ok })
+      if (ok) {toast({ title: ok })}
       await load()
     } catch (e: any) {
       toast({ title: "Action failed", description: String(e?.message ?? e), variant: "destructive" })
@@ -135,7 +135,7 @@ export default function WaitlistPage() {
                 {hasDetails ? (
                   <button
                     type="button"
-                    onClick={() => setOpenRows((p) => ({ ...p, [e.id]: !open }))}
+                    onClick={() => { setOpenRows((p) => ({ ...p, [e.id]: !open })); }}
                     className="inline-flex items-center gap-1 font-medium text-primary hover:underline"
                     aria-expanded={open}
                   >
@@ -154,12 +154,12 @@ export default function WaitlistPage() {
             <select
               className="h-9 rounded-md border bg-background px-2 text-sm"
               value={seatPick[e.id] ?? ""}
-              onChange={(ev) => setSeatPick((p) => ({ ...p, [e.id]: ev.target.value }))}
+              onChange={(ev) => { setSeatPick((p) => ({ ...p, [e.id]: ev.target.value })); }}
             >
               <option value="">{freeTables.length ? "Table…" : "No free tables"}</option>
               {freeTables.map((t) => <option key={t} value={t}>{t}</option>)}
             </select>
-            <Button size="sm" disabled={busyId === e.id || freeTables.length === 0} onClick={() => seat(e)}>
+            <Button size="sm" disabled={busyId === e.id || freeTables.length === 0} onClick={() => { seat(e); }}>
               <Check className="mr-1 h-4 w-4" /> Seat
             </Button>
             <Button size="sm" variant="ghost" disabled={busyId === e.id} onClick={() => act(e.id, () => cancelWaitlistEntry(rid, e.id, "no_show"))} title="No-show">

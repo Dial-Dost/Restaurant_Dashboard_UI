@@ -39,7 +39,7 @@ import { getCustomers, addCustomer, getCustomerInsights, type CustomerInsight, t
 import { useCurrency } from "@/hooks/use-currency";
 
 
-export type Customer = {
+export interface Customer {
   customerId?: string;
   name: string;
   email: string;
@@ -51,7 +51,7 @@ export type Customer = {
   gender?: string;
   ageGroup?: string;
   pincode?: string;
-};
+}
 
 const customerSchema = z.object({
     name: z.string().min(1, "Name is required."),
@@ -66,7 +66,7 @@ const customerSchema = z.object({
 type CustomerFormData = z.infer<typeof customerSchema>;
 
 // Segment badge styling + labels (CRM view). Order here drives the filter chips.
-const SEGMENTS: Array<{ key: CustomerSegment; label: string; className: string }> = [
+const SEGMENTS: { key: CustomerSegment; label: string; className: string }[] = [
   { key: "new", label: "New", className: "bg-muted text-muted-foreground" },
   { key: "regular", label: "Regular", className: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300" },
   { key: "high-spend", label: "High spend", className: "bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300" },
@@ -97,11 +97,11 @@ export default function CustomersPage() {
   };
 
   useEffect(() => {
-    if (user) void refresh(user.restaurantUsername);
+    if (user) {void refresh(user.restaurantUsername);}
   }, [user]);
 
   const handleAddCustomer = async (data: CustomerFormData) => {
-    if (!user) return;
+    if (!user) {return;}
     const newCustomer: Customer = {
       ...data,
       totalBookings: 1,
@@ -135,7 +135,7 @@ export default function CustomersPage() {
                 Fill in the details for the new customer.
               </DialogDescription>
             </DialogHeader>
-            <CustomerForm onSubmit={handleAddCustomer} afterSubmit={() => setIsDialogOpen(false)} />
+            <CustomerForm onSubmit={handleAddCustomer} afterSubmit={() => { setIsDialogOpen(false); }} />
           </DialogContent>
         </Dialog>
       </div>
@@ -150,7 +150,7 @@ export default function CustomersPage() {
               variant={segmentFilter === "all" ? "default" : "outline"}
               size="sm"
               className="h-7 rounded-full px-3 text-xs"
-              onClick={() => setSegmentFilter("all")}
+              onClick={() => { setSegmentFilter("all"); }}
             >
               All ({customers.length})
             </Button>
@@ -160,7 +160,7 @@ export default function CustomersPage() {
                 variant={segmentFilter === s.key ? "default" : "outline"}
                 size="sm"
                 className="h-7 rounded-full px-3 text-xs"
-                onClick={() => setSegmentFilter(s.key)}
+                onClick={() => { setSegmentFilter(s.key); }}
               >
                 {s.label} ({countBySegment(s.key)})
               </Button>
@@ -195,7 +195,7 @@ export default function CustomersPage() {
                 const expanded = expandedId === rowKey;
                 return (
                   <React.Fragment key={rowKey}>
-                    <TableRow className="cursor-pointer" onClick={() => setExpandedId(expanded ? null : rowKey)}>
+                    <TableRow className="cursor-pointer" onClick={() => { setExpandedId(expanded ? null : rowKey); }}>
                       <TableCell className="pr-0 text-muted-foreground">
                         {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                       </TableCell>

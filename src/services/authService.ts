@@ -2,7 +2,8 @@
 
 'use server';
 
-import { findRestaurantByName, findUserInRestaurant, createRestaurant, User, addEmployee, removeEmployee } from '@/lib/db';
+import type { User} from '@/lib/db';
+import { findRestaurantByName, findUserInRestaurant, createRestaurant, addEmployee, removeEmployee } from '@/lib/db';
 
 // Authentication service: thin server-action wrapper over the backend auth API
 // (employee login, restaurant registration, employee management, password reset).
@@ -58,7 +59,7 @@ export const signUpRestaurant = async ({ restaurantName, adminName, adminEmploye
             // store admin full name as first name for backwards-compatible signup UI
             emp_Fname: adminName,
             emp_Lname: null,
-            password: password, // In a real app, hash this password
+            password, // In a real app, hash this password
             role: 'admin' as const,
             action_list: [],
         };
@@ -153,7 +154,7 @@ export const addEmployeeToRestaurant = async (restaurantId: string, outletId: st
         add: employeeData.add ?? undefined,
     } as any;
 
-    await addEmployee(restaurantId, newEmployee as any, outletId, sendee_emp_id);
+    await addEmployee(restaurantId, newEmployee, outletId, sendee_emp_id);
     return newEmployee;
 };
 

@@ -32,7 +32,7 @@ function prettyMonth(ym: string): string {
 // (Computes the month's real last day — not a blind "-31".)
 function monthDrilldownHref(ym: string): string {
   const [y, m] = ym.split("-").map(Number)
-  if (!y || !m) return "/dashboard/accounting"
+  if (!y || !m) {return "/dashboard/accounting"}
   const lastDay = new Date(y, m, 0).getDate() // day 0 of next month = last of this one
   const mm = String(m).padStart(2, "0")
   return `/dashboard/accounting?from=${y}-${mm}-01&to=${y}-${mm}-${String(lastDay).padStart(2, "0")}`
@@ -59,12 +59,12 @@ export default function HistoryPage() {
   const money = (n: number | null | undefined) => `${currency}${Number(n ?? 0).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`
 
   useEffect(() => {
-    if (!user?.restaurantUsername) return
+    if (!user?.restaurantUsername) {return}
     let active = true
     setLoading(true)
     getMonthlyHistory(user.restaurantUsername, months)
-      .then((d) => { if (active) setRows(d) })
-      .finally(() => { if (active) setLoading(false) })
+      .then((d) => { if (active) {setRows(d)} })
+      .finally(() => { if (active) {setLoading(false)} })
     return () => { active = false }
   }, [user?.restaurantUsername, months])
 
@@ -87,7 +87,7 @@ export default function HistoryPage() {
           {RANGES.map((r) => (
             <button
               key={r.months}
-              onClick={() => setMonths(r.months)}
+              onClick={() => { setMonths(r.months); }}
               className={`rounded-md px-3 py-1 text-sm font-medium transition ${months === r.months ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
             >
               {r.label}
@@ -133,7 +133,7 @@ export default function HistoryPage() {
               <CardDescription>Revenue, volume, guests and service quality per month.</CardDescription>
             </div>
             <label className="flex items-center gap-2 text-sm text-muted-foreground">
-              <input type="checkbox" checked={hideEmpty} onChange={(e) => setHideEmpty(e.target.checked)} className="h-4 w-4 accent-current" />
+              <input type="checkbox" checked={hideEmpty} onChange={(e) => { setHideEmpty(e.target.checked); }} className="h-4 w-4 accent-current" />
               Hide empty months
             </label>
           </div>
@@ -151,7 +151,7 @@ export default function HistoryPage() {
                   <div key={r.month} className={hasActivity(r) ? "" : "text-muted-foreground"}>
                     <button
                       type="button"
-                      onClick={() => setOpenMonth(open ? null : r.month)}
+                      onClick={() => { setOpenMonth(open ? null : r.month); }}
                       aria-expanded={open}
                       className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left transition hover:bg-muted/50"
                     >

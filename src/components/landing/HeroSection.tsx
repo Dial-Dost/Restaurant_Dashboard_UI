@@ -15,7 +15,7 @@ export default function HeroSection() {
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
-    Promise.resolve().then(() => setMounted(true));
+    Promise.resolve().then(() => { setMounted(true); });
   }, []);
 
   return (

@@ -19,15 +19,15 @@ import { useRealtime } from "@/context/RealtimeContext";
 import { useToast } from "@/hooks/use-toast";
 import { requestBackend } from "@/lib/db";
 
-type FeedbackCategoryRating = {
+interface FeedbackCategoryRating {
   key: string;
   label: string;
   rating: number;
   question?: string | null;
   follow_up?: string | null;
-};
+}
 
-type FeedbackEntry = {
+interface FeedbackEntry {
   id: string;
   restaurant_id: string;
   employee_id: string;
@@ -39,14 +39,14 @@ type FeedbackEntry = {
   image_theme?: { background: string; surface: string; text: string; accent: string } | null;
   source?: string | null;
   submitted_at: string;
-};
+}
 
-type FeedbackSummary = {
+interface FeedbackSummary {
   totalResponses: number;
   averageRating: number | null;
   categoryAverages: Record<string, { label: string; average: number | null }>;
   last30DaysResponses: number;
-};
+}
 
 function formatDate(input?: string | null): string {
   if (!input) {
@@ -70,7 +70,7 @@ export default function FeedbackPage() {
   const [employeeQrMap, setEmployeeQrMap] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const { lastEvent } = useRealtime();
-  const [stats, setStats] = useState<{ daily?: any; weekly?: any; overall?: Array<any>; monthly?: any; yearly?: any } | null>(null);
+  const [stats, setStats] = useState<{ daily?: any; weekly?: any; overall?: any[]; monthly?: any; yearly?: any } | null>(null);
   const [dailyDate, setDailyDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
   const [weeklyStart, setWeeklyStart] = useState<string>(() => {
     const d = new Date();
@@ -149,10 +149,10 @@ export default function FeedbackPage() {
           // ignore in environments without console
         }
 
-        if (!active) return;
+        if (!active) {return;}
 
-        setEntries(feedbackRows as FeedbackEntry[]);
-        setSummary(feedbackSummary as FeedbackSummary | null);
+        setEntries(feedbackRows);
+        setSummary(feedbackSummary);
         const statsDailyRes = await requestBackend<any>({
           baseUrl: base,
           path: `/feedback/stats?mode=daily&date=${dailyDate}`,
@@ -187,7 +187,7 @@ export default function FeedbackPage() {
         const statsYearly = statsYearlyRes.ok ? statsYearlyRes.data : null;
         setStats({ daily: statsDaily, weekly: statsWeekly, monthly: statsMonthly, yearly: statsYearly });
       } finally {
-        if (active) setLoading(false);
+        if (active) {setLoading(false);}
       }
     };
 
@@ -199,8 +199,8 @@ export default function FeedbackPage() {
   }, [user?.restaurantUsername, user?.employeeId, user?.outlet_id, dailyDate, weeklyStart, monthlyStart, yearlyYear]);
 
   useEffect(() => {
-    if (!user?.restaurantUsername) return;
-    if (!lastEvent) return;
+    if (!user?.restaurantUsername) {return;}
+    if (!lastEvent) {return;}
     if (lastEvent.event && lastEvent.event.startsWith('feedback')) {
       // Re-fetch when feedback changes
       (async () => {
@@ -257,8 +257,8 @@ export default function FeedbackPage() {
           const statsWeekly = statsWeeklyRes.ok ? statsWeeklyRes.data : null;
           const statsMonthly = statsMonthlyRes.ok ? statsMonthlyRes.data : null;
           const statsYearly = statsYearlyRes.ok ? statsYearlyRes.data : null;
-          setEntries(feedbackRows as FeedbackEntry[]);
-          setSummary(feedbackSummary as FeedbackSummary | null);
+          setEntries(feedbackRows);
+          setSummary(feedbackSummary);
           setStats({ daily: statsDaily, weekly: statsWeekly, monthly: statsMonthly, yearly: statsYearly });
           // refresh employee list
           try {
@@ -371,12 +371,12 @@ export default function FeedbackPage() {
   }
 
   const resolveEmployeeName = useCallback((employeeId: any) => {
-    if (employeeId === undefined || employeeId === null) return null;
+    if (employeeId === undefined || employeeId === null) {return null;}
     const idStr = String(employeeId);
-    if (employeesMap[idStr]?.name) return employeesMap[idStr].name;
-    if (employeesMap[employeeId as any]?.name) return employeesMap[employeeId as any].name;
+    if (employeesMap[idStr]?.name) {return employeesMap[idStr].name;}
+    if (employeesMap[employeeId]?.name) {return employeesMap[employeeId].name;}
     const numeric = Number(employeeId);
-    if (!Number.isNaN(numeric) && employeesMap[String(numeric)]?.name) return employeesMap[String(numeric)].name;
+    if (!Number.isNaN(numeric) && employeesMap[String(numeric)]?.name) {return employeesMap[String(numeric)].name;}
     return null;
   }, [employeesMap]);
 
@@ -409,7 +409,7 @@ export default function FeedbackPage() {
   // Per-employee feedback link: {base}?rid=<restaurantUsername>&oid=<outlet_id>&eid=<Employees.id UUID>
   const empQrId = (emp: any) => String(emp?.id ?? emp?.employee_id ?? emp?.employeeId ?? "");
   const buildEmployeeFeedbackUrl = useCallback((eid: string) => {
-    if (!feedbackBase || !user?.restaurantUsername || !eid) return "";
+    if (!feedbackBase || !user?.restaurantUsername || !eid) {return "";}
     const params = new URLSearchParams({
       rid: String(user.restaurantUsername),
       oid: String(user.outlet_id ?? ""),
@@ -430,14 +430,14 @@ export default function FeedbackPage() {
       for (const emp of employees) {
         const eid = empQrId(emp);
         const url = buildEmployeeFeedbackUrl(eid);
-        if (!eid || !url) continue;
+        if (!eid || !url) {continue;}
         try {
           map[eid] = await QRCode.toDataURL(url, { width: 220, margin: 2 });
         } catch {
           // skip this employee's QR on failure
         }
       }
-      if (active) setEmployeeQrMap(map);
+      if (active) {setEmployeeQrMap(map);}
     })();
     return () => { active = false; };
   }, [employees, buildEmployeeFeedbackUrl, user?.role]);
@@ -448,7 +448,7 @@ export default function FeedbackPage() {
     if (monthly && Array.isArray(monthly.weeks)) {
       return monthly.weeks.map((d: any) => ({ name: d.label ?? `${d.start?.slice(5)} - ${d.end?.slice(5)}`, count: d.count }));
     }
-    if (Array.isArray(overall)) return overall.map((d: any) => ({ name: d.month, count: d.count }));
+    if (Array.isArray(overall)) {return overall.map((d: any) => ({ name: d.month, count: d.count }));}
     return [];
   })();
 
@@ -513,13 +513,13 @@ export default function FeedbackPage() {
       .sort((a, b) => {
         const aAvg = a.averageRating ?? -1;
         const bAvg = b.averageRating ?? -1;
-        if (bAvg !== aAvg) return bAvg - aAvg;
+        if (bAvg !== aAvg) {return bAvg - aAvg;}
         return b.responses - a.responses;
       });
   }, [entries, employeesMap, resolveEmployeeName]);
 
   const myPerformance = useMemo(() => {
-    if (!user?.employeeId) return null;
+    if (!user?.employeeId) {return null;}
     return employeePerformance.find((row) => row.employeeId === user.employeeId) ?? null;
   }, [employeePerformance, user]);
 
@@ -533,9 +533,9 @@ export default function FeedbackPage() {
                 <div className="text-xs text-muted-foreground">{formatISODate(dailyDate)}</div>
               </div>
               <div className="flex items-center gap-2">
-                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => setDailyDate(shiftDate(dailyDate, -1))}>Prev</button>
-                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => setDailyDate(new Date().toISOString().slice(0,10))}>Now</button>
-                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => setDailyDate(shiftDate(dailyDate, 1))}>Next</button>
+                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setDailyDate(shiftDate(dailyDate, -1)); }}>Prev</button>
+                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setDailyDate(new Date().toISOString().slice(0,10)); }}>Now</button>
+                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setDailyDate(shiftDate(dailyDate, 1)); }}>Next</button>
               </div>
             </CardHeader>
           <CardContent style={{ height: 160 }}>
@@ -568,11 +568,11 @@ export default function FeedbackPage() {
                 <div className="text-xs text-muted-foreground">{formatMonthWeek(weeklyStart)}</div>
               </div>
               <div className="flex items-center gap-2">
-                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => setWeeklyStart(shiftWeek(weeklyStart, -1))}>Prev</button>
-                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => setWeeklyStart(() => {
+                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setWeeklyStart(shiftWeek(weeklyStart, -1)); }}>Prev</button>
+                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setWeeklyStart(() => {
                   const d = new Date(); const day = d.getDay(); const diff = (day + 6) % 7; d.setDate(d.getDate() - diff); return d.toISOString().slice(0,10);
-                })}>Now</button>
-                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => setWeeklyStart(shiftWeek(weeklyStart, 1))}>Next</button>
+                }); }}>Now</button>
+                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setWeeklyStart(shiftWeek(weeklyStart, 1)); }}>Next</button>
               </div>
             </CardHeader>
           <CardContent style={{ height: 160 }}>
@@ -605,9 +605,9 @@ export default function FeedbackPage() {
                 <div className="text-xs text-muted-foreground">{formatMonthlyLabel(monthlyStart)}</div>
               </div>
               <div className="flex items-center gap-2">
-                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => setMonthlyStart(shiftMonth(monthlyStart, -1))}>Prev</button>
-                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => setMonthlyStart(() => { const d=new Date(); d.setDate(1); return d.toISOString().slice(0,10); })}>Now</button>
-                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => setMonthlyStart(shiftMonth(monthlyStart, 1))}>Next</button>
+                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setMonthlyStart(shiftMonth(monthlyStart, -1)); }}>Prev</button>
+                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setMonthlyStart(() => { const d=new Date(); d.setDate(1); return d.toISOString().slice(0,10); }); }}>Now</button>
+                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setMonthlyStart(shiftMonth(monthlyStart, 1)); }}>Next</button>
               </div>
             </CardHeader>
           <CardContent style={{ height: 160 }}>
@@ -634,9 +634,9 @@ export default function FeedbackPage() {
                 <div className="text-xs text-muted-foreground">{yearlyYear}</div>
               </div>
               <div className="flex items-center gap-2">
-                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => setYearlyYear(shiftYear(yearlyYear, -1))}>Prev</button>
-                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => setYearlyYear(new Date().getFullYear())}>Now</button>
-                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => setYearlyYear(shiftYear(yearlyYear, 1))}>Next</button>
+                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setYearlyYear(shiftYear(yearlyYear, -1)); }}>Prev</button>
+                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setYearlyYear(new Date().getFullYear()); }}>Now</button>
+                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setYearlyYear(shiftYear(yearlyYear, 1)); }}>Next</button>
               </div>
             </CardHeader>
           <CardContent style={{ height: 160 }}>
@@ -823,7 +823,7 @@ export default function FeedbackPage() {
                         variant="outline"
                         disabled={!url}
                         onClick={async () => {
-                          if (!url) return;
+                          if (!url) {return;}
                           try {
                             await navigator.clipboard.writeText(url);
                             toast({ title: "Link copied", description: `Feedback link for ${name} copied.` });

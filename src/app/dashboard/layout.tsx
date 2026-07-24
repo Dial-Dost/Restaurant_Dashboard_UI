@@ -53,7 +53,7 @@ const inter = Inter({ subsets: ['latin'] });
 const normalizeActionName = (value: string) => value.trim().toLowerCase();
 
 const hasKeywordAction = (actionNames: Set<string>, keywords: string[]) => {
-  if (keywords.length === 0) return true;
+  if (keywords.length === 0) {return true;}
   for (const actionName of actionNames) {
     if (keywords.some((keyword) => actionName.includes(keyword.toLowerCase()))) {
       return true;
@@ -69,8 +69,8 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
   const { user, logout } = useAuth();
 
   const hasRole = (role: 'admin' | 'employee' | 'valet' | 'waiter' | 'cashier' | 'captain' | 'manager') => {
-    if (!user) return false;
-    if (user.role === role) return true;
+    if (!user) {return false;}
+    if (user.role === role) {return true;}
     return Array.isArray(user.role_all) ? user.role_all.includes(role) : false;
   };
 
@@ -85,8 +85,8 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
 
   const hasAllActions = Array.isArray(user?.actions_set) && user.actions_set.includes('*');
   const canAccessByAction = (keywords: string[]) => {
-    if (hasAllActions) return true;
-    if (actionNames.size === 0) return true;
+    if (hasAllActions) {return true;}
+    if (actionNames.size === 0) {return true;}
     return hasKeywordAction(actionNames, keywords);
   };
 
@@ -119,8 +119,8 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
   ].filter((item) => canAccessByAction(item.actionKeywords));
 
   const navItems = useMemo(() => {
-    if (isValet) return [{ href: '/dashboard/valet', label: 'Valet Dashboard', icon: <Activity className="h-6 w-6" />, exact: true }];
-    if (isWaiterOnly) return [{ href: '/dashboard/orders', label: t('orders'), icon: <ListOrdered className="h-6 w-6" />, exact: true }];
+    if (isValet) {return [{ href: '/dashboard/valet', label: 'Valet Dashboard', icon: <Activity className="h-6 w-6" />, exact: true }];}
+    if (isWaiterOnly) {return [{ href: '/dashboard/orders', label: t('orders'), icon: <ListOrdered className="h-6 w-6" />, exact: true }];}
     return fullNavItems;
   }, [isValet, isWaiterOnly, fullNavItems, t]);
 
@@ -167,7 +167,7 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
   const dockItems = navItems.map(item => ({
     icon: item.icon,
     label: item.label,
-    onClick: () => router.push(item.href),
+    onClick: () => { router.push(item.href); },
     className: (item.exact ? pathname === item.href : pathname.startsWith(item.href)) ? 'active-dock-item' : ''
   }));
 
@@ -209,7 +209,7 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               {languages.map((lang) => (
-                <DropdownMenuItem key={lang.code} onSelect={() => setLanguage(lang.code)}>
+                <DropdownMenuItem key={lang.code} onSelect={() => { setLanguage(lang.code); }}>
                   {lang.name}
                 </DropdownMenuItem>
               ))}

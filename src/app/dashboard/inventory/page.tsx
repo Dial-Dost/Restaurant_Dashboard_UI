@@ -49,6 +49,10 @@ import {
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
+import type {
+  Vendor,
+  StockMovement,
+  PricePoint} from "@/lib/db";
 import {
   getInventory,
   addInventoryItem,
@@ -64,15 +68,12 @@ import {
   getStockMovements,
   getInventoryCategories,
   saveInventoryCategories,
-  renameInventoryCategory,
-  Vendor,
-  StockMovement,
-  PricePoint,
+  renameInventoryCategory
 } from "@/lib/db";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 
-export type InventoryItem = {
+export interface InventoryItem {
   id: string;
   name: string;
   category: string;
@@ -80,7 +81,7 @@ export type InventoryItem = {
   unit: string;
   status: "In Stock" | "Low Stock" | "Out of Stock";
   expiry_date?: string | null; // "YYYY-MM-DD" when set
-};
+}
 
 const inventorySchema = z.object({
   name: z.string().min(1, "Item name is required."),
@@ -109,7 +110,7 @@ export default function InventoryPage() {
   const [expiryItem, setExpiryItem] = useState<InventoryItem | null>(null);
 
   const refresh = useCallback(async () => {
-    if (!restaurantId) return;
+    if (!restaurantId) {return;}
     const [inv, ven, mov, cats] = await Promise.all([
       getInventory(restaurantId),
       getVendors(restaurantId).catch(() => [] as Vendor[]),
@@ -127,10 +128,10 @@ export default function InventoryPage() {
   }, [refresh]);
 
   const handleAddItem = async (data: InventoryFormData) => {
-    if (!restaurantId) return;
+    if (!restaurantId) {return;}
     let status: InventoryItem["status"] = "In Stock";
-    if (data.stock === 0) status = "Out of Stock";
-    else if (data.stock < 10) status = "Low Stock";
+    if (data.stock === 0) {status = "Out of Stock";}
+    else if (data.stock < 10) {status = "Low Stock";}
     const newItem: InventoryItem = { id: (inventory.length + 1).toString(), ...data, status };
     await addInventoryItem(restaurantId, newItem);
     await refresh();
@@ -138,7 +139,7 @@ export default function InventoryPage() {
   };
 
   const handleRemoveItem = async (itemId: string) => {
-    if (!restaurantId) return;
+    if (!restaurantId) {return;}
     await removeInventoryItem(restaurantId, itemId);
     await refresh();
   };
@@ -160,9 +161,9 @@ export default function InventoryPage() {
 
   // Days until expiry (negative = already expired); null when no expiry set.
   const daysToExpiry = (item: InventoryItem): number | null => {
-    if (!item.expiry_date) return null;
+    if (!item.expiry_date) {return null;}
     const d = new Date(`${item.expiry_date}T00:00:00`);
-    if (Number.isNaN(d.getTime())) return null;
+    if (Number.isNaN(d.getTime())) {return null;}
     return Math.floor((d.getTime() - Date.now()) / 86_400_000);
   };
 
@@ -172,11 +173,11 @@ export default function InventoryPage() {
         <h1 className="text-lg font-semibold md:text-2xl">Inventory</h1>
         <div className="flex gap-2">
           {isAdmin && (
-            <Button variant="outline" onClick={() => setCategoriesOpen(true)}>
+            <Button variant="outline" onClick={() => { setCategoriesOpen(true); }}>
               <Tags className="mr-2 h-4 w-4" /> Categories
             </Button>
           )}
-          <Button variant="outline" onClick={() => setVendorsOpen(true)}>
+          <Button variant="outline" onClick={() => { setVendorsOpen(true); }}>
             <Truck className="mr-2 h-4 w-4" /> Vendors
           </Button>
           <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
@@ -191,7 +192,7 @@ export default function InventoryPage() {
                 <DialogTitle>Add New Inventory Item</DialogTitle>
                 <DialogDescription>Fill in the details to add a new item to the inventory.</DialogDescription>
               </DialogHeader>
-              <InventoryForm categories={categories} inventory={inventory} onSubmit={handleAddItem} afterSubmit={() => setIsDialogOpen(false)} />
+              <InventoryForm categories={categories} inventory={inventory} onSubmit={handleAddItem} afterSubmit={() => { setIsDialogOpen(false); }} />
             </DialogContent>
           </Dialog>
         </div>
@@ -251,24 +252,24 @@ export default function InventoryPage() {
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
                         <DropdownMenuLabel>Actions</DropdownMenuLabel>
-                        <DropdownMenuItem onClick={() => setAction({ item, mode: "receive" })}>
+                        <DropdownMenuItem onClick={() => { setAction({ item, mode: "receive" }); }}>
                           <PackagePlus className="mr-2 h-4 w-4" />
                           Receive stock
                         </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => setAction({ item, mode: "issue" })}>
+                        <DropdownMenuItem onClick={() => { setAction({ item, mode: "issue" }); }}>
                           <ChefHat className="mr-2 h-4 w-4" />
                           Issue to kitchen
                         </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => setAction({ item, mode: "wastage" })}>
+                        <DropdownMenuItem onClick={() => { setAction({ item, mode: "wastage" }); }}>
                           <Trash className="mr-2 h-4 w-4" />
                           Record wastage
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
-                        <DropdownMenuItem onClick={() => setHistoryItem(item)}>
+                        <DropdownMenuItem onClick={() => { setHistoryItem(item); }}>
                           <LineChart className="mr-2 h-4 w-4" />
                           Price history
                         </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => setExpiryItem(item)}>
+                        <DropdownMenuItem onClick={() => { setExpiryItem(item); }}>
                           <CalendarClock className="mr-2 h-4 w-4" />
                           Set expiry
                         </DropdownMenuItem>
@@ -345,7 +346,7 @@ export default function InventoryPage() {
           item={action.item}
           mode={action.mode}
           vendors={vendors}
-          onClose={() => setAction(null)}
+          onClose={() => { setAction(null); }}
           onDone={async () => {
             setAction(null);
             await refresh();
@@ -359,7 +360,7 @@ export default function InventoryPage() {
         <PriceHistoryDialog
           restaurantId={restaurantId}
           item={historyItem}
-          onClose={() => setHistoryItem(null)}
+          onClose={() => { setHistoryItem(null); }}
         />
       )}
 
@@ -367,7 +368,7 @@ export default function InventoryPage() {
         <ExpiryDialog
           restaurantId={restaurantId}
           item={expiryItem}
-          onClose={() => setExpiryItem(null)}
+          onClose={() => { setExpiryItem(null); }}
           onDone={async () => {
             setExpiryItem(null);
             await refresh();
@@ -459,7 +460,7 @@ function StockActionDialog({
   };
 
   return (
-    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+    <Dialog open onOpenChange={(o) => { if (!o) {onClose();} }}>
       <DialogContent className="sm:max-w-[425px]">
         <DialogHeader>
           <DialogTitle>{titles[mode]} — {item.name}</DialogTitle>
@@ -468,7 +469,7 @@ function StockActionDialog({
         <div className="grid gap-3 py-2">
           <div className="grid gap-1">
             <Label htmlFor="qty">Quantity ({item.unit})</Label>
-            <Input id="qty" type="number" min="0" step="any" value={qty} onChange={(e) => setQty(e.target.value)} autoFocus />
+            <Input id="qty" type="number" min="0" step="any" value={qty} onChange={(e) => { setQty(e.target.value); }} autoFocus />
           </div>
           {mode === "receive" ? (
             <>
@@ -483,13 +484,13 @@ function StockActionDialog({
               </div>
               <div className="grid gap-1">
                 <Label htmlFor="cost">Unit cost (optional)</Label>
-                <Input id="cost" type="number" min="0" step="any" value={unitCost} onChange={(e) => setUnitCost(e.target.value)} placeholder="₹ per unit" />
+                <Input id="cost" type="number" min="0" step="any" value={unitCost} onChange={(e) => { setUnitCost(e.target.value); }} placeholder="₹ per unit" />
               </div>
             </>
           ) : (
             <div className="grid gap-1">
               <Label htmlFor="reason">{mode === "issue" ? "Note (optional)" : "Reason (optional)"}</Label>
-              <Input id="reason" value={reason} onChange={(e) => setReason(e.target.value)} placeholder={mode === "issue" ? "e.g., dinner prep" : "e.g., spoiled, breakage"} />
+              <Input id="reason" value={reason} onChange={(e) => { setReason(e.target.value); }} placeholder={mode === "issue" ? "e.g., dinner prep" : "e.g., spoiled, breakage"} />
             </div>
           )}
         </div>
@@ -517,13 +518,13 @@ function PriceHistoryDialog({
   useEffect(() => {
     let alive = true;
     getPriceHistory(restaurantId, item.id)
-      .then((p) => { if (alive) setPoints(p); })
-      .catch(() => { if (alive) setPoints([]); });
+      .then((p) => { if (alive) {setPoints(p);} })
+      .catch(() => { if (alive) {setPoints([]);} });
     return () => { alive = false; };
   }, [restaurantId, item.id]);
 
   return (
-    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+    <Dialog open onOpenChange={(o) => { if (!o) {onClose();} }}>
       <DialogContent className="sm:max-w-[520px]">
         <DialogHeader>
           <DialogTitle>Price history — {item.name}</DialogTitle>
@@ -601,7 +602,7 @@ function ExpiryDialog({
   };
 
   return (
-    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+    <Dialog open onOpenChange={(o) => { if (!o) {onClose();} }}>
       <DialogContent className="sm:max-w-[425px]">
         <DialogHeader>
           <DialogTitle>Set expiry — {item.name}</DialogTitle>
@@ -609,7 +610,7 @@ function ExpiryDialog({
         </DialogHeader>
         <div className="grid gap-1 py-2">
           <Label htmlFor="expiry">Expiry date</Label>
-          <Input id="expiry" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+          <Input id="expiry" type="date" value={date} onChange={(e) => { setDate(e.target.value); }} />
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
@@ -643,7 +644,7 @@ function VendorsDialog({
   const [busy, setBusy] = useState(false);
 
   const add = async () => {
-    if (!name.trim()) return;
+    if (!name.trim()) {return;}
     setBusy(true);
     try {
       await addVendor(restaurantId, { name: name.trim(), phone: phone.trim() || undefined });
@@ -676,11 +677,11 @@ function VendorsDialog({
         <div className="flex items-end gap-2">
           <div className="grid flex-1 gap-1">
             <Label htmlFor="v-name">Name</Label>
-            <Input id="v-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Vendor name" />
+            <Input id="v-name" value={name} onChange={(e) => { setName(e.target.value); }} placeholder="Vendor name" />
           </div>
           <div className="grid w-[140px] gap-1">
             <Label htmlFor="v-phone">Phone</Label>
-            <Input id="v-phone" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="optional" />
+            <Input id="v-phone" value={phone} onChange={(e) => { setPhone(e.target.value); }} placeholder="optional" />
           </div>
           <Button onClick={() => void add()} disabled={busy || !name.trim()}>Add</Button>
         </div>
@@ -736,7 +737,7 @@ function CategoriesDialog({
 
   const add = async () => {
     const next = name.trim().replace(/\s+/g, " ").slice(0, 40);
-    if (!next) return;
+    if (!next) {return;}
     if (categories.some((c) => c.toLowerCase() === next.toLowerCase())) {
       setName("");
       return;
@@ -755,7 +756,7 @@ function CategoriesDialog({
 
   const rename = async (from: string) => {
     const to = window.prompt(`Rename category "${from}" to:`, from)?.trim().replace(/\s+/g, " ").slice(0, 40) ?? "";
-    if (!to || to.toLowerCase() === from.toLowerCase()) return;
+    if (!to || to.toLowerCase() === from.toLowerCase()) {return;}
     setBusy(true);
     try {
       const result = await renameInventoryCategory(restaurantId, from, to);
@@ -775,7 +776,7 @@ function CategoriesDialog({
       count > 0
         ? `Remove category "${cat}"? ${count} item${count === 1 ? "" : "s"} keep the label but it will no longer be in the picker.`
         : `Remove category "${cat}"?`,
-    )) return;
+    )) {return;}
     setBusy(true);
     try {
       await saveInventoryCategories(restaurantId, categories.filter((c) => c.toLowerCase() !== cat.toLowerCase()));
@@ -831,7 +832,7 @@ function CategoriesDialog({
             placeholder="New category (e.g. Spices)"
             value={name}
             maxLength={40}
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => { setName(e.target.value); }}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();
@@ -860,9 +861,9 @@ function InventoryForm({ categories, inventory, onSubmit, afterSubmit }: { categ
     const out: string[] = [];
     for (const c of [...categories, ...inventory.map((it) => it.category)]) {
       const name = (c ?? "").trim();
-      if (!name) continue;
+      if (!name) {continue;}
       const key = name.toLowerCase();
-      if (seen.has(key)) continue;
+      if (seen.has(key)) {continue;}
       seen.add(key);
       out.push(name);
     }

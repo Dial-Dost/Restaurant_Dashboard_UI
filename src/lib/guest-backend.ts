@@ -17,7 +17,7 @@
 // server-side rendering (no window).
 export function guestBackendBase(): string {
   const configured = (process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001").replace(/\/$/, "");
-  if (typeof window === "undefined") return configured;
+  if (typeof window === "undefined") {return configured;}
   try {
     const u = new URL(configured);
     const localhostNames = ["localhost", "127.0.0.1", "[::1]"];

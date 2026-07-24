@@ -3,19 +3,19 @@
 
 import React, { useState } from 'react';
 
-export type DockItemData = {
+export interface DockItemData {
   icon: React.ReactNode;
   label: React.ReactNode;
   onClick: () => void;
   className?: string;
-};
+}
 
-export type DockProps = {
+export interface DockProps {
   items: DockItemData[];
   className?: string;
   panelHeight?: number;
   baseItemSize?: number;
-};
+}
 
 function DockItem({
   children,

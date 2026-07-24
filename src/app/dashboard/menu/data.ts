@@ -1,9 +1,9 @@
 
 // One recipe row: inventory ingredient consumed per unit sold (+ optional note,
 // e.g. "grams" or "chopped").
-export type RecipeIngredient = { inventory_id: string; qty: number; note?: string };
+export interface RecipeIngredient { inventory_id: string; qty: number; note?: string }
 
-export type MenuItem = {
+export interface MenuItem {
   id: string;
   name: string;
   price: number;
@@ -15,7 +15,7 @@ export type MenuItem = {
   station?: string | null;
   // Allergen tags shown to guests on the QR menu, e.g. ["gluten", "nuts"].
   allergens?: string[];
-};
+}
 
 export const initialMenuItems: MenuItem[] = [
   { id: "1", name: "Garlic Bread", price: 6.5, category: "Appetizers" },

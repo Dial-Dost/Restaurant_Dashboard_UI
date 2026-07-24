@@ -23,7 +23,7 @@ import { BRAND_FONTS, fontStack, loadBrandFont, readableOn, shapeRadius } from "
 // see.
 function shade(hex: string, pct: number): string {
   const m = /^#([0-9a-fA-F]{6})$/.exec(hex)
-  if (!m) return hex
+  if (!m) {return hex}
   const num = parseInt(m[1], 16)
   const amt = Math.round(2.55 * pct)
   const r = Math.min(255, Math.max(0, (num >> 16) + amt))
@@ -37,7 +37,7 @@ const isHex = (v: string) => /^#[0-9a-fA-F]{6}$/.test(v.trim())
 type HeaderStyle = "gradient" | "solid"
 type ButtonShape = "rounded" | "pill" | "square"
 
-type BrandForm = {
+interface BrandForm {
   font: string
   color_primary: string
   color_secondary: string
@@ -79,7 +79,7 @@ function ColorField(props: {
           aria-label={label}
           disabled={disabled}
           value={isHex(value) ? value : "#000000"}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => { onChange(e.target.value); }}
           className="h-9 w-10 shrink-0 cursor-pointer rounded-md border bg-transparent p-0.5 disabled:cursor-not-allowed disabled:opacity-50"
         />
         <Input
@@ -89,7 +89,7 @@ function ColorField(props: {
           spellCheck={false}
           onChange={(e) => {
             let v = e.target.value.trim()
-            if (v && !v.startsWith("#")) v = `#${v}`
+            if (v && !v.startsWith("#")) {v = `#${v}`}
             onChange(v)
           }}
           className={cn("h-9 font-mono text-xs uppercase", value && !isHex(value) && "border-destructive")}
@@ -114,7 +114,7 @@ function Segmented<T extends string>(props: {
           key={o.value}
           type="button"
           disabled={disabled}
-          onClick={() => onChange(o.value)}
+          onClick={() => { onChange(o.value); }}
           aria-pressed={value === o.value}
           className={cn(
             "rounded-md px-3 py-1.5 text-xs font-medium capitalize transition disabled:cursor-not-allowed disabled:opacity-50",
@@ -145,40 +145,40 @@ export function BrandingCustomizer(props: {
   const loadedPrimary = useRef(DEFAULT_PRIMARY)
 
   const set = <K extends keyof BrandForm>(key: K, value: BrandForm[K]) =>
-    setForm((f) => ({ ...f, [key]: value }))
+    { setForm((f) => ({ ...f, [key]: value })); }
 
   useEffect(() => {
     let active = true
     getBrandConfig(restaurantId)
       .then(({ brand_config, brand_fonts }) => {
-        if (!active) return
-        const primary = isHex(brand_config.color_primary ?? "") ? (brand_config.color_primary as string) : DEFAULT_PRIMARY
+        if (!active) {return}
+        const primary = isHex(brand_config.color_primary ?? "") ? (brand_config.color_primary!) : DEFAULT_PRIMARY
         loadedPrimary.current = primary
         const base = defaultForm(primary)
         setForm({
           font: brand_config.font && brand_fonts.concat(BRAND_FONTS).includes(brand_config.font) ? brand_config.font : base.font,
           color_primary: primary,
-          color_secondary: isHex(brand_config.color_secondary ?? "") ? (brand_config.color_secondary as string) : base.color_secondary,
-          color_bg: isHex(brand_config.color_bg ?? "") ? (brand_config.color_bg as string) : base.color_bg,
-          color_text: isHex(brand_config.color_text ?? "") ? (brand_config.color_text as string) : base.color_text,
-          color_card: isHex(brand_config.color_card ?? "") ? (brand_config.color_card as string) : base.color_card,
+          color_secondary: isHex(brand_config.color_secondary ?? "") ? (brand_config.color_secondary!) : base.color_secondary,
+          color_bg: isHex(brand_config.color_bg ?? "") ? (brand_config.color_bg!) : base.color_bg,
+          color_text: isHex(brand_config.color_text ?? "") ? (brand_config.color_text!) : base.color_text,
+          color_card: isHex(brand_config.color_card ?? "") ? (brand_config.color_card!) : base.color_card,
           header_style: brand_config.header_style === "solid" ? "solid" : "gradient",
           button_shape:
             brand_config.button_shape === "rounded" || brand_config.button_shape === "square"
               ? brand_config.button_shape
               : "pill",
         })
-        if (brand_fonts.length > 0) setFonts(brand_fonts)
+        if (brand_fonts.length > 0) {setFonts(brand_fonts)}
       })
       .catch(() => {/* keep defaults */})
-      .finally(() => { if (active) setLoading(false) })
+      .finally(() => { if (active) {setLoading(false)} })
     return () => { active = false }
   }, [restaurantId])
 
   // Load the chosen font (for the live preview) whenever it changes.
   useEffect(() => { loadBrandFont(form.font) }, [form.font])
 
-  const reset = () => setForm(defaultForm(loadedPrimary.current))
+  const reset = () => { setForm(defaultForm(loadedPrimary.current)); }
 
   const onSave = async () => {
     if (!isAdmin) {
@@ -206,7 +206,7 @@ export function BrandingCustomizer(props: {
         header_style: form.header_style,
         button_shape: form.button_shape,
       })
-      loadedPrimary.current = isHex(saved.color_primary ?? "") ? (saved.color_primary as string) : loadedPrimary.current
+      loadedPrimary.current = isHex(saved.color_primary ?? "") ? (saved.color_primary!) : loadedPrimary.current
       toast({ title: "Branding saved!", description: "Your customer order page now uses the new look." })
     } catch (error: any) {
       toast({ title: "Couldn't save branding", description: error?.message ?? "Unable to update customer-page branding.", variant: "destructive" })
@@ -237,7 +237,7 @@ export function BrandingCustomizer(props: {
           <div className={cn("space-y-5", loading && "pointer-events-none opacity-60")}>
             <div className="space-y-1.5">
               <Label className="text-xs font-medium">Font</Label>
-              <Select value={form.font} onValueChange={(v) => set("font", v)} disabled={!isAdmin}>
+              <Select value={form.font} onValueChange={(v) => { set("font", v); }} disabled={!isAdmin}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select a font" />
                 </SelectTrigger>
@@ -250,11 +250,11 @@ export function BrandingCustomizer(props: {
             </div>
 
             <div className="grid grid-cols-2 gap-4">
-              <ColorField label="Primary" hint="Header, buttons, accents" value={form.color_primary} disabled={!isAdmin} onChange={(v) => set("color_primary", v)} />
-              <ColorField label="Secondary" hint="Header gradient end" value={form.color_secondary} disabled={!isAdmin} onChange={(v) => set("color_secondary", v)} />
-              <ColorField label="Page background" value={form.color_bg} disabled={!isAdmin} onChange={(v) => set("color_bg", v)} />
-              <ColorField label="Body text" value={form.color_text} disabled={!isAdmin} onChange={(v) => set("color_text", v)} />
-              <ColorField label="Card surface" value={form.color_card} disabled={!isAdmin} onChange={(v) => set("color_card", v)} />
+              <ColorField label="Primary" hint="Header, buttons, accents" value={form.color_primary} disabled={!isAdmin} onChange={(v) => { set("color_primary", v); }} />
+              <ColorField label="Secondary" hint="Header gradient end" value={form.color_secondary} disabled={!isAdmin} onChange={(v) => { set("color_secondary", v); }} />
+              <ColorField label="Page background" value={form.color_bg} disabled={!isAdmin} onChange={(v) => { set("color_bg", v); }} />
+              <ColorField label="Body text" value={form.color_text} disabled={!isAdmin} onChange={(v) => { set("color_text", v); }} />
+              <ColorField label="Card surface" value={form.color_card} disabled={!isAdmin} onChange={(v) => { set("color_card", v); }} />
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -264,7 +264,7 @@ export function BrandingCustomizer(props: {
                   <Segmented<HeaderStyle>
                     value={form.header_style}
                     disabled={!isAdmin}
-                    onChange={(v) => set("header_style", v)}
+                    onChange={(v) => { set("header_style", v); }}
                     options={[{ value: "gradient", label: "Gradient" }, { value: "solid", label: "Solid" }]}
                   />
                 </div>
@@ -275,7 +275,7 @@ export function BrandingCustomizer(props: {
                   <Segmented<ButtonShape>
                     value={form.button_shape}
                     disabled={!isAdmin}
-                    onChange={(v) => set("button_shape", v)}
+                    onChange={(v) => { set("button_shape", v); }}
                     options={[{ value: "rounded", label: "Rounded" }, { value: "pill", label: "Pill" }, { value: "square", label: "Square" }]}
                   />
                 </div>

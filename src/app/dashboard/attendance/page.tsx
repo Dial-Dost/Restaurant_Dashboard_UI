@@ -9,10 +9,11 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Clock, LogIn, LogOut, RefreshCw } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/hooks/use-toast";
-import {
+import type {
   MyAttendance,
   AttendanceSummaryRow,
-  PendingClockIn,
+  PendingClockIn} from "@/lib/db";
+import {
   reviewClockIn,
   getMyAttendance,
   clockIn,
@@ -36,7 +37,7 @@ export default function AttendancePage() {
   const restaurantId = user?.restaurantUsername ?? "";
 
   const isManager = useMemo(() => {
-    if (!user) return false;
+    if (!user) {return false;}
     const roles = [user.role, ...(Array.isArray(user.role_all) ? user.role_all : [])];
     return roles.includes("admin") || roles.includes("manager");
   }, [user]);
@@ -51,7 +52,7 @@ export default function AttendancePage() {
   const [summaryLoading, setSummaryLoading] = useState(false);
 
   const loadMe = useCallback(async () => {
-    if (!restaurantId) return;
+    if (!restaurantId) {return;}
     try {
       setMe(await getMyAttendance(restaurantId));
     } catch {
@@ -60,7 +61,7 @@ export default function AttendancePage() {
   }, [restaurantId]);
 
   const loadSummary = useCallback(async () => {
-    if (!restaurantId || !isManager) return;
+    if (!restaurantId || !isManager) {return;}
     setSummaryLoading(true);
     try {
       const res = await getAttendanceSummary(restaurantId, from, to);
@@ -83,7 +84,7 @@ export default function AttendancePage() {
   }, [loadSummary]);
 
   const toggleClock = async () => {
-    if (!restaurantId || !me) return;
+    if (!restaurantId || !me) {return;}
     setBusy(true);
     try {
       const ok = me.clocked_in ? await clockOut(restaurantId) : await clockIn(restaurantId);
@@ -171,11 +172,11 @@ export default function AttendancePage() {
             <div className="flex items-end gap-2">
               <div className="grid gap-1">
                 <label className="text-xs text-muted-foreground">From</label>
-                <Input type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} className="h-9 w-[150px]" />
+                <Input type="date" value={from} max={to} onChange={(e) => { setFrom(e.target.value); }} className="h-9 w-[150px]" />
               </div>
               <div className="grid gap-1">
                 <label className="text-xs text-muted-foreground">To</label>
-                <Input type="date" value={to} min={from} max={todayIso()} onChange={(e) => setTo(e.target.value)} className="h-9 w-[150px]" />
+                <Input type="date" value={to} min={from} max={todayIso()} onChange={(e) => { setTo(e.target.value); }} className="h-9 w-[150px]" />
               </div>
               <Button variant="outline" size="icon" onClick={() => void loadSummary()} disabled={summaryLoading} aria-label="Refresh">
                 <RefreshCw className={`h-4 w-4 ${summaryLoading ? "animate-spin" : ""}`} />

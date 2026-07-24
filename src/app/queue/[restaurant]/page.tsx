@@ -8,9 +8,9 @@ import { guestBackendBase } from "@/lib/guest-backend";
 const BASE = guestBackendBase();
 const DEFAULT_ACCENT = "#ea580c";
 
-type MenuItem = { id: string; name: string; price: number; category: string; image_url?: string; available?: boolean };
-type PreItem = { id: string; name: string; price: number; quantity: number };
-type Entry = {
+interface MenuItem { id: string; name: string; price: number; category: string; image_url?: string; available?: boolean }
+interface PreItem { id: string; name: string; price: number; quantity: number }
+interface Entry {
   id: string;
   token: string;
   name: string;
@@ -20,14 +20,14 @@ type Entry = {
   pre_order: PreItem[];
   table_name: string | null;
   qr_token?: string | null;
-};
+}
 
 // Darken/tint a #rrggbb accent for gradients + soft backgrounds. The accent is the
 // restaurant's BRAND colour; light/dark of the surrounding UI comes from the app
 // theme tokens (so text stays readable in either mode).
 function shade(hex: string, pct: number): string {
   const m = /^#([0-9a-fA-F]{6})$/.exec(hex);
-  if (!m) return hex;
+  if (!m) {return hex;}
   const num = parseInt(m[1], 16);
   const amt = Math.round(2.55 * pct);
   const r = Math.min(255, Math.max(0, (num >> 16) + amt));
@@ -37,7 +37,7 @@ function shade(hex: string, pct: number): string {
 }
 function tint(hex: string): string {
   const m = /^#([0-9a-fA-F]{6})$/.exec(hex);
-  if (!m) return "rgba(234,88,12,0.14)";
+  if (!m) {return "rgba(234,88,12,0.14)";}
   const num = parseInt(m[1], 16);
   return `rgba(${num >> 16}, ${(num >> 8) & 0xff}, ${num & 0xff}, 0.14)`;
 }
@@ -45,7 +45,7 @@ function tint(hex: string): string {
 // near-black for pale ones — so a light brand colour never yields white-on-white.
 function onAccent(hex: string): string {
   const m = /^#([0-9a-fA-F]{6})$/.exec(hex);
-  if (!m) return "#ffffff";
+  if (!m) {return "#ffffff";}
   const num = parseInt(m[1], 16);
   const r = num >> 16, g = (num >> 8) & 0xff, b = num & 0xff;
   const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
@@ -96,7 +96,7 @@ function QueueInner() {
 
   // Load branding + menu once.
   useEffect(() => {
-    if (!restaurant) return;
+    if (!restaurant) {return;}
     (async () => {
       try {
         const r = await fetch(`${BASE}/qr/${encodeURIComponent(restaurant)}/menu`);
@@ -143,7 +143,7 @@ function QueueInner() {
 
   // Poll the entry status while we have a token.
   useEffect(() => {
-    if (!token) return;
+    if (!token) {return;}
     let active = true;
     const tick = async () => {
       try {
@@ -170,8 +170,8 @@ function QueueInner() {
   useEffect(() => {
     if (entry && !cartSeeded) {
       const seed: Record<string, number> = {};
-      for (const it of entry.pre_order ?? []) seed[it.id] = it.quantity;
-      if (Object.keys(seed).length) setCart(seed);
+      for (const it of entry.pre_order ?? []) {seed[it.id] = it.quantity;}
+      if (Object.keys(seed).length) {setCart(seed);}
       setCartSeeded(true);
     }
   }, [entry, cartSeeded]);
@@ -180,13 +180,13 @@ function QueueInner() {
   // entry whenever we observe 'called' — including the FIRST observed state after a
   // tab reopen/refresh (an ack flag in localStorage prevents re-firing on later polls).
   useEffect(() => {
-    if (!entry || entry.status !== "called") return;
+    if (entry?.status !== "called") {return;}
     const ackKey = `waitlist_called_${restaurant}_${entry.token}`;
     let acked = false;
     try { acked = localStorage.getItem(ackKey) === "1"; } catch { /* ignore */ }
-    if (acked) return;
+    if (acked) {return;}
     setShowCalled(true);
-    try { if (typeof Notification !== "undefined" && Notification.permission === "granted") new Notification(`${brand.name}: your table is ready!`, { body: "Please head to the host." }); } catch { /* ignore */ }
+    try { if (typeof Notification !== "undefined" && Notification.permission === "granted") {new Notification(`${brand.name}: your table is ready!`, { body: "Please head to the host." });} } catch { /* ignore */ }
     try { navigator.vibrate?.([200, 100, 200]); } catch { /* ignore */ }
     try { localStorage.setItem(ackKey, "1"); } catch { /* ignore */ }
   }, [entry, brand.name, restaurant]);
@@ -207,8 +207,8 @@ function QueueInner() {
     if (!entry || typeof window === "undefined" || (entry.status !== "waiting" && entry.status !== "called")) { setShareQr(""); return; }
     const u = new URL(window.location.origin + window.location.pathname);
     u.searchParams.set("token", entry.token);
-    if (outlet) u.searchParams.set("outlet", outlet);
-    QRCode.toDataURL(u.toString(), { width: 512, margin: 2 }).then(setShareQr).catch(() => setShareQr(""));
+    if (outlet) {u.searchParams.set("outlet", outlet);}
+    QRCode.toDataURL(u.toString(), { width: 512, margin: 2 }).then(setShareQr).catch(() => { setShareQr(""); });
   }, [entry, outlet]);
 
   const join = async () => {
@@ -222,7 +222,7 @@ function QueueInner() {
       const d = await r.json();
       if (!r.ok) { setError(d?.error ?? "Could not join the queue"); return; }
       try { localStorage.setItem(storeKey, d.token); localStorage.setItem(ownerKey, d.token); } catch {}
-      try { if (typeof Notification !== "undefined" && Notification.permission === "default") Notification.requestPermission(); } catch {}
+      try { if (typeof Notification !== "undefined" && Notification.permission === "default") {Notification.requestPermission();} } catch {}
       setToken(d.token);
     } catch { setError("Network error — please try again"); }
     finally { setBusy(false); }
@@ -236,14 +236,14 @@ function QueueInner() {
   }, [cart, menu]);
 
   const savePreorder = async () => {
-    if (!token) return;
+    if (!token) {return;}
     setBusy(true);
     try {
       const r = await fetch(`${BASE}/qr/${encodeURIComponent(restaurant)}/waitlist/${token}/preorder`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ items: cartItems() }),
       });
-      if (r.ok) setSavedAt(Date.now());
+      if (r.ok) {setSavedAt(Date.now());}
     } catch {}
     finally { setBusy(false); }
   };
@@ -251,7 +251,7 @@ function QueueInner() {
   // Party guest introduces themselves → appended to the host's party_members.
   // Phone must carry >=7 digits (matches the backend); dedupe/cap is server-side.
   const submitMember = async () => {
-    if (!token) return;
+    if (!token) {return;}
     const nm = memberName.trim();
     if (!nm) { setMemberError("Please enter your name"); return; }
     if (memberPhone.replace(/\D/g, "").length < 7) { setMemberError("Please enter a valid phone number"); return; }
@@ -270,7 +270,7 @@ function QueueInner() {
   };
 
   const leave = async () => {
-    if (!token) return;
+    if (!token) {return;}
     setBusy(true);
     try { await fetch(`${BASE}/qr/${encodeURIComponent(restaurant)}/waitlist/${token}/cancel`, { method: "POST" }); } catch {}
     try { localStorage.removeItem(storeKey); } catch {}
@@ -281,7 +281,7 @@ function QueueInner() {
   const availableMenu = useMemo(() => menu.filter((m) => m.available !== false), [menu]);
   const byCategory = useMemo(() => {
     const m: Record<string, MenuItem[]> = {};
-    for (const it of availableMenu) (m[it.category || "Menu"] ??= []).push(it);
+    for (const it of availableMenu) {(m[it.category || "Menu"] ??= []).push(it);}
     return m;
   }, [availableMenu]);
   const categories = useMemo(() => Object.keys(byCategory).sort(), [byCategory]);
@@ -291,13 +291,13 @@ function QueueInner() {
   const cartCount = Object.values(cart).reduce((s, q) => s + q, 0);
   const cartTotal = cartItems().reduce((s, it) => s + it.price * it.quantity, 0);
 
-  if (loading) return <div className="flex min-h-dvh items-center justify-center bg-background text-sm text-muted-foreground">Loading…</div>;
+  if (loading) {return <div className="flex min-h-dvh items-center justify-center bg-background text-sm text-muted-foreground">Loading…</div>;}
 
   const accent = brand.accent;
   const ink = onAccent(accent); // readable text/icon colour on top of the accent
-  const setQty = (id: string, delta: number) => setCart((c) => { const q = Math.max(0, (c[id] ?? 0) + delta); const n = { ...c }; if (q === 0) delete n[id]; else n[id] = q; return n; });
-  const onTabsDown = (e: { clientX: number }) => { const el = tabsRef.current; if (!el) return; drag.current = { down: true, startX: e.clientX, scroll: el.scrollLeft, moved: false }; };
-  const onTabsMove = (e: { clientX: number }) => { const el = tabsRef.current; if (!el || !drag.current.down) return; const dx = e.clientX - drag.current.startX; if (Math.abs(dx) > 4) drag.current.moved = true; el.scrollLeft = drag.current.scroll - dx; };
+  const setQty = (id: string, delta: number) => { setCart((c) => { const q = Math.max(0, (c[id] ?? 0) + delta); const n = { ...c }; if (q === 0) {delete n[id];} else {n[id] = q;} return n; }); };
+  const onTabsDown = (e: { clientX: number }) => { const el = tabsRef.current; if (!el) {return;} drag.current = { down: true, startX: e.clientX, scroll: el.scrollLeft, moved: false }; };
+  const onTabsMove = (e: { clientX: number }) => { const el = tabsRef.current; if (!el || !drag.current.down) {return;} const dx = e.clientX - drag.current.startX; if (Math.abs(dx) > 4) {drag.current.moved = true;} el.scrollLeft = drag.current.scroll - dx; };
   const onTabsUp = () => { drag.current.down = false; };
 
   const MenuCard = ({ m }: { m: MenuItem }) => (
@@ -312,12 +312,12 @@ function QueueInner() {
       </div>
       {cart[m.id] ? (
         <div className="flex items-center gap-2 rounded-full px-2 py-1" style={{ backgroundColor: tint(accent) }}>
-          <button aria-label="Remove one" onClick={() => setQty(m.id, -1)} className="h-7 w-7 rounded-full bg-card text-lg leading-none shadow ring-1 ring-border" style={{ color: accent }}>−</button>
+          <button aria-label="Remove one" onClick={() => { setQty(m.id, -1); }} className="h-7 w-7 rounded-full bg-card text-lg leading-none shadow ring-1 ring-border" style={{ color: accent }}>−</button>
           <span className="w-4 text-center font-semibold" style={{ color: accent }}>{cart[m.id]}</span>
-          <button aria-label="Add one" onClick={() => setQty(m.id, 1)} className="h-7 w-7 rounded-full text-lg leading-none shadow" style={{ backgroundColor: accent, color: ink }}>+</button>
+          <button aria-label="Add one" onClick={() => { setQty(m.id, 1); }} className="h-7 w-7 rounded-full text-lg leading-none shadow" style={{ backgroundColor: accent, color: ink }}>+</button>
         </div>
       ) : (
-        <button onClick={() => setQty(m.id, 1)} className="rounded-full px-4 py-2 text-sm font-semibold shadow transition active:scale-95" style={{ backgroundColor: accent, color: ink }}>Add</button>
+        <button onClick={() => { setQty(m.id, 1); }} className="rounded-full px-4 py-2 text-sm font-semibold shadow transition active:scale-95" style={{ backgroundColor: accent, color: ink }}>Add</button>
       )}
     </div>
   );
@@ -349,14 +349,14 @@ function QueueInner() {
             <h2 className="mb-1 text-lg font-semibold text-card-foreground">Join the waitlist</h2>
             <p className="mb-4 text-sm text-muted-foreground">We&apos;ll alert you here the moment your table is ready.</p>
             <label className="mb-1 block text-sm font-medium text-card-foreground">Your name</label>
-            <input value={name} onChange={(e) => setName(e.target.value)} className="mb-3 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring" style={{ caretColor: accent }} placeholder="Name" />
+            <input value={name} onChange={(e) => { setName(e.target.value); }} className="mb-3 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring" style={{ caretColor: accent }} placeholder="Name" />
             <label className="mb-1 block text-sm font-medium text-card-foreground">Phone (optional)</label>
-            <input value={phone} onChange={(e) => setPhone(e.target.value)} inputMode="tel" className="mb-3 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring" style={{ caretColor: accent }} placeholder="Phone" />
+            <input value={phone} onChange={(e) => { setPhone(e.target.value); }} inputMode="tel" className="mb-3 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring" style={{ caretColor: accent }} placeholder="Phone" />
             <label className="mb-1 block text-sm font-medium text-card-foreground">Party size</label>
             <div className="mb-4 flex items-center gap-3">
-              <button onClick={() => setParty((p) => Math.max(1, p - 1))} className="h-10 w-10 rounded-lg border bg-background text-xl text-foreground">−</button>
+              <button onClick={() => { setParty((p) => Math.max(1, p - 1)); }} className="h-10 w-10 rounded-lg border bg-background text-xl text-foreground">−</button>
               <span className="w-8 text-center text-lg font-semibold text-card-foreground">{party}</span>
-              <button onClick={() => setParty((p) => Math.min(50, p + 1))} className="h-10 w-10 rounded-lg border bg-background text-xl text-foreground">+</button>
+              <button onClick={() => { setParty((p) => Math.min(50, p + 1)); }} className="h-10 w-10 rounded-lg border bg-background text-xl text-foreground">+</button>
             </div>
             {error ? <p className="mb-3 text-sm text-red-600 dark:text-red-400">{error}</p> : null}
             <button onClick={join} disabled={busy} className="w-full rounded-lg py-2.5 font-semibold shadow-sm transition active:scale-[0.99] disabled:opacity-60" style={{ background: accent, color: ink }}>
@@ -403,9 +403,9 @@ function QueueInner() {
                 <h3 className="text-base font-semibold text-card-foreground">You&apos;re joining {entry.name}&apos;s group 👋</h3>
                 <p className="mb-4 mt-0.5 text-sm text-muted-foreground">Add your name so the host knows you&apos;re here{brand.showMenu ? " — then pick your dishes below" : ""}.</p>
                 <label className="mb-1 block text-sm font-medium text-card-foreground">Your name</label>
-                <input value={memberName} onChange={(e) => setMemberName(e.target.value)} className="mb-3 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring" style={{ caretColor: accent }} placeholder="Name" />
+                <input value={memberName} onChange={(e) => { setMemberName(e.target.value); }} className="mb-3 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring" style={{ caretColor: accent }} placeholder="Name" />
                 <label className="mb-1 block text-sm font-medium text-card-foreground">Your phone</label>
-                <input value={memberPhone} onChange={(e) => setMemberPhone(e.target.value)} inputMode="tel" className="mb-3 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring" style={{ caretColor: accent }} placeholder="Phone" />
+                <input value={memberPhone} onChange={(e) => { setMemberPhone(e.target.value); }} inputMode="tel" className="mb-3 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring" style={{ caretColor: accent }} placeholder="Phone" />
                 {memberError ? <p className="mb-3 text-sm text-red-600 dark:text-red-400">{memberError}</p> : null}
                 <button onClick={submitMember} disabled={memberBusy} className="w-full rounded-lg py-2.5 font-semibold shadow-sm transition active:scale-[0.99] disabled:opacity-60" style={{ background: accent, color: ink }}>
                   {memberBusy ? "Adding…" : "Add me to the group"}
@@ -447,7 +447,7 @@ function QueueInner() {
                       return (
                         <button
                           key={cat}
-                          onClick={() => { if (!drag.current.moved) setActiveCat(cat); }}
+                          onClick={() => { if (!drag.current.moved) {setActiveCat(cat);} }}
                           className={`whitespace-nowrap rounded-full border px-4 py-1.5 text-sm font-medium shadow-sm transition ${on ? "" : "bg-card text-card-foreground"}`}
                           style={on ? { backgroundColor: accent, borderColor: accent, color: ink } : undefined}
                         >
@@ -491,12 +491,12 @@ function QueueInner() {
 
       {/* "Table ready" pop-up */}
       {showCalled ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-6" onClick={() => setShowCalled(false)}>
-          <div className="w-full max-w-sm rounded-2xl border bg-card p-6 text-center shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-6" onClick={() => { setShowCalled(false); }}>
+          <div className="w-full max-w-sm rounded-2xl border bg-card p-6 text-center shadow-2xl" onClick={(e) => { e.stopPropagation(); }}>
             <div className="mb-2 text-5xl">🔔</div>
             <h2 className="text-xl font-bold" style={{ color: accent }}>Your table is ready!</h2>
             <p className="mt-2 text-sm text-muted-foreground">Please head over to the host now to be seated{entry?.pre_order.length ? " — your picks are saved" : ""}.</p>
-            <button onClick={() => setShowCalled(false)} className="mt-5 w-full rounded-lg py-2.5 font-semibold shadow-sm" style={{ background: accent, color: ink }}>Got it</button>
+            <button onClick={() => { setShowCalled(false); }} className="mt-5 w-full rounded-lg py-2.5 font-semibold shadow-sm" style={{ background: accent, color: ink }}>Got it</button>
           </div>
         </div>
       ) : null}

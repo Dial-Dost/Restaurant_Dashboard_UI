@@ -16,7 +16,7 @@ import {
 } from "@/lib/db"
 import { type InventoryItem } from "@/app/dashboard/inventory/page"
 
-type DraftLine = { inventory_id: string; name: string; qty_ordered: number; unit_cost: number }
+interface DraftLine { inventory_id: string; name: string; qty_ordered: number; unit_cost: number }
 
 const STATUS_STYLES: Record<string, string> = {
   draft: "bg-gray-100 text-gray-700",
@@ -56,7 +56,7 @@ export default function PurchaseOrdersPage() {
   const money = (n: number | null | undefined) => `${currency}${Number(n ?? 0).toFixed(2)}`
 
   const load = useCallback(async () => {
-    if (!rid) return
+    if (!rid) {return}
     setLoading(true)
     try {
       const [pos, vs, inv] = await Promise.all([
@@ -84,7 +84,7 @@ export default function PurchaseOrdersPage() {
     if (!(qty > 0)) { toast({ title: "Enter a quantity", variant: "destructive" }); return }
     setLines((prev) => {
       const existing = prev.find((l) => l.inventory_id === item.id)
-      if (existing) return prev.map((l) => l.inventory_id === item.id ? { ...l, qty_ordered: qty, unit_cost: cost } : l)
+      if (existing) {return prev.map((l) => l.inventory_id === item.id ? { ...l, qty_ordered: qty, unit_cost: cost } : l)}
       return [...prev, { inventory_id: item.id, name: item.name, qty_ordered: qty, unit_cost: cost }]
     })
     setPickItem(""); setPickQty(""); setPickCost("")
@@ -182,18 +182,18 @@ export default function PurchaseOrdersPage() {
           <div className="grid gap-3 sm:grid-cols-3">
             <div className="space-y-1">
               <Label>Vendor</Label>
-              <select className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={vendorId} onChange={(e) => setVendorId(e.target.value)}>
+              <select className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={vendorId} onChange={(e) => { setVendorId(e.target.value); }}>
                 <option value="">— Select vendor —</option>
                 {vendors.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
               </select>
             </div>
             <div className="space-y-1">
               <Label htmlFor="expected">Expected date</Label>
-              <Input id="expected" type="date" value={expected} onChange={(e) => setExpected(e.target.value)} />
+              <Input id="expected" type="date" value={expected} onChange={(e) => { setExpected(e.target.value); }} />
             </div>
             <div className="space-y-1">
               <Label htmlFor="ponotes">Notes</Label>
-              <Input id="ponotes" placeholder="Optional" value={notes} onChange={(e) => setNotes(e.target.value)} />
+              <Input id="ponotes" placeholder="Optional" value={notes} onChange={(e) => { setNotes(e.target.value); }} />
             </div>
           </div>
 
@@ -201,18 +201,18 @@ export default function PurchaseOrdersPage() {
           <div className="grid items-end gap-2 sm:grid-cols-[1fr_120px_140px_auto]">
             <div className="space-y-1">
               <Label>Item</Label>
-              <select className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={pickItem} onChange={(e) => setPickItem(e.target.value)}>
+              <select className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={pickItem} onChange={(e) => { setPickItem(e.target.value); }}>
                 <option value="">— Select item —</option>
                 {inventory.map((i) => <option key={i.id} value={i.id}>{i.name}{i.unit ? ` (${i.unit})` : ""}</option>)}
               </select>
             </div>
             <div className="space-y-1">
               <Label>Qty</Label>
-              <Input type="number" inputMode="decimal" placeholder="0" value={pickQty} onChange={(e) => setPickQty(e.target.value)} />
+              <Input type="number" inputMode="decimal" placeholder="0" value={pickQty} onChange={(e) => { setPickQty(e.target.value); }} />
             </div>
             <div className="space-y-1">
               <Label>Unit cost ({currency})</Label>
-              <Input type="number" inputMode="decimal" placeholder="0.00" value={pickCost} onChange={(e) => setPickCost(e.target.value)} />
+              <Input type="number" inputMode="decimal" placeholder="0.00" value={pickCost} onChange={(e) => { setPickCost(e.target.value); }} />
             </div>
             <Button type="button" variant="secondary" onClick={addLine}><Plus className="mr-1 h-4 w-4" /> Add</Button>
           </div>
@@ -224,7 +224,7 @@ export default function PurchaseOrdersPage() {
                   <span className="flex-1">{l.name}</span>
                   <span className="text-muted-foreground">{l.qty_ordered} × {money(l.unit_cost)}</span>
                   <span className="w-24 text-right font-medium">{money(l.qty_ordered * l.unit_cost)}</span>
-                  <button className="text-muted-foreground hover:text-destructive" onClick={() => setLines((p) => p.filter((x) => x.inventory_id !== l.inventory_id))}>
+                  <button className="text-muted-foreground hover:text-destructive" onClick={() => { setLines((p) => p.filter((x) => x.inventory_id !== l.inventory_id)); }}>
                     <Trash2 className="h-4 w-4" />
                   </button>
                 </div>
@@ -249,7 +249,7 @@ export default function PurchaseOrdersPage() {
             <CardTitle>Orders</CardTitle>
             <CardDescription>Receiving against an order adds the items to inventory.</CardDescription>
           </div>
-          <select className="h-9 rounded-md border bg-background px-3 text-sm" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+          <select className="h-9 rounded-md border bg-background px-3 text-sm" value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); }}>
             <option value="">All statuses</option>
             <option value="draft">Draft</option>
             <option value="ordered">Ordered</option>
@@ -279,7 +279,7 @@ export default function PurchaseOrdersPage() {
                   </div>
                   <div className="flex flex-wrap gap-2">
                     {po.status === "draft" && <Button size="sm" variant="outline" disabled={busyId === po.id} onClick={() => changeStatus(po, "ordered")}><Send className="mr-1 h-4 w-4" /> Place</Button>}
-                    {canReceive && <Button size="sm" disabled={busyId === po.id} onClick={() => receivingId === po.id ? setReceivingId(null) : startReceiving(po)}><PackageCheck className="mr-1 h-4 w-4" /> Receive</Button>}
+                    {canReceive && <Button size="sm" disabled={busyId === po.id} onClick={() => { receivingId === po.id ? setReceivingId(null) : startReceiving(po); }}><PackageCheck className="mr-1 h-4 w-4" /> Receive</Button>}
                     {po.status !== "received" && po.status !== "cancelled" && <Button size="sm" variant="ghost" disabled={busyId === po.id} onClick={() => changeStatus(po, "cancelled")}><X className="mr-1 h-4 w-4" /> Cancel</Button>}
                     {po.status !== "received" && <Button size="sm" variant="ghost" className="text-destructive" disabled={busyId === po.id} onClick={() => removePo(po)}><Trash2 className="h-4 w-4" /></Button>}
                   </div>
@@ -296,7 +296,7 @@ export default function PurchaseOrdersPage() {
                           <span className="text-xs text-muted-foreground">{it.qty_received}/{it.qty_ordered} · {remaining} left</span>
                           <Input type="number" inputMode="decimal" className="h-8 w-24" placeholder="0"
                             value={receiveQty[it.inventory_id] ?? ""}
-                            onChange={(e) => setReceiveQty((p) => ({ ...p, [it.inventory_id]: e.target.value }))} />
+                            onChange={(e) => { setReceiveQty((p) => ({ ...p, [it.inventory_id]: e.target.value })); }} />
                         </div>
                       )
                     })}
@@ -304,7 +304,7 @@ export default function PurchaseOrdersPage() {
                       <span className="text-muted-foreground">Delivery quality</span>
                       <select
                         value={receiveRating}
-                        onChange={(e) => setReceiveRating(e.target.value)}
+                        onChange={(e) => { setReceiveRating(e.target.value); }}
                         className="h-8 rounded-md border border-input bg-background px-2 text-sm outline-none focus:border-ring"
                       >
                         <option value="">Not rated</option>
@@ -317,7 +317,7 @@ export default function PurchaseOrdersPage() {
                       <span className="text-xs text-muted-foreground">Feeds the supplier score in Analytics.</span>
                     </div>
                     <div className="flex justify-end gap-2 pt-1">
-                      <Button size="sm" variant="ghost" onClick={() => setReceivingId(null)}>Cancel</Button>
+                      <Button size="sm" variant="ghost" onClick={() => { setReceivingId(null); }}>Cancel</Button>
                       <Button size="sm" disabled={busyId === po.id} onClick={() => submitReceive(po)}><PackageCheck className="mr-1 h-4 w-4" /> Confirm receipt</Button>
                     </div>
                   </div>

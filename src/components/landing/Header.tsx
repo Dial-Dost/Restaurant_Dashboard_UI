@@ -28,7 +28,7 @@ export default function Header() {
       setIsScrolled(window.scrollY > 10);
     };
     window.addEventListener('scroll', handleScroll);
-    return () => window.removeEventListener('scroll', handleScroll);
+    return () => { window.removeEventListener('scroll', handleScroll); };
   }, []);
 
   const navLinks = [
@@ -77,7 +77,7 @@ export default function Header() {
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 {languages.map((lang) => (
-                  <DropdownMenuItem key={lang.code} onSelect={() => setLanguage(lang.code)}>
+                  <DropdownMenuItem key={lang.code} onSelect={() => { setLanguage(lang.code); }}>
                     {lang.name}
                   </DropdownMenuItem>
                 ))}
@@ -94,11 +94,11 @@ export default function Header() {
           <SheetContent side="right">
             <nav className="flex flex-col space-y-2 mt-8">
               {navLinks.map((link) => (
-                <Button key={link.href} variant="ghost" asChild onClick={() => setOpen(false)} className="justify-start">
+                <Button key={link.href} variant="ghost" asChild onClick={() => { setOpen(false); }} className="justify-start">
                   <Link href={link.href}>{link.label}</Link>
                 </Button>
               ))}
-              <Button asChild onClick={() => setOpen(false)} className="justify-start">
+              <Button asChild onClick={() => { setOpen(false); }} className="justify-start">
                   <Link href="/login">{t('login')}</Link>
               </Button>
               <Separator className="my-2"/>

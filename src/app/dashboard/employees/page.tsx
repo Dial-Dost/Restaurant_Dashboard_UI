@@ -53,10 +53,11 @@ import { z } from "zod";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import { addEmployeeToRestaurant, removeEmployeeFromRestaurant } from "@/services/authService";
-import {
+import type {
   User,
   RoleDefinition,
-  PasswordResetRequest,
+  PasswordResetRequest} from "@/lib/db";
+import {
   getRestaurantUsers,
   getRoles,
   getActions,
@@ -84,7 +85,7 @@ const addEmployeeSchema = z.object({
     .trim()
     .optional()
     .refine((val) => {
-      if (!val) return true;
+      if (!val) {return true;}
       return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val);
     }, { message: "Invalid email" }),
   phone: z.string().optional(),
@@ -109,7 +110,7 @@ export default function EmployeesPage() {
   const [newRoleActions, setNewRoleActions] = useState<string[]>([]);
 
   const [accessCatalog, setAccessCatalog] = useState<
-    Array<{ group: string; actions: { id: string; name: string; desc?: string | null }[] }>
+    { group: string; actions: { id: string; name: string; desc?: string | null }[] }[]
   >([]);
   const [selectedRoleToEdit, setSelectedRoleToEdit] = useState<RoleDefinition | null>(null);
   const [isEditRoleDialogOpen, setIsEditRoleDialogOpen] = useState(false);
@@ -143,7 +144,7 @@ export default function EmployeesPage() {
   const roleIdToName = useMemo(() => {
     const m: Record<string, string> = {};
     for (const r of roleDefinitions) {
-      if (r.id) m[r.id] = r.role_name;
+      if (r.id) {m[r.id] = r.role_name;}
     }
     return m;
   }, [roleDefinitions]);
@@ -153,7 +154,7 @@ export default function EmployeesPage() {
   }
 
   const fetchEmployees = async () => {
-    if (!user?.restaurantUsername || !user.employeeId) return;
+    if (!user?.restaurantUsername || !user.employeeId) {return;}
     try {
       const data = await getRestaurantUsers(user.restaurantUsername, user.employeeId);
       setEmployees(Array.isArray(data) ? data : []);
@@ -164,7 +165,7 @@ export default function EmployeesPage() {
   };
 
   const fetchRoles = async () => {
-    if (!user?.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
     try {
       const data = await getRoles(user.restaurantUsername);
       setRoleDefinitions(Array.isArray(data) ? data : []);
@@ -175,7 +176,7 @@ export default function EmployeesPage() {
   };
 
   const fetchPasswordRequests = async () => {
-    if (!user?.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
     try {
       setPasswordRequests(await getPasswordRequests(user.restaurantUsername));
     } catch (error) {
@@ -191,7 +192,7 @@ export default function EmployeesPage() {
   };
 
   const handleResetPassword = async () => {
-    if (!user?.restaurantUsername || !resetTarget) return;
+    if (!user?.restaurantUsername || !resetTarget) {return;}
     if (newPassword.trim().length < 4) {
       toast({ title: "Password too short", description: "Use at least 4 characters.", variant: "destructive" });
       return;
@@ -209,13 +210,13 @@ export default function EmployeesPage() {
   };
 
   const handleDismissRequest = async (requestId: string) => {
-    if (!user?.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
     await dismissPasswordRequest(user.restaurantUsername, requestId);
     await fetchPasswordRequests();
   };
 
   useEffect(() => {
-    if (!user?.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
 
     let isActive = true;
 
@@ -225,7 +226,7 @@ export default function EmployeesPage() {
           getRestaurantUsers(user.restaurantUsername, user.employeeId),
           getRoles(user.restaurantUsername),
         ]);
-        if (!isActive) return;
+        if (!isActive) {return;}
         setEmployees(Array.isArray(employeesData) ? employeesData : []);
         setRoleDefinitions(Array.isArray(rolesData) ? rolesData : []);
       } catch (err) {
@@ -238,29 +239,29 @@ export default function EmployeesPage() {
 
       try {
         const cores = await getCoreRoles(user.restaurantUsername, user.actions_set);
-        if (!isActive) return;
+        if (!isActive) {return;}
         setCoreRoles(Array.isArray(cores) ? cores : []);
       } catch (err) {
         console.error('fetch_core_roles_failed', err);
-        if (isActive) setCoreRoles([]);
+        if (isActive) {setCoreRoles([]);}
       }
 
       try {
         const catalog = await getActions(user.restaurantUsername, user.actions_set);
-        if (!isActive) return;
+        if (!isActive) {return;}
         setAccessCatalog(Array.isArray(catalog) ? catalog : []);
       } catch (err) {
         console.error('fetch_actions_failed', err);
-        if (isActive) setAccessCatalog([]);
+        if (isActive) {setAccessCatalog([]);}
       }
 
       try {
         const reqs = await getPasswordRequests(user.restaurantUsername);
-        if (!isActive) return;
+        if (!isActive) {return;}
         setPasswordRequests(Array.isArray(reqs) ? reqs : []);
       } catch (err) {
         console.error('fetch_password_requests_failed', err);
-        if (isActive) setPasswordRequests([]);
+        if (isActive) {setPasswordRequests([]);}
       }
     })();
 
@@ -268,7 +269,7 @@ export default function EmployeesPage() {
   }, [user?.restaurantUsername, user?.employeeId, user?.actions_set]);
 
   const handleAddEmployee = async (data: AddEmployeeFormData) => {
-    if (!user) return;
+    if (!user) {return;}
     try {
       // split full name into first + last
       const parts = (data.name || '').trim().replace(/\s+/g, ' ').split(' ');
@@ -280,7 +281,7 @@ export default function EmployeesPage() {
         emp_Lname: last,
         employeeId: typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : String(Date.now()) + '-' + Math.random().toString(36).slice(2,8),
         username: data.username,
-        email: data.email && data.email.trim() ? data.email.trim() : null,
+        email: data.email?.trim() ? data.email.trim() : null,
         ph: data.phone ?? null,
         add: data.address ?? null,
         role: data.role,
@@ -304,7 +305,7 @@ export default function EmployeesPage() {
   };
 
   const handleRemoveEmployee = async (employeeId: string) => {
-    if (!user) return;
+    if (!user) {return;}
     try {
       await removeEmployeeFromRestaurant(user.restaurantUsername, employeeId, user.res_id, user.employeeId, user.outlet_id);
       await fetchEmployees();
@@ -322,7 +323,7 @@ export default function EmployeesPage() {
   };
 
   const handleAssignRole = async (employeeId: string, roleName: string) => {
-    if (!user?.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
     const ok = await assignRoleToEmployee(user.restaurantUsername, employeeId, roleName);
     if (!ok) {
       toast({ title: "Error", description: "Unable to assign role.", variant: "destructive" });
@@ -334,7 +335,7 @@ export default function EmployeesPage() {
   };
 
   const handleRemoveRole = async (employee: User, roleName: string) => {
-    if (!user?.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
     const normalized = roleName.trim().toLowerCase();
     if (normalized === employee.role) {
       toast({
@@ -377,7 +378,7 @@ export default function EmployeesPage() {
   };
 
   const handleSaveRoleChanges = async () => {
-    if (!user?.restaurantUsername || !selectedRoleToEdit) return;
+    if (!user?.restaurantUsername || !selectedRoleToEdit) {return;}
     try {
       await createRole(user.restaurantUsername, selectedRoleToEdit.role_name, editRoleActions);
       await fetchRoles();
@@ -391,7 +392,7 @@ export default function EmployeesPage() {
   };
 
   const handleCreateCustomRole = async () => {
-    if (!user?.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
 
     const normalizedName = newRoleName.trim().toLowerCase();
     if (!normalizedName) {
@@ -423,7 +424,7 @@ export default function EmployeesPage() {
   };
 
   const handleDeleteCustomRole = async (role: RoleDefinition) => {
-    if (!user?.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
 
     if (coreRoles.some((c) => c.role.trim().toLowerCase() === role.role_name.trim().toLowerCase())) {
       toast({ title: "Protected Role", description: "Core roles cannot be deleted.", variant: "destructive" });
@@ -453,7 +454,7 @@ export default function EmployeesPage() {
     hasShownAccessToastRef.current = true;
   }, [user, toast]);
 
-  if (!user || user.role !== "admin") {
+  if (user?.role !== "admin") {
     return (
       <div className="p-4">
         <p>You do not have permission to view this page. Required role: admin.</p>
@@ -499,7 +500,7 @@ export default function EmployeesPage() {
                   <p className="text-xs text-muted-foreground">@{req.username}</p>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Button size="sm" onClick={() => openResetPassword(req.employee_id, req.name)}>
+                  <Button size="sm" onClick={() => { openResetPassword(req.employee_id, req.name); }}>
                     <KeyRound className="mr-1 h-4 w-4" /> Reset
                   </Button>
                   <Button size="sm" variant="ghost" onClick={() => void handleDismissRequest(req.id)}>Dismiss</Button>
@@ -522,12 +523,12 @@ export default function EmployeesPage() {
               id="new-password"
               type="password"
               value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
+              onChange={(e) => { setNewPassword(e.target.value); }}
               placeholder="At least 4 characters"
             />
           </div>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setIsResetDialogOpen(false)}>Cancel</Button>
+            <Button variant="ghost" onClick={() => { setIsResetDialogOpen(false); }}>Cancel</Button>
             <Button onClick={() => void handleResetPassword()}>Set password</Button>
           </DialogFooter>
         </DialogContent>
@@ -637,10 +638,10 @@ export default function EmployeesPage() {
                           </DropdownMenuSub>
 
                           <DropdownMenuItem
-                            onClick={() => openResetPassword(
+                            onClick={() => { openResetPassword(
                               employee.employee_id,
                               `${employee.emp_Fname ?? ''}${employee.emp_Lname ? ` ${employee.emp_Lname}` : ''}`.trim() || (employee.employee_Username ?? employee.employee_id),
-                            )}
+                            ); }}
                           >
                             <KeyRound className="mr-2 h-4 w-4" />
                             Reset Password
@@ -692,7 +693,7 @@ export default function EmployeesPage() {
                   <Input
                     id="role-name"
                     value={newRoleName}
-                    onChange={(event) => setNewRoleName(event.target.value)}
+                    onChange={(event) => { setNewRoleName(event.target.value); }}
                     placeholder="e.g. floor_manager"
                   />
                 </div>
@@ -712,7 +713,7 @@ export default function EmployeesPage() {
                                 <input
                                   type="checkbox"
                                   checked={checked}
-                                  onChange={() => toggleNewRoleAction(action.id)}
+                                  onChange={() => { toggleNewRoleAction(action.id); }}
                                 />
                                 <span className="text-sm" title={action.desc ?? ''} aria-label={action.desc ?? ''}>{action.name}</span>
                               </label>
@@ -760,7 +761,7 @@ export default function EmployeesPage() {
                                 <input
                                   type="checkbox"
                                   checked={checked}
-                                  onChange={() => toggleEditRoleAction(action.id)}
+                                  onChange={() => { toggleEditRoleAction(action.id); }}
                                 />
                                 <span className="text-sm" title={action.desc ?? ''} aria-label={action.desc ?? ''}>{action.name}</span>
                               </label>
@@ -798,7 +799,7 @@ export default function EmployeesPage() {
                 )}
               </div>
               <DialogFooter>
-                <Button onClick={() => setIsViewCoreRoleDialogOpen(false)}>Close</Button>
+                <Button onClick={() => { setIsViewCoreRoleDialogOpen(false); }}>Close</Button>
               </DialogFooter>
             </DialogContent>
           </Dialog>
@@ -811,7 +812,7 @@ export default function EmployeesPage() {
                 <p className="text-sm text-muted-foreground">No core roles available</p>
               ) : (
                 coreRoles.map((r) => (
-                  <Button key={`core-${r.role}`} variant="ghost" size="sm" onClick={() => openViewCoreRole(r)}>
+                  <Button key={`core-${r.role}`} variant="ghost" size="sm" onClick={() => { openViewCoreRole(r); }}>
                     {toTitleCase(r.role)} (core)
                   </Button>
                 ))
@@ -824,7 +825,7 @@ export default function EmployeesPage() {
               <div className="space-y-2">
                 {roleDefinitions.map((role) => (
                       <div key={role.id} className="flex items-center justify-between rounded-md border p-2">
-                        <button type="button" onClick={() => openEditRole(role)} className="text-left">
+                        <button type="button" onClick={() => { openEditRole(role); }} className="text-left">
                           <p className="font-medium">{toTitleCase(role.role_name)}</p>
                           <p className="text-xs text-muted-foreground break-words">
                             {(Array.isArray(role.actions_performable) && role.actions_performable.length > 0)

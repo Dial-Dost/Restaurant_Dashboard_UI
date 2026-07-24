@@ -26,7 +26,7 @@ export default function LoginPage() {
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!restaurantName) return;
+    if (!restaurantName) {return;}
 
     const restaurant = await findRestaurantByName(restaurantName);
 
@@ -64,7 +64,7 @@ export default function LoginPage() {
                   placeholder="e.g., The Grand Bistro"
                   required
                   value={restaurantName}
-                  onChange={(e) => setRestaurantName(e.target.value)}
+                  onChange={(e) => { setRestaurantName(e.target.value); }}
                 />
               </div>
               <Button type="submit" className="w-full">

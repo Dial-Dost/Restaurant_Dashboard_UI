@@ -67,7 +67,7 @@ const addToRemoveQueue = (toastId: string) => {
     toastTimeouts.delete(toastId)
     dispatch({
       type: "REMOVE_TOAST",
-      toastId: toastId,
+      toastId,
     })
   }, TOAST_REMOVE_DELAY)
 
@@ -129,7 +129,7 @@ export const reducer = (state: State, action: Action): State => {
   }
 }
 
-const listeners: Array<(state: State) => void> = []
+const listeners: ((state: State) => void)[] = []
 
 let memoryState: State = { toasts: [] }
 
@@ -146,11 +146,11 @@ function toast({ ...props }: Toast) {
   const id = genId()
 
   const update = (props: ToasterToast) =>
-    dispatch({
+    { dispatch({
       type: "UPDATE_TOAST",
       toast: { ...props, id },
-    })
-  const dismiss = () => dispatch({ type: "DISMISS_TOAST", toastId: id })
+    }); }
+  const dismiss = () => { dispatch({ type: "DISMISS_TOAST", toastId: id }); }
 
   dispatch({
     type: "ADD_TOAST",
@@ -159,13 +159,13 @@ function toast({ ...props }: Toast) {
       id,
       open: true,
       onOpenChange: (open) => {
-        if (!open) dismiss()
+        if (!open) {dismiss()}
       },
     },
   })
 
   return {
-    id: id,
+    id,
     dismiss,
     update,
   }
@@ -187,7 +187,7 @@ function useToast() {
   return {
     ...state,
     toast,
-    dismiss: (toastId?: string) => dispatch({ type: "DISMISS_TOAST", toastId }),
+    dismiss: (toastId?: string) => { dispatch({ type: "DISMISS_TOAST", toastId }); },
   }
 }
 

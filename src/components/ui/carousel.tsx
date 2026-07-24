@@ -14,7 +14,7 @@ type UseCarouselParameters = Parameters<typeof useEmblaCarousel>
 type CarouselOptions = UseCarouselParameters[0]
 type CarouselPlugin = UseCarouselParameters[1]
 
-type CarouselProps = {
+interface CarouselProps {
   opts?: CarouselOptions
   plugins?: CarouselPlugin
   orientation?: "horizontal" | "vertical"
@@ -103,7 +103,7 @@ const Carousel = React.forwardRef<
         return
       }
 
-      Promise.resolve().then(() => setApi(api))
+      Promise.resolve().then(() => { setApi(api); })
     }, [api, setApi])
 
     React.useEffect(() => {
@@ -111,7 +111,7 @@ const Carousel = React.forwardRef<
         return
       }
 
-      Promise.resolve().then(() => onSelect(api))
+      Promise.resolve().then(() => { onSelect(api); })
       api.on("reInit", onSelect)
       api.on("select", onSelect)
 
@@ -124,7 +124,7 @@ const Carousel = React.forwardRef<
       <CarouselContext.Provider
         value={{
           carouselRef,
-          api: api,
+          api,
           opts,
           orientation:
             orientation || (opts?.axis === "y" ? "vertical" : "horizontal"),

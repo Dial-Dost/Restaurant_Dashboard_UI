@@ -1,7 +1,8 @@
 
 "use client";
 
-import React, { createContext, useState, useContext, ReactNode } from 'react';
+import type { ReactNode } from 'react';
+import React, { createContext, useState, useContext } from 'react';
 
 const translations = {
   en: {

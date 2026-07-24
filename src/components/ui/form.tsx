@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import * as LabelPrimitive from "@radix-ui/react-label"
+import type * as LabelPrimitive from "@radix-ui/react-label"
 import { Slot } from "@radix-ui/react-slot"
 import {
   Controller,
@@ -17,10 +17,10 @@ import { Label } from "@/components/ui/label"
 
 const Form = FormProvider
 
-type FormFieldContextValue<
+interface FormFieldContextValue<
   TFieldValues extends FieldValues = FieldValues,
   TName extends FieldPath<TFieldValues> = FieldPath<TFieldValues>
-> = {
+> {
   name: TName
 }
 
@@ -64,7 +64,7 @@ const useFormField = () => {
   }
 }
 
-type FormItemContextValue = {
+interface FormItemContextValue {
   id: string
 }
 
@@ -115,7 +115,7 @@ const FormControl = React.forwardRef<
       id={formItemId}
       aria-describedby={
         !error
-          ? `${formDescriptionId}`
+          ? formDescriptionId
           : `${formDescriptionId} ${formMessageId}`
       }
       aria-invalid={!!error}

@@ -1,6 +1,7 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { FormEvent} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
 import {
   RealtimeAgent,
@@ -11,23 +12,23 @@ import {
 import type { RealtimeItem } from "@openai/agents/realtime";
 import { requestReceptionBackend } from "@/lib/db";
 
-type RestaurantInfoEntry = {
+interface RestaurantInfoEntry {
   field: string;
   value: string;
-};
+}
 
-type RestaurantKnowledge = {
+interface RestaurantKnowledge {
   infoEntries: RestaurantInfoEntry[];
   infoContext: string;
   openingTime: string;
   closingTime: string;
-};
+}
 
-type ConversationMessage = {
+interface ConversationMessage {
   id: string;
   role: "assistant" | "user";
   text: string;
-};
+}
 
 async function fetchKnowledge(): Promise<RestaurantKnowledge> {
   const response = await requestReceptionBackend<RestaurantKnowledge>({
@@ -40,13 +41,13 @@ async function fetchKnowledge(): Promise<RestaurantKnowledge> {
   return response.data;
 }
 
-type AvailabilityRequest = {
+interface AvailabilityRequest {
   reservationDate: string;
   reservationTime: string;
   partySize: number;
-};
+}
 
-type ReservationRequest = {
+interface ReservationRequest {
   guestName: string;
   contactNumber: string;
   partySize: number;
@@ -54,20 +55,20 @@ type ReservationRequest = {
   reservationTime: string;
   tablePreference?: string | null;
   specialRequests?: string | null;
-};
+}
 
-type AvailabilityResult = {
+interface AvailabilityResult {
   status: "available" | "unavailable" | "connectivity" | "validation";
   message: string;
-  tables?: Array<{ tableName: string; capacity: number | null }>;
-};
+  tables?: { tableName: string; capacity: number | null }[];
+}
 
-type ReservationResult = {
+interface ReservationResult {
   status: "confirmed" | "queued" | "failed";
   message: string;
   tableName?: string;
   referenceId?: string | null;
-};
+}
 
 async function postJSON<TInput, TOutput>(
   path: string,
@@ -480,7 +481,7 @@ export default function VoiceTestPage() {
           className="flex-1 rounded border border-slate-300 px-3 py-2 text-sm"
           placeholder="Type a message while connected"
           value={pendingText}
-          onChange={(event) => setPendingText(event.target.value)}
+          onChange={(event) => { setPendingText(event.target.value); }}
           disabled={status !== "connected"}
         />
         <button

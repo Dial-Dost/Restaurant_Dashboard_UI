@@ -1,10 +1,11 @@
-import { io, Socket } from "socket.io-client";
+import type { Socket } from "socket.io-client";
+import { io } from "socket.io-client";
 
 let socket: Socket | null = null;
 let hasLoggedConnectError = false;
 
 export function initSocket({ url, restaurantId, token }: { url?: string; restaurantId: string; token?: string }) {
-  if (socket) return socket;
+  if (socket) {return socket;}
 
   // Prefer explicit URL, then shared backend env vars, then localhost:3001 dev fallback (backend runs on 3001).
   const serverUrl =
@@ -32,7 +33,7 @@ export function initSocket({ url, restaurantId, token }: { url?: string; restaur
     },
   };
 
-  if (token) opts.auth.token = token;
+  if (token) {opts.auth.token = token;}
 
   socket = io(serverUrl, opts);
 
@@ -70,7 +71,7 @@ export function getSocket() {
 }
 
 export function disconnectSocket() {
-  if (!socket) return;
+  if (!socket) {return;}
   socket.disconnect();
   socket = null;
 }

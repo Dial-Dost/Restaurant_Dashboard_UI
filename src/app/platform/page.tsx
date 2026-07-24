@@ -46,7 +46,7 @@ export default function PlatformDashboard() {
 			setRestaurants(r.restaurants);
 			setPlans(p.plans);
 			// Health is best-effort — never block the dashboard on it.
-			getPlatformHealth().then(setHealth).catch(() => setHealth(null));
+			getPlatformHealth().then(setHealth).catch(() => { setHealth(null); });
 		} catch (err: any) {
 			if (err?.message === "Unauthorized") {
 				router.push("/platform/login");
@@ -100,7 +100,7 @@ export default function PlatformDashboard() {
 	};
 
 	const recordCharge = async (status: "paid" | "pending") => {
-		if (!billingFor) return;
+		if (!billingFor) {return;}
 		setBillingBusy(true);
 		try {
 			await createInvoice(billingFor.id, { status });
@@ -115,7 +115,7 @@ export default function PlatformDashboard() {
 
 	// Confirm an offline payment: mark the invoice paid AND activate its plan.
 	const markPaid = async (invoiceId: string) => {
-		if (!billingFor) return;
+		if (!billingFor) {return;}
 		setBillingBusy(true);
 		try {
 			await markInvoicePaid(invoiceId);
@@ -152,7 +152,7 @@ export default function PlatformDashboard() {
 	const [resetBusy, setResetBusy] = useState(false);
 	const [resetMsg, setResetMsg] = useState<string | null>(null);
 	const doResetOwner = async () => {
-		if (!resetFor || resetPw.trim().length < 4) return;
+		if (!resetFor || resetPw.trim().length < 4) {return;}
 		setResetBusy(true);
 		setResetMsg(null);
 		try {
@@ -192,7 +192,7 @@ export default function PlatformDashboard() {
 
 	// Premium features a plan can include. Anything NOT set false here is allowed
 	// (fail-open), so unchecking a box paywalls that area for the plan's tenants.
-	const GATEABLE_FEATURES: Array<{ key: string; label: string }> = [
+	const GATEABLE_FEATURES: { key: string; label: string }[] = [
 		{ key: "accounting", label: "Accounting & cash" },
 		{ key: "analytics", label: "Analytics" },
 		{ key: "inventory", label: "Inventory & purchasing" },
@@ -302,19 +302,19 @@ export default function PlatformDashboard() {
 					<form onSubmit={onCreatePlan} className="flex flex-wrap items-end gap-2">
 						<div className="space-y-1">
 							<label className="block text-xs text-muted-foreground">Code</label>
-							<input value={newPlan.code} onChange={(e) => setNewPlan({ ...newPlan, code: e.target.value })} placeholder="starter" required className="block rounded-md border px-2 py-1 text-sm" />
+							<input value={newPlan.code} onChange={(e) => { setNewPlan({ ...newPlan, code: e.target.value }); }} placeholder="starter" required className="block rounded-md border px-2 py-1 text-sm" />
 						</div>
 						<div className="space-y-1">
 							<label className="block text-xs text-muted-foreground">Name</label>
-							<input value={newPlan.name} onChange={(e) => setNewPlan({ ...newPlan, name: e.target.value })} placeholder="Starter" required className="block rounded-md border px-2 py-1 text-sm" />
+							<input value={newPlan.name} onChange={(e) => { setNewPlan({ ...newPlan, name: e.target.value }); }} placeholder="Starter" required className="block rounded-md border px-2 py-1 text-sm" />
 						</div>
 						<div className="space-y-1">
 							<label className="block text-xs text-muted-foreground">Price (₹/mo)</label>
-							<input value={newPlan.price} onChange={(e) => setNewPlan({ ...newPlan, price: e.target.value })} type="number" min="0" step="0.01" placeholder="0" className="block w-24 rounded-md border px-2 py-1 text-sm" />
+							<input value={newPlan.price} onChange={(e) => { setNewPlan({ ...newPlan, price: e.target.value }); }} type="number" min="0" step="0.01" placeholder="0" className="block w-24 rounded-md border px-2 py-1 text-sm" />
 						</div>
 						<div className="space-y-1">
 							<label className="block text-xs text-muted-foreground">Max staff</label>
-							<input value={newPlan.employees} onChange={(e) => setNewPlan({ ...newPlan, employees: e.target.value })} type="number" min="0" placeholder="unlimited" className="block w-28 rounded-md border px-2 py-1 text-sm" />
+							<input value={newPlan.employees} onChange={(e) => { setNewPlan({ ...newPlan, employees: e.target.value }); }} type="number" min="0" placeholder="unlimited" className="block w-28 rounded-md border px-2 py-1 text-sm" />
 						</div>
 						<button type="submit" className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground">Add plan</button>
 					</form>
@@ -331,7 +331,7 @@ export default function PlatformDashboard() {
 									{p.active ? "active" : "inactive"}
 								</button>
 								<button
-									onClick={() => setEditingPlanId(editingPlanId === p.id ? null : p.id)}
+									onClick={() => { setEditingPlanId(editingPlanId === p.id ? null : p.id); }}
 									className="rounded px-2 py-0.5 text-xs underline text-muted-foreground hover:text-foreground"
 								>
 									Features
@@ -343,8 +343,8 @@ export default function PlatformDashboard() {
 
 					{editingPlanId && (() => {
 						const p = plans.find((x) => x.id === editingPlanId);
-						if (!p) return null;
-						const feats = (p.features ?? {}) as Record<string, unknown>;
+						if (!p) {return null;}
+						const feats = (p.features ?? {});
 						return (
 							<div className="mt-3 rounded-lg border bg-muted/30 p-3">
 								<p className="mb-2 text-sm font-medium">Included features — {p.name}</p>
@@ -422,7 +422,7 @@ export default function PlatformDashboard() {
 													defaultValue=""
 													onChange={(e) => {
 														const planId = e.target.value;
-														if (planId) void run(r.id, () => setSubscription(r.id, { plan_id: planId, status: "active" }));
+														if (planId) {void run(r.id, () => setSubscription(r.id, { plan_id: planId, status: "active" }));}
 													}}
 													className="rounded-md border px-2 py-1 text-xs"
 												>
@@ -465,11 +465,11 @@ export default function PlatformDashboard() {
 				)}
 			</div>
 			{billingFor && (
-				<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setBillingFor(null)}>
-					<div className="w-full max-w-lg rounded-lg border bg-card p-5 shadow-lg" onClick={(e) => e.stopPropagation()}>
+				<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => { setBillingFor(null); }}>
+					<div className="w-full max-w-lg rounded-lg border bg-card p-5 shadow-lg" onClick={(e) => { e.stopPropagation(); }}>
 						<div className="mb-3 flex items-center justify-between">
 							<h2 className="text-lg font-semibold">Billing · {billingFor.res_name}</h2>
-							<button onClick={() => setBillingFor(null)} className="text-sm text-muted-foreground">Close</button>
+							<button onClick={() => { setBillingFor(null); }} className="text-sm text-muted-foreground">Close</button>
 						</div>
 						<div className="mb-3 flex gap-2">
 							<button disabled={billingBusy} onClick={() => void recordCharge("paid")} className="rounded-md border border-green-300 px-3 py-1 text-sm text-green-700 disabled:opacity-50">Record payment</button>
@@ -517,11 +517,11 @@ export default function PlatformDashboard() {
 
 			{/* Reset-owner-password modal */}
 			{resetFor && (
-				<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setResetFor(null)}>
-					<div className="w-full max-w-md rounded-lg border bg-card p-5 shadow-lg" onClick={(e) => e.stopPropagation()}>
+				<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => { setResetFor(null); }}>
+					<div className="w-full max-w-md rounded-lg border bg-card p-5 shadow-lg" onClick={(e) => { e.stopPropagation(); }}>
 						<div className="mb-3 flex items-center justify-between">
 							<h2 className="text-lg font-semibold">Reset owner password</h2>
-							<button onClick={() => setResetFor(null)} className="text-sm text-muted-foreground">Close</button>
+							<button onClick={() => { setResetFor(null); }} className="text-sm text-muted-foreground">Close</button>
 						</div>
 						<p className="mb-3 text-sm text-muted-foreground">
 							Sets a new password for the owner (first admin) of <span className="font-medium text-foreground">{resetFor.res_name}</span> and signs out their live sessions. Use this when the owner is locked out.
@@ -529,13 +529,13 @@ export default function PlatformDashboard() {
 						<input
 							type="text"
 							value={resetPw}
-							onChange={(e) => setResetPw(e.target.value)}
+							onChange={(e) => { setResetPw(e.target.value); }}
 							placeholder="New password (min 4 chars)"
 							className="mb-3 block w-full rounded-md border px-2 py-1.5 text-sm"
 						/>
 						{resetMsg && <p className="mb-3 text-sm">{resetMsg}</p>}
 						<div className="flex justify-end gap-2">
-							<button onClick={() => setResetFor(null)} className="rounded-md border px-3 py-1.5 text-sm">Cancel</button>
+							<button onClick={() => { setResetFor(null); }} className="rounded-md border px-3 py-1.5 text-sm">Cancel</button>
 							<button
 								disabled={resetBusy || resetPw.trim().length < 4}
 								onClick={() => void doResetOwner()}
@@ -550,11 +550,11 @@ export default function PlatformDashboard() {
 
 			{/* Audit log modal */}
 			{auditOpen && (
-				<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setAuditOpen(false)}>
-					<div className="w-full max-w-2xl rounded-lg border bg-card p-5 shadow-lg" onClick={(e) => e.stopPropagation()}>
+				<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => { setAuditOpen(false); }}>
+					<div className="w-full max-w-2xl rounded-lg border bg-card p-5 shadow-lg" onClick={(e) => { e.stopPropagation(); }}>
 						<div className="mb-3 flex items-center justify-between">
 							<h2 className="text-lg font-semibold">Audit log</h2>
-							<button onClick={() => setAuditOpen(false)} className="text-sm text-muted-foreground">Close</button>
+							<button onClick={() => { setAuditOpen(false); }} className="text-sm text-muted-foreground">Close</button>
 						</div>
 						<div className="max-h-[60vh] overflow-y-auto">
 							{auditLoading ? (

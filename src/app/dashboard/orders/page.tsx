@@ -85,7 +85,7 @@ import type { MenuItem } from "../menu/data";
 import { BillActions } from "./bill-actions";
 
 
-type OrderItem = {
+interface OrderItem {
     id: string;
     name: string;
     quantity: number;
@@ -97,22 +97,22 @@ type OrderItem = {
   // Course hold-and-fire: held items wait (no prep ageing) until fired.
   course_hold?: boolean;
   fired_at?: string | null;
-};
+}
 
 // Per-item prep timer as stored in Orders.timing (mirrors the backend shape).
-type OrderTimer = {
+interface OrderTimer {
   started_at: string | null;
   ended_at: string | null;
   paused: boolean;
   pause_started_at: string | null;
   paused_ms: number;
-};
+}
 
-type OrderTiming = {
+interface OrderTiming {
   ordered_at?: string;
   order?: OrderTimer;
   items?: Record<string, OrderTimer>;
-};
+}
 
 export type OrderStatus =
   | "Preparing"
@@ -123,13 +123,13 @@ export type OrderStatus =
   | "Closed"
   | "Cancelled";
 
-type Tax = {
+interface Tax {
   id: string;
   name: string;
   percentage: number;
-};
+}
 
-export type Order = {
+export interface Order {
   id: string;
   table: string;
   customer: string;
@@ -162,7 +162,7 @@ export type Order = {
   // "Barked" step: when the expo announced the order to the kitchen. Null =
   // awaiting bark (greyed, no running timers); missing (old backend) = barked.
   barked_at?: string | null;
-};
+}
 
 // Un-barked orders sit greyed with idle timers until the expo barks them.
 const isOrderBarked = (o: Order): boolean => (o.barked_at === undefined ? true : o.barked_at !== null);
@@ -183,9 +183,9 @@ const MAX_PROOF_UPLOAD_BYTES = 400 * 1024;
 
 const normalizeProofPreviewUrl = (value?: string | null): string | null => {
   const raw = String(value ?? "").trim();
-  if (!raw) return null;
-  if (/^https?:\/\//i.test(raw)) return raw;
-  if (/^data:image\//i.test(raw)) return raw;
+  if (!raw) {return null;}
+  if (/^https?:\/\//i.test(raw)) {return raw;}
+  if (/^data:image\//i.test(raw)) {return raw;}
   return null;
 };
 
@@ -202,9 +202,9 @@ const compressProofImage = async (file: File): Promise<string | null> => {
   const objectUrl = URL.createObjectURL(file);
   try {
     const image = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const img = document.createElement('img') as HTMLImageElement;
-      img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error("Unable to load image"));
+      const img = document.createElement('img');
+      img.onload = () => { resolve(img); };
+      img.onerror = () => { reject(new Error("Unable to load image")); };
       img.src = objectUrl;
     });
 
@@ -257,8 +257,8 @@ const pickPaymentProofScreenshot = async (): Promise<string | null> => {
       }
 
       void compressProofImage(file)
-        .then((dataUrl) => resolve(dataUrl))
-        .catch(() => resolve(null));
+        .then((dataUrl) => { resolve(dataUrl); })
+        .catch(() => { resolve(null); });
     };
 
     input.click();
@@ -266,12 +266,12 @@ const pickPaymentProofScreenshot = async (): Promise<string | null> => {
 };
 
 const calculateServiceCharge = (subtotal: number, percentage?: number, apply?: boolean) => {
-  if (!apply || !percentage) return 0;
+  if (!apply || !percentage) {return 0;}
   return subtotal * (percentage / 100);
 }
 
 const calculateTaxes = (subtotal: number, taxes?: Tax[]) => {
-  if (!taxes) return [];
+  if (!taxes) {return [];}
   return taxes.map(tax => ({
     ...tax,
     amount: subtotal * (tax.percentage / 100)
@@ -299,7 +299,7 @@ const deriveDefaultsForCharges = (defaultTax: Record<string, number> | null): {
 
   for (const [name, rawValue] of Object.entries(defaultTax)) {
     const value = Number(rawValue);
-    if (!Number.isFinite(value) || value <= 0) continue;
+    if (!Number.isFinite(value) || value <= 0) {continue;}
 
     if (/service ?charge/i.test(name) || /service ?charges/i.test(name)) {
       serviceChargePercentage = value;
@@ -314,9 +314,9 @@ const deriveDefaultsForCharges = (defaultTax: Record<string, number> | null): {
 };
 
 const formatOrderedAt = (isoOrString?: string) => {
-  if (!isoOrString) return "";
+  if (!isoOrString) {return "";}
   const d = new Date(isoOrString);
-  if (Number.isNaN(d.getTime())) return String(isoOrString);
+  if (Number.isNaN(d.getTime())) {return String(isoOrString);}
   const dd = String(d.getDate()).padStart(2, '0');
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   const yy = String(d.getFullYear()).slice(-2);
@@ -365,8 +365,8 @@ function OrdersDashboard() {
   const { user } = useAuth();
   const { toast } = useToast();
   const hasRole = (role: "admin" | "employee" | "valet" | "waiter" | "cashier" | "captain" | "manager") => {
-    if (!user) return false;
-    if (user.role === role) return true;
+    if (!user) {return false;}
+    if (user.role === role) {return true;}
     return Array.isArray(user.role_all) ? user.role_all.includes(role) : false;
   };
   const isAdmin = hasRole("admin");
@@ -417,15 +417,15 @@ function OrdersDashboard() {
   // before any ticket carries the station.
   const [kitchenSections, setKitchenSections] = useState<string[]>([]);
   useEffect(() => {
-    if (!user) return;
+    if (!user) {return;}
     let cancelled = false;
     void getKitchenSections(user.restaurantUsername).then((s) => {
-      if (!cancelled) setKitchenSections(s);
+      if (!cancelled) {setKitchenSections(s);}
     });
     return () => { cancelled = true; };
   }, [user]);
   const selectedTable = useMemo(() => {
-    if (!selectedTableName) return null;
+    if (!selectedTableName) {return null;}
     return tables.find((table) => table.name.toLowerCase() === selectedTableName.toLowerCase()) ?? null;
   }, [selectedTableName, tables]);
 
@@ -514,9 +514,9 @@ function OrdersDashboard() {
         if (isAdmin) {
           try {
             const reqs = await getDiscountRequests(user.restaurantUsername);
-            if (isActive) setDiscountRequests(reqs);
+            if (isActive) {setDiscountRequests(reqs);}
           } catch {
-            if (isActive) setDiscountRequests([]);
+            if (isActive) {setDiscountRequests([]);}
           }
         }
       } catch (error) {
@@ -540,16 +540,16 @@ function OrdersDashboard() {
     // Highlight order if requested via query param
     useEffect(() => {
       const param = searchParams.get('highlightOrder')?.trim() ?? '';
-      if (!param) return;
+      if (!param) {return;}
       setHighlightedOrderId(param);
       // wait for DOM to render table rows
       setTimeout(() => {
-        const el = document.getElementById(`order-row-${param}`) as HTMLElement | null;
+        const el = document.getElementById(`order-row-${param}`);
         if (el) {
           try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
           try { el.focus(); } catch {}
           // remove highlight after a short delay
-          setTimeout(() => setHighlightedOrderId(null), 3500);
+          setTimeout(() => { setHighlightedOrderId(null); }, 3500);
         }
       }, 250);
     }, [searchParams, displayOrders]);
@@ -559,20 +559,20 @@ function OrdersDashboard() {
     const handler = (e: any) => {
       try {
         const detail = e?.detail as { event: string } | undefined;
-        if (!detail) return;
+        if (!detail) {return;}
         if (detail.event === 'table:added' || detail.event === 'table:deleted' || detail.event === 'table:updated') {
-          if (user?.restaurantUsername) getTables(user.restaurantUsername).then(t => setTables(Array.isArray(t) ? t : [])).catch(() => {});
+          if (user?.restaurantUsername) {getTables(user.restaurantUsername).then(t => { setTables(Array.isArray(t) ? t : []); }).catch(() => {});}
         }
         // Keep the KDS/orders list live when items are fired or bills change.
         if (detail.event === 'order:updated' || detail.event === 'bill:updated') {
-          if (user?.restaurantUsername) getOrders(user.restaurantUsername).then(o => setOrders(Array.isArray(o) ? dedupeOrdersById(o) : [])).catch(() => {});
+          if (user?.restaurantUsername) {getOrders(user.restaurantUsername).then(o => { setOrders(Array.isArray(o) ? dedupeOrdersById(o) : []); }).catch(() => {});}
         }
       } catch (err) {
         // ignore
       }
     };
     window.addEventListener('realtime:event', handler as EventListener);
-    return () => window.removeEventListener('realtime:event', handler as EventListener);
+    return () => { window.removeEventListener('realtime:event', handler as EventListener); };
   }, [user]);
 
   const triggerPrint = (order: Order) => {
@@ -595,7 +595,7 @@ function OrdersDashboard() {
   }
   
   const handleAddOrder = async (newOrderData: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null; course_hold?: boolean }[]; covers?: number }) => {
-    if (!user?.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
     const items = newOrderData.items.map(it => ({
       id: it.id ?? `i${Date.now()}${Math.random().toString(36).slice(2,5)}`,
       name: it.name,
@@ -715,7 +715,7 @@ function OrdersDashboard() {
       });
 
       const newSelected = selectedOrder ? updated.find(o => o.id === selectedOrder.id) ?? null : null;
-      if (selectedOrder && newSelected) setSelectedOrder(newSelected);
+      if (selectedOrder && newSelected) {setSelectedOrder(newSelected);}
       return updated;
     });
   }
@@ -744,13 +744,13 @@ function OrdersDashboard() {
       });
 
       const newSelected = selectedOrder ? updated.find(o => o.id === selectedOrder.id) ?? null : null;
-      if (selectedOrder && newSelected) setSelectedOrder(newSelected);
+      if (selectedOrder && newSelected) {setSelectedOrder(newSelected);}
       return updated;
     });
   }
 
   const handleDeleteOrder = async (orderId: string) => {
-    if (!user?.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
     try {
       await deleteOrder(user.restaurantUsername, orderId);
         const [updatedOrders, updatedApcInsight] = await Promise.all([
@@ -795,10 +795,10 @@ function OrdersDashboard() {
     // optimistic UI update
     setOrders(orders.map(order => order.id === orderId ? { ...order, status } : order));
 
-    if (!user?.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
 
     const current = orders.find(o => o.id === orderId);
-    if (!current) return;
+    if (!current) {return;}
 
     const updatedOrder: Order = { ...current, status };
 
@@ -822,7 +822,7 @@ function OrdersDashboard() {
   // Bark the order to the kitchen: advances the visible stage and starts the
   // order/dish prep timers (they stay idle until the bark).
   const handleBarkOrder = async (order: Order) => {
-    if (!user?.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
     try {
       await barkOrder(user.restaurantUsername, order.id);
       toast({ title: "Order barked", description: `Table ${order.table || "—"} announced to the kitchen — timers started.` });
@@ -833,15 +833,15 @@ function OrdersDashboard() {
   };
 
   const handleSetBillVerification = async (order: Order) => {
-    if (!user?.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
     const confirmed = window.confirm(
       'Confirm move to Bill Verification? This action cannot be undone and you will not be able to revert to Preparing or Served.',
     );
-    if (!confirmed) return;
+    if (!confirmed) {return;}
 
     try {
       // decide which taxes to apply: prefer order.taxes if present, otherwise use defaultTax
-      let taxesToApply: Tax[] | undefined = order.taxes && order.taxes.length ? order.taxes : undefined;
+      let taxesToApply: Tax[] | undefined = order.taxes?.length ? order.taxes : undefined;
       if ((!taxesToApply || taxesToApply.length === 0) && defaultTax) {
         taxesToApply = Object.keys(defaultTax).map((name, i) => ({ id: `d${i}` , name, percentage: Number(defaultTax[name]) }));
       }
@@ -872,13 +872,13 @@ function OrdersDashboard() {
   };
 
   const handleReplaceBill = async (order: Order, replacement: { items: OrderItem[]; taxes: { id?: string; name: string; percentage: number }[]; serviceChargePercentage?: number | undefined; applyServiceCharge?: boolean; reason: string; }) => {
-    if (!user?.restaurantUsername) return;
-    if (!replacement.reason || !replacement.reason.trim()) {
+    if (!user?.restaurantUsername) {return;}
+    if (!replacement.reason?.trim()) {
       alert('Reason is required');
       return;
     }
     const confirmed = window.confirm('This will update the existing bill and order in-place. Continue?');
-    if (!confirmed) return;
+    if (!confirmed) {return;}
 
     try {
       const subtotal = replacement.items.reduce((s, it) => s + (Number(it.price) || 0) * (Number(it.quantity) || 0), 0);
@@ -909,12 +909,12 @@ function OrdersDashboard() {
       } as const;
 
       const result = await replaceBill(user.restaurantUsername, payload);
-      if (!result) throw new Error('Replace failed');
+      if (!result) {throw new Error('Replace failed');}
 
       // update the existing order in local state instead of creating a new one
       setOrders((prev) => {
         return prev.map(o => {
-          if (o.id !== order.id) return o;
+          if (o.id !== order.id) {return o;}
           const updated: Order = {
             ...o,
             items: replacement.items.map(it => ({ ...it })),
@@ -931,9 +931,9 @@ function OrdersDashboard() {
 
       // update APC insight if present
       setMonthlyApcInsight((prev) => {
-        if (!prev) return prev;
+        if (!prev) {return prev;}
         const ordersCopy = (prev.orders || []).map(a => {
-          if (a.order_id !== order.id) return a;
+          if (a.order_id !== order.id) {return a;}
           return { ...a, total: Number(totalAmt) };
         });
         return { ...prev, orders: ordersCopy };
@@ -953,7 +953,7 @@ function OrdersDashboard() {
   // requests carry no amount. Returns null when the bill can't be read, in
   // which case the caller simply omits the figure.
   const fetchTablePayable = async (tableName: string): Promise<number | null> => {
-    if (!user?.restaurantUsername) return null;
+    if (!user?.restaurantUsername) {return null;}
     try {
       const bill = await getBillForTable(user.restaurantUsername, tableName);
       const amount = Number(bill?.grand_total ?? bill?.total_amt);
@@ -967,7 +967,7 @@ function OrdersDashboard() {
     payable != null ? `Amount payable: ${currencySymbol}${payable.toFixed(2)} (incl. taxes & charges)\n\n` : "";
 
   const handleWaiterConfirmPayment = async (order: Order, paymentMethod: PaymentMethod) => {
-    if (!user?.restaurantUsername || !user.employeeId) return;
+    if (!user?.restaurantUsername || !user.employeeId) {return;}
     if (!(hasRole("waiter") || hasRole("admin"))) {
       showRoleRequiredToast("waiter or admin");
       return;
@@ -987,7 +987,7 @@ function OrdersDashboard() {
     const confirmed = window.confirm(
       `${payableLine(payable)}Confirm payment by ${paymentMethod}? This sends the bill for admin approval.`,
     );
-    if (!confirmed) return;
+    if (!confirmed) {return;}
 
     try {
       await confirmBillPaymentByWaiter(
@@ -1017,7 +1017,7 @@ function OrdersDashboard() {
   };
 
   const handleAdminApprovePayment = async (order: Order) => {
-    if (!user?.restaurantUsername || !user.employeeId) return;
+    if (!user?.restaurantUsername || !user.employeeId) {return;}
     if (!hasRole('admin')) {
       showRoleRequiredToast('admin');
       return;
@@ -1033,7 +1033,7 @@ function OrdersDashboard() {
 
     const payable = await fetchTablePayable(order.table);
     const confirmed = window.confirm(`${payableLine(payable)}Approve this waiter-confirmed payment?`);
-    if (!confirmed) return;
+    if (!confirmed) {return;}
 
     try {
       await approveBillPaymentByAdmin(user.restaurantUsername, user.employeeId, order.id);
@@ -1056,13 +1056,13 @@ function OrdersDashboard() {
   };
 
   const handleCloseBill = async (order: Order) => {
-    if (!user?.restaurantUsername || !user.employeeId) return;
+    if (!user?.restaurantUsername || !user.employeeId) {return;}
     if (!hasRole('admin')) {
       showRoleRequiredToast('admin');
       return;
     }
     const confirmed = window.confirm('Close this bill? This finalizes the order.');
-    if (!confirmed) return;
+    if (!confirmed) {return;}
 
     try {
       await closeBillByOrder(user.restaurantUsername, user.employeeId, order.id);
@@ -1085,12 +1085,12 @@ function OrdersDashboard() {
   };
 
   const refreshDiscountRequests = async () => {
-    if (!user?.restaurantUsername || !isAdmin) return;
+    if (!user?.restaurantUsername || !isAdmin) {return;}
     try { setDiscountRequests(await getDiscountRequests(user.restaurantUsername)); } catch { /* keep current */ }
   };
 
   const handleDecideDiscount = async (request: DiscountRequest, approve: boolean) => {
-    if (!user?.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
     try {
       await decideDiscountRequest(user.restaurantUsername, request.id, approve);
       toast({
@@ -1105,7 +1105,7 @@ function OrdersDashboard() {
   };
 
   const handleReopenBill = async (order: Order) => {
-    if (!user?.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
     if (!hasRole('admin')) {
       showRoleRequiredToast('admin');
       return;
@@ -1115,7 +1115,7 @@ function OrdersDashboard() {
       return;
     }
     const confirmed = window.confirm('Re-open this closed bill? The table goes back in service and the payment must be approved again.');
-    if (!confirmed) return;
+    if (!confirmed) {return;}
     try {
       const r = await reopenBill(user.restaurantUsername, order.bill_id);
       toast({ title: "Bill re-opened", description: `${r.restored_orders ?? 0} order(s) restored — approve the payment again to settle.` });
@@ -1127,7 +1127,7 @@ function OrdersDashboard() {
 
   // --- Split tender (multiple payment modes on one bill) --------------------
   const openSplitPayment = async (order: Order) => {
-    if (!user?.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
     if (!(hasRole("waiter") || hasRole("admin"))) {
       showRoleRequiredToast("waiter or admin");
       return;
@@ -1138,7 +1138,7 @@ function OrdersDashboard() {
     try {
       const bill = await getBillForTable(user.restaurantUsername, order.table);
       const g = Number(bill?.grand_total);
-      if (Number.isFinite(g) && g > 0) total = Math.round(g * 100) / 100;
+      if (Number.isFinite(g) && g > 0) {total = Math.round(g * 100) / 100;}
     } catch { /* leave null — user fills amounts manually */ }
     setSplitPayTotal(total);
     setSplitRows([
@@ -1162,7 +1162,7 @@ function OrdersDashboard() {
   };
 
   const submitSplitPayment = async () => {
-    if (!user?.restaurantUsername || !user.employeeId || !splitPayOrder) return;
+    if (!user?.restaurantUsername || !user.employeeId || !splitPayOrder) {return;}
     const splits: PaymentSplit[] = splitRows
       .map((r) => ({ method: r.method, amount: Math.round((Number(r.amount) || 0) * 100) / 100 }))
       .filter((r) => r.amount > 0);
@@ -1184,13 +1184,13 @@ function OrdersDashboard() {
   };
 
   const refreshOrders = async () => {
-    if (!user?.restaurantUsername) return;
+    if (!user?.restaurantUsername) {return;}
     try {
       const updatedOrders = await getOrders(user.restaurantUsername);
       setOrders(Array.isArray(updatedOrders) ? dedupeOrdersById(updatedOrders) : []);
       if (selectedOrder) {
         const updatedSelected = Array.isArray(updatedOrders) ? updatedOrders.find(o => o.id === selectedOrder.id) ?? null : null;
-        if (updatedSelected) setSelectedOrder(updatedSelected);
+        if (updatedSelected) {setSelectedOrder(updatedSelected);}
       }
       if (isAdmin) {
         try { setDiscountRequests(await getDiscountRequests(user.restaurantUsername)); } catch { /* keep current */ }
@@ -1201,9 +1201,9 @@ function OrdersDashboard() {
   };
 
   const getApcBadgeClass = (zone?: "red" | "yellow" | "green") => {
-    if (zone === "green") return "bg-green-100 text-green-800 border-green-200";
-    if (zone === "yellow") return "bg-yellow-100 text-yellow-900 border-yellow-200";
-    if (zone === "red") return "bg-red-100 text-red-800 border-red-200";
+    if (zone === "green") {return "bg-green-100 text-green-800 border-green-200";}
+    if (zone === "yellow") {return "bg-yellow-100 text-yellow-900 border-yellow-200";}
+    if (zone === "red") {return "bg-red-100 text-red-800 border-red-200";}
     return "";
   };
 
@@ -1218,9 +1218,9 @@ function OrdersDashboard() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" onClick={() => router.push("/dashboard/tables")}>Open Tables</Button>
+          <Button variant="outline" onClick={() => { router.push("/dashboard/tables"); }}>Open Tables</Button>
           {isAdmin ? (
-            <Button variant="outline" onClick={() => setIsDefaultTaxDialogOpen(true)}>Modify Default Tax</Button>
+            <Button variant="outline" onClick={() => { setIsDefaultTaxDialogOpen(true); }}>Modify Default Tax</Button>
           ) : null}
         </div>
       </div>
@@ -1274,7 +1274,7 @@ function OrdersDashboard() {
             menuItems={menuItems}
             tables={tables}
             selectedTableName={selectedTable?.name ?? selectedTableName}
-            onClearSelectedTable={() => router.push("/dashboard/orders")}
+            onClearSelectedTable={() => { router.push("/dashboard/orders"); }}
           />
         </DialogContent>
       </Dialog>
@@ -1365,7 +1365,7 @@ function OrdersDashboard() {
                   key={order.id}
                   id={`order-row-${order.id}`}
                   tabIndex={0}
-                  onClick={() => handleRowClick(order)}
+                  onClick={() => { handleRowClick(order); }}
                   className={`cursor-pointer ${highlightedOrderId === String(order.id) ? 'ring-2 ring-primary/60' : ''}`}
                 >
                   <TableCell className="font-medium">
@@ -1418,7 +1418,7 @@ function OrdersDashboard() {
                   </TableCell>
                   <TableCell>
                     {isWaiterOnly ? null : (
-                    <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex items-center justify-end gap-1" onClick={(e) => { e.stopPropagation(); }}>
                     {order.status === "Preparing" && !isOrderBarked(order) ? (
                       <Button
                         size="sm"
@@ -1441,7 +1441,7 @@ function OrdersDashboard() {
                       // Customer-facing display: full-screen live bill for this table
                       // (public page — the signed table token is the auth).
                       const tbl = tables.find((t) => t.name.toLowerCase() === order.table?.toLowerCase());
-                      if (!tbl?.qr_token || !user?.restaurantUsername) return null;
+                      if (!tbl?.qr_token || !user?.restaurantUsername) {return null;}
                       const cfdUrl = `/cfd/${encodeURIComponent(user.restaurantUsername)}?t=${encodeURIComponent(tbl.qr_token)}`;
                       return (
                         <Button
@@ -1457,12 +1457,12 @@ function OrdersDashboard() {
                     })()}
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
-                        <Button aria-haspopup="true" size="icon" variant="ghost" onClick={(e) => e.stopPropagation()}>
+                        <Button aria-haspopup="true" size="icon" variant="ghost" onClick={(e) => { e.stopPropagation(); }}>
                           <MoreHorizontal className="h-4 w-4" />
                           <span className="sr-only">Toggle menu</span>
                         </Button>
                       </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+                      <DropdownMenuContent align="end" onClick={(e) => { e.stopPropagation(); }}>
                         <DropdownMenuLabel>Actions</DropdownMenuLabel>
                         <DropdownMenuItem
                           disabled={
@@ -1640,7 +1640,7 @@ function OrdersDashboard() {
         </CardContent>
       </Card>
 
-      <Dialog open={splitPayOrder !== null} onOpenChange={(v) => { if (!v && !splitBusy) setSplitPayOrder(null); }}>
+      <Dialog open={splitPayOrder !== null} onOpenChange={(v) => { if (!v && !splitBusy) {setSplitPayOrder(null);} }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Split payment · Table {splitPayOrder?.table}</DialogTitle>
@@ -1653,7 +1653,7 @@ function OrdersDashboard() {
           <div className="space-y-2">
             {splitRows.map((row, idx) => (
               <div key={idx} className="flex items-center gap-2">
-                <Select value={row.method} onValueChange={(v) => updateSplitRow(idx, { method: v })}>
+                <Select value={row.method} onValueChange={(v) => { updateSplitRow(idx, { method: v }); }}>
                   <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {["Cash", "Upi", "Card"].map((m) => (
@@ -1666,17 +1666,17 @@ function OrdersDashboard() {
                   min="0"
                   step="0.01"
                   value={row.amount}
-                  onChange={(e) => updateSplitRow(idx, { amount: e.target.value })}
+                  onChange={(e) => { updateSplitRow(idx, { amount: e.target.value }); }}
                 />
                 {splitRows.length > 2 ? (
-                  <Button variant="ghost" size="icon" onClick={() => setSplitRows((rows) => rows.filter((_, i) => i !== idx))}>
+                  <Button variant="ghost" size="icon" onClick={() => { setSplitRows((rows) => rows.filter((_, i) => i !== idx)); }}>
                     <X className="h-4 w-4" />
                   </Button>
                 ) : null}
               </div>
             ))}
             {splitRows.length < 4 ? (
-              <Button variant="outline" size="sm" onClick={() => setSplitRows((rows) => [...rows, { method: "Upi", amount: "0.00" }])}>
+              <Button variant="outline" size="sm" onClick={() => { setSplitRows((rows) => [...rows, { method: "Upi", amount: "0.00" }]); }}>
                 Add payment mode
               </Button>
             ) : null}
@@ -1695,7 +1695,7 @@ function OrdersDashboard() {
             })() : null}
           </div>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setSplitPayOrder(null)} disabled={splitBusy}>Cancel</Button>
+            <Button variant="ghost" onClick={() => { setSplitPayOrder(null); }} disabled={splitBusy}>Cancel</Button>
             <Button onClick={() => { void submitSplitPayment(); }} disabled={splitBusy}>Record split payment</Button>
           </DialogFooter>
         </DialogContent>
@@ -1707,10 +1707,10 @@ function OrdersDashboard() {
         open={isDetailsOpen}
         onOpenChange={(isOpen) => {
           setIsDetailsOpen(isOpen);
-          if (!isOpen) setSelectedOrder(null);
+          if (!isOpen) {setSelectedOrder(null);}
         }}
         onSave={async (updatedOrder) => {
-          if (!user?.restaurantUsername) return;
+          if (!user?.restaurantUsername) {return;}
           try {
             // detect removed item ids and call delete endpoint for each
             try {
@@ -1748,7 +1748,7 @@ function OrdersDashboard() {
         open={isViewOpen}
         onOpenChange={(isOpen) => {
           setIsViewOpen(isOpen);
-          if (!isOpen) setSelectedOrder(null);
+          if (!isOpen) {setSelectedOrder(null);}
         }}
         onRefreshOrders={refreshOrders}
       />}
@@ -1758,7 +1758,7 @@ function OrdersDashboard() {
           order={selectedOrder} 
           open={isEditDialogOpen}
           onOpenChange={(isOpen) => {
-            if(!isOpen) setSelectedOrder(null);
+            if(!isOpen) {setSelectedOrder(null);}
             setIsEditDialogOpen(isOpen);
           }}
           onSubmit={handleEditOrder}
@@ -1787,7 +1787,7 @@ function OrdersDashboard() {
         open={isProofPreviewOpen}
         onOpenChange={(open) => {
           setIsProofPreviewOpen(open);
-          if (!open) setProofPreviewUrl(null);
+          if (!open) {setProofPreviewUrl(null);}
         }}
       >
         <DialogContent className="sm:max-w-2xl w-full">
@@ -1811,7 +1811,7 @@ function OrdersDashboard() {
             <div className="text-sm text-muted-foreground">No screenshot available.</div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setIsProofPreviewOpen(false)}>Close</Button>
+            <Button variant="outline" onClick={() => { setIsProofPreviewOpen(false); }}>Close</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1823,11 +1823,11 @@ function OrdersDashboard() {
 
 // Live elapsed (ms) for a prep timer, mirroring the backend computation.
 const timerElapsedMs = (t?: OrderTimer | null, nowMs?: number): number => {
-  if (!t?.started_at) return 0;
+  if (!t?.started_at) {return 0;}
   const now = nowMs ?? Date.now();
   const end = t.ended_at ? Date.parse(t.ended_at) : now;
   let paused = t.paused_ms ?? 0;
-  if (t.paused && t.pause_started_at) paused += now - Date.parse(t.pause_started_at);
+  if (t.paused && t.pause_started_at) {paused += now - Date.parse(t.pause_started_at);}
   return Math.max(0, end - Date.parse(t.started_at) - paused);
 };
 
@@ -1854,7 +1854,7 @@ const SOURCE_BADGE_CLASS: Record<string, string> = {
 };
 const SourceBadge = ({ source }: { source?: string | null }) => {
   const s = (source ?? "").trim().toLowerCase();
-  if (!s || s === "dine_in") return null;
+  if (!s || s === "dine_in") {return null;}
   return (
     <Badge variant="outline" className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0 ${SOURCE_BADGE_CLASS[s] ?? ""}`}>
       {s.replace(/_/g, " ")}
@@ -1888,27 +1888,27 @@ function KitchenDisplay({ orders, restaurantId, onRefresh, managedSections = [],
       if (!seen.has(key)) { seen.add(key); out.push(s); }
     }
     const extras = new Set<string>();
-    for (const o of activeOrders) for (const it of o.items) {
-      if (it.station && !seen.has(it.station.toLowerCase())) extras.add(it.station);
-    }
+    for (const o of activeOrders) {for (const it of o.items) {
+      if (it.station && !seen.has(it.station.toLowerCase())) {extras.add(it.station);}
+    }}
     out.push(...Array.from(extras).sort());
     return out;
   }, [activeOrders, managedSections]);
 
   // Ageing tick while tickets are on screen.
   useEffect(() => {
-    if (mode !== "tickets" || activeOrders.length === 0) return;
-    const t = setInterval(() => setNow(Date.now()), 10000);
-    return () => clearInterval(t);
+    if (mode !== "tickets" || activeOrders.length === 0) {return;}
+    const t = setInterval(() => { setNow(Date.now()); }, 10000);
+    return () => { clearInterval(t); };
   }, [mode, activeOrders.length]);
 
   useEffect(() => {
-    if (mode !== "expo" || !restaurantId) return;
+    if (mode !== "expo" || !restaurantId) {return;}
     let cancelled = false;
     const load = async () => {
       try {
         const r = await getKdsExpo(restaurantId);
-        if (!cancelled) setExpo(r.tables);
+        if (!cancelled) {setExpo(r.tables);}
       } catch { /* keep the previous snapshot */ }
     };
     void load();
@@ -1987,8 +1987,8 @@ function KitchenDisplay({ orders, restaurantId, onRefresh, managedSections = [],
           </CardDescription>
         </div>
         <div className="flex gap-1 rounded-md border p-1">
-          <Button size="sm" variant={mode === "tickets" ? "default" : "ghost"} onClick={() => setMode("tickets")}>Tickets</Button>
-          <Button size="sm" variant={mode === "expo" ? "default" : "ghost"} onClick={() => setMode("expo")}>Expo</Button>
+          <Button size="sm" variant={mode === "tickets" ? "default" : "ghost"} onClick={() => { setMode("tickets"); }}>Tickets</Button>
+          <Button size="sm" variant={mode === "expo" ? "default" : "ghost"} onClick={() => { setMode("expo"); }}>Expo</Button>
         </div>
       </CardHeader>
       <CardContent>
@@ -2002,7 +2002,7 @@ function KitchenDisplay({ orders, restaurantId, onRefresh, managedSections = [],
                       size="sm"
                       variant={station.toLowerCase() === s.toLowerCase() ? "default" : "outline"}
                       className={`h-7 px-2.5 text-xs capitalize ${s === "All" ? "" : "rounded-r-none"}`}
-                      onClick={() => setStation(s)}
+                      onClick={() => { setStation(s); }}
                     >
                       {s}
                     </Button>
@@ -2165,7 +2165,7 @@ function KitchenKioskDisplay({ station }: { station: string }) {
   const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(async () => {
-    if (!restaurantId) return;
+    if (!restaurantId) {return;}
     try {
       const data = await getOrders(restaurantId, station);
       setOrders(Array.isArray(data) ? dedupeOrdersById(data) : []);
@@ -2181,22 +2181,22 @@ function KitchenKioskDisplay({ station }: { station: string }) {
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
     const t = setInterval(() => { void load(); }, 10000);
-    return () => clearInterval(t);
+    return () => { clearInterval(t); };
   }, [load]);
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent)?.detail as { event?: string } | undefined;
-      if (!detail) return;
-      if (detail.event === "order:updated" || detail.event === "bill:updated") void load();
+      if (!detail) {return;}
+      if (detail.event === "order:updated" || detail.event === "bill:updated") {void load();}
     };
     window.addEventListener("realtime:event", handler as EventListener);
-    return () => window.removeEventListener("realtime:event", handler as EventListener);
+    return () => { window.removeEventListener("realtime:event", handler as EventListener); };
   }, [load]);
 
   // Ageing tick so item/urgency timers keep advancing on the wall screen.
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 5000);
-    return () => clearInterval(t);
+    const t = setInterval(() => { setNow(Date.now()); }, 5000);
+    return () => { clearInterval(t); };
   }, []);
 
   const activeOrders = useMemo(
@@ -2257,8 +2257,8 @@ function KitchenKioskDisplay({ station }: { station: string }) {
   // Order-level urgency by minutes since the prep timer started (i.e. barked).
   const urgency = (order: Order): "fresh" | "warn" | "late" => {
     const min = timerElapsedMs(order.timing?.order, now) / 60000;
-    if (min >= 10) return "late";
-    if (min >= 5) return "warn";
+    if (min >= 10) {return "late";}
+    if (min >= 5) {return "warn";}
     return "fresh";
   };
 
@@ -2386,7 +2386,7 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
   const [selectedTableId, setSelectedTableId] = useState<string>(() => {
     if (selectedTableName) {
       const matched = tables.find((table) => table.name.toLowerCase() === selectedTableName.toLowerCase());
-      if (matched) return String(matched.id);
+      if (matched) {return String(matched.id);}
     }
     return tables?.[0]?.id?.toString() ?? '';
   });
@@ -2419,7 +2419,7 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
   const addItem = () => {
     const name = selectedItemValue.trim();
     const selectedMenuItem = menuItems.find((m) => m.name.toLowerCase() === name.toLowerCase());
-    if (!selectedMenuItem) return;
+    if (!selectedMenuItem) {return;}
     const price = Number(selectedMenuItem.price || 0);
     const note = selectedNote.trim();
     const hold = selectedHold;
@@ -2450,7 +2450,7 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
 
   const handleSubmit = () => {
     const tableIdNum = Number(selectedTableId);
-    if (!selectedTableId || Number.isNaN(tableIdNum) || itemsList.length === 0) return;
+    if (!selectedTableId || Number.isNaN(tableIdNum) || itemsList.length === 0) {return;}
     void onSubmit({ tableId: tableIdNum, items: itemsList, covers });
   };
 
@@ -2470,7 +2470,7 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
           <Combobox
             options={tableOptions}
             value={selectedTableId || (tables?.[0]?.id?.toString() ?? '')}
-            onChange={(value) => setSelectedTableId(String(value ?? ''))}
+            onChange={(value) => { setSelectedTableId(String(value ?? '')); }}
             placeholder="Select a table"
             searchPlaceholder="Search tables..."
             emptyPlaceholder="No tables available"
@@ -2481,7 +2481,7 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
       <div className="grid grid-cols-4 items-center gap-4">
       <Label htmlFor="covers" className="text-right">Guests</Label>
       <div className="col-span-3">
-        <Input id="covers" type="number" min={1} value={String(covers)} onChange={(e) => setCovers(Math.max(1, Number(e.target.value) || 1))} placeholder="Number of guests (covers)" />
+        <Input id="covers" type="number" min={1} value={String(covers)} onChange={(e) => { setCovers(Math.max(1, Number(e.target.value) || 1)); }} placeholder="Number of guests (covers)" />
       </div>
       </div>
       <div className="grid grid-cols-4 items-center gap-4">
@@ -2500,7 +2500,7 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
             emptyPlaceholder="No items found."
           />
         </div>
-        <Input placeholder="Qty" type="number" value={String(selectedQuantity)} onChange={e => setSelectedQuantity(Math.max(1, Number(e.target.value) || 1))} className="col-span-4" />
+        <Input placeholder="Qty" type="number" value={String(selectedQuantity)} onChange={e => { setSelectedQuantity(Math.max(1, Number(e.target.value) || 1)); }} className="col-span-4" />
         <Button onClick={addItem} className="col-span-2">Add</Button>
       </div>
       </div>
@@ -2510,7 +2510,7 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
           id="item-note"
           placeholder="No onion, extra spicy, etc."
           value={selectedNote}
-          onChange={(e) => setSelectedNote(e.target.value)}
+          onChange={(e) => { setSelectedNote(e.target.value); }}
           className="col-span-3"
         />
       </div>
@@ -2540,7 +2540,7 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
               </div>
               <div className="flex items-center gap-2">
                 <div>{currencySymbol}{(it.price * it.quantity).toFixed(2)}</div>
-                <Button variant="ghost" size="icon" onClick={() => removeItem(it.name, it.note)}><X className="h-4 w-4"/></Button>
+                <Button variant="ghost" size="icon" onClick={() => { removeItem(it.name, it.note); }}><X className="h-4 w-4"/></Button>
               </div>
             </div>
           ))}
@@ -2586,7 +2586,7 @@ const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit, onRep
       } else if (defaultTax && typeof defaultTax === "object") {
         const taxesFromDefault: Tax[] = [];
         for (const [k, v] of Object.entries(defaultTax)) {
-          if (!k) continue;
+          if (!k) {continue;}
           if (/service ?charge/i.test(k) || /service ?charges/i.test(k)) {
             if (Number(v) > 0) {
               setServiceChargePerc(String(Number(v)));
@@ -2618,7 +2618,7 @@ const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit, onRep
   const handleAddItem = () => {
     const itemName = newItemName.trim();
     const selectedMenuItem = (menuItems ?? []).find(m => m.name.toLowerCase() === itemName.toLowerCase());
-    if (!selectedMenuItem) return;
+    if (!selectedMenuItem) {return;}
     const normalizedNote = newItemNote.trim();
 
     setLocalItems(prev => {
@@ -2643,7 +2643,7 @@ const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit, onRep
     setNewItemNote("");
   };
 
-  const handleRemoveItem = (id: string) => setLocalItems(prev => prev.filter(i => i.id !== id));
+  const handleRemoveItem = (id: string) => { setLocalItems(prev => prev.filter(i => i.id !== id)); };
 
   const handleSubmit = async () => {
     const updatedOrder = {
@@ -2655,7 +2655,7 @@ const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit, onRep
     };
 
     if (onReplace) {
-      if (!reason || !reason.trim()) {
+      if (!reason?.trim()) {
         alert("Reason is required to replace bill");
         return;
       }
@@ -2702,7 +2702,7 @@ const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit, onRep
           </div>
           <div className="grid grid-cols-3 items-center gap-4">
             <Label htmlFor="serviceCharge">Percentage (%)</Label>
-            <Input id="serviceCharge" type="number" value={serviceChargePerc} onChange={(e) => setServiceChargePerc(e.target.value)} className="col-span-2" placeholder="e.g., 10" disabled={!applyServiceCharge} />
+            <Input id="serviceCharge" type="number" value={serviceChargePerc} onChange={(e) => { setServiceChargePerc(e.target.value); }} className="col-span-2" placeholder="e.g., 10" disabled={!applyServiceCharge} />
           </div>
 
           <div className="grid grid-cols-1 gap-y-2">
@@ -2717,11 +2717,11 @@ const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit, onRep
                         {item.note ? <div className="text-xs text-muted-foreground">Note: {item.note}</div> : null}
                       </TableCell>
                       <TableCell className="text-center">
-                        <Input type="number" value={String(item.quantity)} onChange={(e) => setLocalItems(prev => prev.map(p => p.id === item.id ? { ...p, quantity: Math.max(1, Number(e.target.value) || 1) } : p))} className="w-16 mx-auto" />
+                        <Input type="number" value={String(item.quantity)} onChange={(e) => { setLocalItems(prev => prev.map(p => p.id === item.id ? { ...p, quantity: Math.max(1, Number(e.target.value) || 1) } : p)); }} className="w-16 mx-auto" />
                       </TableCell>
                       <TableCell className="text-right">{currencySymbol}{(item.price * item.quantity).toFixed(2)}</TableCell>
                       <TableCell className="text-right">
-                        <Button variant="ghost" size="icon" onClick={() => handleRemoveItem(item.id)}>
+                        <Button variant="ghost" size="icon" onClick={() => { handleRemoveItem(item.id); }}>
                           <Trash2 className="h-4 w-4 text-destructive" />
                         </Button>
                       </TableCell>
@@ -2748,10 +2748,10 @@ const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit, onRep
               <Input
                 placeholder="Note"
                 value={newItemNote}
-                onChange={(e) => setNewItemNote(e.target.value)}
+                onChange={(e) => { setNewItemNote(e.target.value); }}
                 className="col-span-4"
               />
-              <Input placeholder="Qty" type="number" value={String(newItemQuantity)} onChange={(e) => setNewItemQuantity(Math.max(1, Number(e.target.value) || 1))} className="col-span-2" />
+              <Input placeholder="Qty" type="number" value={String(newItemQuantity)} onChange={(e) => { setNewItemQuantity(Math.max(1, Number(e.target.value) || 1)); }} className="col-span-2" />
               <Button onClick={handleAddItem} className="col-span-1">Add</Button>
             </div>
           </div>
@@ -2761,9 +2761,9 @@ const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit, onRep
             <div className="space-y-2">
               {taxes.map((tax) => (
                 <div key={tax.id} className="grid grid-cols-12 items-center gap-2">
-                  <Input placeholder="Tax Name (e.g., VAT)" value={tax.name} onChange={(e) => handleTaxChange(tax.id, "name", e.target.value)} className="col-span-7" />
-                  <Input placeholder="%" type="number" value={tax.percentage} onChange={(e) => handleTaxChange(tax.id, "percentage", e.target.value)} className="col-span-3" />
-                  <Button variant="ghost" size="icon" onClick={() => removeTax(tax.id)} className="col-span-2"><X className="h-4 w-4" /></Button>
+                  <Input placeholder="Tax Name (e.g., VAT)" value={tax.name} onChange={(e) => { handleTaxChange(tax.id, "name", e.target.value); }} className="col-span-7" />
+                  <Input placeholder="%" type="number" value={tax.percentage} onChange={(e) => { handleTaxChange(tax.id, "percentage", e.target.value); }} className="col-span-3" />
+                  <Button variant="ghost" size="icon" onClick={() => { removeTax(tax.id); }} className="col-span-2"><X className="h-4 w-4" /></Button>
                 </div>
               ))}
             </div>
@@ -2793,14 +2793,14 @@ const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit, onRep
               aria-label="Reason for bill replacement"
               placeholder="Write the reason for replacement"
               value={reason}
-              onChange={e => setReason(e.target.value)}
+              onChange={e => { setReason(e.target.value); }}
               className="w-full border rounded p-2 mt-1"
               rows={3}
             />
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button variant="outline" onClick={() => { onOpenChange(false); }}>Cancel</Button>
           <Button onClick={handleSubmit}>Save Changes</Button>
         </DialogFooter>
       </DialogContent>
@@ -2827,7 +2827,7 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
     }
   }, [open, order]);
 
-  if (!order) return null;
+  if (!order) {return null;}
 
   const handleAddItem = () => {
     const itemName = newItemName.trim();
@@ -2938,7 +2938,7 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
                     </TableCell>
                     <TableCell className="text-right">{currencySymbol}{(item.price * item.quantity).toFixed(2)}</TableCell>
                     <TableCell className="text-right">
-                      <Button variant="ghost" size="icon" onClick={() => handleRemove(item.id)}>
+                      <Button variant="ghost" size="icon" onClick={() => { handleRemove(item.id); }}>
                         <Trash2 className="h-4 w-4 text-destructive" />
                       </Button>
                     </TableCell>
@@ -2963,7 +2963,7 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
             <Input
               placeholder="Note"
               value={newItemNote}
-              onChange={(e) => setNewItemNote(e.target.value)}
+              onChange={(e) => { setNewItemNote(e.target.value); }}
               className="col-span-4"
             />
             <div className="col-span-2 flex items-center justify-center gap-1" title="Hold this course — fire it from the KDS later">
@@ -3008,7 +3008,7 @@ OrderDetailsDialog.displayName = "OrderDetailsDialog";
 const OrderViewDialog = React.memo(({ order, open, onOpenChange, onRefreshOrders }: { order: Order | null, open: boolean, onOpenChange: (open: boolean) => void, onRefreshOrders?: () => Promise<void> }) => {
   const { currencySymbol } = useCurrency();
   const { user } = useAuth();
-  if (!order) return null;
+  if (!order) {return null;}
 
   const calculatedTaxes = calculateTaxes(order.subtotal, order.taxes);
   const serviceCharge = calculateServiceCharge(order.subtotal, order.serviceChargePercentage, order.applyServiceCharge);
@@ -3036,14 +3036,14 @@ const OrderViewDialog = React.memo(({ order, open, onOpenChange, onRefreshOrders
     try {
       await requestBackend({ path: `/bills/order/${encodeURIComponent(order.id)}/status`, method: 'PATCH', restaurantId: user?.restaurantUsername, body: { items_split: [['Served', servedList], ['Preparing', preparingList]] } });
       // call parent refresh handler so OrdersPage can reload state
-      if (onRefreshOrders) await onRefreshOrders();
+      if (onRefreshOrders) {await onRefreshOrders();}
     } catch (err) {
       console.error('persist items_split failed', err);
     }
   };
 
   const handleSaveChanges = async () => {
-    if (!dndEnabled) return;
+    if (!dndEnabled) {return;}
     try {
       await persistSplit(served, preparing);
       setIsDirty(false);
@@ -3064,13 +3064,13 @@ const OrderViewDialog = React.memo(({ order, open, onOpenChange, onRefreshOrders
       const activeId = item.id;
       if (side === 'preparing') {
         const moving = preparing.find(p => p.id === activeId);
-        if (!moving) return;
+        if (!moving) {return;}
         setPreparing(prev => prev.filter(p => p.id !== activeId));
         setServed(prev => [...prev, moving]);
         setIsDirty(true);
       } else {
         const moving = served.find(s => s.id === activeId);
-        if (!moving) return;
+        if (!moving) {return;}
         setServed(prev => prev.filter(s => s.id !== activeId));
         setPreparing(prev => [...prev, moving]);
         setIsDirty(true);
@@ -3195,7 +3195,7 @@ const OrderViewDialog = React.memo(({ order, open, onOpenChange, onRefreshOrders
               <Button className="ml-2" onClick={handleSaveChanges}>Save Changes</Button>
             </>
           ) : null}
-          <Button onClick={() => onOpenChange(false)}>Close</Button>
+          <Button onClick={() => { onOpenChange(false); }}>Close</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -3218,8 +3218,8 @@ const DefaultTaxDialog = React.memo(({ open, onOpenChange, defaultTax, onSaved }
     }
   }, [open, defaultTax]);
 
-  const addTax = () => setTaxes(prev => [...prev, { id: `t${Date.now()}`, name: '', percentage: 0 }]);
-  const removeTax = (id: string) => setTaxes(prev => prev.filter(t => t.id !== id));
+  const addTax = () => { setTaxes(prev => [...prev, { id: `t${Date.now()}`, name: '', percentage: 0 }]); };
+  const removeTax = (id: string) => { setTaxes(prev => prev.filter(t => t.id !== id)); };
   const updateTax = (id: string, field: 'name' | 'percentage', value: string) => {
     setTaxes(prev => prev.map(t => t.id === id ? { ...t, [field]: field === 'percentage' ? (parseFloat(value) || 0) : value } : t));
   };
@@ -3227,7 +3227,7 @@ const DefaultTaxDialog = React.memo(({ open, onOpenChange, defaultTax, onSaved }
   const handleSave = async () => {
     const payload: Record<string, number> = {};
     for (const t of taxes) {
-      if (t.name && !Number.isNaN(t.percentage)) payload[t.name] = Number(t.percentage);
+      if (t.name && !Number.isNaN(t.percentage)) {payload[t.name] = Number(t.percentage);}
     }
     onSaved(payload);
     onOpenChange(false);
@@ -3245,15 +3245,15 @@ const DefaultTaxDialog = React.memo(({ open, onOpenChange, defaultTax, onSaved }
         <div className="grid gap-4 py-4">
           {taxes.map(t => (
             <div key={t.id} className="grid grid-cols-12 gap-2 items-center">
-              <Input value={t.name} placeholder="Tax name" onChange={e => updateTax(t.id, 'name', e.target.value)} className="col-span-7" />
-              <Input value={String(t.percentage)} placeholder="%" type="number" onChange={e => updateTax(t.id, 'percentage', e.target.value)} className="col-span-3" />
-              <Button variant="ghost" size="icon" onClick={() => removeTax(t.id)} className="col-span-2"><X className="h-4 w-4"/></Button>
+              <Input value={t.name} placeholder="Tax name" onChange={e => { updateTax(t.id, 'name', e.target.value); }} className="col-span-7" />
+              <Input value={String(t.percentage)} placeholder="%" type="number" onChange={e => { updateTax(t.id, 'percentage', e.target.value); }} className="col-span-3" />
+              <Button variant="ghost" size="icon" onClick={() => { removeTax(t.id); }} className="col-span-2"><X className="h-4 w-4"/></Button>
             </div>
           ))}
           <Button variant="outline" onClick={addTax}>Add Tax</Button>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button variant="outline" onClick={() => { onOpenChange(false); }}>Cancel</Button>
           <Button onClick={handleSave}>Save Changes</Button>
         </DialogFooter>
       </DialogContent>

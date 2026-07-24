@@ -18,7 +18,7 @@ import {
   type OutletRow, type OutletsRollup,
 } from "@/lib/db"
 
-type EditState = { open: boolean; id: string | null; name: string; address: string; phone: string; hours: string }
+interface EditState { open: boolean; id: string | null; name: string; address: string; phone: string; hours: string }
 const EMPTY_EDIT: EditState = { open: false, id: null, name: "", address: "", phone: "", hours: "" }
 
 export default function OutletsPage() {
@@ -38,13 +38,13 @@ export default function OutletsPage() {
 
   // Admins/managers can use an outlet card as a launchpad: switching the whole
   // dashboard into that outlet. Everyone else just manages outlet records.
-  const roles = [user?.role, ...(Array.isArray(user?.role_all) ? user!.role_all : [])]
+  const roles = [user?.role, ...(Array.isArray(user?.role_all) ? user.role_all : [])]
   const canSwitch = roles.includes("admin") || roles.includes("manager")
 
   const money = (n: number | null | undefined) => `${currency}${Number(n ?? 0).toFixed(0)}`
 
   const load = useCallback(async () => {
-    if (!rid) return
+    if (!rid) {return}
     setLoading(true)
     try {
       const [o, r] = await Promise.all([getOutlets(rid), getOutletsRollup(rid, 30)])
@@ -65,7 +65,7 @@ export default function OutletsPage() {
   // top-bar OutletSwitcher: persist the choice, then navigate to /dashboard with
   // a full page load so every screen refetches under the new outlet scope.
   const openOutlet = (o: OutletRow) => {
-    if (!canSwitch) return
+    if (!canSwitch) {return}
     try { window.localStorage.setItem(SELECTED_OUTLET_KEY, o.id) } catch { /* ignore */ }
     window.location.href = "/dashboard"
   }
@@ -83,8 +83,8 @@ export default function OutletsPage() {
     setSaving(true)
     try {
       const body = { name: edit.name.trim(), address: edit.address.trim(), phone: edit.phone.trim(), hours: edit.hours.trim() }
-      if (edit.id) await updateOutlet(rid, edit.id, body)
-      else await addOutlet(rid, body)
+      if (edit.id) {await updateOutlet(rid, edit.id, body)}
+      else {await addOutlet(rid, body)}
       setEdit(EMPTY_EDIT)
       await load()
     } catch (err) {
@@ -104,7 +104,7 @@ export default function OutletsPage() {
   }
 
   const remove = async (o: OutletRow) => {
-    if (!confirm(`Delete "${o.outlet_name}"? Only possible if it has no orders/bills.`)) return
+    if (!confirm(`Delete "${o.outlet_name}"? Only possible if it has no orders/bills.`)) {return}
     try {
       await deleteOutlet(rid, o.id)
       await load()
@@ -120,17 +120,17 @@ export default function OutletsPage() {
     <div className="grid gap-4 md:gap-8">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-lg font-semibold md:text-2xl">Outlets</h1>
-        <Dialog open={edit.open} onOpenChange={(v) => setEdit(v ? { ...EMPTY_EDIT, open: true } : EMPTY_EDIT)}>
+        <Dialog open={edit.open} onOpenChange={(v) => { setEdit(v ? { ...EMPTY_EDIT, open: true } : EMPTY_EDIT); }}>
           <DialogTrigger asChild>
             <Button size="sm"><Plus className="mr-1 h-4 w-4" /> Add outlet</Button>
           </DialogTrigger>
           <DialogContent>
             <DialogHeader><DialogTitle>{edit.id ? "Edit outlet" : "Add outlet"}</DialogTitle></DialogHeader>
             <div className="grid gap-3">
-              <div className="grid gap-1"><Label>Name</Label><Input value={edit.name} onChange={(e) => setEdit({ ...edit, name: e.target.value })} /></div>
-              <div className="grid gap-1"><Label>Address</Label><Input value={edit.address} onChange={(e) => setEdit({ ...edit, address: e.target.value })} /></div>
-              <div className="grid gap-1"><Label>Phone</Label><Input value={edit.phone} onChange={(e) => setEdit({ ...edit, phone: e.target.value })} /></div>
-              <div className="grid gap-1"><Label>Hours</Label><Input value={edit.hours} onChange={(e) => setEdit({ ...edit, hours: e.target.value })} /></div>
+              <div className="grid gap-1"><Label>Name</Label><Input value={edit.name} onChange={(e) => { setEdit({ ...edit, name: e.target.value }); }} /></div>
+              <div className="grid gap-1"><Label>Address</Label><Input value={edit.address} onChange={(e) => { setEdit({ ...edit, address: e.target.value }); }} /></div>
+              <div className="grid gap-1"><Label>Phone</Label><Input value={edit.phone} onChange={(e) => { setEdit({ ...edit, phone: e.target.value }); }} /></div>
+              <div className="grid gap-1"><Label>Hours</Label><Input value={edit.hours} onChange={(e) => { setEdit({ ...edit, hours: e.target.value }); }} /></div>
             </div>
             <DialogFooter>
               <Button onClick={save} disabled={saving}>{saving ? "Saving…" : "Save"}</Button>
@@ -179,7 +179,7 @@ export default function OutletsPage() {
               return (
                 <div
                   key={o.id}
-                  onClick={canSwitch ? () => openOutlet(o) : undefined}
+                  onClick={canSwitch ? () => { openOutlet(o); } : undefined}
                   className={`flex items-center gap-3 rounded-lg border p-3 text-sm ${canSwitch ? "cursor-pointer transition-colors hover:bg-muted/50" : ""} ${isViewing ? "border-primary bg-primary/5 ring-1 ring-primary" : ""}`}
                 >
                   <Store className={`h-5 w-5 ${o.is_active ? "text-primary" : "text-muted-foreground"}`} />
@@ -193,12 +193,12 @@ export default function OutletsPage() {
                     </p>
                   </div>
                   {/* Management controls — stop propagation so they never trigger the switch. */}
-                  <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                  <div className="flex items-center gap-2" onClick={(e) => { e.stopPropagation(); }}>
                     {canSwitch && (
                       <Button
                         variant={isViewing ? "secondary" : "outline"}
                         size="sm"
-                        onClick={() => openOutlet(o)}
+                        onClick={() => { openOutlet(o); }}
                         title="Switch the dashboard into this outlet"
                       >
                         <ExternalLink className="mr-1 h-4 w-4" />
@@ -207,7 +207,7 @@ export default function OutletsPage() {
                     )}
                     <span className="text-xs text-muted-foreground">{o.is_active ? "Active" : "Inactive"}</span>
                     <Switch checked={o.is_active} disabled={o.is_default} onCheckedChange={() => toggleActive(o)} />
-                    <Button variant="ghost" size="icon" onClick={() => setEdit({ open: true, id: o.id, name: o.outlet_name, address: o.outlet_add ?? "", phone: o.outlet_phone ?? "", hours: o.outlet_hours ?? "" })}>
+                    <Button variant="ghost" size="icon" onClick={() => { setEdit({ open: true, id: o.id, name: o.outlet_name, address: o.outlet_add ?? "", phone: o.outlet_phone ?? "", hours: o.outlet_hours ?? "" }); }}>
                       <Pencil className="h-4 w-4" />
                     </Button>
                     {!o.is_default && (
