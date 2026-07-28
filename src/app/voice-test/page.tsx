@@ -11,6 +11,7 @@ import {
 } from "@openai/agents/realtime";
 import type { RealtimeItem } from "@openai/agents/realtime";
 import { requestReceptionBackend } from "@/lib/db";
+import { isMobile10 } from "@/lib/phone";
 
 interface RestaurantInfoEntry {
   field: string;
@@ -210,10 +211,13 @@ function buildReservationTool() {
       "Commit a reservation once all details are confirmed with the caller. The agent must repeat sensitive details like names and phone numbers back to the guest before calling this tool.",
     parameters: z.object({
       guestName: z.string().min(2).describe("Guest's full name."),
+      // POST /reception/create-reservation rejects anything that is not exactly
+      // 10 digits, so the agent is told the rule up front instead of discovering
+      // it as a 400 after the caller has hung up.
       contactNumber: z
         .string()
-        .min(6)
-        .describe("Digits-only contact number with optional country code."),
+        .refine(isMobile10, "Enter a 10-digit mobile number")
+        .describe("Exactly 10 digits (Indian mobile). No country code, no spaces."),
       partySize: z
         .number()
         .int()

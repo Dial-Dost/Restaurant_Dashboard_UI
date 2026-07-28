@@ -35,7 +35,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
-import { Users, PlusCircle, MoreVertical, Trash2, GripVertical } from "lucide-react";
+import { Users, PlusCircle, MoreVertical, Trash2, GripVertical, Pencil, Link2 } from "lucide-react";
 import { type Table } from "./data";
 import {
     // addAuditLogEntry,
@@ -44,6 +44,8 @@ import {
     updateTableCovers,
     getTables,
     getTableStatus,
+    getBookings,
+    updateTableSeating,
     requestBackend,
 } from "@/lib/db";
 import { useAuth } from "@/context/AuthContext";
@@ -52,10 +54,20 @@ import type { DragEndEvent, DragStartEvent } from "@dnd-kit/core";
 import { DndContext, closestCenter, useSensor, useSensors, PointerSensor, DragOverlay } from "@dnd-kit/core";
 import { SortableContext, useSortable, arrayMove } from "@dnd-kit/sortable";
 
+// A table that is part of a clubbed ("combined") reservation, as derived from
+// the bookings list: the other tables it is seated together with.
+interface CombinedInfo {
+    partners: string[];
+    customer: string;
+    time: string;
+}
+
 function SortableTable({
     table,
     occupancy,
+    combined,
     onRemove,
+    onEdit,
     onOpenOrders,
     onOccupy,
     onRelease,
@@ -64,7 +76,9 @@ function SortableTable({
 }: {
     table: Table;
     occupancy: { is_occupied: boolean; num_covers: number } | null;
+    combined?: CombinedInfo | null;
     onRemove: (tableId: number) => void;
+    onEdit: (table: Table) => void;
     onOpenOrders: (tableName: string, linkedOrderId?: string | null) => void;
     onOccupy: (tableName: string, numCovers: number) => void;
     onRelease: (tableName: string) => void;
@@ -117,6 +131,10 @@ function SortableTable({
                         </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
+                        <DropdownMenuItem onSelect={() => { onEdit(table); }}>
+                            <Pencil className="mr-2 h-4 w-4" />
+                            Edit seating
+                        </DropdownMenuItem>
                         <AlertDialog>
                             <AlertDialogTrigger asChild>
                                 <DropdownMenuItem onSelect={(e) => { e.preventDefault(); }} className="text-destructive">
@@ -168,11 +186,29 @@ function SortableTable({
                                 {table.status === "Booked" ? "In booking window" : "Upcoming"}
                             </Badge>
                         ) : null}
+                        {combined ? (
+                            <Badge
+                                variant="outline"
+                                className="text-[10px] sm:text-xs border-amber-600 text-amber-400"
+                                title={`Clubbed with ${combined.partners.join(", ")} for ${combined.customer} at ${combined.time}`}
+                            >
+                                <Link2 className="mr-1 h-3 w-3" />
+                                + {combined.partners.join(" + ")}
+                            </Badge>
+                        ) : null}
                     </div>
                     <div className="flex items-center text-muted-foreground text-xs">
                         <Users className="h-3 w-3 mr-1" />
-                        <span>Cap: {table.capacity}</span>
+                        <span>
+                            Seats: {table.capacity}
+                            {table.max_capacity > table.capacity ? ` · max ${table.max_capacity}` : ""}
+                        </span>
                     </div>
+                    {combined ? (
+                        <p className="text-[10px] leading-snug text-amber-400/90">
+                            Combined reservation — {combined.customer} ({combined.time})
+                        </p>
+                    ) : null}
                 </div>
             </CardContent>
             <div className="px-3 pb-3 space-y-2">
@@ -226,9 +262,16 @@ export default function TablesPage() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [newTableName, setNewTableName] = useState("");
   const [newTableCapacity, setNewTableCapacity] = useState("");
+  const [newTableMaxCapacity, setNewTableMaxCapacity] = useState("");
     const [tableOccupancyByName, setTableOccupancyByName] = useState<Record<string, { is_occupied: boolean; num_covers: number; linkedOrderId?: string | null }>>({});
+    // name (lowercased) -> the other tables it is clubbed with for an upcoming booking
+    const [combinedByName, setCombinedByName] = useState<Record<string, CombinedInfo>>({});
     const [busyTableName, setBusyTableName] = useState<string | null>(null);
     const [activeId, setActiveId] = useState<number | null>(null);
+    const [editingTable, setEditingTable] = useState<Table | null>(null);
+    const [editCapacity, setEditCapacity] = useState("");
+    const [editMaxCapacity, setEditMaxCapacity] = useState("");
+    const [savingSeating, setSavingSeating] = useState(false);
   const { toast } = useToast();
 
     const hasRole = (role: "admin" | "employee" | "valet" | "waiter" | "cashier" | "captain" | "manager") => {
@@ -288,10 +331,33 @@ export default function TablesPage() {
             );
 
             setTableOccupancyByName(Object.fromEntries(statusEntries));
+
+            // Clubbed reservations hold several tables under one booking. Mark
+            // them on the floor so staff never move one half of a combination.
+            try {
+                const bookings = await getBookings(user.restaurantUsername);
+                const combined: Record<string, CombinedInfo> = {};
+                for (const booking of Array.isArray(bookings) ? bookings : []) {
+                    const names = Array.isArray(booking.table_names) ? booking.table_names : [];
+                    if (names.length < 2) {continue;}
+                    for (const name of names) {
+                        combined[name.toLowerCase()] = {
+                            partners: names.filter((other) => other !== name),
+                            customer: booking.customer,
+                            time: booking.time,
+                        };
+                    }
+                }
+                setCombinedByName(combined);
+            } catch (bookingError) {
+                console.warn("Failed to load combined bookings", bookingError);
+                setCombinedByName({});
+            }
         } catch (error) {
             console.error("Failed to load tables", error);
             setTablesData([]);
             setTableOccupancyByName({});
+            setCombinedByName({});
         }
     };
 
@@ -331,10 +397,33 @@ export default function TablesPage() {
         return;
       }
       
-            const payload: any = {
+                  const capacityValue = newTableCapacity ? parseInt(newTableCapacity, 10) : undefined;
+            // Optional MAX (extra chairs). Same rule the backend enforces: a whole
+            // number >= 1, and never below the normal seat count (the backend
+            // silently clamps it up, so refuse it here instead of surprising them).
+            const maxValue = newTableMaxCapacity.trim() ? Number(newTableMaxCapacity) : undefined;
+            if (maxValue !== undefined && (!Number.isInteger(maxValue) || maxValue < 1)) {
+                toast({
+                    title: "Invalid maximum",
+                    description: "Max with extra chairs must be a whole number of 1 or more.",
+                    variant: "destructive",
+                });
+                return;
+            }
+            if (maxValue !== undefined && capacityValue !== undefined && maxValue < capacityValue) {
+                toast({
+                    title: "Maximum too small",
+                    description: `Max with extra chairs cannot be below the ${capacityValue} normal seats.`,
+                    variant: "destructive",
+                });
+                return;
+            }
+
+      const payload: any = {
                 table: {
                     name: trimmedName,
-                    capacity: newTableCapacity ? parseInt(newTableCapacity, 10) : undefined,
+                    capacity: capacityValue,
+                    max_capacity: maxValue,
                 },
             };
 
@@ -359,9 +448,63 @@ export default function TablesPage() {
             await loadTables();
       setNewTableName("");
       setNewTableCapacity("");
+      setNewTableMaxCapacity("");
       setIsDialogOpen(false);
     }
   };
+
+    const openEditTable = (table: Table) => {
+        if (!ensureAdmin()) {return;}
+        setEditingTable(table);
+        setEditCapacity(String(table.capacity || 1));
+        setEditMaxCapacity(String(table.max_capacity || table.capacity || 1));
+    };
+
+    const handleSaveSeating = async () => {
+        if (!editingTable || !user?.restaurantUsername) {return;}
+        if (!ensureAdmin()) {return;}
+
+        const capacityValue = Number(editCapacity);
+        const maxValue = Number(editMaxCapacity);
+        if (!Number.isInteger(capacityValue) || capacityValue < 1 || !Number.isInteger(maxValue) || maxValue < 1) {
+            toast({
+                title: "Invalid seating",
+                description: "Seats and max with extra chairs must both be whole numbers of 1 or more.",
+                variant: "destructive",
+            });
+            return;
+        }
+        if (maxValue < capacityValue) {
+            toast({
+                title: "Maximum too small",
+                description: `Max with extra chairs cannot be below the ${capacityValue} normal seats.`,
+                variant: "destructive",
+            });
+            return;
+        }
+
+        setSavingSeating(true);
+        try {
+            const updated = await updateTableSeating(user.restaurantUsername, editingTable.name, {
+                capacity: capacityValue,
+                max_capacity: maxValue,
+            });
+            toast({
+                title: "Seating updated",
+                description: `${updated.table_name} now seats ${updated.capacity} (max ${updated.max_capacity}).`,
+            });
+            setEditingTable(null);
+            await loadTables();
+        } catch (error: any) {
+            toast({
+                title: "Unable to update seating",
+                description: String(error?.message ?? "Failed to save the seating numbers."),
+                variant: "destructive",
+            });
+        } finally {
+            setSavingSeating(false);
+        }
+    };
 
     const handleRemoveTable = async (tableId: number) => {
         if (!ensureAdmin()) {return;}
@@ -552,16 +695,35 @@ export default function TablesPage() {
                 </div>
                 <div className="grid grid-cols-4 items-center gap-4">
                     <Label htmlFor="capacity" className="text-right">
-                    Capacity
+                    Seats
                     </Label>
                     <Input
                     id="capacity"
                     type="number"
+                    min={1}
                     value={newTableCapacity}
                     onChange={(e) => { setNewTableCapacity(e.target.value); }}
                     className="col-span-3"
                     placeholder="e.g., 4"
                     />
+                </div>
+                <div className="grid grid-cols-4 items-start gap-4">
+                    <Label htmlFor="max-capacity" className="pt-2 text-right">
+                    Max with extra chairs
+                    </Label>
+                    <div className="col-span-3">
+                        <Input
+                        id="max-capacity"
+                        type="number"
+                        min={1}
+                        value={newTableMaxCapacity}
+                        onChange={(e) => { setNewTableMaxCapacity(e.target.value); }}
+                        placeholder={newTableCapacity ? `defaults to ${newTableCapacity}` : "same as seats"}
+                        />
+                        <p className="mt-1 text-xs text-muted-foreground">
+                            The most this table can take when you squeeze in extra chairs. Leave blank to use the seat count.
+                        </p>
+                    </div>
                 </div>
                 </div>
                 <DialogFooter>
@@ -598,7 +760,9 @@ export default function TablesPage() {
                                         key={table.id}
                                         table={table}
                                         occupancy={tableOccupancyByName[table.name.toLowerCase()] ?? null}
+                                        combined={combinedByName[table.name.toLowerCase()] ?? null}
                                         onRemove={handleRemoveTable}
+                                        onEdit={openEditTable}
                                         onOpenOrders={openOrdersForTable}
                                         onOccupy={handleOccupyTable}
                                         onRelease={handleReleaseTable}
@@ -619,13 +783,56 @@ export default function TablesPage() {
              </SortableContext>
             </CardContent>
         </Card>
+        <Dialog open={editingTable !== null} onOpenChange={(open) => { if (!open) {setEditingTable(null);} }}>
+            <DialogContent className="sm:max-w-[425px]">
+                <DialogHeader>
+                    <DialogTitle>Edit seating — {editingTable?.name}</DialogTitle>
+                    <DialogDescription>
+                        &ldquo;Seats&rdquo; is the normal cover count. &ldquo;Max with extra chairs&rdquo; is the largest party the
+                        table can take; reservations use it to decide when two tables have to be clubbed together.
+                    </DialogDescription>
+                </DialogHeader>
+                <div className="grid gap-4 py-2">
+                    <div className="grid grid-cols-4 items-center gap-4">
+                        <Label htmlFor="edit-capacity" className="text-right">Seats</Label>
+                        <Input
+                            id="edit-capacity"
+                            type="number"
+                            min={1}
+                            value={editCapacity}
+                            onChange={(e) => { setEditCapacity(e.target.value); }}
+                            className="col-span-3"
+                        />
+                    </div>
+                    <div className="grid grid-cols-4 items-center gap-4">
+                        <Label htmlFor="edit-max-capacity" className="text-right">Max with extra chairs</Label>
+                        <Input
+                            id="edit-max-capacity"
+                            type="number"
+                            min={1}
+                            value={editMaxCapacity}
+                            onChange={(e) => { setEditMaxCapacity(e.target.value); }}
+                            className="col-span-3"
+                        />
+                    </div>
+                </div>
+                <DialogFooter>
+                    <Button variant="outline" onClick={() => { setEditingTable(null); }}>Cancel</Button>
+                    <Button onClick={handleSaveSeating} disabled={savingSeating}>
+                        {savingSeating ? "Saving…" : "Save seating"}
+                    </Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
         </div>
          <DragOverlay>
             {activeTable ? (
                 <SortableTable
                     table={activeTable}
                     occupancy={tableOccupancyByName[activeTable.name.toLowerCase()] ?? null}
+                    combined={combinedByName[activeTable.name.toLowerCase()] ?? null}
                     onRemove={() => {}}
+                    onEdit={() => {}}
                     onOpenOrders={openOrdersForTable}
                     onOccupy={handleOccupyTable}
                     onRelease={handleReleaseTable}

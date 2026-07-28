@@ -3,15 +3,22 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import { guestBackendBase } from "@/lib/guest-backend";
-import { fontStack, loadBrandFont, loadDesignFonts, type BrandConfig } from "@/lib/brand-fonts";
+import { fontStack, loadBrandFont, loadDesignFonts } from "@/lib/brand-fonts";
+import {
+  DEFAULT_ACCENT,
+  GUEST_CSS,
+  type GuestBrandConfig,
+  guestThemeVars,
+  pickHex,
+  resolveGuestTheme,
+} from "@/lib/guest-theme";
+import { isMobile10, normalizeMobile10, sanitizePhoneInput } from "@/lib/phone";
 
 const BASE = guestBackendBase();
-const DEFAULT_ACCENT = "#ea580c";
-const HEX_RE = /^#[0-9a-fA-F]{6}$/;
 
 interface ModOption { name: string; price: number }
 interface ModGroup { name: string; multi: boolean; required: boolean; options: ModOption[] }
-interface MenuItem { id: string; name: string; price: number; category: string; image_url?: string; available?: boolean; modifiers?: ModGroup[]; allergens?: string[] }
+interface MenuItem { id: string; name: string; price: number; category: string; image_url?: string; available?: boolean; modifiers?: ModGroup[]; allergens?: string[]; blurb?: string }
 interface CartLine { key: string; itemId: string; name: string; unitPrice: number; quantity: number }
 interface PayMethod { id: string; label: string; enabled?: boolean; requires_screenshot?: boolean; online?: boolean }
 interface TaxLine { name: string; percentage: number; amount: number }
@@ -69,9 +76,10 @@ const STRINGS: Record<Lang, Record<string, string>> = {
     emptyCart: "Your cart is empty.",
     notePlaceholder: "Add a note (e.g. no onions, less spicy, allergies)…",
     guestName: "Your name",
-    guestPhone: "Phone number",
+    guestPhone: "10-digit mobile",
     contactHint: "Name & phone are required to place your order.",
-    contactMissing: "Please enter your name and a valid phone number to order.",
+    contactMissing: "Please enter your name and a 10-digit mobile number to order.",
+    phoneTenDigits: "Enter a 10-digit mobile number",
     total: "Total",
     subtotal: "Subtotal",
     discount: "Discount",
@@ -124,6 +132,9 @@ const STRINGS: Record<Lang, Record<string, string>> = {
     item: "item",
     popular: "POPULAR",
     fullMenu: "FULL MENU",
+    // Item description (menu item `blurb`).
+    aboutDish: "About this dish",
+    details: "Details",
   },
   hi: {
     loadingMenu: "मेनू लोड हो रहा है…",
@@ -145,9 +156,10 @@ const STRINGS: Record<Lang, Record<string, string>> = {
     emptyCart: "आपका कार्ट खाली है।",
     notePlaceholder: "नोट जोड़ें (जैसे — प्याज़ नहीं, कम तीखा, एलर्जी)…",
     guestName: "आपका नाम",
-    guestPhone: "फ़ोन नंबर",
+    guestPhone: "10 अंकों का मोबाइल नंबर",
     contactHint: "ऑर्डर देने के लिए नाम और फ़ोन नंबर ज़रूरी है।",
-    contactMissing: "ऑर्डर करने के लिए अपना नाम और सही फ़ोन नंबर डालें।",
+    contactMissing: "ऑर्डर करने के लिए अपना नाम और 10 अंकों का मोबाइल नंबर डालें।",
+    phoneTenDigits: "10 अंकों का मोबाइल नंबर डालें",
     total: "कुल",
     subtotal: "उप-योग",
     discount: "छूट",
@@ -200,95 +212,35 @@ const STRINGS: Record<Lang, Record<string, string>> = {
     item: "आइटम",
     popular: "लोकप्रिय",
     fullMenu: "पूरा मेनू",
+    // Item description (menu item `blurb`).
+    aboutDish: "इस व्यंजन के बारे में",
+    details: "जानकारी",
   },
 };
 type Tr = (key: string) => string;
 
 // ---------------------------------------------------------------------------
 // Premium dark "Rustic Fork" design system. The whole page is dark; the accent
-// RAMP + fixed panel material/mood drive every surface via CSS vars. The accent
-// is DERIVED from the restaurant's brand accent (copper is only the fallback) —
-// controlled by the owner via brand_config, not by the guest.
-// Colour helpers (hsl2rgb / rgb2hsl / hex / ramp) are ported from the design
-// prototype so the ramp matches it exactly.
+// RAMP + the tenant's panel material / control shape / hero wash drive every
+// surface via CSS vars. The accent is DERIVED from the restaurant's brand accent
+// (copper is only the fallback) — controlled by the owner via brand_config, not
+// by the guest. The colour maths, the CSS-var bag and the utility CSS now live in
+// @/lib/guest-theme so the feedback + valet screens render the SAME surfaces.
 // ---------------------------------------------------------------------------
 
-// h in degrees, s & l in 0..1 → [r,g,b] 0..255.
-function hsl2rgb(h: number, s: number, l: number): [number, number, number] {
-  const a = s * Math.min(l, 1 - l);
-  const f = (n: number) => {
-    const k = (n + h / 30) % 12;
-    return l - a * Math.max(-1, Math.min(k - 3, Math.min(9 - k, 1)));
-  };
-  return [Math.round(f(0) * 255), Math.round(f(8) * 255), Math.round(f(4) * 255)];
-}
-// [r,g,b] 0..255 → [h(deg), s(0..1), l(0..1)].
-function rgb2hsl(r: number, g: number, b: number): [number, number, number] {
-  r /= 255; g /= 255; b /= 255;
-  const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
-  let h = 0, s = 0; const l = (mx + mn) / 2;
-  if (mx !== mn) {
-    const d = mx - mn;
-    s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
-    if (mx === r) {h = (g - b) / d + (g < b ? 6 : 0);}
-    else if (mx === g) {h = (b - r) / d + 2;}
-    else {h = (r - g) / d + 4;}
-    h *= 60;
-  }
-  return [h, s, l];
-}
-const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
-const hexOf = (rgb: number[]) => "#" + rgb.map((x) => Math.max(0, Math.min(255, Math.round(x))).toString(16).padStart(2, "0")).join("");
-
-interface Ramp {
-  acc: string; accHi: string; accMid: string; accDeep: string; accShadow: string; onAcc: string;
-  accRGB: string; accHiRGB: string; accDeepRGB: string; accShadowRGB: string;
-}
-// The 6-stop ramp, exactly like the prototype: hi L.75, acc L.63, mid L.51,
-// deep L.39, shadow L.27, onAcc (dark ink) L.09. h in deg, s in 0..100.
-function rampHS(h: number, s: number): Ramp {
-  const hi = hsl2rgb(h, clamp01((s + 7) / 100), 0.75);
-  const acc = hsl2rgb(h, clamp01(s / 100), 0.63);
-  const mid = hsl2rgb(h, clamp01((s - 3) / 100), 0.51);
-  const deep = hsl2rgb(h, clamp01((s - 6) / 100), 0.39);
-  const shadow = hsl2rgb(h, clamp01((s - 8) / 100), 0.27);
-  const on = hsl2rgb(h, clamp01((s - 5) / 100), 0.09);
-  return {
-    acc: hexOf(acc), accHi: hexOf(hi), accMid: hexOf(mid), accDeep: hexOf(deep), accShadow: hexOf(shadow), onAcc: hexOf(on),
-    accRGB: acc.join(","), accHiRGB: hi.join(","), accDeepRGB: deep.join(","), accShadowRGB: shadow.join(","),
-  };
-}
-// Resolve a brand hex into {h, s(0..100)} for the ramp. Falls back to copper.
-function hexToHS(hex: string): { h: number; s: number } {
-  const m = /^#?([0-9a-fA-F]{6})$/.exec((hex ?? "").trim());
-  const hp = m?.[1];
-  if (!hp) {return { h: 24, s: 38 };}
-  const n = parseInt(hp, 16);
-  const [h, s] = rgb2hsl((n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff);
-  return { h, s: s * 100 };
-}
-// Fixed panel material (Frosted) + shape mood (Cozy) — the surface look. These
-// drive --panelBg/--blur/--pbA/--rCard/--rCtrl and are NOT guest-editable; only
-// the restaurant's brand accent re-themes the page.
-const PANEL = { panelBg: "rgba(26,26,31,0.55)", blur: "22px", pbA: "0.12" };
-const SHAPE = { rCard: "22px", rCtrl: "13px" };
-
-const GLOBAL_CSS = `
-.ms{font-family:'Material Symbols Outlined';font-weight:400;font-style:normal;line-height:1;-webkit-font-smoothing:antialiased;user-select:none;}
-.rf-sc{scrollbar-width:none;-ms-overflow-style:none;}
-.rf-sc::-webkit-scrollbar{width:0;height:0;}
-.rf-num{font-family:Roboto,system-ui,sans-serif;font-weight:300;letter-spacing:-0.5px;}
-.rf-serif{font-family:'Instrument Serif',Georgia,serif;}
-@keyframes rfFloatOrb{0%,100%{transform:translate(0,0) scale(1);}50%{transform:translate(24px,-20px) scale(1.08);}}
-@keyframes rfSheetUp{from{transform:translateY(100%);}to{transform:translateY(0);}}
-@keyframes rfFadeIn{from{opacity:0;}to{opacity:1;}}
-`;
+const GLOBAL_CSS = GUEST_CSS;
 
 // Material Symbols icon (falls back to nothing if the font hasn't loaded yet).
 function Icon(props: { name: string; className?: string; style?: React.CSSProperties }) {
   const cls = props.className ? `ms ${props.className}` : "ms";
   return <span className={cls} style={props.style} aria-hidden="true">{props.name}</span>;
 }
+
+// A dish "opens" (shows the item sheet) when there is something to read or pick:
+// a human description (blurb) and/or modifier groups. Items with neither keep the
+// original one-tap "add to cart" behaviour.
+const itemBlurb = (it: MenuItem) => (typeof it.blurb === "string" ? it.blurb.trim() : "");
+const hasItemDetails = (it: MenuItem) => (it.modifiers?.length ?? 0) > 0 || itemBlurb(it).length > 0;
 
 // Decode the friendly table name from the opaque ?t= token (base64url(name).sig).
 function decodeTableName(token: string): string {
@@ -318,7 +270,7 @@ function OrderInner() {
   // Rich customer-page branding (font/colours/header/button style). Null until
   // the menu loads (or when the tenant never customised) — every use falls back
   // to today's hardcoded look so existing tenants are visually unchanged.
-  const [brandConfig, setBrandConfig] = useState<BrandConfig | null>(null);
+  const [brandConfig, setBrandConfig] = useState<GuestBrandConfig | null>(null);
   const [currency, setCurrency] = useState("₹");
   const [payMethods, setPayMethods] = useState<PayMethod[]>(DEFAULT_METHODS);
   const [items, setItems] = useState<MenuItem[]>([]);
@@ -434,10 +386,9 @@ function OrderInner() {
         setLogoUrl(typeof data.logo_url === "string" ? data.logo_url : "");
         // brand_config.color_primary wins, then the logo-derived primary, then
         // the configured theme_color (keeps existing tenants unchanged).
-        const hex = (v: unknown) => (typeof v === "string" && HEX_RE.test(v) ? v : null);
-        const bcfg = data.brand_config && typeof data.brand_config === "object" ? (data.brand_config as BrandConfig) : null;
+        const bcfg = data.brand_config && typeof data.brand_config === "object" ? (data.brand_config as GuestBrandConfig) : null;
         setBrandConfig(bcfg);
-        const themePref = hex(bcfg?.color_primary) ?? hex(data.theme_primary) ?? hex(data.theme_color);
+        const themePref = pickHex(bcfg?.color_primary, data.theme_primary, data.theme_color);
         if (themePref) {setAccent(themePref);}
         if (typeof data.currency === "string" && data.currency.trim()) {setCurrency(data.currency.trim());}
         if (Array.isArray(data.payment_methods) && data.payment_methods.length > 0) {setPayMethods(data.payment_methods);}
@@ -468,20 +419,10 @@ function OrderInner() {
   useEffect(() => { loadDesignFonts(); }, []);
 
   // Resolve the accent RAMP from the restaurant's brand accent (copper is the
-  // ultimate fallback via hexToHS), combined with the fixed panel material +
-  // shape mood → CSS vars.
-  const brandHS = useMemo(() => hexToHS(accent), [accent]);
-  const theme = useMemo(() => {
-    const r = rampHS(brandHS.h, brandHS.s);
-    return { ...r, ...PANEL, ...SHAPE };
-  }, [brandHS]);
-  const themeVars = {
-    "--acc": theme.acc, "--accHi": theme.accHi, "--accMid": theme.accMid,
-    "--accDeep": theme.accDeep, "--accShadow": theme.accShadow, "--onAcc": theme.onAcc,
-    "--accRGB": theme.accRGB, "--accHiRGB": theme.accHiRGB, "--accDeepRGB": theme.accDeepRGB,
-    "--accShadowRGB": theme.accShadowRGB, "--panelBg": theme.panelBg, "--blur": theme.blur,
-    "--pbA": theme.pbA, "--rCard": theme.rCard, "--rCtrl": theme.rCtrl,
-  } as React.CSSProperties;
+  // ultimate fallback), combined with the tenant's panel material (surface_style),
+  // control shape (button_shape) and hero wash (header_style) → CSS vars.
+  const theme = useMemo(() => resolveGuestTheme(accent, brandConfig), [accent, brandConfig]);
+  const themeVars = guestThemeVars(theme);
   // Body font: the tenant's brand font still applies to body text; the serif
   // display + thin numerals are design constants layered on top.
   const bodyFont = brandConfig?.font ? fontStack(brandConfig.font) : "Roboto, system-ui, sans-serif";
@@ -528,9 +469,11 @@ function OrderInner() {
       const ex = c[line.key];
       return { ...c, [line.key]: ex ? { ...ex, quantity: ex.quantity + line.quantity } : line };
     }); };
-  // Add a plain item (no modifiers) keyed by its id; modifier items open the sheet.
+  // Add a plain item keyed by its id. Items with modifiers OR a description open
+  // the item sheet first (the sheet is where the guest reads the description and
+  // picks options); an item with neither goes straight into the cart as before.
   const addItem = (it: MenuItem) => {
-    if (it.modifiers && it.modifiers.length > 0) {
+    if (hasItemDetails(it)) {
       setModItem(it);
       return;
     }
@@ -546,9 +489,10 @@ function OrderInner() {
   useEffect(() => { try { localStorage.setItem("qr_guest_phone", guestPhone); } catch { /* ignore */ } }, [guestPhone]);
   const placeOrder = async () => {
     // Name + phone are REQUIRED (captured for the customer database / marketing).
-    // A valid phone = at least 10 digits (Indian mobile). Block the order otherwise.
-    const digitCount = guestPhone.replace(/\D/g, "").length;
-    if (guestName.trim().length === 0 || digitCount < 10) {
+    // A valid phone is EXACTLY 10 digits (Indian mobile) — not "10 or more", which
+    // used to let an 11-digit typo through to a backend that now 400s it.
+    const normalizedPhone = normalizeMobile10(guestPhone);
+    if (guestName.trim().length === 0 || !normalizedPhone) {
       setError(t("contactMissing"));
       setShowCart(true);
       return;
@@ -556,7 +500,7 @@ function OrderInner() {
     setPlacing(true);
     setError(null);
     try {
-      const phoneDigits = guestPhone.replace(/[^0-9+]/g, "");
+      const phoneDigits = normalizedPhone;
       const payload = {
         t: token,
         items: cartLines.map((l) => ({ id: l.itemId, name: l.name, price: l.unitPrice, quantity: l.quantity })),
@@ -628,6 +572,7 @@ function OrderInner() {
         restaurant={restaurant}
         token={token}
         themeVars={themeVars}
+        bodyFont={bodyFont}
         restaurantName={restaurantName || restaurant}
         logoUrl={logoUrl}
         tableLabel={tableLabel}
@@ -659,7 +604,8 @@ function OrderInner() {
       <div className="relative z-10">
         {/* HERO */}
         <header className="relative overflow-hidden" style={{ height: 172 }}>
-          <div className="absolute inset-0" style={{ background: "linear-gradient(150deg, var(--accDeep), #0B0B0D 78%)" }} />
+          {/* Hero wash — accent gradient or a flat accent block (header_style). */}
+          <div className="absolute inset-0" style={{ background: "var(--heroWash)" }} />
           {heroImage && (
             // eslint-disable-next-line @next/next/no-img-element
             <img src={heroImage} alt="" className="absolute inset-0 h-full w-full object-cover opacity-55" />
@@ -774,13 +720,27 @@ function OrderInner() {
               const soldOut = it.available === false;
               const line = cart[it.id];
               const monogram = (it.name.trim()[0] ?? "•").toUpperCase();
+              const blurb = itemBlurb(it);
+              const openable = hasItemDetails(it);
+              // Tapping the photo/name of a dish that has a description and/or
+              // options opens its sheet (read the blurb, pick options) without
+              // adding anything to the cart.
+              const openSheet = () => { if (openable) {setModItem(it);} };
               return (
                 <div
                   key={it.id}
                   className="relative overflow-hidden"
                   style={{ borderRadius: "var(--rCard)", background: "var(--panelBg)", backdropFilter: "blur(var(--blur))", WebkitBackdropFilter: "blur(var(--blur))", border: "1.5px solid rgba(255,255,255,var(--pbA))", boxShadow: "0 14px 34px rgba(0,0,0,0.45)", opacity: soldOut ? 0.6 : 1 }}
                 >
-                  <div className="relative flex items-center justify-center" style={{ height: 96, background: "linear-gradient(140deg,#26262B,#111113)", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+                  <div
+                    role={openable ? "button" : undefined}
+                    tabIndex={openable ? 0 : undefined}
+                    onClick={openSheet}
+                    onKeyDown={(e) => { if (openable && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openSheet(); } }}
+                    aria-label={openable ? `${it.name} — ${t("details")}` : undefined}
+                    className="relative flex items-center justify-center"
+                    style={{ height: 96, background: "linear-gradient(140deg,#26262B,#111113)", borderBottom: "1px solid rgba(255,255,255,0.05)", cursor: openable ? "pointer" : "default" }}
+                  >
                     {it.image_url ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={it.image_url} alt={it.name} className={`absolute inset-0 h-full w-full object-cover ${soldOut ? "grayscale" : ""}`} />
@@ -795,8 +755,28 @@ function OrderInner() {
                     )}
                   </div>
                   <div className="px-3 pb-3 pt-2.5">
-                    <div className="text-[13.5px] font-semibold leading-tight text-[#ECEAE6]" style={{ minHeight: 34 }}>{it.name}</div>
+                    <div
+                      role={openable ? "button" : undefined}
+                      tabIndex={openable ? 0 : undefined}
+                      onClick={openSheet}
+                      onKeyDown={(e) => { if (openable && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openSheet(); } }}
+                      className="text-[13.5px] font-semibold leading-tight text-[#ECEAE6]"
+                      style={{ minHeight: 34, cursor: openable ? "pointer" : "default" }}
+                    >
+                      {it.name}
+                    </div>
                     {searching && <div className="mt-0.5 text-[11px] text-[#615E57]">{it.category}</div>}
+                    {/* Two-line teaser of the dish description; the full text is in
+                        the item sheet (tap the photo, the name or this line). */}
+                    {blurb ? (
+                      <div
+                        onClick={openSheet}
+                        className="mt-1 text-[11px] leading-snug text-[#9A978F]"
+                        style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", cursor: "pointer" }}
+                      >
+                        {blurb}
+                      </div>
+                    ) : null}
                     {(it.allergens ?? []).length > 0 && (
                       <div className="mt-1.5 flex flex-wrap gap-1">
                         {(it.allergens ?? []).map((a) => (
@@ -959,6 +939,7 @@ function ModifierSheet(props: {
 }) {
   const { item, currency, onClose, onAdd, t } = props;
   const groups = item.modifiers ?? [];
+  const blurb = itemBlurb(item);
   // selection: groupIndex -> set of chosen option names
   const [sel, setSel] = useState<Record<number, string[]>>(() => {
     const init: Record<number, string[]> = {};
@@ -993,7 +974,9 @@ function ModifierSheet(props: {
       }
     }
     onAdd({
-      key: `${item.id}|${summary}`,
+      // No options chosen (e.g. a description-only dish) → key by the plain item
+      // id so the menu tile's own +/- stepper stays wired to this line.
+      key: summary ? `${item.id}|${summary}` : item.id,
       itemId: item.id,
       name: summary ? `${item.name} (${summary})` : item.name,
       unitPrice,
@@ -1015,6 +998,17 @@ function ModifierSheet(props: {
         </div>
 
         <div className="rf-sc min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch]">
+          {/* The kitchen's own words about the dish (brand_config-independent —
+              it comes from the menu item). Newlines are preserved. */}
+          {blurb ? (
+            <div className="p-3.5" style={{ borderRadius: "var(--rCtrl)", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.07)" }}>
+              <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[1.3px]" style={{ color: "var(--accHi)" }}>
+                <Icon name="restaurant_menu" style={{ fontSize: 13 }} />
+                {t("aboutDish")}
+              </p>
+              <p className="text-[13px] leading-relaxed text-[#C9C6BF]" style={{ whiteSpace: "pre-line" }}>{blurb}</p>
+            </div>
+          ) : null}
           {groups.map((g, gi) => (
             <div key={gi}>
               <p className="mb-2 text-sm font-semibold text-[#ECEAE6]">
@@ -1086,7 +1080,12 @@ function CartSheet(props: {
 }) {
   const { lines, currency, total, placing, note, error, onNote, guestName, onGuestName, guestPhone, onGuestPhone, onQty, onClose, onConfirm, t } = props;
   // Name + phone are required before an order can be sent (customer data capture).
-  const contactOk = guestName.trim().length > 0 && guestPhone.replace(/\D/g, "").length >= 10;
+  // EXACTLY 10 digits — the old `>= 10` accepted 11-digit typos the API now 400s.
+  const phoneOk = isMobile10(guestPhone);
+  const contactOk = guestName.trim().length > 0 && phoneOk;
+  // Only nag about the phone once something has been typed, so the field doesn't
+  // look broken before the guest has started.
+  const phoneTouched = guestPhone.trim().length > 0;
   const inputStyle: React.CSSProperties = { background: "rgba(14,14,16,0.7)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "var(--rCtrl)", color: "#ECEAE6" };
   return (
     <div className="fixed inset-0 z-40 flex items-end justify-center" onClick={onClose} style={{ background: "rgba(4,4,6,0.55)", backdropFilter: "blur(2px)", WebkitBackdropFilter: "blur(2px)", animation: "rfFadeIn .2s ease" }}>
@@ -1139,17 +1138,22 @@ function CartSheet(props: {
               />
               <input
                 value={guestPhone}
-                onChange={(e) => { onGuestPhone(e.target.value); }}
-                inputMode="tel"
-                maxLength={16}
+                onChange={(e) => { onGuestPhone(sanitizePhoneInput(e.target.value)); }}
+                inputMode="numeric"
+                autoComplete="tel"
+                maxLength={13}
                 placeholder={t("guestPhone")}
                 className="w-full p-3 text-sm outline-none placeholder:text-[#615E57]"
-                style={inputStyle}
+                style={{ ...inputStyle, ...(phoneTouched && !phoneOk ? { border: "1px solid rgba(239,68,68,0.6)" } : {}) }}
               />
             </div>
-            {!contactOk && (
+            {/* Live, specific message once they've started typing; the generic
+                "name & phone required" hint otherwise. */}
+            {phoneTouched && !phoneOk ? (
+              <p className="mt-1 text-xs text-[#F0A6A0]">{t("phoneTenDigits")}</p>
+            ) : !contactOk ? (
               <p className="mt-1 text-xs text-[#9A978F]">{t("contactHint")}</p>
-            )}
+            ) : null}
             <textarea
               value={note}
               onChange={(e) => { onNote(e.target.value); }}
@@ -1693,13 +1697,14 @@ function OtpGate(props: {
   restaurant: string;
   token: string;
   themeVars: React.CSSProperties;
+  bodyFont: string;
   restaurantName: string;
   logoUrl: string;
   tableLabel: string;
   t: Tr;
   onVerified: (code: string) => void;
 }) {
-  const { restaurant, token, themeVars, restaurantName, logoUrl, tableLabel, t, onVerified } = props;
+  const { restaurant, token, themeVars, bodyFont, restaurantName, logoUrl, tableLabel, t, onVerified } = props;
   const [code, setCode] = useState("");
   const [checking, setChecking] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -1728,7 +1733,7 @@ function OtpGate(props: {
   return (
     <div
       className="relative mx-auto flex min-h-screen max-w-md flex-col items-center justify-center overflow-hidden px-6 text-center text-[#ECEAE6]"
-      style={{ ...themeVars, backgroundColor: "#08080A", fontFamily: "Roboto, system-ui, sans-serif" }}
+      style={{ ...themeVars, backgroundColor: "#08080A", fontFamily: bodyFont }}
     >
       <style>{GLOBAL_CSS}</style>
       <div className="pointer-events-none fixed" style={{ top: -120, left: -80, width: 360, height: 360, borderRadius: "50%", background: "radial-gradient(circle, rgba(var(--accRGB),0.2), transparent 65%)", filter: "blur(30px)", animation: "rfFloatOrb 16s ease-in-out infinite" }} />

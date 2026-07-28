@@ -26,6 +26,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -70,12 +71,20 @@ import {
   type MenuCostingItem,
 } from "@/lib/db";
 
+// Guest-facing description cap — mirrors the server-side sanitizer, which trims
+// to 500 characters of plain text.
+const BLURB_MAX = 500;
+
 const menuItemSchema = z.object({
   name: z.string().min(1, "Item name is required."),
   price: z.coerce.number().min(0.01, "Price must be greater than 0."),
   category: z.string().min(1, "Category is required."),
   // Optional KOT prep station (tandoor/grill/bar/...) for KDS routing.
   station: z.string().optional(),
+  // A few lines describing the dish, shown to guests when they open the item on
+  // the QR order page. Stored as the `blurb` key inside the item's description
+  // JSON blob; the server sanitizes and caps it as well.
+  blurb: z.string().max(BLURB_MAX, `Description must be ${BLURB_MAX} characters or fewer.`).optional(),
 });
 
 const categorySchema = z.object({
@@ -91,7 +100,7 @@ type CategoryFormData = z.infer<typeof categorySchema>;
 const isManagedStation = (station: string | null | undefined, sections: string[]) =>
     !!station && sections.some((s) => s.toLowerCase() === station.toLowerCase());
 
-function SortableMenuItem({ item, onRemoveItem, onEditRecipe, costing, currencySymbol, isDragging, sections = [], showCategory = false }: { item: MenuItem, onRemoveItem: (id: string) => void, onEditRecipe?: (item: MenuItem) => void, costing?: MenuCostingItem, currencySymbol: string, isDragging?: boolean, sections?: string[], showCategory?: boolean }) {
+function SortableMenuItem({ item, onRemoveItem, onEditItem, onEditRecipe, costing, currencySymbol, isDragging, sections = [], showCategory = false }: { item: MenuItem, onRemoveItem: (id: string) => void, onEditItem?: (item: MenuItem) => void, onEditRecipe?: (item: MenuItem) => void, costing?: MenuCostingItem, currencySymbol: string, isDragging?: boolean, sections?: string[], showCategory?: boolean }) {
     const { attributes, listeners, setNodeRef } = useSortable({
         id: item.id,
         data: { category: item.category },
@@ -126,6 +135,13 @@ function SortableMenuItem({ item, onRemoveItem, onEditRecipe, costing, currencyS
                             </Badge>
                         ) : null}
                     </p>
+                    {/* Guest-facing description — two lines here, the full text
+                        on hover; guests see it when they open the item. */}
+                    {item.blurb?.trim() ? (
+                        <p className="mt-0.5 line-clamp-2 max-w-prose whitespace-pre-line text-xs text-muted-foreground" title={item.blurb}>
+                            {item.blurb}
+                        </p>
+                    ) : null}
                     {costing?.cost != null && (
                         <p className="text-xs text-muted-foreground">
                             Cost {currencySymbol}{costing.cost.toFixed(2)}
@@ -149,6 +165,12 @@ function SortableMenuItem({ item, onRemoveItem, onEditRecipe, costing, currencyS
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                         <DropdownMenuLabel>Actions</DropdownMenuLabel>
+                        {onEditItem && (
+                            <DropdownMenuItem onClick={() => { onEditItem(item); }}>
+                                <Pencil className="mr-2 h-4 w-4" />
+                                <span>Edit item</span>
+                            </DropdownMenuItem>
+                        )}
                         {onEditRecipe && (
                             <DropdownMenuItem onClick={() => { onEditRecipe(item); }}>
                                 <ChefHat className="mr-2 h-4 w-4" />
@@ -166,7 +188,7 @@ function SortableMenuItem({ item, onRemoveItem, onEditRecipe, costing, currencyS
     );
 }
 
-function DroppableCategory({ category, items, onRemoveItem, onRemoveCategory, onEditRecipe, costingById, currencySymbol, activeId, sections }: { category: string, items: MenuItem[], onRemoveItem: (id: string) => void, onRemoveCategory: (category: string) => void, onEditRecipe: (item: MenuItem) => void, costingById: Map<string, MenuCostingItem>, currencySymbol: string, activeId: string | null, sections: string[] }) {
+function DroppableCategory({ category, items, onRemoveItem, onRemoveCategory, onEditItem, onEditRecipe, costingById, currencySymbol, activeId, sections }: { category: string, items: MenuItem[], onRemoveItem: (id: string) => void, onRemoveCategory: (category: string) => void, onEditItem: (item: MenuItem) => void, onEditRecipe: (item: MenuItem) => void, costingById: Map<string, MenuCostingItem>, currencySymbol: string, activeId: string | null, sections: string[] }) {
     const { isOver, setNodeRef } = useDroppable({
         id: category,
     });
@@ -210,7 +232,7 @@ function DroppableCategory({ category, items, onRemoveItem, onRemoveCategory, on
                     {items && items.length > 0 ? (
                         <ul className="space-y-2">
                             {items.map(item => (
-                                <SortableMenuItem key={item.id} item={item} onRemoveItem={onRemoveItem} onEditRecipe={onEditRecipe} costing={costingById.get(item.id)} currencySymbol={currencySymbol} isDragging={activeId === item.id} sections={sections} />
+                                <SortableMenuItem key={item.id} item={item} onRemoveItem={onRemoveItem} onEditItem={onEditItem} onEditRecipe={onEditRecipe} costing={costingById.get(item.id)} currencySymbol={currencySymbol} isDragging={activeId === item.id} sections={sections} />
                             ))}
                         </ul>
                     ) : (
@@ -230,6 +252,9 @@ export default function MenuPage() {
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
   const [isItemDialogOpen, setIsItemDialogOpen] = useState(false);
+  // The item whose details (name/price/category/section/description) are being
+  // edited. Null = the edit dialog is closed.
+  const [editItem, setEditItem] = useState<MenuItem | null>(null);
   const [isCategoryDialogOpen, setIsCategoryDialogOpen] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
     const [isImporting, setIsImporting] = useState(false);
@@ -283,15 +308,39 @@ export default function MenuPage() {
 
   const handleAddItem = async (data: MenuItemFormData) => {
     if (!user) {return;}
+    const blurb = (data.blurb ?? "").trim();
     const newItem: MenuItem = {
       id: (menuItems.length + 1).toString() + Date.now(),
       ...data,
+      // Omit rather than send "" so a blank field never writes an empty key.
+      ...(blurb ? { blurb } : { blurb: undefined }),
     };
     await addMenuItem(user.restaurantUsername, newItem);
     setMenuItems([...menuItems, newItem]);
     setIsItemDialogOpen(false);
   };
-  
+
+  // Save an EXISTING item's details. Only the edited fields travel (plus the id),
+  // so the upsert's preserve-on-omit keeps the image, modifiers, recipe and
+  // allergens untouched — and an explicit "" for the description is the one way
+  // to clear it.
+  const handleEditItem = async (data: MenuItemFormData) => {
+    if (!user || !editItem) {return;}
+    const station = (data.station ?? "").trim();
+    const patch: MenuItem = {
+      id: editItem.id,
+      name: data.name,
+      price: data.price,
+      category: data.category,
+      station: station ? station : null,
+      blurb: (data.blurb ?? "").trim(),
+    };
+    await addMenuItem(user.restaurantUsername, patch);
+    setEditItem(null);
+    setMenuItems(await getMenuItems(user.restaurantUsername));
+    await refreshCosting(user.restaurantUsername);
+  };
+
   const handleAddCategory = async (data: CategoryFormData) => {
     if (!user) {return;}
     if (!categories.find(c => c.toLowerCase() === data.name.toLowerCase())) {
@@ -821,6 +870,7 @@ export default function MenuPage() {
                                         key={item.id}
                                         item={item}
                                         onRemoveItem={handleRemoveItem}
+                                        onEditItem={setEditItem}
                                         onEditRecipe={setRecipeItem}
                                         costing={costingById.get(item.id)}
                                         currencySymbol={currencySymbol}
@@ -846,6 +896,7 @@ export default function MenuPage() {
                                 items={groupedItems[category] || []}
                                 onRemoveItem={handleRemoveItem}
                                 onRemoveCategory={handleRemoveCategory}
+                                onEditItem={setEditItem}
                                 onEditRecipe={setRecipeItem}
                                 costingById={costingById}
                                 currencySymbol={currencySymbol}
@@ -870,6 +921,26 @@ export default function MenuPage() {
                 </div>
             ) : null}
         </DragOverlay>
+        {editItem && (
+            <Dialog open onOpenChange={(o) => { if (!o) {setEditItem(null);} }}>
+                <DialogContent className="sm:max-w-[425px]">
+                    <DialogHeader>
+                        <DialogTitle>Edit menu item</DialogTitle>
+                        <DialogDescription>
+                            Update the details guests see. Images, modifiers, recipe and allergens are left untouched.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <MenuItemForm
+                        key={editItem.id}
+                        onSubmit={handleEditItem}
+                        categories={categories}
+                        sections={sections}
+                        defaults={editItem}
+                        submitLabel="Save changes"
+                    />
+                </DialogContent>
+            </Dialog>
+        )}
         {isOrganiseOpen && (
             <OrganiseByKitchenDialog
                 items={menuItems}
@@ -1282,10 +1353,21 @@ function RecipeDialog({
 }
 
 
-function MenuItemForm({ onSubmit, categories, sections = [] }: { onSubmit: (data: MenuItemFormData) => void; categories: string[]; sections?: string[] }) {
-    const { register, handleSubmit, control, formState: { errors } } = useForm<MenuItemFormData>({
-        resolver: zodResolver(menuItemSchema)
+function MenuItemForm({ onSubmit, categories, sections = [], defaults, submitLabel = "Save Item" }: { onSubmit: (data: MenuItemFormData) => void; categories: string[]; sections?: string[]; defaults?: MenuItem; submitLabel?: string }) {
+    const { register, handleSubmit, control, watch, formState: { errors } } = useForm<MenuItemFormData>({
+        resolver: zodResolver(menuItemSchema),
+        defaultValues: defaults
+            ? {
+                name: defaults.name,
+                price: defaults.price,
+                category: defaults.category,
+                station: defaults.station ?? "",
+                blurb: defaults.blurb ?? "",
+            }
+            : undefined,
     });
+    // Live character count against the same cap the server enforces.
+    const blurbLength = (watch("blurb") ?? "").length;
 
     return (
         <form onSubmit={handleSubmit(onSubmit)} className="grid gap-4 py-4">
@@ -1301,6 +1383,25 @@ function MenuItemForm({ onSubmit, categories, sections = [] }: { onSubmit: (data
                 <div className="col-span-3">
                     <Input id="price" type="number" step="0.01" {...register("price")} placeholder="e.g., 12.50" />
                      {errors.price && <p className="text-sm text-destructive mt-1">{errors.price.message}</p>}
+                </div>
+            </div>
+            <div className="grid grid-cols-4 items-start gap-4">
+                <Label htmlFor="blurb" className="pt-2 text-right">Description</Label>
+                <div className="col-span-3">
+                    <Textarea
+                        id="blurb"
+                        rows={3}
+                        maxLength={BLURB_MAX}
+                        placeholder="A few lines guests see when they open this dish — e.g. slow-roasted heirloom carrots with burnt-honey glaze, dukkah and labneh."
+                        {...register("blurb")}
+                    />
+                    <div className="mt-1 flex items-start justify-between gap-2">
+                        <p className="text-xs text-muted-foreground">Optional. Shown on the guest QR menu when the item is opened.</p>
+                        <span className={cn("shrink-0 text-xs tabular-nums text-muted-foreground", blurbLength >= BLURB_MAX && "text-destructive")}>
+                            {blurbLength}/{BLURB_MAX}
+                        </span>
+                    </div>
+                    {errors.blurb && <p className="text-sm text-destructive mt-1">{errors.blurb.message}</p>}
                 </div>
             </div>
             <div className="grid grid-cols-4 items-center gap-4">
@@ -1343,7 +1444,7 @@ function MenuItemForm({ onSubmit, categories, sections = [] }: { onSubmit: (data
                 </div>
             </div>
              <DialogFooter>
-                <Button type="submit">Save Item</Button>
+                <Button type="submit">{submitLabel}</Button>
             </DialogFooter>
         </form>
     );

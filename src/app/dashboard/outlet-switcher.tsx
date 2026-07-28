@@ -5,12 +5,11 @@ import { Store, Layers } from "lucide-react"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useAuth } from "@/context/AuthContext"
 import { getOutlets, type OutletRow } from "@/lib/db"
-import { SELECTED_OUTLET_KEY } from "@/lib/outlet"
+import { ALL_OUTLETS, SELECTED_OUTLET_KEY, setSelectedOutlet } from "@/lib/outlet"
 
-// Sentinel selection meaning "combine every outlet" — admins/managers see
+// ALL_OUTLETS ("all") means "combine every outlet" — admins/managers see
 // aggregated read-only data across all branches. The backend (X-Outlet-Id: "all")
 // aggregates reads and rejects any WRITE with 400 while this is active.
-const ALL_OUTLETS = "all";
 
 // Lets admins/managers switch the active outlet (or view all combined). The choice
 // is stored in localStorage and sent as X-Outlet-Id on every request (the backend
@@ -41,10 +40,11 @@ export function OutletSwitcher() {
 
   if (!canSwitch || outlets.length < 2) {return null}
 
+  // setSelectedOutlet persists to localStorage AND to the server cookie the
+  // Server-Action data layer reads, then reloads so everything refetches.
   const onChange = (id: string) => {
     setSelected(id)
-    try { window.localStorage.setItem(SELECTED_OUTLET_KEY, id) } catch { /* ignore */ }
-    if (typeof window !== "undefined") {window.location.reload()}
+    void setSelectedOutlet(id)
   }
 
   const isAll = selected === ALL_OUTLETS

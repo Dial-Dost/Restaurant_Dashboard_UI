@@ -3,6 +3,7 @@
 // the dashboard as the public /feedback route. Same endpoints, same payloads.
 // Base URL follows the dashboard-wide pattern (see the queue page).
 import { guestBackendBase } from "@/lib/guest-backend";
+import type { GuestBrandConfig } from "@/lib/guest-theme";
 
 const BACKEND_URL = guestBackendBase();
 
@@ -187,6 +188,11 @@ export interface RestaurantBranding {
   theme_secondary: string | null;
   restaurant_name: string;
   feedback_config: FeedbackFormConfig;
+  // The tenant's customer-page branding, resolved with defaults by the backend
+  // (accent, body font, hero wash, control shape, panel material). The SAME object
+  // the guest ordering page reads from /qr/:slug/menu, so all three customer
+  // surfaces theme themselves identically. Absent on very old backends.
+  brand_config?: GuestBrandConfig | null;
 }
 
 // Public, no-auth: the restaurant's branding + feedback form configuration, so

@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import QRCode from "qrcode"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -8,11 +8,12 @@ import { Bell, Check, RefreshCw, UserX, X, Clock, Users, QrCode, Printer, Downlo
 import { useAuth } from "@/context/AuthContext"
 import { useCurrency } from "@/hooks/use-currency"
 import { useToast } from "@/hooks/use-toast"
+import { useHighlightRow } from "@/hooks/use-highlight-row"
 import { getWaitlist, callWaitlistEntry, seatWaitlistEntry, cancelWaitlistEntry, getTables, type WaitlistEntry } from "@/lib/db"
 import { getSelectedOutletId } from "@/lib/outlet"
 import { type Table } from "@/app/dashboard/tables/data"
 
-export default function WaitlistPage() {
+function WaitlistPageInner() {
   const { user } = useAuth()
   const { toast } = useToast()
   const { currencySymbol } = useCurrency()
@@ -28,6 +29,10 @@ export default function WaitlistPage() {
   const [openRows, setOpenRows] = useState<Record<string, boolean>>({})
 
   const freeTables = useMemo(() => tables.filter((t) => t.status === "Available").map((t) => t.name), [tables])
+
+  // A "new in queue" notification links here as ?highlightWaitlist=<id>; ring
+  // and scroll to that party instead of leaving the user to find them.
+  const highlight = useHighlightRow("highlightWaitlist", entries.length)
 
   const load = useCallback(async () => {
     if (!rid) {return}
@@ -117,8 +122,9 @@ export default function WaitlistPage() {
     const members = e.party_members ?? []
     const preTotal = pre.reduce((s, it) => s + Number(it.price || 0) * Number(it.quantity || 0), 0)
     const hasDetails = pre.length > 0 || members.length > 0
+    const anchor = highlight.rowProps(e.id)
     return (
-      <div className="rounded-lg border p-3">
+      <div id={anchor.id} className={`rounded-lg border p-3 transition-shadow ${anchor.className}`}>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-3">
             {e.status === "waiting"
@@ -262,4 +268,14 @@ export default function WaitlistPage() {
       </Card>
     </div>
   )
+}
+
+// useSearchParams (via useHighlightRow) requires a Suspense boundary
+// (same pattern as the accounting and queue pages).
+export default function WaitlistPage() {
+  return (
+    <Suspense fallback={<div className="py-10 text-center text-muted-foreground">Loading…</div>}>
+      <WaitlistPageInner />
+    </Suspense>
+  );
 }

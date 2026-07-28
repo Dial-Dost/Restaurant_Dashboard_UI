@@ -8,15 +8,15 @@ import {
 } from "@/components/ui/chart"
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis, Line, LineChart, Pie, PieChart, Cell, Tooltip, ResponsiveContainer, LabelList } from "recharts"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { useEffect, useState, type ReactNode } from "react"
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import Link from "next/link"
 import { useAuth } from "@/context/AuthContext"
 import { useCurrency } from "@/hooks/use-currency"
-import { getMenuInsights, type MenuInsights, type PriceSuggestion, type SuppressedSuggestion, applyMenuItemPrice, getOperationsAnalytics, type OperationsAnalytics, getApcTrends, type ApcTrendPoint, getAdvancedAnalytics, type AdvancedAnalytics, getOutletsComparison, type OutletComparison, createCampaign, deleteCampaign, getKitchenAnalytics, type KitchenAnalytics, type KitchenDishStat, type KitchenSectionStat } from "@/lib/db"
+import { getMenuInsights, type MenuInsights, type PriceSuggestion, type SuppressedSuggestion, applyMenuItemPrice, getOperationsAnalytics, type OperationsAnalytics, getApcTrends, type ApcTrendPoint, getAdvancedAnalytics, type AdvancedAnalytics, getOutletsComparison, type OutletComparison, createCampaign, deleteCampaign, getKitchenAnalytics, type KitchenAnalytics, type KitchenDishStat, type KitchenSectionStat, getMetricExplainers, type MetricExplainer, type MetricExplainers } from "@/lib/db"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { useToast } from "@/hooks/use-toast"
-import { ArrowDown, ArrowUp, Check, ChevronDown, Flame, Trophy, Lightbulb, Snail } from "lucide-react"
+import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, Download, Flame, HelpCircle, Info, Maximize2, Trophy, Lightbulb, Snail, TriangleAlert } from "lucide-react"
 
 const ordersChartConfig = {
   orders: {
@@ -40,8 +40,10 @@ const KPI_COLORS: Record<string, string> = {
 const KPI_STATUS_LABEL: Record<string, string> = { blue: "Excellent", green: "On target", amber: "Watch", red: "Action", grey: "No data" }
 
 // Drill-down targets: clicking a KPI tile jumps to the page holding its source
-// records. Data-driven by KPI key — keys without an entry render unlinked
-// (e.g. churn/campaign, whose detail already lives on this page).
+// records. Data-driven by KPI key. Every key the backend can emit is listed —
+// a KPI whose detail genuinely lives on THIS page (churn cohorts, campaign ROI,
+// menu classes) still gets a destination via KPI_VIEW, so no drill-down is ever
+// a dead end. Audited against the KPI_VIEW map so the two stay in step.
 const KPI_LINKS: Record<string, string> = {
   food_cost_pct: "/dashboard/inventory",
   food_cost_variance: "/dashboard/inventory",
@@ -49,23 +51,30 @@ const KPI_LINKS: Record<string, string> = {
   complaint_rate: "/dashboard/feedback",
   nps: "/dashboard/feedback",
   avg_rating: "/dashboard/feedback",
+  happiness_efficiency: "/dashboard/feedback",
   discount_utilization: "/dashboard/orders",
+  offer_redemption: "/dashboard/coupons",
+  processing_time: "/dashboard/orders",
   labour_cost: "/dashboard/attendance",
   table_turnaround: "/dashboard/tables",
   revpash: "/dashboard/tables",
+  wait_time: "/dashboard/waitlist",
   supplier_on_time: "/dashboard/purchase-orders",
   supplier_score: "/dashboard/purchase-orders",
   booking_fill: "/dashboard/bookings",
   booking_no_show: "/dashboard/bookings",
   valet_retrieval: "/dashboard/valet",
   profit_margin: "/dashboard/accounting",
+  churn_rate: "/dashboard/customers",
+  menu_bad_share: "/dashboard/menu",
+  forecast_mape: "/dashboard/menu",
 }
 
 // ---------------------------------------------------------------------------
 // View filter ("show only this slice") + KPI sort — pure presentation. Every
 // section and KPI key is tagged into exactly ONE detail view; Overview is a
 // curated headline cut and Everything shows it all, so nothing is unreachable.
-type ViewId = "overview" | "sales" | "discounts" | "menu" | "staff" | "customers" | "operations" | "supply" | "marketing" | "everything"
+type ViewId = "overview" | "sales" | "discounts" | "menu" | "staff" | "customers" | "operations" | "kitchen" | "supply" | "marketing" | "everything"
 
 const VIEWS: { id: ViewId; label: string }[] = [
   { id: "overview", label: "Overview" },
@@ -75,6 +84,9 @@ const VIEWS: { id: ViewId; label: string }[] = [
   { id: "staff", label: "Staff" },
   { id: "customers", label: "Customers" },
   { id: "operations", label: "Operations" },
+  // Kitchen prep timings are their own section (they also show on Operations,
+  // Everything and — compactly — on Overview, so they can't be missed).
+  { id: "kitchen", label: "Kitchen" },
   { id: "supply", label: "Suppliers & Inventory" },
   { id: "marketing", label: "Marketing" },
   { id: "everything", label: "Everything" },
@@ -113,6 +125,9 @@ const OVERVIEW_KPIS = new Set([
   "profit_margin", "revpash", "food_cost_pct", "labour_cost",
   "avg_rating", "nps", "table_turnaround", "churn_rate", "low_stock",
 ])
+
+/** Human label for a view id — used by every "See more in <View>" affordance. */
+const viewLabel = (id: ViewId): string => VIEWS.find((v) => v.id === id)?.label ?? "Everything"
 
 // New backend KPIs without a mapping surface on Overview (and Everything)
 // rather than silently disappearing.
@@ -247,6 +262,453 @@ function SectionHeaderRow({ children, control }: { children: ReactNode; control:
   )
 }
 
+// ---------------------------------------------------------------------------
+// Metric drill-down primitives — shared by the KPI tiles AND by every plain
+// numeric card on the page. Rule: a number is never a dead click. Clicking one
+// opens a dialog with (a) the big value, (b) the metric's explainer copy from
+// /analytics/metric-explainers, (c) a breakdown built from data the page has
+// ALREADY fetched (no card triggers a request of its own) and (d) the old
+// "jump to the source page" navigation, preserved as a link in the footer.
+
+// Categorical palette shared by pie slices and bar fills.
+const DRILL_PALETTE = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#0891b2", "#db2777", "#65a30d", "#ea580c", "#4f46e5"]
+
+// Prep times are stored in ms and always read as "Xm Ys".
+function fmtPrepMs(ms: number | null | undefined): string {
+  const total = Math.max(0, Math.round(Number(ms ?? 0) / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}m ${s}s`;
+}
+
+// ---------------------------------------------------------------------------
+// Per-section CSV download. Every section that renders rows or numbers offers a
+// small "CSV" button in its header; the file is built CLIENT-SIDE from the data
+// the section already rendered (never a refetch), so the numbers in the file are
+// exactly the numbers on screen — same rounding, same sort order, same slice.
+//
+// Convention: a numeric column carries the number as displayed and puts the unit
+// in the header (e.g. "Revenue (₹)", "Complaints (%)"); durations carry the
+// displayed "Xm Ys" string. Output is CRLF-delimited, BOM-free UTF-8.
+type CsvCell = string | number | null | undefined
+interface CsvSection {
+  /** kebab-case, also the `<section>` slug in the filename. */
+  id: string
+  label: string
+  /** Called at click time so the CSV always reflects the current sort/filter. */
+  build: () => CsvCell[][]
+}
+
+const csvEscape = (v: CsvCell): string => {
+  const s = v == null ? "" : String(v)
+  return /["\n\r,]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+}
+const toCsv = (rows: CsvCell[][]): string => rows.map((r) => r.map(csvEscape).join(",")).join("\r\n")
+
+const csvSlug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
+const csvToday = () => {
+  const d = new Date()
+  const p = (n: number) => String(n).padStart(2, "0")
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+const csvFilename = (restaurant: string | undefined, section: string) =>
+  `${csvSlug(restaurant ?? "restaurant") || "restaurant"}-${csvSlug(section) || "section"}-${csvToday()}.csv`
+
+function downloadCsv(filename: string, rows: CsvCell[][]) {
+  // No BOM: the file is plain UTF-8 (Blob text is encoded as UTF-8).
+  const blob = new Blob([toCsv(rows)], { type: "text/csv;charset=utf-8" })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = filename
+  a.rel = "noopener"
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  // Give the browser a tick to start the download before dropping the blob.
+  setTimeout(() => { URL.revokeObjectURL(url); }, 0)
+}
+
+// The page collects every mounted section so the toolbar can offer one combined
+// file. Registration happens once per mount (the id is stable); `build` is read
+// through a ref, so the combined file uses each section's CURRENT rows.
+interface CsvRegistry {
+  register: (s: CsvSection) => void
+  unregister: (id: string) => void
+  list: () => CsvSection[]
+}
+const CsvRegistryContext = createContext<CsvRegistry | null>(null)
+
+/**
+ * Registers a card's rows for the SECTION-level export. Renders nothing.
+ *
+ * Downloads are deliberately whole-section ("entire Kitchen", "entire Sales &
+ * Revenue"), not per-card: a card used to carry its own CSV button, which meant
+ * ~30 tiny buttons and one file per widget. Each card now only contributes its
+ * rows to the single toolbar download for the view it lives in. Keeping this as
+ * a component (rather than a hook) means the ~30 call sites stay untouched, and
+ * a card is exported exactly when it is on screen.
+ */
+function SectionDownload({ id, label, build }: CsvSection & { className?: string }) {
+  const registry = useContext(CsvRegistryContext)
+  const latest = useRef(build)
+  latest.current = build
+
+  useEffect(() => {
+    if (!registry) {return}
+    registry.register({ id, label, build: () => latest.current() })
+    return () => { registry.unregister(id); }
+  }, [registry, id, label])
+
+  return null
+}
+
+/** Groups a sort control and a download button in one card-header cluster. */
+function HeaderControls({ children }: { children: ReactNode }) {
+  return <div className="flex shrink-0 items-center gap-1.5">{children}</div>
+}
+
+type DrillUnit = "money" | "pct" | "min" | "rating" | "count" | "ms"
+type DrillChartKind = "pie" | "bar" | "none"
+interface DrillRow { name: string; value: number }
+
+// Everything a clickable number hands to the shared dialog. Only `title` and
+// `value` are required — a card with no breakdown still opens and still explains
+// itself via `explainerKey` / `note`.
+interface MetricDetail {
+  title: string
+  value: string
+  sub?: string
+  badge?: ReactNode
+  // Key into /analytics/metric-explainers. Missing/unknown key => no explainer.
+  explainerKey?: string
+  // Extra sentence spelling out this restaurant's own numbers.
+  note?: string
+  chart?: DrillChartKind
+  rows?: DrillRow[]
+  unit?: DrillUnit
+  breakdownTitle?: string
+  footnote?: string
+  link?: string
+  linkLabel?: string
+  /**
+   * The analytics view holding this metric's full section. Renders a working
+   * "See more in <View>" action in the dialog footer — the affordance that used
+   * to be text-only and did nothing. Every detail on this page sets it, so no
+   * drill-down closes without offering somewhere to go.
+   */
+  view?: ViewId
+}
+
+function formatDrill(n: number, unit: DrillUnit, money: (v: number) => string): string {
+  switch (unit) {
+    case "money": return money(n)
+    case "pct": return `${Math.round(n * 10) / 10}%`
+    case "min": return `${Math.round(n * 10) / 10} min`
+    case "rating": return n.toFixed(1)
+    case "ms": return fmtPrepMs(n)
+    default: return `${Math.round(n)}`
+  }
+}
+
+// Fetch-once wrapper around the static explainer copy. Cached in db.ts, so
+// every component may call this freely — only the first one hits the network.
+function useMetricExplainers(): MetricExplainers {
+  const { user } = useAuth();
+  const [explainers, setExplainers] = useState<MetricExplainers>({});
+  useEffect(() => {
+    if (!user?.restaurantUsername) {return;}
+    let active = true;
+    getMetricExplainers(user.restaurantUsername)
+      .then((e) => { if (active) {setExplainers(e);} })
+      .catch(() => { /* explainer copy is decoration — never block a card */ });
+    return () => { active = false; };
+  }, [user?.restaurantUsername]);
+  return explainers;
+}
+
+// A clickable numeric tile. Affordances: pointer cursor, hover ring + shadow,
+// and an expand glyph that fades in on hover/focus.
+function MetricTile({ label, value, sub, className, onOpen }: {
+  label: string
+  value: ReactNode
+  sub?: ReactNode
+  className?: string
+  onOpen: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      title={`${label} — click for detail`}
+      className={`group h-full w-full cursor-pointer rounded-xl border p-3 text-left transition-shadow hover:shadow-md hover:ring-1 hover:ring-primary/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary ${className ?? ""}`}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="text-xs font-medium text-muted-foreground">{label}</div>
+        <Maximize2 className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+      </div>
+      <div className="mt-1 text-2xl font-bold">{value}</div>
+      {sub != null && <div className="text-[10px] text-muted-foreground">{sub}</div>}
+    </button>
+  )
+}
+
+// The row-shaped variant, for label/value lists inside an existing card.
+function MetricRow({ label, value, onOpen }: { label: string; value: ReactNode; onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      title={`${label} — click for detail`}
+      className="group -mx-1 flex w-full cursor-pointer items-center justify-between gap-2 rounded-md px-1 py-0.5 text-left transition-colors hover:bg-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+    >
+      <span className="text-muted-foreground">{label}</span>
+      <span className="flex items-center gap-1 font-medium">
+        {value}
+        <ChevronRight className="h-3.5 w-3.5 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+      </span>
+    </button>
+  )
+}
+
+// Small "?" affordance for a card title whose numbers live in a table rather
+// than in a tile — opens the same dialog with just the explainer.
+function ExplainerHint({ label, onOpen }: { label: string; onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      title={`What does ${label} mean?`}
+      aria-label={`What does ${label} mean?`}
+      className="inline-flex shrink-0 cursor-pointer items-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+    >
+      <HelpCircle className="h-4 w-4" />
+    </button>
+  )
+}
+
+// Theme-aware tooltip (the built-in recharts one is not) — mirrors the card
+// tooltip styling used elsewhere on the page.
+function DrillTooltip({ active, payload, fmt }: { active?: boolean; payload?: any[]; fmt: (n: number) => string }) {
+  if (!active || !payload?.length) {return null}
+  const p = payload[0]
+  return (
+    <div className="rounded-lg border border-border/50 bg-background px-2.5 py-1.5 text-xs shadow-xl">
+      <div className="font-medium text-foreground">{p?.payload?.name}</div>
+      <div className="text-muted-foreground">{fmt(Number(p?.value ?? 0))}</div>
+    </div>
+  )
+}
+
+// Compact name / value list beneath the chart — doubles as the pie legend
+// (colour swatches) and the bar's exact figures.
+function DrillBreakdown({ rows, fmt, total }: { rows: DrillRow[]; fmt: (n: number) => string; total: number | null }) {
+  return (
+    <div className="max-h-[200px] overflow-y-auto rounded-lg border">
+      <table className="w-full text-sm">
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={i} className="border-b last:border-0">
+              <td className="py-1.5 pl-2 pr-2">
+                <span className="flex items-center gap-2">
+                  <span className="h-2.5 w-2.5 shrink-0 rounded-[2px]" style={{ backgroundColor: DRILL_PALETTE[i % DRILL_PALETTE.length] }} />
+                  <span className="truncate">{r.name}</span>
+                </span>
+              </td>
+              <td className="whitespace-nowrap py-1.5 pr-2 text-right font-medium tabular-nums">
+                {fmt(r.value)}
+                {total ? <span className="ml-1 text-xs text-muted-foreground">({Math.round((r.value / total) * 100)}%)</span> : null}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+// Pie (composition) or horizontal bar (ranking) + the exact figures.
+function DrillChart({ rows, kind, fmt, total }: { rows: DrillRow[]; kind: "pie" | "bar"; fmt: (n: number) => string; total: number | null }) {
+  if (kind === "pie") {
+    return (
+      <div className="grid gap-4 sm:grid-cols-2 sm:items-center">
+        <div className="h-[220px] w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+              <Pie
+                data={rows}
+                dataKey="value"
+                nameKey="name"
+                cx="50%"
+                cy="50%"
+                innerRadius={48}
+                outerRadius={86}
+                paddingAngle={2}
+                labelLine={false}
+                label={({ percent }: { percent?: number }) => ((percent ?? 0) > 0.05 ? `${Math.round((percent ?? 0) * 100)}%` : "")}
+              >
+                {rows.map((_, i) => (
+                  <Cell key={i} fill={DRILL_PALETTE[i % DRILL_PALETTE.length]} stroke="hsl(var(--background))" strokeWidth={2} />
+                ))}
+              </Pie>
+              <Tooltip content={(props) => <DrillTooltip {...props} fmt={fmt} />} />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+        <DrillBreakdown rows={rows} fmt={fmt} total={total} />
+      </div>
+    )
+  }
+  return (
+    <div className="grid gap-4">
+      <div className="h-[240px] w-full">
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={rows} layout="vertical" margin={{ top: 4, right: 48, left: 8, bottom: 4 }}>
+            <CartesianGrid horizontal={false} strokeDasharray="3 3" stroke="hsl(var(--border))" />
+            <XAxis type="number" hide />
+            <YAxis
+              type="category"
+              dataKey="name"
+              width={116}
+              tickLine={false}
+              axisLine={false}
+              tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11 }}
+              tickFormatter={(v: string) => (v && v.length > 16 ? `${v.slice(0, 15)}…` : v)}
+            />
+            <Tooltip cursor={{ fill: "hsl(var(--muted))", fillOpacity: 0.5 }} content={(props) => <DrillTooltip {...props} fmt={fmt} />} />
+            <Bar dataKey="value" radius={[0, 4, 4, 0]}>
+              {rows.map((_, i) => (
+                <Cell key={i} fill={DRILL_PALETTE[i % DRILL_PALETTE.length]} />
+              ))}
+              <LabelList dataKey="value" position="right" className="fill-foreground text-[11px]" formatter={(v: any) => fmt(Number(v))} />
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+      <DrillBreakdown rows={rows} fmt={fmt} total={null} />
+    </div>
+  )
+}
+
+// "What this means / How it's computed / tip" block, straight from the backend
+// copy so the web dashboard and the Flutter owner app say the same thing.
+function ExplainerBlock({ explainer }: { explainer: MetricExplainer | undefined }) {
+  if (!explainer) {return null}
+  return (
+    <div className="space-y-2 rounded-lg border bg-muted/40 p-3 text-sm">
+      <div>
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">What this means</p>
+        <p>{explainer.what}</p>
+      </div>
+      <div>
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">How it&apos;s computed</p>
+        <p className="text-muted-foreground">{explainer.how}</p>
+      </div>
+      {explainer.tip && (
+        <div className="flex items-start gap-2 rounded-md bg-background/70 p-2">
+          <Lightbulb className="mt-0.5 h-3.5 w-3.5 shrink-0 text-yellow-500" />
+          <p className="text-xs text-muted-foreground">{explainer.tip}</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Small, always-working "jump to the section that owns this" control. Switching
+// the view is a real action (it re-renders the page onto that slice) — this is
+// the affordance the dead "see more in Sales & Revenue" text was pretending to be.
+function SeeMoreInView({ view, onOpenView, className }: { view: ViewId; onOpenView: (v: ViewId) => void; className?: string }) {
+  return (
+    <button
+      type="button"
+      onClick={() => { onOpenView(view); }}
+      className={`inline-flex shrink-0 items-center gap-1 text-sm font-medium text-primary transition-colors hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-primary ${className ?? ""}`}
+    >
+      See more in {viewLabel(view)}
+      <ChevronRight className="h-4 w-4" />
+    </button>
+  )
+}
+
+// The one dialog every numeric card opens. `detail == null` keeps it closed.
+function MetricDetailDialog({ detail, explainers, money, onOpenChange, onOpenView }: {
+  detail: MetricDetail | null
+  explainers: MetricExplainers
+  money: (n: number | null | undefined) => string
+  onOpenChange: (open: boolean) => void
+  /** Switches the analytics view. Closes the dialog first so the jump is visible. */
+  onOpenView?: (v: ViewId) => void
+}) {
+  const explainer = detail?.explainerKey ? explainers[detail.explainerKey] : undefined
+  const unit = detail?.unit ?? "count"
+  const fmt = (n: number) => formatDrill(n, unit, money)
+  const kind: DrillChartKind = detail?.chart ?? ((detail?.rows?.length ?? 0) > 0 ? "bar" : "none")
+  const raw = (detail?.rows ?? []).filter((r) => Number.isFinite(r.value))
+  // Bars: biggest first, capped at 8. Pies keep composition order.
+  const rows = kind === "bar" ? [...raw].sort((a, b) => b.value - a.value).slice(0, 8) : raw
+  const total = rows.reduce((s, r) => s + (r.value || 0), 0)
+
+  return (
+    <Dialog open={detail != null} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[85vh] max-w-xl overflow-y-auto" aria-describedby={undefined}>
+        {detail && (
+          <>
+            <DialogHeader>
+              <DialogTitle className="flex flex-wrap items-center gap-2">
+                <span>{detail.title}</span>
+                {detail.badge}
+              </DialogTitle>
+              <div className="text-3xl font-bold">{detail.value}</div>
+              {detail.sub && <p className="text-xs text-muted-foreground">{detail.sub}</p>}
+            </DialogHeader>
+
+            <ExplainerBlock explainer={explainer} />
+            {detail.note && <p className="text-sm text-muted-foreground">{detail.note}</p>}
+            {/* Only when there is genuinely nothing else to show — a chart or a
+                note already answers "what am I looking at?". */}
+            {!explainer && !detail.note && kind === "none" && (
+              <p className="text-sm text-muted-foreground">No written explainer for this metric yet.</p>
+            )}
+
+            {kind !== "none" && (
+              rows.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No detailed breakdown yet for this metric.</p>
+              ) : (
+                <div className="grid gap-2">
+                  {detail.breakdownTitle && (
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{detail.breakdownTitle}</p>
+                  )}
+                  <DrillChart rows={rows} kind={kind} fmt={fmt} total={kind === "pie" ? (total || null) : null} />
+                </div>
+              )
+            )}
+
+            {/* Footer actions. At least one is always present: a metric with no
+                records page still offers the view that owns its full section. */}
+            <DialogFooter className="items-center gap-2 sm:justify-between">
+              <span className="text-xs text-muted-foreground">{detail.footnote ?? ""}</span>
+              <span className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                {detail.view && onOpenView && (
+                  <SeeMoreInView
+                    view={detail.view}
+                    onOpenView={(v) => { onOpenChange(false); onOpenView(v); }}
+                  />
+                )}
+                {detail.link && (
+                  <Link href={detail.link} className="text-sm font-medium text-primary hover:underline">
+                    {detail.linkLabel ?? "View full records"} →
+                  </Link>
+                )}
+              </span>
+            </DialogFooter>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // One muted sentence naming the items the backend is currently holding back,
 // with the cooldown release date when it sent one. Names are capped so the
 // line stays a single readable row.
@@ -262,9 +724,74 @@ function pausedSummary(items: SuppressedSuggestion[], count: number): string {
   return `Paused: ${shown.join(", ")}${more > 0 ? ` and ${more} more` : ""}.`;
 }
 
-function ActionableInsights({ view }: { view: ViewId }) {
+// The backend now sends a written `explanation` for every withheld item. This is
+// only the fallback for an older backend that sends the bare guard code — the
+// code itself is still what we branch on, never rendered.
+function suppressedExplanation(s: SuppressedSuggestion): string {
+  if (s.explanation) {return s.explanation;}
+  const when = s.retry_after ? new Date(s.retry_after) : null;
+  const until = when && !Number.isNaN(when.getTime())
+    ? ` until ${when.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`
+    : "";
+  switch (s.reason) {
+    case "cooldown": return `Paused${until}: the price moved recently, so there isn't a full period of sales at the new price yet.`;
+    case "drift_cap": return "Already as far from its original price as automatic suggestions are allowed to go.";
+    default: return "A further cut would leave too little margin over the item's food cost.";
+  }
+}
+
+// Confidence chip colours — same three-band language the backend uses.
+const CONFIDENCE_TONE: Record<string, string> = {
+  high: "border-green-300 bg-green-50 text-green-800 dark:border-green-900 dark:bg-green-950 dark:text-green-300",
+  medium: "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200",
+  low: "border-border bg-muted text-muted-foreground",
+};
+
+// The structured price-suggestion explainer: why, expected effect, confidence,
+// the exact delta, and the margin / caution lines when the backend sends them.
+// Falls back to the legacy one-line `reason` when the new fields are absent.
+function PriceExplainer({ s, delta, deltaPct }: { s: PriceSuggestion; delta: string; deltaPct: string }) {
+  const structured = Boolean(s.why ?? s.expected_effect);
+  if (!structured) {
+    return <p className="text-xs text-muted-foreground">{s.reason}</p>;
+  }
+  return (
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className={`rounded-full border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${s.direction === "increase" ? "border-green-300 bg-green-50 text-green-700 dark:border-green-900 dark:bg-green-950 dark:text-green-300" : "border-orange-300 bg-orange-50 text-orange-700 dark:border-orange-900 dark:bg-orange-950 dark:text-orange-300"}`}>
+          {delta} ({deltaPct})
+        </span>
+        {s.confidence && (
+          <span
+            className={`rounded-full border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${CONFIDENCE_TONE[s.confidence] ?? CONFIDENCE_TONE.low}`}
+            title={s.confidence_note}
+          >
+            {s.confidence} confidence
+          </span>
+        )}
+      </div>
+      {s.why && <p className="text-xs text-foreground">{s.why}</p>}
+      {s.expected_effect && <p className="text-xs text-muted-foreground">{s.expected_effect}</p>}
+      {s.confidence_note && <p className="text-xs text-muted-foreground">{s.confidence_note}</p>}
+      {s.margin_note && (
+        <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+          <Info className="mt-0.5 h-3 w-3 shrink-0" />
+          <span>{s.margin_note}</span>
+        </p>
+      )}
+      {s.caution && (
+        <p className="flex items-start gap-1.5 rounded-md border border-amber-300 bg-amber-50 p-1.5 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100">
+          <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" />
+          <span>{s.caution}</span>
+        </p>
+      )}
+    </div>
+  );
+}
+
+function ActionableInsights({ view, onOpenView }: { view: ViewId; onOpenView: (v: ViewId) => void }) {
   const { user } = useAuth();
-  const { currency } = useCurrency();
+  const { currency, currencySymbol } = useCurrency();
   const { toast } = useToast();
   const [data, setData] = useState<MenuInsights | null>(null);
   const [loading, setLoading] = useState(true);
@@ -272,8 +799,20 @@ function ActionableInsights({ view }: { view: ViewId }) {
   // Price suggestion pending confirmation + the row currently being written.
   const [pendingPrice, setPendingPrice] = useState<PriceSuggestion | null>(null);
   const [applyingId, setApplyingId] = useState<string | null>(null);
-  const money = (n: number | null | undefined) => `${currency}${Number(n ?? 0).toFixed(0)}`;
-  const money2 = (n: number | null | undefined) => `${currency}${Number(n ?? 0).toFixed(2)}`;
+  const [detail, setDetail] = useState<MetricDetail | null>(null); // expanded numeric card
+  const explainers = useMetricExplainers();
+  const money = (n: number | null | undefined) => `${currencySymbol}${Number(n ?? 0).toFixed(0)}`;
+  const money2 = (n: number | null | undefined) => `${currencySymbol}${Number(n ?? 0).toFixed(2)}`;
+  // Signed money/percent for a price delta, always rendered from the backend's
+  // own delta fields (a margin-clamped cut is NOT the nominal step).
+  const deltaMoney = (s: PriceSuggestion) => {
+    const d = s.delta_amount ?? s.suggested_price - s.current_price;
+    return `${d >= 0 ? "+" : "−"}${money2(Math.abs(d))}`;
+  };
+  const deltaPercent = (s: PriceSuggestion) => {
+    const p = s.delta_percent ?? ((s.suggested_price - s.current_price) / (s.current_price || 1)) * 100;
+    return `${p >= 0 ? "+" : "−"}${Math.abs(p).toFixed(1)}%`;
+  };
 
   // Per-section sort state (defaults = most meaningful metric).
   const [dishSort, setDishSort] = useSectionSort("revenue");
@@ -355,13 +894,85 @@ function ActionableInsights({ view }: { view: ViewId }) {
   const priceSuggestions = sortRows(data.price_suggestions, priceFields, priceSort);
   const slowMovers = sortRows(data.slow_movers, slowFields, slowSort);
 
+  const windowLabel = `Last ${data.period_days} days`;
+  // Breakdowns for the three headline tiles — all from `data`, no extra fetch.
+  const dishRevenueRows: DrillRow[] = data.top_dishes.map((d) => ({ name: d.name, value: d.revenue }));
+  const dishQtyRows: DrillRow[] = data.top_dishes.map((d) => ({ name: d.name, value: d.quantity }));
+  const byCategoryRows: DrillRow[] = Object.entries(
+    data.top_dishes.reduce<Record<string, number>>((acc, d) => {
+      const key = d.category || "Uncategorised";
+      acc[key] = (acc[key] ?? 0) + 1;
+      return acc;
+    }, {}),
+  ).map(([name, value]) => ({ name, value }));
+
+  const revenueDetail: MetricDetail = {
+    title: "Revenue",
+    value: money(data.total_revenue),
+    sub: windowLabel.toLowerCase(),
+    explainerKey: "revenue",
+    note: `${data.total_items_sold} item${data.total_items_sold === 1 ? "" : "s"} sold across ${data.top_dishes.length} distinct dish${data.top_dishes.length === 1 ? "" : "es"}.`,
+    chart: "bar",
+    rows: dishRevenueRows,
+    unit: "money",
+    breakdownTitle: "Revenue by dish (top 8)",
+    footnote: windowLabel,
+    link: "/dashboard/orders",
+    linkLabel: "View orders",
+    view: "sales",
+  };
+  const itemsSoldDetail: MetricDetail = {
+    title: "Items sold",
+    value: String(data.total_items_sold),
+    sub: windowLabel.toLowerCase(),
+    explainerKey: "top_dish",
+    note: `Every line item on every non-cancelled order in the window, quantities added up. That is ${data.top_dishes.length > 0 ? `an average of ${Math.round((data.total_items_sold / data.top_dishes.length) * 10) / 10} per dish` : "no sales yet"}.`,
+    chart: "bar",
+    rows: dishQtyRows,
+    unit: "count",
+    breakdownTitle: "Quantity by dish (top 8)",
+    footnote: windowLabel,
+    link: "/dashboard/orders",
+    linkLabel: "View orders",
+    view: "menu",
+  };
+  const distinctDishesDetail: MetricDetail = {
+    title: "Distinct dishes",
+    value: String(data.top_dishes.length),
+    sub: "sold at least once",
+    note: `How much of the menu is actually earning. ${data.slow_movers.length} available item${data.slow_movers.length === 1 ? "" : "s"} barely sold in this window — see Slow movers below.`,
+    chart: "pie",
+    rows: byCategoryRows,
+    unit: "count",
+    breakdownTitle: "Dishes sold, by category",
+    footnote: windowLabel,
+    link: "/dashboard/menu",
+    linkLabel: "View menu",
+    view: "menu",
+  };
+
   return (
     <div className="grid gap-4 md:gap-8">
       {showStats && (
-        <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
-          <Card><CardHeader className="pb-2"><CardDescription>Revenue (30d)</CardDescription><CardTitle className="text-2xl">{money(data.total_revenue)}</CardTitle></CardHeader></Card>
-          <Card><CardHeader className="pb-2"><CardDescription>Items sold (30d)</CardDescription><CardTitle className="text-2xl">{data.total_items_sold}</CardTitle></CardHeader></Card>
-          <Card><CardHeader className="pb-2"><CardDescription>Distinct dishes</CardDescription><CardTitle className="text-2xl">{data.top_dishes.length}</CardTitle></CardHeader></Card>
+        <div className="grid gap-2">
+          <div className="flex items-center justify-end">
+            <SectionDownload
+              id="menu-insights-headline"
+              label="Menu insights (headline)"
+              build={() => [
+                ["Metric", "Value"],
+                [`Revenue (${currencySymbol})`, Number(data.total_revenue ?? 0).toFixed(0)],
+                ["Items sold", data.total_items_sold],
+                ["Distinct dishes", data.top_dishes.length],
+                ["Window (days)", data.period_days],
+              ]}
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
+            <MetricTile className="bg-card shadow-sm" label={`Revenue (${data.period_days}d)`} value={money(data.total_revenue)} onOpen={() => { setDetail(revenueDetail); }} />
+            <MetricTile className="bg-card shadow-sm" label={`Items sold (${data.period_days}d)`} value={data.total_items_sold} onOpen={() => { setDetail(itemsSoldDetail); }} />
+            <MetricTile className="bg-card shadow-sm" label="Distinct dishes" value={data.top_dishes.length} onOpen={() => { setDetail(distinctDishesDetail); }} />
+          </div>
         </div>
       )}
 
@@ -373,9 +984,24 @@ function ActionableInsights({ view }: { view: ViewId }) {
         {showDishes && data.top_dishes.length > 0 && (
           <Card>
             <CardHeader>
-              <SectionHeaderRow control={<SortControl fields={dishFields} state={dishSort} onChange={setDishSort} />}>
-                <CardTitle className="flex items-center gap-2"><Flame className="h-5 w-5 text-orange-500" /> Top-selling dishes</CardTitle>
-                <CardDescription>Best performers over the last 30 days.</CardDescription>
+              <SectionHeaderRow control={
+                <HeaderControls>
+                  <SortControl fields={dishFields} state={dishSort} onChange={setDishSort} />
+                  <SectionDownload
+                    id="top-dishes"
+                    label="Top-selling dishes"
+                    build={() => [
+                      ["Rank", "Dish", "Category", "Qty sold", `Revenue (${currencySymbol})`, "Orders"],
+                      ...topDishes.map((d, i) => [i + 1, d.name, d.category ?? "", d.quantity, Number(d.revenue ?? 0).toFixed(0), d.orders]),
+                    ]}
+                  />
+                </HeaderControls>
+              }>
+                <CardTitle className="flex items-center gap-2">
+                  <Flame className="h-5 w-5 text-orange-500" /> Top-selling dishes
+                  <ExplainerHint label="top dish" onOpen={() => { setDetail({ ...revenueDetail, title: "Top dish", value: data.top_dishes[0]?.name ?? "—", sub: data.top_dishes[0] ? `${money(data.top_dishes[0].revenue)} from ${data.top_dishes[0].quantity} sold` : undefined, explainerKey: "top_dish", note: undefined }); }} />
+                </CardTitle>
+                <CardDescription>Best performers over the last {data.period_days} days.</CardDescription>
               </SectionHeaderRow>
             </CardHeader>
             <CardContent className="space-y-2">
@@ -386,6 +1012,11 @@ function ActionableInsights({ view }: { view: ViewId }) {
                   <span className="font-semibold">{money(d.revenue)}</span>
                 </div>
               ))}
+              {/* Overview shows a curated cut; the Menu view holds price
+                  suggestions and slow movers as well. */}
+              {view === "overview" && (
+                <div className="flex justify-end pt-1"><SeeMoreInView view="menu" onOpenView={onOpenView} /></div>
+              )}
             </CardContent>
           </Card>
         )}
@@ -393,7 +1024,19 @@ function ActionableInsights({ view }: { view: ViewId }) {
         {showWaiters && data.top_waiters.length > 0 && (
           <Card>
             <CardHeader>
-              <SectionHeaderRow control={<SortControl fields={waiterFields} state={waiterSort} onChange={setWaiterSort} />}>
+              <SectionHeaderRow control={
+                <HeaderControls>
+                  <SortControl fields={waiterFields} state={waiterSort} onChange={setWaiterSort} />
+                  <SectionDownload
+                    id="top-waiters"
+                    label="Top waiters"
+                    build={() => [
+                      ["Rank", "Waiter", "Orders", `Revenue (${currencySymbol})`],
+                      ...topWaiters.map((w, i) => [i + 1, w.employee_name, w.orders, Number(w.revenue ?? 0).toFixed(0)]),
+                    ]}
+                  />
+                </HeaderControls>
+              }>
                 <CardTitle className="flex items-center gap-2"><Trophy className="h-5 w-5 text-amber-500" /> Top waiters</CardTitle>
                 <CardDescription>By revenue brought in (last 30 days).</CardDescription>
               </SectionHeaderRow>
@@ -413,7 +1056,40 @@ function ActionableInsights({ view }: { view: ViewId }) {
         {showPrices && data.price_suggestions.length > 0 && (
           <Card className="md:col-span-2">
             <CardHeader>
-              <SectionHeaderRow control={<SortControl fields={priceFields} state={priceSort} onChange={setPriceSort} />}>
+              <SectionHeaderRow control={
+                <HeaderControls>
+                  <SortControl fields={priceFields} state={priceSort} onChange={setPriceSort} />
+                  <SectionDownload
+                    id="price-suggestions"
+                    label="Price suggestions"
+                    build={() => {
+                      const rows: (string | number)[][] = [
+                        ["Item", "Category", `Current (${currencySymbol})`, `Suggested (${currencySymbol})`, "Direction", `Change (${currencySymbol})`, "Change (%)", "Confidence", "Why", "Expected effect"],
+                        ...priceSuggestions.map((s) => [
+                          s.name, s.category ?? "",
+                          Number(s.current_price ?? 0).toFixed(0),
+                          Number(s.suggested_price ?? 0).toFixed(0),
+                          s.direction,
+                          // Same figures the card shows, with an ASCII sign so a
+                          // spreadsheet reads them as numbers.
+                          (s.delta_amount ?? s.suggested_price - s.current_price).toFixed(2),
+                          (s.delta_percent ?? ((s.suggested_price - s.current_price) / (s.current_price || 1)) * 100).toFixed(1),
+                          s.confidence ?? "",
+                          s.why ?? s.reason ?? "",
+                          s.expected_effect ?? "",
+                        ]),
+                      ];
+                      if (hasSuppressed) {
+                        rows.push([]);
+                        rows.push([`Held back for now (${suppressed.count})`]);
+                        rows.push(["Item", "Why it is paused"]);
+                        for (const s of suppressed.items) {rows.push([s.name, suppressedExplanation(s)]);}
+                      }
+                      return rows;
+                    }}
+                  />
+                </HeaderControls>
+              }>
                 <CardTitle className="flex items-center gap-2"><Lightbulb className="h-5 w-5 text-yellow-500" /> Price suggestions</CardTitle>
                 <CardDescription>Data-driven ideas to grow revenue. Review before applying.</CardDescription>
                 <CardDescription className="mt-1 text-xs">
@@ -431,9 +1107,9 @@ function ActionableInsights({ view }: { view: ViewId }) {
                 return (
                   <div key={`${s.name}-${s.direction}`} className="flex items-start gap-3 rounded-lg border p-3 text-sm">
                     {up ? <ArrowUp className="mt-0.5 h-4 w-4 shrink-0 text-green-600" /> : <ArrowDown className="mt-0.5 h-4 w-4 shrink-0 text-orange-600" />}
-                    <div className="min-w-0 flex-1">
-                      <p className="font-medium">{s.name}</p>
-                      <p className="text-xs text-muted-foreground">{s.reason}</p>
+                    <div className="min-w-0 flex-1 space-y-1">
+                      <p className="font-medium">{s.name}{s.category ? <span className="ml-1 text-xs font-normal text-muted-foreground">{s.category}</span> : null}</p>
+                      <PriceExplainer s={s} delta={deltaMoney(s)} deltaPct={deltaPercent(s)} />
                     </div>
                     <div className="shrink-0 text-right">
                       <p className="text-xs text-muted-foreground line-through">{money(s.current_price)}</p>
@@ -454,6 +1130,19 @@ function ActionableInsights({ view }: { view: ViewId }) {
                   </div>
                 );
               })}
+              {hasSuppressed && (
+                <div className="rounded-lg border border-dashed p-3 md:col-span-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Held back for now ({suppressed.count})</p>
+                  <ul className="mt-2 space-y-1.5">
+                    {suppressed.items.map((s, i) => (
+                      <li key={s.id ?? `${s.name}-${i}`} className="text-xs">
+                        <span className="font-medium">{s.name}</span>
+                        <span className="text-muted-foreground"> — {suppressedExplanation(s)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </CardContent>
           </Card>
         )}
@@ -461,21 +1150,69 @@ function ActionableInsights({ view }: { view: ViewId }) {
         {showPrices && data.price_suggestions.length === 0 && hasSuppressed && (
           <Card className="md:col-span-2">
             <CardHeader>
+              <SectionHeaderRow control={
+                <SectionDownload
+                  id="price-suggestions"
+                  label="Price suggestions (all paused)"
+                  build={() => [
+                    ["Item", "Why it is paused"],
+                    ...suppressed.items.map((s) => [s.name, suppressedExplanation(s)]),
+                  ]}
+                />
+              }>
               <CardTitle className="flex items-center gap-2"><Lightbulb className="h-5 w-5 text-yellow-500" /> Price suggestions</CardTitle>
               <CardDescription>All price suggestions are in their quiet period.</CardDescription>
               <CardDescription className="mt-1 text-xs">
                 Recently-adjusted items are paused until a full period of sales at the new price exists.
               </CardDescription>
+              </SectionHeaderRow>
             </CardHeader>
-            <CardContent className="text-xs text-muted-foreground">{pausedSummary(suppressed.items, suppressed.count)}</CardContent>
+            <CardContent>
+              <ul className="space-y-1.5">
+                {suppressed.items.map((s, i) => (
+                  <li key={s.id ?? `${s.name}-${i}`} className="text-xs">
+                    <span className="font-medium">{s.name}</span>
+                    <span className="text-muted-foreground"> — {suppressedExplanation(s)}</span>
+                  </li>
+                ))}
+              </ul>
+            </CardContent>
           </Card>
         )}
 
         {showSlow && data.slow_movers.length > 0 && (
           <Card className="md:col-span-2">
             <CardHeader>
-              <SectionHeaderRow control={<SortControl fields={slowFields} state={slowSort} onChange={setSlowSort} />}>
-                <CardTitle className="flex items-center gap-2"><Snail className="h-5 w-5 text-muted-foreground" /> Slow movers</CardTitle>
+              <SectionHeaderRow control={
+                <HeaderControls>
+                  <SortControl fields={slowFields} state={slowSort} onChange={setSlowSort} />
+                  <SectionDownload
+                    id="slow-movers"
+                    label="Slow movers"
+                    build={() => [
+                      ["Dish", "Category", "Qty sold", `Price (${currencySymbol})`],
+                      ...slowMovers.map((d) => [d.name, d.category ?? "", d.quantity, Number(d.current_price ?? 0).toFixed(0)]),
+                    ]}
+                  />
+                </HeaderControls>
+              }>
+                <CardTitle className="flex items-center gap-2">
+                  <Snail className="h-5 w-5 text-muted-foreground" /> Slow movers
+                  <ExplainerHint label="slow movers" onOpen={() => { setDetail({
+                    title: "Slow movers",
+                    value: String(data.slow_movers.length),
+                    sub: `available item${data.slow_movers.length === 1 ? "" : "s"} barely selling`,
+                    explainerKey: "slow_mover",
+                    chart: "bar",
+                    rows: data.slow_movers.map((d) => ({ name: d.name, value: d.quantity })),
+                    unit: "count",
+                    breakdownTitle: "Quantity sold",
+                    footnote: windowLabel,
+                    link: "/dashboard/menu",
+                    linkLabel: "View menu",
+                    view: "menu",
+                  }); }} />
+                </CardTitle>
                 <CardDescription>On the menu but rarely ordered — consider promoting, re-pricing, or removing.</CardDescription>
               </SectionHeaderRow>
             </CardHeader>
@@ -492,7 +1229,7 @@ function ActionableInsights({ view }: { view: ViewId }) {
       </div>
 
       <Dialog open={pendingPrice != null} onOpenChange={(open) => { if (!open) {setPendingPrice(null);} }}>
-        <DialogContent className="max-w-md" aria-describedby={undefined}>
+        <DialogContent className="max-h-[85vh] max-w-md overflow-y-auto" aria-describedby={undefined}>
           <DialogHeader>
             <DialogTitle>Apply this price?</DialogTitle>
           </DialogHeader>
@@ -507,9 +1244,12 @@ function ActionableInsights({ view }: { view: ViewId }) {
                   <span className={`text-lg font-bold ${pendingPrice.direction === "increase" ? "text-green-600" : "text-orange-600"}`}>
                     {money2(pendingPrice.suggested_price)}
                   </span>
+                  <span className="text-xs text-muted-foreground">{deltaMoney(pendingPrice)} ({deltaPercent(pendingPrice)})</span>
                 </p>
               </div>
-              <p className="text-muted-foreground">{pendingPrice.reason}</p>
+              {/* Same explainer the card shows, so the reasoning is in front of
+                  the operator at the moment they commit. */}
+              <PriceExplainer s={pendingPrice} delta={deltaMoney(pendingPrice)} deltaPct={deltaPercent(pendingPrice)} />
               <p className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100">
                 This changes the <strong>live menu</strong> straight away — new orders, the guest QR menu and every bill will use the new price. Existing open bills keep the price they were placed at.
               </p>
@@ -523,6 +1263,8 @@ function ActionableInsights({ view }: { view: ViewId }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <MetricDetailDialog detail={detail} explainers={explainers} money={money} onOpenView={onOpenView} onOpenChange={(o) => { if (!o) {setDetail(null);} }} />
     </div>
   );
 }
@@ -561,8 +1303,16 @@ function OperationsCharts({ view }: { view: ViewId }) {
     <div className="grid gap-4 md:gap-8">
       <Card>
         <CardHeader>
-          <CardTitle>Peak Order Times</CardTitle>
-          <CardDescription>Order volume by hour of day (UTC), last 30 days.</CardDescription>
+          <SectionHeaderRow control={hasData ? (
+            <SectionDownload
+              id="peak-order-times"
+              label="Peak order times"
+              build={() => [["Hour (UTC)", "Orders"], ...byHour.map((h) => [h.time, h.orders])]}
+            />
+          ) : null}>
+            <CardTitle>Peak Order Times</CardTitle>
+            <CardDescription>Order volume by hour of day (UTC), last 30 days.</CardDescription>
+          </SectionHeaderRow>
         </CardHeader>
         <CardContent>
           {loading ? spinner : !hasData ? empty : (
@@ -580,8 +1330,16 @@ function OperationsCharts({ view }: { view: ViewId }) {
       </Card>
       <Card>
         <CardHeader>
-          <CardTitle>Orders by Day of Week</CardTitle>
-          <CardDescription>Which days are busiest, last 30 days.</CardDescription>
+          <SectionHeaderRow control={hasData ? (
+            <SectionDownload
+              id="orders-by-weekday"
+              label="Orders by day of week"
+              build={() => [["Day", "Orders"], ...byWeekday.map((w) => [w.day, w.orders])]}
+            />
+          ) : null}>
+            <CardTitle>Orders by Day of Week</CardTitle>
+            <CardDescription>Which days are busiest, last 30 days.</CardDescription>
+          </SectionHeaderRow>
         </CardHeader>
         <CardContent>
           {loading ? spinner : !hasData ? empty : (
@@ -603,20 +1361,24 @@ function OperationsCharts({ view }: { view: ViewId }) {
 
 // Kitchen analytics: per-dish prep time, per-section (station) averages and an
 // order-level prep summary — all from Orders.timing (pause-excluded, server-side).
-// ms are formatted "Xm Ys". Lives in the Operations view.
-function fmtPrepMs(ms: number | null | undefined): string {
-  const total = Math.max(0, Math.round(Number(ms ?? 0) / 1000));
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${m}m ${s}s`;
-}
-
-function KitchenAnalyticsView({ view }: { view: ViewId }) {
+// ms are formatted "Xm Ys" (see fmtPrepMs).
+//
+// This is a FIRST-CLASS section: it has its own "Kitchen" view, still appears in
+// Operations/Everything, and shows a compact cut on Overview so the numbers are
+// discoverable without hunting through the view picker.
+function KitchenAnalyticsView({ view, onOpenView }: { view: ViewId; onOpenView: (v: ViewId) => void }) {
   const { user } = useAuth();
+  const { currency, currencySymbol } = useCurrency();
+  const explainers = useMetricExplainers();
   const [data, setData] = useState<KitchenAnalytics | null>(null);
   const [loading, setLoading] = useState(true);
   const [dishSort, setDishSort] = useSectionSort("avg_prep_ms");
   const [sectionSort, setSectionSort] = useSectionSort("avg_prep_ms");
+  const [detail, setDetail] = useState<MetricDetail | null>(null);
+  const money = (n: number | null | undefined) => `${currencySymbol}${Number(n ?? 0).toFixed(0)}`;
+  // Every prep-time drill-down belongs to the Kitchen view, so stamp it once
+  // here rather than repeating `view: "kitchen"` on seven detail objects.
+  const openDetail = (d: MetricDetail) => { setDetail({ view: "kitchen", ...d }); };
 
   useEffect(() => {
     if (!user?.restaurantUsername) {return;}
@@ -628,16 +1390,25 @@ function KitchenAnalyticsView({ view }: { view: ViewId }) {
     return () => { active = false; };
   }, [user?.restaurantUsername]);
 
-  if (!inView(view, "operations")) {return null;}
+  // Dedicated Kitchen view + Operations/Everything (as before) + a compact cut
+  // on Overview so the section is discoverable without opening the view picker.
+  if (!(view === "kitchen" || inView(view, "operations", true))) {return null;}
+  const compact = view === "overview";
+
+  // p90 is additive on the wire; max is the honest fallback for an old backend.
+  const dishP90 = (d: KitchenDishStat) => d.p90_prep_ms ?? d.max_prep_ms;
+  const sectionP90 = (s: KitchenSectionStat) => s.p90_prep_ms ?? s.max_prep_ms;
 
   const dishFields: SortField<KitchenDishStat>[] = [
     { id: "avg_prep_ms", label: "Avg", type: "num", get: (d) => d.avg_prep_ms },
+    { id: "p90_prep_ms", label: "P90", type: "num", get: dishP90 },
     { id: "max_prep_ms", label: "Max", type: "num", get: (d) => d.max_prep_ms },
     { id: "count", label: "Count", type: "num", get: (d) => d.count },
     { id: "name", label: "Name", type: "text", get: (d) => d.name },
   ];
   const sectionFields: SortField<KitchenSectionStat>[] = [
     { id: "avg_prep_ms", label: "Avg", type: "num", get: (s) => s.avg_prep_ms },
+    { id: "p90_prep_ms", label: "P90", type: "num", get: sectionP90 },
     { id: "items_timed", label: "Items", type: "num", get: (s) => s.items_timed },
     { id: "dishes", label: "Dishes", type: "num", get: (s) => s.dishes },
     { id: "section", label: "Name", type: "text", get: (s) => s.section },
@@ -647,12 +1418,118 @@ function KitchenAnalyticsView({ view }: { view: ViewId }) {
   const byDishRaw = data?.by_dish ?? [];
   const bySectionRaw = data?.by_section ?? [];
   const hasData = (summary?.orders_timed ?? 0) > 0 || byDishRaw.length > 0 || bySectionRaw.length > 0;
+  const periodDays = data?.period_days ?? 30;
+  const windowLabel = `Last ${periodDays} days`;
 
   const byDish = sortRows(byDishRaw, dishFields, dishSort);
   const bySection = sortRows(bySectionRaw, sectionFields, sectionSort);
   // Slowest dish by average — flagged wherever it lands after re-sorting.
   const slowestDish = byDishRaw.reduce<KitchenDishStat | null>((m, d) => (d.avg_prep_ms > (m?.avg_prep_ms ?? -1) ? d : m), null);
   const maxSectionAvg = Math.max(1, ...bySectionRaw.map((s) => s.avg_prep_ms));
+  // Compact (Overview) cut: the five slowest dishes by average.
+  const slowestFive = [...byDishRaw].sort((a, b) => b.avg_prep_ms - a.avg_prep_ms).slice(0, 5);
+
+  // Breakdown row sets — all from the object already in memory.
+  const sectionRows: DrillRow[] = bySectionRaw.map((s) => ({ name: s.section, value: s.avg_prep_ms }));
+  const dishAvgRows: DrillRow[] = byDishRaw.map((d) => ({ name: d.name, value: d.avg_prep_ms }));
+  const dishP90Rows: DrillRow[] = byDishRaw.map((d) => ({ name: d.name, value: dishP90(d) }));
+  const dishMaxRows: DrillRow[] = byDishRaw.map((d) => ({ name: d.name, value: d.max_prep_ms }));
+
+  const timedOrders = summary?.orders_timed ?? 0;
+  const ordersSub = `${timedOrders} order${timedOrders === 1 ? "" : "s"} timed`;
+
+  // One clickable detail per summary tile. Every tile carries an explainer, and
+  // a breakdown drawn from the sections / dishes already loaded.
+  const avgDetail: MetricDetail = {
+    title: "Average prep time",
+    value: fmtPrepMs(summary?.avg_prep_ms),
+    sub: ordersSub,
+    explainerKey: "avg_prep_ms",
+    note: `Half of your orders came out inside ${fmtPrepMs(summary?.median_prep_ms)} and the slowest tenth crossed ${fmtPrepMs(summary?.p90_prep_ms)} — the gap between those two is how uneven service felt.`,
+    chart: "bar",
+    rows: sectionRows,
+    unit: "ms",
+    breakdownTitle: "Average prep by kitchen section",
+    footnote: windowLabel,
+  };
+  const p90Detail: MetricDetail = {
+    title: "90th-percentile prep time",
+    value: fmtPrepMs(summary?.p90_prep_ms),
+    sub: "the slowest 10% of orders cross this",
+    explainerKey: "p90_prep_ms",
+    note: `Average prep is ${fmtPrepMs(summary?.avg_prep_ms)}, so an unlucky guest waited about ${fmtPrepMs(Math.max(0, Number(summary?.p90_prep_ms ?? 0) - Number(summary?.avg_prep_ms ?? 0)))} longer than a typical one.`,
+    chart: "bar",
+    rows: dishP90Rows,
+    unit: "ms",
+    breakdownTitle: "Dishes with the slowest 90th-percentile",
+    footnote: windowLabel,
+  };
+  const barkDetail: MetricDetail = {
+    title: "Announce to served",
+    value: fmtPrepMs(summary?.avg_bark_to_served_ms),
+    sub: "avg from fire to plate",
+    explainerKey: "bark_to_served",
+    note: `Average prep time is ${fmtPrepMs(summary?.avg_prep_ms)}. Whatever this number sits above that is time the ticket spent queuing rather than cooking.`,
+    chart: "bar",
+    rows: sectionRows,
+    unit: "ms",
+    breakdownTitle: "Average prep by kitchen section",
+    footnote: windowLabel,
+  };
+  const maxDetail: MetricDetail = {
+    title: "Slowest ticket",
+    value: fmtPrepMs(summary?.max_prep_ms),
+    sub: `median ${fmtPrepMs(summary?.median_prep_ms)}`,
+    note: `The single slowest finished ticket in the window, against a median of ${fmtPrepMs(summary?.median_prep_ms)}. Tickets that ran over three hours are treated as abandoned and left out, so this is a real order rather than a forgotten one.`,
+    chart: "bar",
+    rows: dishMaxRows,
+    unit: "ms",
+    breakdownTitle: "Slowest single ticket per dish",
+    footnote: windowLabel,
+  };
+  // Card-level "?" explainers for the two tables (their numbers live in rows,
+  // not tiles, so they get a hint button instead of a clickable tile).
+  const sectionCardDetail: MetricDetail = {
+    title: "Section prep time",
+    value: fmtPrepMs(summary?.avg_prep_ms),
+    sub: `across ${bySectionRaw.length} station${bySectionRaw.length === 1 ? "" : "s"}`,
+    explainerKey: "section_avg_prep",
+    chart: "bar",
+    rows: sectionRows,
+    unit: "ms",
+    breakdownTitle: "Average prep by kitchen section",
+    footnote: windowLabel,
+  };
+  const dishCardDetail: MetricDetail = {
+    title: "Prep time by dish",
+    value: slowestDish ? fmtPrepMs(slowestDish.avg_prep_ms) : "—",
+    sub: slowestDish ? `slowest dish: ${slowestDish.name}` : undefined,
+    explainerKey: "avg_prep_ms",
+    note: `Averages per dish across ${byDishRaw.length} timed dish${byDishRaw.length === 1 ? "" : "es"}. A dish with only one or two timings can look slow on a single bad ticket — check the count column before acting.`,
+    chart: "bar",
+    rows: dishAvgRows,
+    unit: "ms",
+    breakdownTitle: "Slowest dishes by average",
+    footnote: windowLabel,
+  };
+  // Per-section detail, opened by clicking a section row.
+  const sectionDetail = (s: KitchenSectionStat): MetricDetail => ({
+    title: s.section,
+    value: fmtPrepMs(s.avg_prep_ms),
+    sub: `${s.dishes} dish${s.dishes === 1 ? "" : "es"} · ${s.items_timed} item${s.items_timed === 1 ? "" : "s"} timed`,
+    explainerKey: "section_avg_prep",
+    note: [
+      `Nine in ten items from this station were out inside ${fmtPrepMs(sectionP90(s))}, and the slowest single item took ${fmtPrepMs(s.max_prep_ms)}.`,
+      s.slowest_dish ? `Its slowest dish is ${s.slowest_dish.name} at ${fmtPrepMs(s.slowest_dish.avg_prep_ms)} on average.` : null,
+    ].filter(Boolean).join(" "),
+    chart: "bar",
+    // The dishes routed to this station. `slowest_dish` comes from the full
+    // aggregate, so it may not be in `by_dish` — hence the note above carries it.
+    rows: byDishRaw.filter((d) => d.station === s.section).map((d) => ({ name: d.name, value: d.avg_prep_ms })),
+    unit: "ms",
+    breakdownTitle: "Dishes routed here",
+    footnote: windowLabel,
+  });
 
   const spinner = <Card><CardContent className="py-10 text-center text-muted-foreground">Loading kitchen timings…</CardContent></Card>;
 
@@ -663,34 +1540,46 @@ function KitchenAnalyticsView({ view }: { view: ViewId }) {
     <div className="grid gap-4 md:gap-8">
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2"><Flame className="h-5 w-5 text-orange-500" /> Kitchen analytics</CardTitle>
-          <CardDescription>Prep time from bark to served, last 30 days. Pauses are excluded.</CardDescription>
+          <SectionHeaderRow
+            control={
+              <HeaderControls>
+                {hasData && (
+                  <SectionDownload
+                    id="kitchen"
+                    label="Kitchen analytics"
+                    build={() => [
+                      ["Metric", "Value"],
+                      ["Orders timed", summary?.orders_timed ?? 0],
+                      ["Avg prep", fmtPrepMs(summary?.avg_prep_ms)],
+                      ["Median prep", fmtPrepMs(summary?.median_prep_ms)],
+                      ["P90 prep", fmtPrepMs(summary?.p90_prep_ms)],
+                      ["Bark → served", fmtPrepMs(summary?.avg_bark_to_served_ms)],
+                      ["Max prep", fmtPrepMs(summary?.max_prep_ms)],
+                      ["Window (days)", periodDays],
+                    ]}
+                  />
+                )}
+                {compact ? (
+                  <Button variant="outline" size="sm" className="shrink-0" onClick={() => { onOpenView("kitchen"); }}>
+                    See more in Kitchen <ChevronRight className="ml-1 h-4 w-4" />
+                  </Button>
+                ) : null}
+              </HeaderControls>
+            }
+          >
+            <CardTitle className="flex items-center gap-2"><Flame className="h-5 w-5 text-orange-500" /> Kitchen analytics</CardTitle>
+            <CardDescription>Prep time from bark to served, last {periodDays} days. Pauses are excluded. Click any number for what it means.</CardDescription>
+          </SectionHeaderRow>
         </CardHeader>
         <CardContent>
           {!hasData ? (
-            <p className="py-6 text-center text-sm text-muted-foreground">No timed orders in the last 30 days yet — prep times appear once tickets are barked and served.</p>
+            <p className="py-6 text-center text-sm text-muted-foreground">No timed orders in the last {periodDays} days yet — prep times appear once tickets are barked and served.</p>
           ) : (
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <div className="rounded-xl border p-3">
-                <div className="text-xs font-medium text-muted-foreground">Avg prep</div>
-                <div className="mt-1 text-2xl font-bold">{fmtPrepMs(summary?.avg_prep_ms)}</div>
-                <div className="text-[10px] text-muted-foreground">{summary?.orders_timed ?? 0} order{(summary?.orders_timed ?? 0) === 1 ? "" : "s"} timed</div>
-              </div>
-              <div className="rounded-xl border p-3">
-                <div className="text-xs font-medium text-muted-foreground">P90 prep</div>
-                <div className="mt-1 text-2xl font-bold">{fmtPrepMs(summary?.p90_prep_ms)}</div>
-                <div className="text-[10px] text-muted-foreground">slowest 10% cross this</div>
-              </div>
-              <div className="rounded-xl border p-3">
-                <div className="text-xs font-medium text-muted-foreground">Bark → served</div>
-                <div className="mt-1 text-2xl font-bold">{fmtPrepMs(summary?.avg_bark_to_served_ms)}</div>
-                <div className="text-[10px] text-muted-foreground">avg from fire to plate</div>
-              </div>
-              <div className="rounded-xl border p-3">
-                <div className="text-xs font-medium text-muted-foreground">Max prep</div>
-                <div className="mt-1 text-2xl font-bold">{fmtPrepMs(summary?.max_prep_ms)}</div>
-                <div className="text-[10px] text-muted-foreground">median {fmtPrepMs(summary?.median_prep_ms)}</div>
-              </div>
+              <MetricTile label="Avg prep" value={fmtPrepMs(summary?.avg_prep_ms)} sub={ordersSub} onOpen={() => { openDetail(avgDetail); }} />
+              <MetricTile label="P90 prep" value={fmtPrepMs(summary?.p90_prep_ms)} sub="slowest 10% cross this" onOpen={() => { openDetail(p90Detail); }} />
+              <MetricTile label="Bark → served" value={fmtPrepMs(summary?.avg_bark_to_served_ms)} sub="avg from fire to plate" onOpen={() => { openDetail(barkDetail); }} />
+              <MetricTile label="Max prep" value={fmtPrepMs(summary?.max_prep_ms)} sub={`median ${fmtPrepMs(summary?.median_prep_ms)}`} onOpen={() => { openDetail(maxDetail); }} />
             </div>
           )}
         </CardContent>
@@ -699,21 +1588,50 @@ function KitchenAnalyticsView({ view }: { view: ViewId }) {
       {bySectionRaw.length > 0 && (
         <Card>
           <CardHeader>
-            <SectionHeaderRow control={<SortControl fields={sectionFields} state={sectionSort} onChange={setSectionSort} />}>
-              <CardTitle>By kitchen section</CardTitle>
-              <CardDescription>Average prep per station — slowest first.</CardDescription>
+            <SectionHeaderRow control={
+              <HeaderControls>
+                {compact ? null : <SortControl fields={sectionFields} state={sectionSort} onChange={setSectionSort} />}
+                <SectionDownload
+                  id="kitchen-by-section"
+                  label="Kitchen — by section"
+                  build={() => [
+                    ["Section", "Dishes", "Items timed", "Avg prep", "P90 prep", "Max prep", "Slowest dish", "Slowest dish avg"],
+                    ...bySection.map((s) => [
+                      s.section, s.dishes, s.items_timed,
+                      fmtPrepMs(s.avg_prep_ms), fmtPrepMs(sectionP90(s)), fmtPrepMs(s.max_prep_ms),
+                      s.slowest_dish?.name ?? "",
+                      s.slowest_dish ? fmtPrepMs(s.slowest_dish.avg_prep_ms) : "",
+                    ]),
+                  ]}
+                />
+              </HeaderControls>
+            }>
+              <CardTitle className="flex items-center gap-2">
+                By kitchen section
+                <ExplainerHint label="section prep time" onOpen={() => { openDetail(sectionCardDetail); }} />
+              </CardTitle>
+              <CardDescription>Average prep per station — slowest first. Click a station for its own breakdown.</CardDescription>
             </SectionHeaderRow>
           </CardHeader>
-          <CardContent className="space-y-2">
+          <CardContent className="space-y-1">
             {bySection.map((s) => (
-              <div key={s.section} className="flex items-center gap-3 text-sm">
+              <button
+                key={s.section}
+                type="button"
+                onClick={() => { openDetail(sectionDetail(s)); }}
+                title={`${s.section} — click for detail`}
+                className="group -mx-1 flex w-full cursor-pointer items-center gap-3 rounded-md px-1 py-1 text-left text-sm transition-colors hover:bg-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              >
                 <div className="w-28 shrink-0 truncate font-medium" title={s.section}>{s.section}</div>
-                <div className="h-2 flex-1 overflow-hidden rounded bg-muted">
+                <div className="h-2 flex-1 overflow-hidden rounded bg-muted group-hover:bg-background">
                   <div className="h-full rounded bg-primary" style={{ width: `${Math.max(2, Math.round((s.avg_prep_ms / maxSectionAvg) * 100))}%` }} />
                 </div>
                 <span className="w-16 shrink-0 text-right font-semibold tabular-nums">{fmtPrepMs(s.avg_prep_ms)}</span>
-                <span className="hidden w-24 shrink-0 text-right text-xs text-muted-foreground sm:inline">{s.dishes} dish{s.dishes === 1 ? "" : "es"} · {s.items_timed}</span>
-              </div>
+                <span className="hidden w-28 shrink-0 text-right text-xs text-muted-foreground sm:inline">
+                  {s.dishes} dish{s.dishes === 1 ? "" : "es"} · p90 {fmtPrepMs(sectionP90(s))}
+                </span>
+                <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+              </button>
             ))}
           </CardContent>
         </Card>
@@ -722,57 +1640,101 @@ function KitchenAnalyticsView({ view }: { view: ViewId }) {
       {byDishRaw.length > 0 && (
         <Card>
           <CardHeader>
-            <SectionHeaderRow control={<SortControl fields={dishFields} state={dishSort} onChange={setDishSort} />}>
-              <CardTitle>By dish</CardTitle>
-              <CardDescription>Per-dish prep time — the slowest dish is flagged.</CardDescription>
+            <SectionHeaderRow control={
+              <HeaderControls>
+                {compact ? null : <SortControl fields={dishFields} state={dishSort} onChange={setDishSort} />}
+                <SectionDownload
+                  id="kitchen-by-dish"
+                  label={compact ? "Kitchen — slowest dishes" : "Kitchen — by dish"}
+                  build={() => [
+                    ["Dish", "Section", "Timed count", "Avg prep", "P90 prep", "Max prep", "Fastest"],
+                    // Matches what the card shows: the five slowest on Overview,
+                    // the full sorted table everywhere else.
+                    ...(compact ? slowestFive : byDish).map((d) => [
+                      d.name, d.station, d.count,
+                      fmtPrepMs(d.avg_prep_ms), fmtPrepMs(dishP90(d)), fmtPrepMs(d.max_prep_ms),
+                      d.min_prep_ms != null ? fmtPrepMs(d.min_prep_ms) : "",
+                    ]),
+                  ]}
+                />
+              </HeaderControls>
+            }>
+              <CardTitle className="flex items-center gap-2">
+                {compact ? "Slowest dishes" : "By dish"}
+                <ExplainerHint label="prep time by dish" onOpen={() => { openDetail(dishCardDetail); }} />
+              </CardTitle>
+              <CardDescription>
+                {compact
+                  ? "The five dishes with the slowest average prep time."
+                  : "Per-dish prep time — the slowest dish is flagged."}
+              </CardDescription>
             </SectionHeaderRow>
           </CardHeader>
           <CardContent>
-            <div className="max-h-96 overflow-y-auto">
-              <table className="w-full text-sm">
-                <thead className="text-left text-muted-foreground">
-                  <tr className="border-b">
-                    <th className="py-1 pr-2">Dish</th>
-                    <th className="py-1 pr-2">Section</th>
-                    <th className="py-1 pr-2 text-right">Count</th>
-                    <th className="py-1 pr-2 text-right">Avg</th>
-                    <th className="py-1 text-right">Max</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {byDish.map((d, i) => {
-                    const isSlowest = slowestDish != null && d.name === slowestDish.name && d.station === slowestDish.station;
-                    return (
-                      <tr key={`${d.name}-${d.station}-${i}`} className={`border-b last:border-0 ${isSlowest ? "bg-amber-50 dark:bg-amber-950/40" : ""}`}>
-                        <td className="py-1 pr-2 font-medium">
-                          <span className="flex items-center gap-1.5">
-                            {isSlowest && <Snail className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" />}
-                            <span className="truncate">{d.name}</span>
-                          </span>
-                        </td>
-                        <td className="py-1 pr-2 text-muted-foreground">{d.station}</td>
-                        <td className="py-1 pr-2 text-right tabular-nums">{d.count}</td>
-                        <td className={`py-1 pr-2 text-right font-semibold tabular-nums ${isSlowest ? "text-amber-700 dark:text-amber-300" : ""}`}>{fmtPrepMs(d.avg_prep_ms)}</td>
-                        <td className="py-1 text-right tabular-nums text-muted-foreground">{fmtPrepMs(d.max_prep_ms)}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+            {compact ? (
+              <div className="space-y-2">
+                {slowestFive.map((d, i) => (
+                  <div key={`${d.name}-${d.station}-${i}`} className="flex items-center gap-3 rounded-lg border p-2 text-sm">
+                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">{i + 1}</span>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-medium">{d.name}</p>
+                      <p className="text-xs text-muted-foreground">{d.station} · {d.count} timed</p>
+                    </div>
+                    <span className="shrink-0 font-semibold tabular-nums">{fmtPrepMs(d.avg_prep_ms)}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="max-h-96 overflow-y-auto">
+                <table className="w-full text-sm">
+                  <thead className="text-left text-muted-foreground">
+                    <tr className="border-b">
+                      <th className="py-1 pr-2">Dish</th>
+                      <th className="py-1 pr-2">Section</th>
+                      <th className="py-1 pr-2 text-right">Count</th>
+                      <th className="py-1 pr-2 text-right">Avg</th>
+                      <th className="py-1 pr-2 text-right">P90</th>
+                      <th className="py-1 text-right">Max</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {byDish.map((d, i) => {
+                      const isSlowest = slowestDish != null && d.name === slowestDish.name && d.station === slowestDish.station;
+                      return (
+                        <tr key={`${d.name}-${d.station}-${i}`} className={`border-b last:border-0 ${isSlowest ? "bg-amber-50 dark:bg-amber-950/40" : ""}`}>
+                          <td className="py-1 pr-2 font-medium">
+                            <span className="flex items-center gap-1.5" title={d.min_prep_ms != null ? `Fastest recorded: ${fmtPrepMs(d.min_prep_ms)}` : undefined}>
+                              {isSlowest && <Snail className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" />}
+                              <span className="truncate">{d.name}</span>
+                            </span>
+                          </td>
+                          <td className="py-1 pr-2 text-muted-foreground">{d.station}</td>
+                          <td className="py-1 pr-2 text-right tabular-nums">{d.count}</td>
+                          <td className={`py-1 pr-2 text-right font-semibold tabular-nums ${isSlowest ? "text-amber-700 dark:text-amber-300" : ""}`}>{fmtPrepMs(d.avg_prep_ms)}</td>
+                          <td className="py-1 pr-2 text-right tabular-nums text-muted-foreground">{fmtPrepMs(dishP90(d))}</td>
+                          <td className="py-1 text-right tabular-nums text-muted-foreground">{fmtPrepMs(d.max_prep_ms)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
+
+      <MetricDetailDialog detail={detail} explainers={explainers} money={money} onOpenView={onOpenView} onOpenChange={(o) => { if (!o) {setDetail(null);} }} />
     </div>
   );
 }
 
-function PerformanceTrends({ view }: { view: ViewId }) {
+function PerformanceTrends({ view, onOpenView }: { view: ViewId; onOpenView: (v: ViewId) => void }) {
   const { user } = useAuth();
-  const { currency } = useCurrency();
+  const { currency, currencySymbol } = useCurrency();
   const [data, setData] = useState<ApcTrendPoint[] | null>(null);
   const [loading, setLoading] = useState(true);
-  const money = (n: number | null | undefined) => `${currency}${Number(n ?? 0).toFixed(0)}`;
+  const money = (n: number | null | undefined) => `${currencySymbol}${Number(n ?? 0).toFixed(0)}`;
 
   useEffect(() => {
     if (!user?.restaurantUsername) {return;}
@@ -798,8 +1760,26 @@ function PerformanceTrends({ view }: { view: ViewId }) {
       {showRevenue && (
       <Card>
         <CardHeader>
-          <CardTitle>Revenue over time</CardTitle>
-          <CardDescription>Monthly revenue across the last 12 months.</CardDescription>
+          {/* On Overview this is the headline cut; the APC table and the outlet
+              comparison live in Sales & Revenue, so offer the jump there. */}
+          <SectionHeaderRow control={
+            <HeaderControls>
+              {hasData && (
+                <SectionDownload
+                  id="revenue-over-time"
+                  label="Revenue over time"
+                  build={() => [
+                    ["Month", `Revenue (${currencySymbol})`],
+                    ...series.map((p) => [p.month, Number(p.total_revenue ?? 0)]),
+                  ]}
+                />
+              )}
+              {view === "overview" ? <SeeMoreInView view="sales" onOpenView={onOpenView} /> : null}
+            </HeaderControls>
+          }>
+            <CardTitle>Revenue over time</CardTitle>
+            <CardDescription>Monthly revenue across the last 12 months.</CardDescription>
+          </SectionHeaderRow>
         </CardHeader>
         <CardContent>
           {loading ? spinner : !hasData ? empty : (
@@ -819,8 +1799,25 @@ function PerformanceTrends({ view }: { view: ViewId }) {
       {showApc && (
       <Card>
         <CardHeader>
-          <CardTitle>APC over time</CardTitle>
-          <CardDescription>Average-per-cover (revenue &divide; covers) by month, with the underlying numbers.</CardDescription>
+          <SectionHeaderRow control={hasData ? (
+            <SectionDownload
+              id="apc-over-time"
+              label="APC over time"
+              build={() => [
+                ["Month", `Revenue (${currencySymbol})`, "Covers", `APC (${currencySymbol})`, "Bills"],
+                ...[...series].reverse().map((p) => [
+                  p.month,
+                  Number(p.total_revenue ?? 0).toFixed(0),
+                  p.total_covers,
+                  Number(p.monthly_apc ?? 0).toFixed(0),
+                  p.bills,
+                ]),
+              ]}
+            />
+          ) : null}>
+            <CardTitle>APC over time</CardTitle>
+            <CardDescription>Average-per-cover (revenue &divide; covers) by month, with the underlying numbers.</CardDescription>
+          </SectionHeaderRow>
         </CardHeader>
         <CardContent>
           {loading ? spinner : !hasData ? empty : (
@@ -868,11 +1865,21 @@ function PerformanceTrends({ view }: { view: ViewId }) {
 }
 
 // ---------------------------------------------------------------------------
-// KPI drill-down: clicking a tile opens a Dialog with a chart derived from the
-// SAME `AdvancedAnalytics` object already on the page (no new fetch). The chart
-// per KPI is data-driven by the registry below. Categorical palette shared by
-// pie slices and bar fills.
-const DRILL_PALETTE = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#0891b2", "#db2777", "#65a30d", "#ea580c", "#4f46e5"]
+// KPI drill-down: clicking a tile opens the shared MetricDetailDialog with a
+// chart derived from the SAME `AdvancedAnalytics` object already on the page (no
+// new fetch). The chart per KPI is data-driven by the registry below.
+
+// KPI key -> metric-explainer key, for the KPIs the backend has copy for. Only
+// exact matches are listed — a KPI without an entry falls back to KPI_MEANINGS.
+const KPI_EXPLAINER_KEY: Record<string, string> = {
+  avg_rating: "avg_rating",
+  nps: "nps",
+  complaint_rate: "avg_rating",
+  discount_utilization: "discount_total",
+  offer_redemption: "discount_total",
+  processing_time: "avg_prep_ms",
+  menu_bad_share: "slow_mover",
+}
 
 // One-line meanings for KPIs that have no per-row breakdown (they still open the
 // modal, just as a value + status + explanation). Falls back to a generic line.
@@ -888,9 +1895,7 @@ const KPI_MEANINGS: Record<string, string> = {
   supplier_score: "Blended vendor rating: 0.6 × on-time + 0.4 × quality.",
 }
 
-type DrillUnit = "money" | "pct" | "min" | "rating" | "count"
-interface DrillRow { name: string; value: number }
-interface DrillSpec { type: "pie" | "bar" | "none"; rows: DrillRow[]; unit: DrillUnit }
+interface DrillSpec { type: DrillChartKind; rows: DrillRow[]; unit: DrillUnit }
 
 // Maps a KPI key -> the chart + rows to show. Empty `rows` on a pie/bar renders
 // a graceful "no breakdown yet"; `type: "none"` renders the value + meaning.
@@ -955,163 +1960,46 @@ function kpiDrilldownSpec(kpi: Kpi, data: AdvancedAnalytics): DrillSpec {
   }
 }
 
-function formatDrill(n: number, unit: DrillUnit, money: (v: number) => string): string {
-  switch (unit) {
-    case "money": return money(n)
-    case "pct": return `${Math.round(n * 10) / 10}%`
-    case "min": return `${Math.round(n * 10) / 10} min`
-    case "rating": return n.toFixed(1)
-    default: return `${Math.round(n)}`
-  }
-}
-
-// Theme-aware tooltip (the built-in recharts one is not) — mirrors the card
-// tooltip styling used elsewhere on the page.
-function DrillTooltip({ active, payload, fmt }: { active?: boolean; payload?: any[]; fmt: (n: number) => string }) {
-  if (!active || !payload?.length) {return null}
-  const p = payload[0]
-  return (
-    <div className="rounded-lg border border-border/50 bg-background px-2.5 py-1.5 text-xs shadow-xl">
-      <div className="font-medium text-foreground">{p?.payload?.name}</div>
-      <div className="text-muted-foreground">{fmt(Number(p?.value ?? 0))}</div>
-    </div>
-  )
-}
-
-// Compact name / value list beneath the chart — doubles as the pie legend
-// (colour swatches) and the bar's exact figures.
-function DrillBreakdown({ rows, fmt, total }: { rows: DrillRow[]; fmt: (n: number) => string; total: number | null }) {
-  return (
-    <div className="max-h-[200px] overflow-y-auto rounded-lg border">
-      <table className="w-full text-sm">
-        <tbody>
-          {rows.map((r, i) => (
-            <tr key={i} className="border-b last:border-0">
-              <td className="py-1.5 pl-2 pr-2">
-                <span className="flex items-center gap-2">
-                  <span className="h-2.5 w-2.5 shrink-0 rounded-[2px]" style={{ backgroundColor: DRILL_PALETTE[i % DRILL_PALETTE.length] }} />
-                  <span className="truncate">{r.name}</span>
-                </span>
-              </td>
-              <td className="whitespace-nowrap py-1.5 pr-2 text-right font-medium tabular-nums">
-                {fmt(r.value)}
-                {total ? <span className="ml-1 text-xs text-muted-foreground">({Math.round((r.value / total) * 100)}%)</span> : null}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
-// The drill-down dialog itself. `kpi == null` keeps it closed.
-function KpiDrilldown({ kpi, data, money, onOpenChange }: {
+// The KPI drill-down. Builds a MetricDetail out of the KPI + its spec and hands
+// it to the shared dialog, so a KPI tile and a plain numeric card open exactly
+// the same UI (explainer copy included). `kpi == null` keeps it closed.
+function KpiDrilldown({ kpi, data, money, explainers, onOpenChange, onOpenView }: {
   kpi: Kpi | null
   data: AdvancedAnalytics
   money: (n: number | null | undefined) => string
+  explainers: MetricExplainers
   onOpenChange: (open: boolean) => void
+  onOpenView: (v: ViewId) => void
 }) {
   const spec = kpi ? kpiDrilldownSpec(kpi, data) : null
-  const link = kpi ? KPI_LINKS[kpi.key] : undefined
-  const val = kpi?.value == null ? "—" : `${kpi.value}${kpi.unit}`
-  const fmt = (n: number) => (spec ? formatDrill(n, spec.unit, money) : String(n))
-  // Bars: worst/biggest first, capped at 8. Pies keep composition order.
-  const rows = spec ? (spec.type === "bar" ? [...spec.rows].sort((a, b) => b.value - a.value).slice(0, 8) : spec.rows) : []
-  const total = rows.reduce((s, r) => s + (r.value || 0), 0)
+  const detail: MetricDetail | null = kpi && spec ? {
+    title: kpi.label,
+    value: kpi.value == null ? "—" : `${kpi.value}${kpi.unit}`,
+    badge: (
+      <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${KPI_COLORS[kpi.status] ?? KPI_COLORS.grey}`}>
+        {KPI_STATUS_LABEL[kpi.status]}
+      </span>
+    ),
+    explainerKey: KPI_EXPLAINER_KEY[kpi.key],
+    note: KPI_MEANINGS[kpi.key] ?? (spec.type === "none" ? `Current value for the last ${data.window_days} days.` : undefined),
+    chart: spec.type,
+    rows: spec.rows,
+    unit: spec.unit,
+    breakdownTitle: spec.type === "none" ? undefined : "Breakdown",
+    footnote: `Last ${data.window_days} days`,
+    link: KPI_LINKS[kpi.key],
+    // The analytics view that owns this KPI's full section. Every key in
+    // KPI_VIEW resolves; anything unmapped falls back to Everything, which is
+    // guaranteed to render it — so a KPI drill-down is never a dead end.
+    view: KPI_VIEW[kpi.key] ?? "everything",
+  } : null
 
-  return (
-    <Dialog open={kpi != null} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] max-w-xl overflow-y-auto" aria-describedby={undefined}>
-        {kpi && spec && (
-          <>
-            <DialogHeader>
-              <DialogTitle className="flex flex-wrap items-center gap-2">
-                <span>{kpi.label}</span>
-                <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${KPI_COLORS[kpi.status] ?? KPI_COLORS.grey}`}>{KPI_STATUS_LABEL[kpi.status]}</span>
-              </DialogTitle>
-              <div className="text-3xl font-bold">{val}</div>
-            </DialogHeader>
-
-            {spec.type === "none" ? (
-              <p className="text-sm text-muted-foreground">{KPI_MEANINGS[kpi.key] ?? `Current value for the last ${data.window_days} days.`}</p>
-            ) : rows.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No detailed breakdown yet for this metric.</p>
-            ) : spec.type === "pie" ? (
-              <div className="grid gap-4 sm:grid-cols-2 sm:items-center">
-                <div className="h-[220px] w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie
-                        data={rows}
-                        dataKey="value"
-                        nameKey="name"
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={48}
-                        outerRadius={86}
-                        paddingAngle={2}
-                        labelLine={false}
-                        label={({ percent }: { percent?: number }) => ((percent ?? 0) > 0.05 ? `${Math.round((percent ?? 0) * 100)}%` : "")}
-                      >
-                        {rows.map((_, i) => (
-                          <Cell key={i} fill={DRILL_PALETTE[i % DRILL_PALETTE.length]} stroke="hsl(var(--background))" strokeWidth={2} />
-                        ))}
-                      </Pie>
-                      <Tooltip content={(props) => <DrillTooltip {...props} fmt={fmt} />} />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
-                <DrillBreakdown rows={rows} fmt={fmt} total={total || null} />
-              </div>
-            ) : (
-              <div className="grid gap-4">
-                <div className="h-[240px] w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={rows} layout="vertical" margin={{ top: 4, right: 48, left: 8, bottom: 4 }}>
-                      <CartesianGrid horizontal={false} strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                      <XAxis type="number" hide />
-                      <YAxis
-                        type="category"
-                        dataKey="name"
-                        width={116}
-                        tickLine={false}
-                        axisLine={false}
-                        tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11 }}
-                        tickFormatter={(v: string) => (v && v.length > 16 ? `${v.slice(0, 15)}…` : v)}
-                      />
-                      <Tooltip cursor={{ fill: "hsl(var(--muted))", fillOpacity: 0.5 }} content={(props) => <DrillTooltip {...props} fmt={fmt} />} />
-                      <Bar dataKey="value" radius={[0, 4, 4, 0]}>
-                        {rows.map((_, i) => (
-                          <Cell key={i} fill={DRILL_PALETTE[i % DRILL_PALETTE.length]} />
-                        ))}
-                        <LabelList dataKey="value" position="right" className="fill-foreground text-[11px]" formatter={(v: any) => fmt(Number(v))} />
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-                <DrillBreakdown rows={rows} fmt={fmt} total={null} />
-              </div>
-            )}
-
-            <DialogFooter className="items-center sm:justify-between">
-              <span className="text-xs text-muted-foreground">Last {data.window_days} days</span>
-              {link && (
-                <Link href={link} className="text-sm font-medium text-primary hover:underline">
-                  View full records →
-                </Link>
-              )}
-            </DialogFooter>
-          </>
-        )}
-      </DialogContent>
-    </Dialog>
-  )
+  return <MetricDetailDialog detail={detail} explainers={explainers} money={money} onOpenChange={onOpenChange} onOpenView={onOpenView} />
 }
 
-function AdvancedAnalyticsView({ view, kpiSort }: { view: ViewId; kpiSort: KpiSort }) {
+function AdvancedAnalyticsView({ view, kpiSort, onOpenView }: { view: ViewId; kpiSort: KpiSort; onOpenView: (v: ViewId) => void }) {
   const { user } = useAuth();
-  const { currency } = useCurrency();
+  const { currency, currencySymbol } = useCurrency();
   const { toast } = useToast();
   const [data, setData] = useState<AdvancedAnalytics | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1119,7 +2007,9 @@ function AdvancedAnalyticsView({ view, kpiSort }: { view: ViewId; kpiSort: KpiSo
   const [campForm, setCampForm] = useState({ name: "", cost: "", starts_at: "", ends_at: "" });
   const [campBusy, setCampBusy] = useState(false);
   const [activeKpi, setActiveKpi] = useState<Kpi | null>(null); // open drill-down dialog
-  const money = (n: number | null | undefined) => `${currency}${Number(n ?? 0).toFixed(0)}`;
+  const [detail, setDetail] = useState<MetricDetail | null>(null); // expanded numeric card
+  const explainers = useMetricExplainers();
+  const money = (n: number | null | undefined) => `${currencySymbol}${Number(n ?? 0).toFixed(0)}`;
 
   // Per-section sort state (defaults = most meaningful metric). Low-stock and
   // TAT default ASC so the most-urgent / fastest rows lead.
@@ -1264,8 +2154,23 @@ function AdvancedAnalyticsView({ view, kpiSort }: { view: ViewId; kpiSort: KpiSo
       {visibleKpis.length > 0 && (
       <Card>
         <CardHeader>
-          <CardTitle>KPI health</CardTitle>
-          <CardDescription>Last {data.window_days} days, colour-coded against target bands.</CardDescription>
+          {/* Overview shows only the headline KPIs; Everything shows all of them. */}
+          <SectionHeaderRow control={
+            <HeaderControls>
+              <SectionDownload
+                id="kpi-health"
+                label="KPI health"
+                build={() => [
+                  ["Metric", "Value", "Unit", "Status"],
+                  ...visibleKpis.map((k) => [k.label, k.value ?? "", k.unit, KPI_STATUS_LABEL[k.status] ?? k.status]),
+                ]}
+              />
+              {view === "overview" ? <SeeMoreInView view="everything" onOpenView={onOpenView} /> : null}
+            </HeaderControls>
+          }>
+            <CardTitle>KPI health</CardTitle>
+            <CardDescription>Last {data.window_days} days, colour-coded against target bands. Click a tile for its breakdown.</CardDescription>
+          </SectionHeaderRow>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
@@ -1290,17 +2195,110 @@ function AdvancedAnalyticsView({ view, kpiSort }: { view: ViewId; kpiSort: KpiSo
       </Card>
       )}
 
-      <KpiDrilldown kpi={activeKpi} data={data} money={money} onOpenChange={(o) => { if (!o) {setActiveKpi(null);} }} />
+      <KpiDrilldown kpi={activeKpi} data={data} money={money} explainers={explainers} onOpenView={onOpenView} onOpenChange={(o) => { if (!o) {setActiveKpi(null);} }} />
+      <MetricDetailDialog detail={detail} explainers={explainers} money={money} onOpenView={onOpenView} onOpenChange={(o) => { if (!o) {setDetail(null);} }} />
 
       <div className="grid gap-4 md:grid-cols-2">
         {inView(view, "discounts") && (
         <Card>
-          <CardHeader><CardTitle>Discounts &amp; offers</CardTitle><CardDescription>Utilization and redemptions, last {data.window_days} days.</CardDescription></CardHeader>
+          <CardHeader>
+            <SectionHeaderRow control={
+              <SectionDownload
+                id="discounts"
+                label="Discounts & offers"
+                build={() => [
+                  ["Metric", "Value"],
+                  ["Discount utilization (%)", data.discounts.utilization_pct],
+                  ["Bills with a discount", data.discounts.discount_bills],
+                  ["Total bills", data.discounts.total_bills],
+                  [`Total discount value (${currencySymbol})`, Number(data.discounts.total_discount ?? 0).toFixed(0)],
+                  ["Coupon redemptions", data.discounts.redemptions],
+                  ["Window (days)", data.window_days],
+                ]}
+              />
+            }>
+              <CardTitle>Discounts &amp; offers</CardTitle><CardDescription>Utilization and redemptions, last {data.window_days} days.</CardDescription>
+            </SectionHeaderRow>
+          </CardHeader>
           <CardContent className="space-y-2 text-sm">
-            <div className="flex justify-between"><span className="text-muted-foreground">Discount utilization</span><span className="font-medium">{data.discounts.utilization_pct}%</span></div>
-            <div className="flex justify-between"><span className="text-muted-foreground">Bills with a discount</span><span className="font-medium">{data.discounts.discount_bills} / {data.discounts.total_bills}</span></div>
-            <div className="flex justify-between"><span className="text-muted-foreground">Total discount value</span><span className="font-medium">{money(data.discounts.total_discount)}</span></div>
-            <div className="flex justify-between"><span className="text-muted-foreground">Coupon redemptions</span><span className="font-medium">{data.discounts.redemptions}</span></div>
+            <MetricRow
+              label="Discount utilization"
+              value={`${data.discounts.utilization_pct}%`}
+              onOpen={() => { setDetail({
+                title: "Discount utilization",
+                value: `${data.discounts.utilization_pct}%`,
+                sub: `${data.discounts.discount_bills} of ${data.discounts.total_bills} bills`,
+                explainerKey: "discount_total",
+                note: `${data.discounts.discount_bills} of ${data.discounts.total_bills} settled bills carried a discount or coupon in this window, worth ${money(data.discounts.total_discount)} in total.`,
+                chart: "pie",
+                rows: [
+                  { name: "Discounted bills", value: data.discounts.discount_bills },
+                  { name: "Full-price bills", value: Math.max(0, data.discounts.total_bills - data.discounts.discount_bills) },
+                ],
+                unit: "count",
+                breakdownTitle: "Bills in this window",
+                footnote: `Last ${data.window_days} days`,
+                link: "/dashboard/orders",
+                linkLabel: "View orders",
+                view: "discounts",
+              }); }}
+            />
+            <MetricRow
+              label="Bills with a discount"
+              value={`${data.discounts.discount_bills} / ${data.discounts.total_bills}`}
+              onOpen={() => { setDetail({
+                title: "Bills with a discount",
+                value: `${data.discounts.discount_bills}`,
+                sub: `of ${data.discounts.total_bills} settled bills`,
+                explainerKey: "bills",
+                note: `Average discount on a discounted bill: ${money(data.discounts.discount_bills > 0 ? data.discounts.total_discount / data.discounts.discount_bills : 0)}.`,
+                chart: "pie",
+                rows: [
+                  { name: "Discounted bills", value: data.discounts.discount_bills },
+                  { name: "Full-price bills", value: Math.max(0, data.discounts.total_bills - data.discounts.discount_bills) },
+                ],
+                unit: "count",
+                footnote: `Last ${data.window_days} days`,
+                link: "/dashboard/orders",
+                linkLabel: "View orders",
+                view: "discounts",
+              }); }}
+            />
+            <MetricRow
+              label="Total discount value"
+              value={money(data.discounts.total_discount)}
+              onOpen={() => { setDetail({
+                title: "Discounts given",
+                value: money(data.discounts.total_discount),
+                sub: `across ${data.discounts.discount_bills} bill${data.discounts.discount_bills === 1 ? "" : "s"}`,
+                explainerKey: "discount_total",
+                note: `That is ${money(data.discounts.discount_bills > 0 ? data.discounts.total_discount / data.discounts.discount_bills : 0)} per discounted bill on average.`,
+                chart: "none",
+                footnote: `Last ${data.window_days} days`,
+                link: "/dashboard/orders",
+                linkLabel: "View orders",
+                view: "discounts",
+              }); }}
+            />
+            <MetricRow
+              label="Coupon redemptions"
+              value={data.discounts.redemptions}
+              onOpen={() => { setDetail({
+                title: "Coupon redemptions",
+                value: String(data.discounts.redemptions),
+                sub: `${(data.offers ?? []).length} coupon code${(data.offers ?? []).length === 1 ? "" : "s"} live`,
+                explainerKey: "discount_total",
+                note: "How many times a coupon code was actually accepted at billing. Manual and staff discounts are not coupons and are not counted here.",
+                chart: "bar",
+                rows: (data.offers ?? []).map((o) => ({ name: o.code, value: o.used })),
+                unit: "count",
+                breakdownTitle: "Uses per code",
+                footnote: `Last ${data.window_days} days`,
+                link: "/dashboard/coupons",
+                linkLabel: "View coupons",
+                view: "discounts",
+              }); }}
+            />
           </CardContent>
         </Card>
         )}
@@ -1308,7 +2306,19 @@ function AdvancedAnalyticsView({ view, kpiSort }: { view: ViewId; kpiSort: KpiSo
         {inView(view, "staff") && (
         <Card>
           <CardHeader>
-            <SectionHeaderRow control={data.staff.length > 0 ? <SortControl fields={staffFields} state={staffSort} onChange={setStaffSort} /> : null}>
+            <SectionHeaderRow control={data.staff.length > 0 ? (
+              <HeaderControls>
+                <SortControl fields={staffFields} state={staffSort} onChange={setStaffSort} />
+                <SectionDownload
+                  id="staff-feedback"
+                  label="Feedback health"
+                  build={() => [
+                    ["Staff", "Responses", "Avg rating", "Complaints (%)"],
+                    ...staff.map((s) => [s.name, s.feedbacks, s.avg_rating ?? "", s.complaint_pct]),
+                  ]}
+                />
+              </HeaderControls>
+            ) : null}>
               <CardTitle>Feedback health</CardTitle><CardDescription>Ratings &amp; complaints across {data.total_feedbacks} response{data.total_feedbacks === 1 ? "" : "s"}.</CardDescription>
             </SectionHeaderRow>
           </CardHeader>
@@ -1330,6 +2340,9 @@ function AdvancedAnalyticsView({ view, kpiSort }: { view: ViewId; kpiSort: KpiSo
                 </tbody>
               </table>
             )}
+            <div className="mt-3 flex flex-wrap items-center justify-end gap-4">
+              <Link href="/dashboard/feedback" className="text-sm font-medium text-primary hover:underline">Open Feedback &rarr;</Link>
+            </div>
           </CardContent>
         </Card>
         )}
@@ -1337,7 +2350,19 @@ function AdvancedAnalyticsView({ view, kpiSort }: { view: ViewId; kpiSort: KpiSo
         {inView(view, "supply") && (
         <Card>
           <CardHeader>
-            <SectionHeaderRow control={data.suppliers.length > 0 ? <SortControl fields={supplierFields} state={supplierSort} onChange={setSupplierSort} /> : null}>
+            <SectionHeaderRow control={data.suppliers.length > 0 ? (
+              <HeaderControls>
+                <SortControl fields={supplierFields} state={supplierSort} onChange={setSupplierSort} />
+                <SectionDownload
+                  id="suppliers"
+                  label="Suppliers"
+                  build={() => [
+                    ["Vendor", "POs", "On-time (%)", "Quality (out of 5)", "Score", `Spend (${currencySymbol})`],
+                    ...suppliers.map((s) => [s.vendor, s.pos, s.on_time_pct, s.quality ?? "", s.score ?? "", Number(s.spend ?? 0).toFixed(0)]),
+                  ]}
+                />
+              </HeaderControls>
+            ) : null}>
               <CardTitle>Suppliers</CardTitle><CardDescription>On-time delivery, quality &amp; spend. Score = 0.6 × on-time + 0.4 × quality — rate deliveries when receiving a PO.</CardDescription>
             </SectionHeaderRow>
           </CardHeader>
@@ -1361,6 +2386,9 @@ function AdvancedAnalyticsView({ view, kpiSort }: { view: ViewId; kpiSort: KpiSo
                 </tbody>
               </table>
             )}
+            <div className="mt-3 flex flex-wrap items-center justify-end gap-4">
+              <Link href="/dashboard/purchase-orders" className="text-sm font-medium text-primary hover:underline">Open Purchase orders &rarr;</Link>
+            </div>
           </CardContent>
         </Card>
         )}
@@ -1368,11 +2396,20 @@ function AdvancedAnalyticsView({ view, kpiSort }: { view: ViewId; kpiSort: KpiSo
         {inView(view, "supply", true) && (
         <Card>
           <CardHeader>
-            <SectionHeaderRow control={data.stock_alerts.length > 0 ? <SortControl fields={stockFields} state={stockSort} onChange={setStockSort} /> : null}>
+            <SectionHeaderRow control={data.stock_alerts.length > 0 ? (
+              <HeaderControls>
+                <SortControl fields={stockFields} state={stockSort} onChange={setStockSort} />
+                <SectionDownload
+                  id="low-stock"
+                  label="Low-stock alerts"
+                  build={() => [["Item", "Qty left"], ...stockAlerts.map((s) => [s.name, s.qty])]}
+                />
+              </HeaderControls>
+            ) : null}>
               <CardTitle>Low-stock alerts</CardTitle><CardDescription>Inventory at or below 5 units.</CardDescription>
             </SectionHeaderRow>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-2">
             {data.stock_alerts.length === 0 ? (
               <p className="py-2 text-sm text-muted-foreground">All stock levels look healthy. ✅</p>
             ) : (
@@ -1382,6 +2419,12 @@ function AdvancedAnalyticsView({ view, kpiSort }: { view: ViewId; kpiSort: KpiSo
                 ))}
               </ul>
             )}
+            {/* On Overview this is the only supply card; supplier scores and
+                food-cost KPIs live in Suppliers & Inventory. */}
+            <div className="flex flex-wrap items-center justify-end gap-4 pt-1">
+              {view === "overview" && <SeeMoreInView view="supply" onOpenView={onOpenView} />}
+              <Link href="/dashboard/inventory" className="text-sm font-medium text-primary hover:underline">Open Inventory →</Link>
+            </div>
           </CardContent>
         </Card>
         )}
@@ -1389,7 +2432,19 @@ function AdvancedAnalyticsView({ view, kpiSort }: { view: ViewId; kpiSort: KpiSo
         {inView(view, "menu") && (
         <Card>
           <CardHeader>
-            <SectionHeaderRow control={(data.menu_classes ?? []).length > 0 ? <SortControl fields={menuFields} state={menuSort} onChange={setMenuSort} /> : null}>
+            <SectionHeaderRow control={(data.menu_classes ?? []).length > 0 ? (
+              <HeaderControls>
+                <SortControl fields={menuFields} state={menuSort} onChange={setMenuSort} />
+                <SectionDownload
+                  id="menu-engineering"
+                  label="Menu engineering"
+                  build={() => [
+                    ["Item", "Class", "Sold", `Revenue (${currencySymbol})`, "Popularity (%)"],
+                    ...menuClasses.map((m) => [m.name, m.class, m.qty, Number(m.revenue ?? 0).toFixed(0), m.popularity_pct]),
+                  ]}
+                />
+              </HeaderControls>
+            ) : null}>
               <CardTitle>Menu engineering</CardTitle><CardDescription>STAR = popular &amp; high-value, GREAT = popular &amp; low-value, MID = niche &amp; high-value, BAD = review or remove. BAD share of sales: {data.bad_share_pct ?? "—"}%.</CardDescription>
             </SectionHeaderRow>
           </CardHeader>
@@ -1416,6 +2471,9 @@ function AdvancedAnalyticsView({ view, kpiSort }: { view: ViewId; kpiSort: KpiSo
                 </table>
               </div>
             )}
+            <div className="mt-3 flex flex-wrap items-center justify-end gap-4">
+              <Link href="/dashboard/menu" className="text-sm font-medium text-primary hover:underline">Open Menu &rarr;</Link>
+            </div>
           </CardContent>
         </Card>
         )}
@@ -1423,7 +2481,23 @@ function AdvancedAnalyticsView({ view, kpiSort }: { view: ViewId; kpiSort: KpiSo
         {inView(view, "customers") && (
         <Card>
           <CardHeader>
-            <SectionHeaderRow control={(data.churn?.at_risk ?? []).length > 0 ? <SortControl fields={churnFields} state={churnSort} onChange={setChurnSort} /> : null}>
+            <SectionHeaderRow control={(data.churn?.at_risk ?? []).length > 0 ? (
+              <HeaderControls>
+                <SortControl fields={churnFields} state={churnSort} onChange={setChurnSort} />
+                <SectionDownload
+                  id="customer-churn"
+                  label="Customer churn"
+                  build={() => [
+                    ["Metric", "Value"],
+                    ["Churn rate (%)", data.churn?.rate_pct ?? ""],
+                    ["Cohort (identified customers)", data.churn?.cohort ?? 0],
+                    [],
+                    ["Customer", "Orders", `Spend (${currencySymbol})`, "Quiet for (days)"],
+                    ...atRisk.map((c) => [c.customer, c.orders, Number(c.spend ?? 0).toFixed(0), c.days_since_visit]),
+                  ]}
+                />
+              </HeaderControls>
+            ) : null}>
               <CardTitle>Customer churn</CardTitle><CardDescription>Cohort of {data.churn?.cohort ?? 0} identified customers · churn rate {data.churn?.rate_pct ?? "—"}%. Quiet 30+ days, by spend:</CardDescription>
             </SectionHeaderRow>
           </CardHeader>
@@ -1445,6 +2519,9 @@ function AdvancedAnalyticsView({ view, kpiSort }: { view: ViewId; kpiSort: KpiSo
                 </tbody>
               </table>
             )}
+            <div className="mt-3 flex flex-wrap items-center justify-end gap-4">
+              <Link href="/dashboard/customers" className="text-sm font-medium text-primary hover:underline">Open Customers &rarr;</Link>
+            </div>
           </CardContent>
         </Card>
         )}
@@ -1452,7 +2529,24 @@ function AdvancedAnalyticsView({ view, kpiSort }: { view: ViewId; kpiSort: KpiSo
         {inView(view, "operations") && (
         <Card>
           <CardHeader>
-            <SectionHeaderRow control={(data.tat?.by_table ?? []).length > 0 ? <SortControl fields={tatFields} state={tatSort} onChange={setTatSort} /> : null}>
+            <SectionHeaderRow control={(data.tat?.by_table ?? []).length > 0 ? (
+              <HeaderControls>
+                <SortControl fields={tatFields} state={tatSort} onChange={setTatSort} />
+                <SectionDownload
+                  id="table-turnaround"
+                  label="Table turnaround (TAT)"
+                  build={() => [
+                    ["Metric", "Value"],
+                    ["Average TAT (min)", data.tat.avg_min],
+                    ["Median TAT (min)", data.tat.median_min],
+                    ["Completed visits", data.tat.sessions],
+                    [],
+                    ["Table", "Visits", "Avg TAT (min)"],
+                    ...tatByTable.map((t) => [t.table_name, t.visits, t.avg_min]),
+                  ]}
+                />
+              </HeaderControls>
+            ) : null}>
               <CardTitle>Table turnaround (TAT)</CardTitle><CardDescription>Seated → left, recorded automatically per table visit. {data.tat?.sessions ?? 0} visit{(data.tat?.sessions ?? 0) === 1 ? "" : "s"} in the window.</CardDescription>
             </SectionHeaderRow>
           </CardHeader>
@@ -1461,9 +2555,45 @@ function AdvancedAnalyticsView({ view, kpiSort }: { view: ViewId; kpiSort: KpiSo
               <p className="py-2 text-sm text-muted-foreground">No completed table visits yet — TAT starts recording from each table&apos;s next seating.</p>
             ) : (
               <>
-                <div className="mb-3 flex gap-6 text-sm">
-                  <div><span className="text-muted-foreground">Average</span> <span className="ml-1 text-lg font-bold">{data.tat.avg_min} min</span></div>
-                  <div><span className="text-muted-foreground">Median</span> <span className="ml-1 text-lg font-bold">{data.tat.median_min} min</span></div>
+                <div className="mb-3 grid grid-cols-2 gap-3">
+                  <MetricTile
+                    label="Average TAT"
+                    value={`${data.tat.avg_min} min`}
+                    sub={`${data.tat.sessions} completed visit${data.tat.sessions === 1 ? "" : "s"}`}
+                    onOpen={() => { setDetail({
+                      title: "Average table turnaround",
+                      value: `${data.tat.avg_min} min`,
+                      sub: `${data.tat.sessions} completed visit${data.tat.sessions === 1 ? "" : "s"}`,
+                      note: `How long a table stays busy from being seated to being freed, averaged over every completed visit. The median is ${data.tat.median_min} min — when the average sits well above it, a handful of very long visits are dragging it up.`,
+                      chart: "bar",
+                      rows: (data.tat.by_table ?? []).map((t) => ({ name: t.table_name, value: t.avg_min })),
+                      unit: "min",
+                      breakdownTitle: "Slowest tables",
+                      footnote: `Last ${data.window_days} days`,
+                      link: "/dashboard/tables",
+                      linkLabel: "View tables",
+                      view: "operations",
+                    }); }}
+                  />
+                  <MetricTile
+                    label="Median TAT"
+                    value={`${data.tat.median_min} min`}
+                    sub="half of visits are shorter"
+                    onOpen={() => { setDetail({
+                      title: "Median table turnaround",
+                      value: `${data.tat.median_min} min`,
+                      sub: "half of visits are shorter than this",
+                      note: `The middle visit once every completed visit is lined up shortest to longest — unlike the ${data.tat.avg_min} min average, one very long table cannot move it. Use this as your realistic turn time when planning covers.`,
+                      chart: "bar",
+                      rows: (data.tat.by_table ?? []).map((t) => ({ name: t.table_name, value: t.avg_min })),
+                      unit: "min",
+                      breakdownTitle: "Average per table",
+                      footnote: `Last ${data.window_days} days`,
+                      link: "/dashboard/tables",
+                      linkLabel: "View tables",
+                      view: "operations",
+                    }); }}
+                  />
                 </div>
                 <table className="w-full text-sm">
                   <thead className="text-left text-muted-foreground"><tr className="border-b"><th className="py-1 pr-2">Table</th><th className="py-1 pr-2 text-right">Visits</th><th className="py-1 text-right">Avg TAT</th></tr></thead>
@@ -1485,7 +2615,27 @@ function AdvancedAnalyticsView({ view, kpiSort }: { view: ViewId; kpiSort: KpiSo
 
         {inView(view, "customers") && (
         <Card>
-          <CardHeader><CardTitle>Customer demographics</CardTitle><CardDescription>Aggregated only — tagged {data.demographics?.tagged ?? 0} of {data.demographics?.total_customers ?? 0} customers{data.demographics?.coverage_pct != null ? ` (${data.demographics.coverage_pct}%)` : ""}. Tag guests when adding customers.</CardDescription></CardHeader>
+          <CardHeader>
+            <SectionHeaderRow control={(data.demographics?.tagged ?? 0) > 0 ? (
+              <SectionDownload
+                id="demographics"
+                label="Customer demographics"
+                build={() => [
+                  ["Metric", "Value"],
+                  ["Customers", data.demographics?.total_customers ?? 0],
+                  ["Tagged", data.demographics?.tagged ?? 0],
+                  ["Coverage (%)", data.demographics?.coverage_pct ?? ""],
+                  [],
+                  ["Group", "Label", "Customers"],
+                  ...byGender.map((g) => ["Gender", g.label, g.n]),
+                  ...byAge.map((g) => ["Age group", g.label, g.n]),
+                  ...topPincodes.map((g) => ["Pincode", g.label, g.n]),
+                ]}
+              />
+            ) : null}>
+              <CardTitle>Customer demographics</CardTitle><CardDescription>Aggregated only — tagged {data.demographics?.tagged ?? 0} of {data.demographics?.total_customers ?? 0} customers{data.demographics?.coverage_pct != null ? ` (${data.demographics.coverage_pct}%)` : ""}. Tag guests when adding customers.</CardDescription>
+            </SectionHeaderRow>
+          </CardHeader>
           <CardContent className="space-y-3 text-sm">
             {(data.demographics?.tagged ?? 0) === 0 ? (
               <p className="py-2 text-sm text-muted-foreground">No demographic tags yet — add gender / age group / pincode when creating customers.</p>
@@ -1518,7 +2668,25 @@ function AdvancedAnalyticsView({ view, kpiSort }: { view: ViewId; kpiSort: KpiSo
         {inView(view, "marketing") && (
         <Card>
           <CardHeader>
-            <SectionHeaderRow control={(data.campaigns ?? []).length > 0 ? <SortControl fields={campFields} state={campSort} onChange={setCampSort} /> : null}>
+            <SectionHeaderRow control={(data.campaigns ?? []).length > 0 ? (
+              <HeaderControls>
+                <SortControl fields={campFields} state={campSort} onChange={setCampSort} />
+                <SectionDownload
+                  id="campaigns"
+                  label="Campaign ROI"
+                  build={() => [
+                    ["Campaign", "Starts", "Ends", `Cost (${currencySymbol})`, `Sales during (${currencySymbol})`, `Sales before (${currencySymbol})`, "Uplift (%)", "ROI (%)"],
+                    ...campaigns.map((c) => [
+                      c.name, c.starts_at, c.ends_at,
+                      Number(c.cost ?? 0).toFixed(0),
+                      Number(c.sales_during ?? 0).toFixed(0),
+                      Number(c.sales_before ?? 0).toFixed(0),
+                      c.uplift_pct ?? "", c.roi_pct ?? "",
+                    ]),
+                  ]}
+                />
+              </HeaderControls>
+            ) : null}>
               <CardTitle>Campaign ROI</CardTitle><CardDescription>Revenue in the campaign window vs the same-length window before it. ROI needs a recorded spend.</CardDescription>
             </SectionHeaderRow>
           </CardHeader>
@@ -1556,7 +2724,19 @@ function AdvancedAnalyticsView({ view, kpiSort }: { view: ViewId; kpiSort: KpiSo
         {inView(view, "menu") && (data.demand_forecast ?? []).length > 0 ? (
           <Card>
             <CardHeader>
-              <SectionHeaderRow control={<SortControl fields={forecastFields} state={forecastSort} onChange={setForecastSort} />}>
+              <SectionHeaderRow control={
+                <HeaderControls>
+                  <SortControl fields={forecastFields} state={forecastSort} onChange={setForecastSort} />
+                  <SectionDownload
+                    id="demand-forecast"
+                    label="Demand forecast"
+                    build={() => [
+                      ["Item", "12-wk sold", "Next week", "Trend"],
+                      ...demandForecast.map((f) => [f.name, f.total_qty, Math.round(f.forecast_next_week), f.trend ?? "flat"]),
+                    ]}
+                  />
+                </HeaderControls>
+              }>
                 <CardTitle>Demand forecast</CardTitle><CardDescription>Next week&apos;s expected sales per item (weighted 4-week average){data.forecast_mape_pct != null ? ` · MAPE ${data.forecast_mape_pct}%` : ""}.</CardDescription>
               </SectionHeaderRow>
             </CardHeader>
@@ -1581,7 +2761,19 @@ function AdvancedAnalyticsView({ view, kpiSort }: { view: ViewId; kpiSort: KpiSo
         {inView(view, "discounts") && (data.offers ?? []).length > 0 ? (
           <Card>
             <CardHeader>
-              <SectionHeaderRow control={<SortControl fields={offerFields} state={offerSort} onChange={setOfferSort} />}>
+              <SectionHeaderRow control={
+                <HeaderControls>
+                  <SortControl fields={offerFields} state={offerSort} onChange={setOfferSort} />
+                  <SectionDownload
+                    id="offer-redemption"
+                    label="Offer redemption"
+                    build={() => [
+                      ["Code", "Used", "Limit", "Redemption (%)"],
+                      ...offers.map((o) => [o.code, o.used, o.limit ?? "Unlimited", o.redemption_pct ?? ""]),
+                    ]}
+                  />
+                </HeaderControls>
+              }>
                 <CardTitle>Offer redemption</CardTitle><CardDescription>Coupon usage vs limits.</CardDescription>
               </SectionHeaderRow>
             </CardHeader>
@@ -1599,6 +2791,9 @@ function AdvancedAnalyticsView({ view, kpiSort }: { view: ViewId; kpiSort: KpiSo
                   ))}
                 </tbody>
               </table>
+            <div className="mt-3 flex flex-wrap items-center justify-end gap-4">
+              <Link href="/dashboard/coupons" className="text-sm font-medium text-primary hover:underline">Open Coupons &rarr;</Link>
+            </div>
             </CardContent>
           </Card>
         ) : null}
@@ -1609,12 +2804,12 @@ function AdvancedAnalyticsView({ view, kpiSort }: { view: ViewId; kpiSort: KpiSo
 
 // Side-by-side branch comparison — renders ONLY for restaurants with 2+ outlets
 // (single-outlet tenants see nothing, not an empty card).
-function OutletsComparisonCard({ view }: { view: ViewId }) {
+function OutletsComparisonCard({ view, onOpenView }: { view: ViewId; onOpenView: (v: ViewId) => void }) {
   const { user } = useAuth();
-  const { currency } = useCurrency();
+  const { currency, currencySymbol } = useCurrency();
   const [data, setData] = useState<OutletComparison | null>(null);
   const [outletSort, setOutletSort] = useSectionSort("revenue");
-  const money = (n: number | null | undefined) => `${currency}${Number(n ?? 0).toFixed(0)}`;
+  const money = (n: number | null | undefined) => `${currencySymbol}${Number(n ?? 0).toFixed(0)}`;
 
   useEffect(() => {
     if (!user?.restaurantUsername) {return;}
@@ -1638,7 +2833,19 @@ function OutletsComparisonCard({ view }: { view: ViewId }) {
   return (
     <Card>
       <CardHeader>
-        <SectionHeaderRow control={<SortControl fields={outletFields} state={outletSort} onChange={setOutletSort} />}>
+        <SectionHeaderRow control={
+          <HeaderControls>
+            <SortControl fields={outletFields} state={outletSort} onChange={setOutletSort} />
+            <SectionDownload
+              id="outlets-comparison"
+              label="Outlets comparison"
+              build={() => [
+                ["Outlet", `Revenue (${currencySymbol})`, "Bills", "Orders", "Rating (out of 5)"],
+                ...outlets.map((o) => [o.name, Number(o.revenue ?? 0).toFixed(0), o.bills, o.orders, o.avg_rating ?? ""]),
+              ]}
+            />
+          </HeaderControls>
+        }>
           <CardTitle>Outlets comparison</CardTitle>
           <CardDescription>Revenue, bills, orders &amp; guest rating per outlet — last {data.days} days.</CardDescription>
         </SectionHeaderRow>
@@ -1673,15 +2880,56 @@ function OutletsComparisonCard({ view }: { view: ViewId }) {
             ))}
           </tbody>
         </table>
+        {/* Two real destinations: the fuller Sales view, and the Outlets module
+            that owns these branches. */}
+        <div className="flex flex-wrap items-center justify-end gap-4 pt-3">
+          {view === "overview" && <SeeMoreInView view="sales" onOpenView={onOpenView} />}
+          <Link href="/dashboard/outlets" className="text-sm font-medium text-primary hover:underline">Manage outlets →</Link>
+        </div>
       </CardContent>
     </Card>
   );
 }
 
 export default function AnalyticsPage() {
+  const { user } = useAuth();
   const [view, setView] = useState<ViewId>("overview");
   const [kpiSort, setKpiSort] = useState<KpiSort>("severity");
   const [sheetOpen, setSheetOpen] = useState(false);
+
+  // Every mounted section registers itself here so "Download all" can emit one
+  // file covering exactly the sections currently on screen. The counter only
+  // moves when a section mounts/unmounts (re-registering a known id is silent),
+  // so a child's registration effect can never loop the page.
+  const sectionsRef = useRef<Map<string, CsvSection>>(new Map());
+  const [sectionCount, setSectionCount] = useState(0);
+  const registry = useMemo<CsvRegistry>(() => ({
+    register: (s) => {
+      const had = sectionsRef.current.has(s.id);
+      sectionsRef.current.set(s.id, s);
+      if (!had) {setSectionCount((n) => n + 1);}
+    },
+    unregister: (id) => {
+      if (sectionsRef.current.delete(id)) {setSectionCount((n) => n - 1);}
+    },
+    list: () => Array.from(sectionsRef.current.values()),
+  }), []);
+
+  // One file, every section currently rendered: a label row, the section's own
+  // rows, then a blank separator row.
+  const downloadAll = () => {
+    const sections = registry.list();
+    if (sections.length === 0) {return;}
+    const rows: CsvCell[][] = [];
+    for (const s of sections) {
+      const body = s.build();
+      if (body.length === 0) {continue;}
+      if (rows.length > 0) {rows.push([]);}
+      rows.push([s.label]);
+      rows.push(...body);
+    }
+    downloadCsv(csvFilename(user?.restaurantUsername, `analytics-${view}`), rows);
+  };
 
   // Restore persisted choices after mount (localStorage is client-only, and
   // reading it in the initial state would break hydration).
@@ -1698,6 +2946,9 @@ export default function AnalyticsPage() {
     setView(v);
     setSheetOpen(false);
     try { localStorage.setItem("analytics.view", v); } catch { /* ignore */ }
+    // Jumping from a card halfway down the page would otherwise leave the user
+    // scrolled into the middle of a completely different set of sections.
+    try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch { /* older browsers */ }
   };
   const pickSort = (s: KpiSort) => {
     setKpiSort(s);
@@ -1734,6 +2985,22 @@ export default function AnalyticsPage() {
             View: {viewLabel} <ChevronDown className="ml-1 h-4 w-4" />
           </Button>
           <div className="ml-auto flex items-center gap-1.5">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={downloadAll}
+              disabled={sectionCount === 0}
+              title={`Download every section shown in ${viewLabel} as one CSV`}
+            >
+              <Download className="mr-1 h-4 w-4" />
+              {/* Named after the section it actually exports ("Download Kitchen"),
+                  not a generic "Download all" — the file covers every card in the
+                  view you are looking at, which is how owners think about it. */}
+              <span className="hidden sm:inline">
+                {view === "everything" ? "Download everything" : `Download ${viewLabel}`}
+              </span>
+              <span className="sm:hidden">CSV</span>
+            </Button>
             <span className="hidden text-xs text-muted-foreground sm:inline">Sort KPIs</span>
             <div className="flex items-center rounded-lg border p-0.5">
               {KPI_SORTS.map((s) => (
@@ -1751,12 +3018,17 @@ export default function AnalyticsPage() {
         </div>
       </div>
 
-      <OutletsComparisonCard view={view} />
-      <AdvancedAnalyticsView view={view} kpiSort={kpiSort} />
-      <ActionableInsights view={view} />
-      <PerformanceTrends view={view} />
-      <OperationsCharts view={view} />
-      <KitchenAnalyticsView view={view} />
+      {/* pickView is the ONE action every "See more in <View>" affordance calls,
+          so switching views from a card or a drill-down behaves exactly like
+          clicking the chip in the toolbar (persisted + scrolled to the top). */}
+      <CsvRegistryContext.Provider value={registry}>
+        <OutletsComparisonCard view={view} onOpenView={pickView} />
+        <AdvancedAnalyticsView view={view} kpiSort={kpiSort} onOpenView={pickView} />
+        <ActionableInsights view={view} onOpenView={pickView} />
+        <PerformanceTrends view={view} onOpenView={pickView} />
+        <OperationsCharts view={view} />
+        <KitchenAnalyticsView view={view} onOpenView={pickView} />
+      </CsvRegistryContext.Provider>
 
       {/* Mobile bottom sheet for the view picker */}
       {sheetOpen && (

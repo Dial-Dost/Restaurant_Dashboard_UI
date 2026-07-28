@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { Suspense, useEffect, useMemo, useState, useCallback } from "react";
 import QRCode from "qrcode";
 import {
   ResponsiveContainer,
@@ -14,9 +14,11 @@ import {
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useRealtime } from "@/context/RealtimeContext";
 import { useToast } from "@/hooks/use-toast";
+import { useHighlightRow } from "@/hooks/use-highlight-row";
 import { requestBackend } from "@/lib/db";
 
 interface FeedbackCategoryRating {
@@ -25,6 +27,15 @@ interface FeedbackCategoryRating {
   rating: number;
   question?: string | null;
   follow_up?: string | null;
+  /** The guest's reply to the follow-up, when one was asked. */
+  follow_up_answer?: string | null;
+}
+
+// A score is stored to 2dp, so 4.8 must read "4.8" — not the "5/5" a rounded
+// integer column used to produce. Whole numbers stay clean ("5", not "5.0").
+function formatScore(value: number | null | undefined): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {return null;}
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
 interface FeedbackEntry {
@@ -38,6 +49,8 @@ interface FeedbackEntry {
   category_ratings: FeedbackCategoryRating[];
   image_theme?: { background: string; surface: string; text: string; accent: string } | null;
   source?: string | null;
+  /** 0–10 "would you recommend" score, when the guest answered it. */
+  nps?: number | null;
   submitted_at: string;
 }
 
@@ -59,10 +72,15 @@ function formatDate(input?: string | null): string {
   return date.toLocaleString();
 }
 
-export default function FeedbackPage() {
+function FeedbackPageInner() {
   const { user } = useAuth();
   const { toast } = useToast();
   const [entries, setEntries] = useState<FeedbackEntry[]>([]);
+  /** Which feedback card is expanded (one at a time keeps the list scannable). */
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  // A complaint notification links here as ?highlightFeedback=<id>; ring and
+  // scroll to that submission instead of leaving the user to search the list.
+  const highlight = useHighlightRow("highlightFeedback", entries.length);
   const [summary, setSummary] = useState<FeedbackSummary | null>(null);
   const [employeesMap, setEmployeesMap] = useState<Record<string, { name: string; role?: string }>>({});
   // Raw employee list (kept alongside employeesMap) so we can build a per-employee feedback QR.
@@ -853,30 +871,102 @@ export default function FeedbackPage() {
           {!loading && entries.length === 0 ? (
             <p className="text-sm text-muted-foreground">No feedback submissions yet.</p>
           ) : null}
-          {entries.map((entry) => (
-            <article className="rounded-md border p-3" key={entry.id}>
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="font-medium">{entry.customer_name || "Anonymous"}</p>
-                <div className="flex items-center gap-2">
-                  <Badge>{entry.overall_rating ? `${entry.overall_rating}/5` : "No score"}</Badge>
-                  <span className="text-xs text-muted-foreground">{formatDate(entry.submitted_at)}</span>
-                </div>
-              </div>
-              <p className="mt-2 text-sm text-muted-foreground">
-                {entry.comments?.trim() ? entry.comments : "No additional comments."}
-              </p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {entry.category_ratings.slice(0, 6).map((category) => (
-                  <Badge key={`${entry.id}-${category.key}`} variant="outline">
-                    {category.label}: {category.rating}/5
-                  </Badge>
-                ))}
-              </div>
-            </article>
-          ))}
+          {entries.map((entry) => {
+            const open = expandedId === entry.id;
+            const score = formatScore(entry.overall_rating);
+            return (
+              <article
+                key={entry.id}
+                id={highlight.rowProps(entry.id).id}
+                className={`rounded-md border ${highlight.rowProps(entry.id).className}`}
+              >
+                {/* The whole header is the toggle: a click opens the full
+                    question-by-question breakdown rather than the 6-badge preview. */}
+                <button
+                  type="button"
+                  onClick={() => { setExpandedId(open ? null : entry.id); }}
+                  aria-expanded={open}
+                  className="flex w-full items-start justify-between gap-2 p-3 text-left transition-colors hover:bg-muted/50"
+                >
+                  <span className="min-w-0">
+                    <span className="flex items-center gap-1.5 font-medium">
+                      {open ? <ChevronDown className="h-4 w-4 shrink-0" /> : <ChevronRight className="h-4 w-4 shrink-0" />}
+                      {entry.customer_name || "Anonymous"}
+                    </span>
+                    <span className="mt-1 block truncate text-sm text-muted-foreground">
+                      {entry.comments?.trim() ? entry.comments : `${entry.category_ratings.length} question${entry.category_ratings.length === 1 ? "" : "s"} answered`}
+                    </span>
+                  </span>
+                  <span className="flex shrink-0 items-center gap-2">
+                    <Badge>{score ? `${score}/5` : "No score"}</Badge>
+                    <span className="text-xs text-muted-foreground">{formatDate(entry.submitted_at)}</span>
+                  </span>
+                </button>
+
+                {open ? (
+                  <div className="space-y-3 border-t px-3 pb-3 pt-3">
+                    {/* Every question, its score, and the follow-up if one was asked. */}
+                    <div className="space-y-2">
+                      {entry.category_ratings.length === 0 ? (
+                        <p className="text-sm text-muted-foreground">No per-question ratings were recorded.</p>
+                      ) : entry.category_ratings.map((category) => (
+                        <div key={`${entry.id}-${category.key}`} className="rounded border bg-muted/30 p-2">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium">{category.label}</p>
+                              {category.question ? (
+                                <p className="text-xs text-muted-foreground">{category.question}</p>
+                              ) : null}
+                            </div>
+                            <Badge variant={category.rating <= 2 ? "destructive" : "outline"} className="shrink-0">
+                              {category.rating}/5
+                            </Badge>
+                          </div>
+                          {category.follow_up ? (
+                            <div className="mt-2 border-l-2 pl-2">
+                              <p className="text-xs italic text-muted-foreground">{category.follow_up}</p>
+                              <p className="text-xs">
+                                {category.follow_up_answer?.trim()
+                                  ? category.follow_up_answer
+                                  : <span className="text-muted-foreground">— not answered</span>}
+                              </p>
+                            </div>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                      {score ? <span>Overall <strong className="text-foreground">{score}/5</strong> (average of {entry.category_ratings.length})</span> : null}
+                      {typeof entry.nps === "number" ? <span>Recommend score <strong className="text-foreground">{entry.nps}/10</strong></span> : null}
+                      {entry.source ? <span>Source: {entry.source}</span> : null}
+                      {entry.visit_date ? <span>Visit: {formatDate(entry.visit_date)}</span> : null}
+                    </div>
+
+                    {entry.comments?.trim() ? (
+                      <div>
+                        <p className="text-xs font-medium text-muted-foreground">Comment</p>
+                        <p className="text-sm">{entry.comments}</p>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </article>
+            );
+          })}
         </CardContent>
       </Card>
       
     </div>
+  );
+}
+
+// useSearchParams (via useHighlightRow) requires a Suspense boundary
+// (same pattern as the accounting and queue pages).
+export default function FeedbackPage() {
+  return (
+    <Suspense fallback={<div className="py-10 text-center text-muted-foreground">Loading…</div>}>
+      <FeedbackPageInner />
+    </Suspense>
   );
 }

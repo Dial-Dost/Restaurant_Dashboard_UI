@@ -4,6 +4,7 @@
 // via Next.js helpers so the server-side request helpers can pick up
 // the `authUser` cookie set by the client after login.
 import { cookies as nextCookies } from 'next/headers';
+import { redirect } from 'next/navigation';
 
 import { type Booking } from '@/app/dashboard/bookings/data';
 import { type Customer } from '@/app/dashboard/customers/page';
@@ -290,6 +291,20 @@ interface FrontendAuthContext {
     token: string | null;
 }
 
+// The outlet switcher's choice, read from the cookie that setSelectedOutlet()
+// writes via /api/session. Server-only: these accessors run as Server Actions,
+// so localStorage is not reachable from here and the cookie is the only channel.
+const getSelectedOutletFromCookie = async (): Promise<string | null> => {
+    if (typeof window !== 'undefined') {return null;}
+    try {
+        const ckAny: any = await nextCookies();
+        const raw = (typeof ckAny.get === 'function' ? ckAny.get(SELECTED_OUTLET_KEY) : ckAny?.cookies?.get?.(SELECTED_OUTLET_KEY))?.value ?? null;
+        return typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : null;
+    } catch {
+        return null;
+    }
+};
+
 const getPathWithoutQuery = (path: string): string => {
     const index = path.indexOf('?');
     return index >= 0 ? path.slice(0, index) : path;
@@ -307,6 +322,36 @@ const isRestaurantLoginPath = (path: string): boolean => {
 const isEmployeeLoginPath = (path: string): boolean => {
     const normalized = getPathWithoutQuery(path).toLowerCase();
     return normalized === '/auth/employee-login';
+};
+
+// --- Expired-session global gate (BUG A) -------------------------------------
+// The backend keeps sessions in memory, so a backend restart invalidates every
+// token and previously-authenticated data calls come back HTTP 401
+// {"error":"Unauthorized","details":"Invalid or expired session"}. These
+// accessors are Server Actions and cannot clear localStorage or navigate on
+// their own, so before this gate a 401 was silently swallowed into an empty tab
+// ("my orders vanished"). Funnelling every fetch below through enforceSessionAlive
+// turns any 401 into a NEXT_REDIRECT that escapes the action to Next's router,
+// forcing the user to the login screen (which clears the stored auth and shows a
+// "session expired" message) instead of rendering empty — global, so every
+// screen that reads through the shared wrappers is covered at once.
+const SESSION_EXPIRED_REDIRECT = '/login?session=expired';
+
+// A 401 on a public /auth/* call (a wrong password on employee-login, or a probe
+// for an unknown restaurant) is a normal auth outcome, NOT an expired session —
+// those must never be bounced to the "session expired" screen.
+const isAuthPath = (path: string): boolean =>
+    getPathWithoutQuery(path).toLowerCase().startsWith('/auth/');
+
+// MUST be called OUTSIDE any try/catch: redirect() signals via a thrown
+// NEXT_REDIRECT that has to escape the action untouched to actually navigate.
+// A 401 is the session itself failing to resolve (expired/invalid/missing token);
+// a 403 is an authenticated-but-unpermitted call and deliberately does NOT log
+// the user out (it flows through as a normal !ok response).
+const enforceSessionAlive = (path: string, status: number): void => {
+    if (status === 401 && !isAuthPath(path)) {
+        redirect(SESSION_EXPIRED_REDIRECT);
+    }
 };
 
 const getFrontendAuthContext = async (): Promise<FrontendAuthContext> => {
@@ -438,11 +483,13 @@ const applyEmployeeContextHeaders = async (
     // Outlet selection stays a header (admins/managers may target an outlet
     // within their own restaurant); the server authorizes it against the session.
     // Precedence: a per-call override > the admin's outlet switcher choice
-    // (localStorage) > the session's home outlet.
+    // (localStorage when this runs in the browser, the mirrored cookie when it
+    // runs as a Server Action) > the session's home outlet.
+    const switcherChoice = getSelectedOutletId() ?? (await getSelectedOutletFromCookie());
     const finalOutletId =
         (typeof explicitOutletId === 'string' && explicitOutletId.trim().length > 0
             ? explicitOutletId.trim()
-            : getSelectedOutletId() ?? fromFrontend.outletId) ?? null;
+            : switcherChoice ?? fromFrontend.outletId) ?? null;
     if (finalOutletId) {
         headers.set('X-Outlet-Id', finalOutletId);
     }
@@ -467,6 +514,7 @@ const backendJson = async <T>(
     restaurantId: string,
     init?: RequestInit,
 ): Promise<T | null> => {
+    let status = 0;
     try {
         const hdrs = await headersForRestaurant(path, restaurantId, init?.headers);
         const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -475,15 +523,22 @@ const backendJson = async <T>(
             headers: hdrs,
         });
 
+        status = response.status;
         if (!response.ok) {
-            return null;
+            // A 401 falls through to the expired-session gate below (outside this
+            // try/catch) so redirect()'s NEXT_REDIRECT is never swallowed here.
+            if (status !== 401) {
+                return null;
+            }
+        } else {
+            return (await response.json()) as T;
         }
-
-        return (await response.json()) as T;
     } catch (error) {
         console.warn(`Backend request failed for ${path}`, error);
         return null;
     }
+    enforceSessionAlive(path, status);
+    return null;
 };
 
 const backendCall = async (
@@ -491,17 +546,20 @@ const backendCall = async (
     restaurantId: string,
     init?: RequestInit,
 ): Promise<Response | null> => {
+    let response: Response;
     try {
         const hdrs = await headersForRestaurant(path, restaurantId, init?.headers);
-        const response = await fetch(`${API_BASE_URL}${path}`, {
+        response = await fetch(`${API_BASE_URL}${path}`, {
             ...init,
             headers: hdrs,
         });
-        return response;
     } catch (error) {
         console.warn(`Backend request failed for ${path}`, error);
         return null;
     }
+    // Outside the catch so an expired-session redirect isn't swallowed.
+    enforceSessionAlive(path, response.status);
+    return response;
 };
 
 const parseBodyText = async (response: Response): Promise<string> => {
@@ -550,49 +608,57 @@ export const requestBackend = async <T = unknown>(
         requestInit.body = typeof body === 'string' ? body : JSON.stringify(body);
     }
 
+    let response: Response;
     try {
-        const response = await fetch(`${finalBaseUrl}${path}`, requestInit);
-        const text = await parseBodyText(response);
-
-        if (!parseJson) {
-            return {
-                ok: response.ok,
-                status: response.status,
-                data: null,
-                text,
-            };
-        }
-
-        if (!text.trim()) {
-            return {
-                ok: response.ok,
-                status: response.status,
-                data: null,
-                text,
-            };
-        }
-
-        try {
-            return {
-                ok: response.ok,
-                status: response.status,
-                data: JSON.parse(text) as T,
-                text,
-            };
-        } catch {
-            return {
-                ok: response.ok,
-                status: response.status,
-                data: null,
-                text,
-            };
-        }
+        response = await fetch(`${finalBaseUrl}${path}`, requestInit);
     } catch {
         return {
             ok: false,
             status: 0,
             data: null,
             text: '',
+        };
+    }
+
+    // Outside the fetch try/catch so an expired-session (401) redirect's
+    // NEXT_REDIRECT escapes to Next's router instead of being swallowed. A 403
+    // (authenticated but unpermitted) is left to flow through as a normal !ok
+    // result so callers can surface the message without logging the user out.
+    enforceSessionAlive(path, response.status);
+
+    const text = await parseBodyText(response);
+
+    if (!parseJson) {
+        return {
+            ok: response.ok,
+            status: response.status,
+            data: null,
+            text,
+        };
+    }
+
+    if (!text.trim()) {
+        return {
+            ok: response.ok,
+            status: response.status,
+            data: null,
+            text,
+        };
+    }
+
+    try {
+        return {
+            ok: response.ok,
+            status: response.status,
+            data: JSON.parse(text) as T,
+            text,
+        };
+    } catch {
+        return {
+            ok: response.ok,
+            status: response.status,
+            data: null,
+            text,
         };
     }
 };
@@ -639,8 +705,16 @@ const mapBooking = (item: any): Booking => ({
     id: String(item.booking_id ?? item.id ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
     customer: item.customer_name ?? 'Guest',
     time: formatBookingTime(String(item.booking_date_time ?? '')),
+    // Raw ISO start — the display `time` is localized text, so keep the machine
+    // value for anything that needs the actual window (seating suggestions).
+    date_time: typeof item.booking_date_time === 'string' ? item.booking_date_time : null,
     guests: Number(item.number_of_people ?? 0),
     table: item.table_name ?? '',
+    // Clubbed reservations hold more than one table; `table_name` stays the
+    // primary so older clients keep working. Fall back to the primary alone.
+    table_names: Array.isArray(item.table_names)
+        ? (item.table_names as unknown[]).filter((n): n is string => typeof n === 'string' && n.trim().length > 0)
+        : (item.table_name ? [String(item.table_name)] : []),
     source: item.source ?? 'Unknown',
     status: item.status ?? (item.active ? 'Arrived' : 'Confirmed'),
     notes: item.notes ?? item.additional_information ?? '',
@@ -661,10 +735,15 @@ const mapCustomer = (item: any): Customer => ({
 const mapTable = (item: any, index: number): Table => {
     const name = item.table_name ?? `Table-${index + 1}`;
     const capacity = Number(item.capacity ?? 0);
+    const safeCapacity = Number.isFinite(capacity) ? capacity : 0;
+    // `max_capacity` is the most the table can take with extra chairs. The backend
+    // always sends it (coalescing to capacity), but older snapshots/caches may not.
+    const maxCapacity = Number(item.max_capacity ?? safeCapacity);
     return {
         id: stableTableId(name, index + 1),
         name,
-        capacity: Number.isFinite(capacity) ? capacity : 0,
+        capacity: safeCapacity,
+        max_capacity: Number.isFinite(maxCapacity) && maxCapacity > 0 ? maxCapacity : safeCapacity,
         status: toTableStatus(item.booked, item.reserved, item.occupied, item.payment_pending),
         qr_token: typeof item.qr_token === 'string' && item.qr_token ? item.qr_token : null,
         order_otp: typeof item.order_otp === 'string' && item.order_otp ? item.order_otp : null,
@@ -707,6 +786,10 @@ const mapMenuItem = (item: any): MenuItem => ({
     available: item.available !== false,
     station: typeof item.station === 'string' && item.station ? item.station : null,
     allergens: Array.isArray(item.allergens) ? item.allergens.filter((a: unknown) => typeof a === 'string' && a).map(String) : [],
+    // Guest-facing description. The key is only carried when there IS one: the
+    // backend treats an omitted `blurb` as "keep the stored text", so a bulk save
+    // of items that never had a description can't accidentally clear anything.
+    ...(typeof item.blurb === 'string' && item.blurb.trim() ? { blurb: item.blurb } : {}),
     recipe: Array.isArray(item.recipe)
         ? item.recipe.map((r: any) => ({
             inventory_id: String(r.inventory_id ?? ''),
@@ -1041,16 +1124,28 @@ export const removeEmployee = async (restaurantUsername: string, restaurantId: s
 };
 
 // --- Specific Data Accessors ---
-export const getBookings = async (restaurantId: string): Promise<Booking[]> => {
+// `windowView` maps straight to GET /get-bookings?window= (backend contract):
+// "upcoming" (default) = slots still in the future, "past" = ended slots
+// (most-recent first), "all" = upcoming then past. Absent/unknown => upcoming,
+// so the default call stays byte-identical to the old one.
+export const getBookings = async (
+    restaurantId: string,
+    windowView?: 'upcoming' | 'past' | 'all',
+): Promise<Booking[]> => {
+    const windowParam = windowView ? `&window=${encodeURIComponent(windowView)}` : '';
     const data = await backendJson<any[]>(
-        `/get-bookings?restaurantId=${encodeURIComponent(restaurantId)}`,
+        `/get-bookings?restaurantId=${encodeURIComponent(restaurantId)}${windowParam}`,
         restaurantId,
         { method: 'GET' },
     );
 
     if (Array.isArray(data)) {
         const mapped = data.map(mapBooking);
-        await writeLocalField(restaurantId, 'bookings', mapped);
+        // Only the default (upcoming) view is the canonical live set; a past/all
+        // snapshot must not overwrite the fallback cache other screens read.
+        if (!windowView || windowView === 'upcoming') {
+            await writeLocalField(restaurantId, 'bookings', mapped);
+        }
         return mapped;
     }
 
@@ -1146,6 +1241,40 @@ export const getOrders = async (restaurantId: string, station?: string): Promise
     return readLocalField<Order[]>(restaurantId, 'orders');
 };
 
+// --- Orders scope (why is this grid empty?) ---------------------------------
+// GET /orders is deliberately scoped to ONE outlet, and old settled orders drop
+// out of the live grid after `live_window_days`. Both are correct, and both made
+// an empty grid look like data loss. This companion endpoint reports what the
+// current scope is and how many live orders sit on the OTHER outlets, so the UI
+// can explain itself and offer a one-click switch instead of a blank table.
+export interface OrdersScopeOutlet {
+    outlet_id: string;
+    outlet_name: string;
+    live_orders: number;
+    tables: number;
+    is_current: boolean;
+}
+export interface OrdersScope {
+    outlet: { id: string; name: string };
+    is_all_outlets: boolean;
+    /** Count for the CURRENT scope — always equals getOrders()'s length. */
+    live_orders: number;
+    /** Live orders on OTHER outlets of this restaurant. 0 in all-outlets mode. */
+    other_outlet_orders: number;
+    outlets: OrdersScopeOutlet[];
+    /** Settled orders older than this many days leave the live grid (History keeps them). */
+    live_window_days: number;
+    /** A guest/QR order lands on the TABLE's outlet — false means it can never arrive here. */
+    current_outlet_has_tables: boolean;
+}
+
+export const getOrdersScope = async (restaurantId: string): Promise<OrdersScope | null> =>
+    backendJson<OrdersScope>(
+        `/orders/scope?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+
 export const getTables = async (restaurantId: string): Promise<Table[]> => {
     const data = await backendJson<any[]>(
         `/get-tables?restaurantId=${encodeURIComponent(restaurantId)}`,
@@ -1217,6 +1346,111 @@ export const releaseTable = async (restaurantId: string, tableName: string) => {
     }
 
     throw new Error(response ? await readErrorMessage(response) : 'Unable to release table');
+};
+
+// --- Seating: per-table max, and the club-two-tables suggester ---------------
+// PATCH /table/:name — edit an existing table's seat counts. Both fields are
+// optional; the backend clamps max_capacity UP to capacity and returns what it
+// actually stored.
+export const updateTableSeating = async (
+    restaurantId: string,
+    tableName: string,
+    seats: { capacity?: number; max_capacity?: number },
+): Promise<{ table_name: string; capacity: number; max_capacity: number }> => {
+    const response = await backendCall(`/table/${encodeURIComponent(tableName)}`, restaurantId, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(seats),
+    });
+
+    if (!response?.ok) {
+        throw new Error(response ? await readErrorMessage(response) : 'Unable to update table');
+    }
+
+    const updated = (await response.json()) as { table_name: string; capacity: number; max_capacity: number };
+    await getTables(restaurantId);
+    try {
+        if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('tables:changed'));
+        }
+    } catch {
+        // ignore
+    }
+    return updated;
+};
+
+export interface SeatingSuggestionTable {
+    table_id: string;
+    table_name: string;
+    capacity: number;
+    max_capacity: number;
+}
+
+export interface SeatingCombination {
+    table_ids: string[];
+    table_names: string[];
+    total_capacity: number;
+    adjacent: boolean;
+}
+
+export interface SeatingSuggestion {
+    party: number;
+    at: string;
+    duration_mins: number;
+    /** Free tables that seat the party on their own, smallest-first. */
+    single: SeatingSuggestionTable[];
+    /** Consecutively-numbered free tables that together seat the party. */
+    combinations: SeatingCombination[];
+    /** Every free table — for a manual staff override. */
+    free_tables: SeatingSuggestionTable[];
+    /** Free but un-clubbable (no number in the name). */
+    unnumbered_free_tables: string[];
+    /** Set only when nothing fits; show it verbatim. */
+    none_reason: string | null;
+}
+
+// GET /tables/seating-suggestion — SUGGESTS ONLY, never assigns. Returns null
+// when the backend refuses (e.g. the employee lacks the assign-tables action).
+export const getSeatingSuggestion = async (
+    restaurantId: string,
+    opts: { party: number; at?: string | null; durationMins?: number },
+): Promise<SeatingSuggestion | null> => {
+    const qs = new URLSearchParams({ restaurantId });
+    qs.set('party', String(Math.max(1, Math.round(opts.party))));
+    if (opts.at) {qs.set('at', opts.at);}
+    if (typeof opts.durationMins === 'number' && opts.durationMins > 0) {
+        qs.set('duration', String(Math.round(opts.durationMins)));
+    }
+
+    return backendJson<SeatingSuggestion>(
+        `/tables/seating-suggestion?${qs.toString()}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+};
+
+// PATCH /booking/:id/table — set the primary table and, optionally, the clubbed
+// extras. Passing [] un-clubs; omitting the key leaves the existing set alone.
+export const assignBookingTables = async (
+    restaurantId: string,
+    bookingId: string,
+    tableName: string,
+    combinedTableNames?: string[],
+) => {
+    const payload: Record<string, unknown> = { table_name: tableName };
+    if (Array.isArray(combinedTableNames)) {payload.combined_table_names = combinedTableNames;}
+
+    const response = await backendCall(`/booking/${encodeURIComponent(bookingId)}/table`, restaurantId, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+
+    if (!response?.ok) {
+        throw new Error(response ? await readErrorMessage(response) : 'Unable to assign tables');
+    }
+
+    return { acknowledged: true };
 };
 
 export const getTableStatus = async (restaurantId: string, tableName: string) => {
@@ -2563,12 +2797,38 @@ export const getMonthlyHistory = async (restaurantId: string, months = 36): Prom
 export interface DishStat { name: string; category: string; quantity: number; revenue: number; orders: number; current_price: number | null }
 // `id` is the Menu row UUID the suggestion applies to — null only when the sold
 // dish name no longer matches a live menu item (nothing to apply then).
-export interface PriceSuggestion { id: string | null; name: string; category: string; current_price: number; suggested_price: number; direction: 'increase' | 'decrease'; reason: string }
+export interface PriceSuggestion {
+    id: string | null;
+    name: string;
+    category: string;
+    current_price: number;
+    suggested_price: number;
+    direction: 'increase' | 'decrease';
+    // Legacy one-liner, now 2-3 sentences. Kept as the fallback for the
+    // structured fields below (all additive — older backends omit them, so the
+    // UI must degrade to `reason` rather than render blanks).
+    reason: string;
+    why?: string;
+    expected_effect?: string;
+    confidence?: 'high' | 'medium' | 'low';
+    confidence_note?: string;
+    // suggested_price - current_price, and the same as a % of current_price.
+    // NOT always the nominal ±8/±10 — a margin-clamped cut is smaller, so
+    // always render the field instead of re-deriving the step.
+    delta_amount?: number;
+    delta_percent?: number;
+    // Only when the dish has a recipe AND a recorded purchase unit cost.
+    margin_note?: string;
+    // Only when something genuinely warrants a warning.
+    caution?: string;
+}
 export interface WaiterStat { employee_id: string; employee_name: string; orders: number; revenue: number }
 // Items the backend deliberately withheld a suggestion for, so the UI can say
 // WHY nothing is being suggested instead of looking like there is no signal.
 // `retry_after` is an ISO date and is only set for the cooldown reason.
-export interface SuppressedSuggestion { id: string | null; name: string; reason: 'cooldown' | 'drift_cap' | 'margin_floor'; retry_after?: string }
+// `reason` stays a machine code (the UI branches on it); `explanation` is the
+// owner-facing sentence and is what should be rendered.
+export interface SuppressedSuggestion { id: string | null; name: string; reason: 'cooldown' | 'drift_cap' | 'margin_floor'; retry_after?: string; explanation?: string }
 export interface MenuInsights {
     period_days: number;
     total_revenue: number;
@@ -2648,6 +2908,9 @@ export interface KitchenDishStat {
     count: number;
     avg_prep_ms: number;
     max_prep_ms: number;
+    // Additive — older backends omit these two.
+    p90_prep_ms?: number;
+    min_prep_ms?: number;
 }
 export interface KitchenSectionStat {
     section: string;
@@ -2655,6 +2918,10 @@ export interface KitchenSectionStat {
     items_timed: number;
     avg_prep_ms: number;
     max_prep_ms: number;
+    // Additive. `slowest_dish` is picked from the FULL dish aggregate, so it is
+    // not guaranteed to appear in the (capped) `by_dish` array.
+    p90_prep_ms?: number;
+    slowest_dish?: { name: string; avg_prep_ms: number } | null;
 }
 export interface KitchenAnalytics {
     order_summary: KitchenOrderSummary;
@@ -2682,6 +2949,37 @@ export const getKitchenAnalytics = async (
         { method: 'GET' },
     );
     return data ?? emptyKitchenAnalytics(days);
+};
+
+// --- Metric explainers ------------------------------------------------------
+// "What does this number mean?" copy for the analytics cards. Static text with
+// no tenant data, so it is fetched once per tab and cached in module scope —
+// every clickable metric card reads from the same object instead of refetching.
+// Keys are metric ids chosen by the backend; a missing key simply means "no
+// explainer for this tile", never an error.
+export interface MetricExplainer { title: string; what: string; how: string; tip?: string }
+export type MetricExplainers = Record<string, MetricExplainer>;
+
+let metricExplainersCache: Promise<MetricExplainers> | null = null;
+
+export const getMetricExplainers = async (restaurantId: string): Promise<MetricExplainers> => {
+    if (metricExplainersCache) { return metricExplainersCache; }
+    const pending = backendJson<{ explainers: MetricExplainers }>(
+        '/analytics/metric-explainers',
+        restaurantId,
+        { method: 'GET' },
+    ).then((data) => {
+        const explainers = data?.explainers;
+        // Don't cache a failure (older backend / transient 5xx) — let the next
+        // card that asks try again.
+        if (!explainers || Object.keys(explainers).length === 0) {
+            metricExplainersCache = null;
+            return {};
+        }
+        return explainers;
+    });
+    metricExplainersCache = pending;
+    return pending;
 };
 
 // --- Accounting & reporting -------------------------------------------------
@@ -2910,6 +3208,74 @@ export const cancelWaitlistEntry = async (restaurantId: string, id: string, stat
     return { ok: true };
 };
 
+// --- Staff notifications (bell) ---------------------------------------------
+export interface NotificationRow {
+    id: string;
+    type: string;
+    title: string;
+    body: string | null;
+    meta: Record<string, unknown> | null;
+    /** The outlet the notification was raised on (may differ from the one being viewed). */
+    outlet_id: string | null;
+    read_at: string | null;
+    created_at: string;
+}
+
+/**
+ * Where a tapped notification should go, and whether the record is actually
+ * reachable from the caller's CURRENT scope.
+ *
+ * `visible_here` — not `still_exists` — is the flag to gate navigation on: a
+ * record can exist and still be unreachable (another outlet, aged out of the
+ * live orders window, already seated, already decided). `message` is
+ * ready-to-display copy for exactly those cases.
+ */
+export interface NotificationTarget {
+    notification_id: string;
+    type: string;
+    /** Owner-app sidebar label ("Orders", "Bookings", …) or null when there is nothing to open. */
+    module: string | null;
+    entity: { type: string; id: string } | null;
+    outlet_id: string | null;
+    outlet_name: string | null;
+    still_exists: boolean;
+    visible_here: boolean;
+    /** 'deleted' | 'other_outlet' | 'outside_live_window' | 'no_longer_in_queue' | 'already_resolved' | 'no_target' | 'unknown_entity' */
+    reason_gone?: string;
+    message?: string;
+    /** Set only for 'other_outlet' — pass as the switcher's outlet id to reach the record. */
+    switch_outlet_id: string | null;
+    meta: Record<string, unknown>;
+}
+
+export const getNotifications = async (restaurantId: string): Promise<{ notifications: NotificationRow[]; unread: number }> => {
+    const data = await backendJson<{ notifications: NotificationRow[]; unread: number }>(
+        `/notifications?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+    return data ?? { notifications: [], unread: 0 };
+};
+
+export const getNotificationTarget = async (restaurantId: string, id: string): Promise<NotificationTarget | null> =>
+    backendJson<NotificationTarget>(
+        `/notifications/${encodeURIComponent(id)}/target?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+
+export const markNotificationRead = async (restaurantId: string, id: string): Promise<void> => {
+    await backendCall(`/notifications/${encodeURIComponent(id)}/read`, restaurantId, { method: 'POST' });
+};
+
+export const markAllNotificationsRead = async (restaurantId: string): Promise<void> => {
+    await backendCall('/notifications/read-all', restaurantId, { method: 'POST' });
+};
+
+export const deleteNotification = async (restaurantId: string, id: string): Promise<void> => {
+    await backendCall(`/notifications/${encodeURIComponent(id)}`, restaurantId, { method: 'DELETE' });
+};
+
 // --- Multi-outlet -----------------------------------------------------------
 export interface OutletRow { id: string; outlet_name: string; outlet_add: string | null; outlet_phone: string | null; outlet_hours: string | null; is_active: boolean; is_default: boolean }
 export interface OutletsRollup {
@@ -3051,36 +3417,72 @@ export const setRequireTableOtp = async (restaurantId: string, enabled: boolean)
 };
 
 // --- Customer-page branding (brand_config) ----------------------------------
-// The rich customer-page customization (font/colours/header/button style) shown
-// on the QR order page. Read the resolved config + the curated font allowlist
-// from /restaurant/settings (admin), and save via POST /restaurant/branding
-// (merge-on-omit: only the keys sent are overwritten). Mirrors the OTP helpers.
-export interface BrandConfigSettings { brand_config: BrandConfig; brand_fonts: string[] }
+// The guest-page customization shown on every customer surface (QR order page,
+// feedback form, valet step). Read the resolved config, the curated font
+// allowlist and the live/legacy field split from /restaurant/settings (admin),
+// and save via POST /restaurant/branding (merge-on-omit: only the keys sent are
+// overwritten). Mirrors the OTP helpers.
+//
+// The backend is the authority on which keys still DO something: brand_fields
+// splits them into `live` (render a control) and `legacy` (stored for tenants who
+// set them once, but the dark guest design derives everything from the accent, so
+// they paint nothing). brand_field_options carries the accepted enum values.
+export interface BrandFieldSplit { live: string[]; legacy: string[] }
+export interface BrandFieldOptions {
+    font?: string[];
+    header_style?: string[];
+    button_shape?: string[];
+    surface_style?: string[];
+}
+// brand_config as the editor writes it — `surface_style` (panel material) is the
+// newer live key; the guest pages read the same shape via GuestBrandConfig.
+export type BrandConfigPatch = BrandConfig & { surface_style?: string };
+export interface BrandConfigSettings {
+    brand_config: BrandConfigPatch;
+    brand_fonts: string[];
+    brand_fields?: BrandFieldSplit;
+    brand_field_options?: BrandFieldOptions;
+}
 export const getBrandConfig = async (restaurantId: string): Promise<BrandConfigSettings> => {
     const fallback: BrandConfigSettings = {
-        brand_config: { font: 'Inter', header_style: 'gradient', button_shape: 'pill' },
+        brand_config: { font: 'Inter', header_style: 'gradient', button_shape: 'rounded', surface_style: 'frosted' },
         brand_fonts: [],
     };
     const res = await backendCall('/restaurant/settings', restaurantId, { method: 'GET' });
     if (!res?.ok) {return fallback;}
     try {
         const j = await res.json();
+        const strings = (v: unknown): string[] | undefined =>
+            Array.isArray(v) ? v.map((s: unknown) => String(s)) : undefined;
+        const split = j?.brand_fields && typeof j.brand_fields === 'object'
+            ? { live: strings(j.brand_fields.live) ?? [], legacy: strings(j.brand_fields.legacy) ?? [] }
+            : undefined;
+        const opts = j?.brand_field_options && typeof j.brand_field_options === 'object'
+            ? {
+                font: strings(j.brand_field_options.font),
+                header_style: strings(j.brand_field_options.header_style),
+                button_shape: strings(j.brand_field_options.button_shape),
+                surface_style: strings(j.brand_field_options.surface_style),
+            }
+            : undefined;
         return {
-            brand_config: (j?.brand_config && typeof j.brand_config === 'object') ? (j.brand_config as BrandConfig) : fallback.brand_config,
-            brand_fonts: Array.isArray(j?.brand_fonts) ? j.brand_fonts.map((s: unknown) => String(s)) : [],
+            brand_config: (j?.brand_config && typeof j.brand_config === 'object') ? (j.brand_config as BrandConfigPatch) : fallback.brand_config,
+            brand_fonts: strings(j?.brand_fonts) ?? [],
+            ...(split ? { brand_fields: split } : {}),
+            ...(opts ? { brand_field_options: opts } : {}),
         };
     } catch {
         return fallback;
     }
 };
-export const saveBrandConfig = async (restaurantId: string, brandConfig: BrandConfig): Promise<BrandConfig> => {
+export const saveBrandConfig = async (restaurantId: string, brandConfig: BrandConfigPatch): Promise<BrandConfigPatch> => {
     const res = await backendCall('/restaurant/branding', restaurantId, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ brand_config: brandConfig }),
     });
     if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to save customer-page branding');}
-    try { const j = await res.json(); return (j?.brand_config && typeof j.brand_config === 'object') ? (j.brand_config as BrandConfig) : brandConfig; } catch { return brandConfig; }
+    try { const j = await res.json(); return (j?.brand_config && typeof j.brand_config === 'object') ? (j.brand_config as BrandConfigPatch) : brandConfig; } catch { return brandConfig; }
 };
 
 // --- Inventory categories (managed list in /restaurant/settings) ------------

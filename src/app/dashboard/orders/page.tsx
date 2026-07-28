@@ -30,7 +30,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { MoreHorizontal, PlusCircle, Clock, Printer, Trash2, X, ChevronUp, ChevronDown, Flame, ChefHat, CheckCircle2, MonitorSmartphone, Megaphone } from "lucide-react";
+import { MoreHorizontal, PlusCircle, Clock, Printer, Trash2, X, ChevronUp, ChevronDown, Flame, ChefHat, CheckCircle2, MonitorSmartphone, Megaphone, Store } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -70,19 +70,23 @@ import {
   barkOrder,
   getKdsExpo,
   getKitchenSections,
+  getOrdersScope,
   // addAuditLogEntry,
   type MonthlyApcInsight,
   type PaymentMethod,
   type PaymentSplit,
   type DiscountRequest,
   type ExpoTable,
+  type OrdersScope,
 } from "@/lib/db";
 // Removed DnD kit - using simple arrow controls instead
 import { useAuth } from "@/context/AuthContext";
 import { useCurrency } from "@/hooks/use-currency";
 import { useToast } from "@/hooks/use-toast";
+import { useHighlightRow } from "@/hooks/use-highlight-row";
 import type { MenuItem } from "../menu/data";
 import { BillActions } from "./bill-actions";
+import { OrdersScopeNotice } from "./orders-scope-notice";
 
 
 interface OrderItem {
@@ -377,6 +381,9 @@ function OrdersDashboard() {
   };
   const isAdmin = hasRole("admin");
   const isWaiterOnly = hasRole("waiter") && !isAdmin;
+  // Same gate as the header's OutletSwitcher: only these roles may target another
+  // outlet, so only they are offered the "switch outlet" actions.
+  const canSwitchOutlet = isAdmin || hasRole("manager");
 
   const showRoleRequiredToast = (requiredRole: string) => {
     toast({
@@ -395,6 +402,9 @@ function OrdersDashboard() {
   };
 
   const [orders, setOrders] = useState<Order[]>([]);
+  // Which outlet this grid is scoped to + how many live orders sit on the others.
+  // Drives OrdersScopeNotice so an empty grid always explains itself.
+  const [ordersScope, setOrdersScope] = useState<OrdersScope | null>(null);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [tables, setTables] = useState<{ id: number; name: string; capacity: number; qr_token?: string | null }[]>([]);
   const [monthlyApcInsight, setMonthlyApcInsight] = useState<MonthlyApcInsight | null>(null);
@@ -436,6 +446,10 @@ function OrdersDashboard() {
   }, [selectedTableName, tables]);
 
   const displayOrders = useMemo(() => dedupeOrdersById(orders), [orders]);
+
+  // A discount-approval notification resolves to entity type `discount_request`,
+  // which lands on this page too — so it gets the same focus treatment as an order.
+  const requestHighlight = useHighlightRow("highlightRequest", discountRequests.length);
 
   const orderApcByOrderId = useMemo(() => {
     const map = new Map<string, MonthlyApcInsight["orders"][number]>();
@@ -501,6 +515,14 @@ function OrdersDashboard() {
         setOrders(Array.isArray(ordersData) ? dedupeOrdersById(ordersData) : []);
         setMenuItems(Array.isArray(menuData) ? menuData : []);
         setMonthlyApcInsight(apcInsight ?? null);
+        // Scope context is decoration for a working grid but the whole
+        // explanation for an empty one — never let it fail the page load.
+        try {
+          const scope = await getOrdersScope(user.restaurantUsername);
+          if (isActive) {setOrdersScope(scope);}
+        } catch {
+          if (isActive) {setOrdersScope(null);}
+        }
         try {
           const dt = await getOutletDefaultTax(user.restaurantUsername);
           setDefaultTax(dt ?? null);
@@ -543,22 +565,44 @@ function OrdersDashboard() {
     };
   }, [user]);
 
+    // Remembers which highlight ids we have already explained, so a realtime
+    // refresh (which changes displayOrders' identity) cannot re-toast the same
+    // "that order isn't here" message over and over.
+    const explainedMissingRef = React.useRef<Set<string>>(new Set());
+
     // Highlight order if requested via query param
     useEffect(() => {
       const param = searchParams.get('highlightOrder')?.trim() ?? '';
       if (!param) {return;}
       setHighlightedOrderId(param);
       // wait for DOM to render table rows
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         const el = document.getElementById(`order-row-${param}`);
         if (el) {
           try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
           try { el.focus(); } catch {}
           // remove highlight after a short delay
           setTimeout(() => { setHighlightedOrderId(null); }, 3500);
+          return;
         }
-      }, 250);
-    }, [searchParams, displayOrders]);
+        // The link named an order this grid cannot show (another outlet, or
+        // settled long enough ago that it has left the live window). Say so —
+        // silently landing on a list without the order is the original bug.
+        // Only complain once the first fetch has actually returned, and only once.
+        if (ordersScope && !explainedMissingRef.current.has(param)) {
+          explainedMissingRef.current.add(param);
+          const days = ordersScope.live_window_days;
+          toast({
+            title: "That order isn't in this list",
+            description: ordersScope.other_outlet_orders > 0
+              ? `It isn't in ${ordersScope.outlet.name || 'this outlet'}. Switch outlet (or view all outlets) to open it — settled orders older than ${days} days live in History.`
+              : `Settled orders older than ${days} days leave the live list — look for it in History or Reports.`,
+          });
+          setHighlightedOrderId(null);
+        }
+      }, 400);
+      return () => { clearTimeout(timer); };
+    }, [searchParams, displayOrders, ordersScope, toast]);
 
   // Refresh tables when realtime table events occur
   useEffect(() => {
@@ -631,7 +675,11 @@ function OrdersDashboard() {
       taxes: defaults.taxes,
       applyServiceCharge: defaults.applyServiceCharge,
     };
-    const newOrder: Order = { ...baseOrder, total: calculateTotal(baseOrder) };
+    // The backend treats an order's `total` as the PRE-TAX base and applies
+    // service charge + taxes itself (computeBillCharges). Sending the
+    // tax-inclusive figure here made the guest pay them twice, so send the
+    // subtotal; calculateTotal stays for on-screen display only.
+    const newOrder: Order = { ...baseOrder, total: baseOrder.subtotal };
     try {
       // Ensure table is occupied first (backend requires table to be occupied before adding order)
       const tableName = String(tables.find(t => t.id === newOrderData.tableId)?.name ?? '');
@@ -1236,6 +1284,10 @@ function OrdersDashboard() {
           ) : null}
         </div>
       </div>
+      {/* Names the outlet this grid is scoped to, and when it is empty explains
+          whether the orders are on another outlet or have aged into History —
+          instead of leaving a bare table that reads as data loss. */}
+      <OrdersScopeNotice scope={ordersScope} visibleCount={displayOrders.length} canSwitchOutlet={canSwitchOutlet} />
       {isAdmin && discountRequests.length > 0 ? (
         <Card className="border-amber-300">
           <CardHeader>
@@ -1246,7 +1298,11 @@ function OrdersDashboard() {
           </CardHeader>
           <CardContent className="space-y-2">
             {discountRequests.map((request) => (
-              <div key={request.id} className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-3">
+              <div
+                key={request.id}
+                id={requestHighlight.rowProps(request.id).id}
+                className={`flex flex-wrap items-center justify-between gap-2 rounded-md border p-3 ${requestHighlight.rowProps(request.id).className}`}
+              >
                 <div className="text-sm">
                   <div className="font-medium">
                     Table {request.table_name ?? "?"} · {request.discount_value}{request.discount_type === "percent" ? "%" : ""} off
@@ -2180,6 +2236,9 @@ function KitchenKioskDisplay({ station }: { station: string }) {
   const [now, setNow] = useState(() => Date.now());
   const [busyItem, setBusyItem] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  // Same symptom as the Orders grid: a kitchen screen pointed at the wrong outlet
+  // shows nothing at all. Scope context turns that into an explanation.
+  const [ordersScope, setOrdersScope] = useState<OrdersScope | null>(null);
 
   const load = useCallback(async () => {
     if (!restaurantId) {return;}
@@ -2193,6 +2252,22 @@ function KitchenKioskDisplay({ station }: { station: string }) {
       setLoaded(true);
     }
   }, [restaurantId, station]);
+
+  // Scope context on its own, slower cadence. It only changes when outlets or
+  // tables change, so tying it to the 10s ticket poll would run two grouped
+  // aggregates every 10 seconds per kitchen screen for no benefit.
+  useEffect(() => {
+    if (!restaurantId) {return;}
+    let cancelled = false;
+    const loadScope = () => {
+      getOrdersScope(restaurantId)
+        .then((s) => { if (!cancelled) {setOrdersScope(s);} })
+        .catch(() => { /* context only — never blank the tickets */ });
+    };
+    loadScope();
+    const t = setInterval(loadScope, 120000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [restaurantId]);
 
   // Initial load + polling auto-refresh + realtime nudges.
   useEffect(() => { void load(); }, [load]);
@@ -2292,6 +2367,14 @@ function KitchenKioskDisplay({ station }: { station: string }) {
           </Badge>
         </div>
         <div className="flex items-center gap-3 text-sm text-muted-foreground">
+          {/* Which branch this wall screen is pointed at — otherwise a kitchen
+              can't tell "quiet night" from "wrong outlet". */}
+          {ordersScope ? (
+            <span className="hidden items-center gap-1 lg:inline-flex">
+              <Store className="h-4 w-4" />
+              {ordersScope.is_all_outlets ? "All outlets" : ordersScope.outlet.name || "This outlet"}
+            </span>
+          ) : null}
           <span className="hidden sm:inline">{tickets.length} active ticket{tickets.length === 1 ? "" : "s"}</span>
           <span className="flex items-center gap-1 tabular-nums">
             <Clock className="h-4 w-4" />{new Date(now).toLocaleTimeString()}
@@ -2310,7 +2393,16 @@ function KitchenKioskDisplay({ station }: { station: string }) {
           </div>
         ) : tickets.length === 0 ? (
           <div className="flex h-full items-center justify-center">
-            <p className="text-center text-2xl text-muted-foreground">No active tickets for {station}.</p>
+            <div className="w-full max-w-2xl">
+              {/* Never a bare "nothing here": names the outlet this screen is
+                  scoped to and offers the switch when the tickets are elsewhere. */}
+              {/* A wall-mounted kitchen screen is not signed in as a manager, so
+                  it gets the explanation without the outlet-switch buttons. */}
+              <OrdersScopeNotice scope={ordersScope} visibleCount={0} station={station} large />
+              {!ordersScope && (
+                <p className="text-center text-2xl text-muted-foreground">No active tickets for {station}.</p>
+              )}
+            </div>
           </div>
         ) : (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">

@@ -4,6 +4,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { useParams, useSearchParams } from "next/navigation";
 import QRCode from "qrcode";
 import { guestBackendBase } from "@/lib/guest-backend";
+import { isMobile10, isOptionalMobile10, MOBILE_10_ERROR, normalizeMobile10, sanitizePhoneInput } from "@/lib/phone";
 
 const BASE = guestBackendBase();
 const DEFAULT_ACCENT = "#ea580c";
@@ -60,6 +61,10 @@ function QueueInner() {
   const urlToken = search.get("token"); // party-share: a member scanned the joiner's QR
   const storeKey = `waitlist_token_${restaurant}`;
   const ownerKey = `waitlist_owner_${restaurant}`; // the token THIS device originated (vs. a shared party link it merely followed)
+  // Written ONLY when this device joins the queue. Unlike ownerKey (which is
+  // backfilled on resume), its presence proves this device really joined, so a
+  // reload can safely restore the seated→table redirect.
+  const joinedKey = `waitlist_joined_${restaurant}`;
 
   const [loading, setLoading] = useState(true);
   const [brand, setBrand] = useState<{ name: string; logo: string | null; accent: string; currency: string; showMenu: boolean }>({
@@ -141,6 +146,15 @@ function QueueInner() {
         const t = localStorage.getItem(storeKey);
         if (t) {
           setToken(t);
+          // A device that JOINED this entry keeps its seated→table redirect across
+          // a reload. We key off a marker written only at join time (not the
+          // backfilled ownerKey), so a device still holding a PREVIOUS party's
+          // token — which never had this marker — still cannot be hijacked into
+          // that party's table. Without this, reloading the page silently dropped
+          // a legitimately seated party back to the queue view.
+          try {
+            if (localStorage.getItem(joinedKey) === t) {setActiveThisSession(true);}
+          } catch { /* ignore */ }
           // Backfill ownership so a device resuming its OWN saved entry is never
           // mistaken for a party guest if it later reopens via its share link.
           if (!owned) { try { localStorage.setItem(ownerKey, t); } catch { /* ignore */ } }
@@ -148,7 +162,7 @@ function QueueInner() {
       }
     } catch { /* ignore */ }
     setLoading(false);
-  }, [storeKey, ownerKey, urlToken, restaurant]);
+  }, [storeKey, ownerKey, joinedKey, urlToken, restaurant]);
 
   // Poll the entry status while we have a token.
   useEffect(() => {
@@ -236,15 +250,18 @@ function QueueInner() {
 
   const join = async () => {
     if (!name.trim()) { setError("Please enter your name"); return; }
+    // Phone is optional here, but anything typed must be exactly 10 digits —
+    // the backend's JoinWaitlist applies the same optional-field rule.
+    if (!isOptionalMobile10(phone)) { setError(MOBILE_10_ERROR); return; }
     setBusy(true); setError(null);
     try {
       const r = await fetch(`${BASE}/qr/${encodeURIComponent(restaurant)}/waitlist/join`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim(), phone: phone.trim(), party_size: party, ...(outlet ? { outlet } : {}) }),
+        body: JSON.stringify({ name: name.trim(), phone: normalizeMobile10(phone) ?? "", party_size: party, ...(outlet ? { outlet } : {}) }),
       });
       const d = await r.json();
       if (!r.ok) { setError(d?.error ?? "Could not join the queue"); return; }
-      try { localStorage.setItem(storeKey, d.token); localStorage.setItem(ownerKey, d.token); } catch {}
+      try { localStorage.setItem(storeKey, d.token); localStorage.setItem(ownerKey, d.token); localStorage.setItem(joinedKey, d.token); } catch {}
       try { if (typeof Notification !== "undefined" && Notification.permission === "default") {Notification.requestPermission();} } catch {}
       setToken(d.token);
       // Joined in this session → this device genuinely owns this entry, so the
@@ -275,17 +292,20 @@ function QueueInner() {
   };
 
   // Party guest introduces themselves → appended to the host's party_members.
-  // Phone must carry >=7 digits (matches the backend); dedupe/cap is server-side.
+  // Phone must be EXACTLY 10 digits (AddWaitlistMember enforces the same rule
+  // server-side; the old ">= 7 digits" allowed numbers the API now rejects).
+  // Dedupe/cap is server-side.
   const submitMember = async () => {
     if (!token) {return;}
     const nm = memberName.trim();
     if (!nm) { setMemberError("Please enter your name"); return; }
-    if (memberPhone.replace(/\D/g, "").length < 7) { setMemberError("Please enter a valid phone number"); return; }
+    const normalized = normalizeMobile10(memberPhone);
+    if (!normalized) { setMemberError(MOBILE_10_ERROR); return; }
     setMemberBusy(true); setMemberError(null);
     try {
       const r = await fetch(`${BASE}/qr/${encodeURIComponent(restaurant)}/waitlist/${token}/member`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: nm, phone: memberPhone.trim() }),
+        body: JSON.stringify({ name: nm, phone: normalized }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { setMemberError(d?.error ?? "Could not add you to the group"); return; }
@@ -377,7 +397,20 @@ function QueueInner() {
             <label className="mb-1 block text-sm font-medium text-card-foreground">Your name</label>
             <input value={name} onChange={(e) => { setName(e.target.value); }} className="mb-3 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring" style={{ caretColor: accent }} placeholder="Name" />
             <label className="mb-1 block text-sm font-medium text-card-foreground">Phone (optional)</label>
-            <input value={phone} onChange={(e) => { setPhone(e.target.value); }} inputMode="tel" className="mb-3 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring" style={{ caretColor: accent }} placeholder="Phone" />
+            <input
+              value={phone}
+              onChange={(e) => { setPhone(sanitizePhoneInput(e.target.value)); }}
+              inputMode="numeric"
+              autoComplete="tel"
+              maxLength={13}
+              className={`mb-1 w-full rounded-lg border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring ${phone.length > 0 && !isMobile10(phone) ? "border-red-500" : "border-input"}`}
+              style={{ caretColor: accent }}
+              placeholder="10-digit mobile"
+            />
+            {/* Optional field: only complains once something has been typed. */}
+            <p className={`mb-3 text-xs ${phone.length > 0 && !isMobile10(phone) ? "text-red-600 dark:text-red-400" : "text-muted-foreground"}`}>
+              {phone.length > 0 && !isMobile10(phone) ? MOBILE_10_ERROR : "So we can call you when your table is ready."}
+            </p>
             <label className="mb-1 block text-sm font-medium text-card-foreground">Party size</label>
             <div className="mb-4 flex items-center gap-3">
               <button onClick={() => { setParty((p) => Math.max(1, p - 1)); }} className="h-10 w-10 rounded-lg border bg-background text-xl text-foreground">−</button>
@@ -385,7 +418,8 @@ function QueueInner() {
               <button onClick={() => { setParty((p) => Math.min(50, p + 1)); }} className="h-10 w-10 rounded-lg border bg-background text-xl text-foreground">+</button>
             </div>
             {error ? <p className="mb-3 text-sm text-red-600 dark:text-red-400">{error}</p> : null}
-            <button onClick={join} disabled={busy} className="w-full rounded-lg py-2.5 font-semibold shadow-sm transition active:scale-[0.99] disabled:opacity-60" style={{ background: accent, color: ink }}>
+            {/* Submit stays blocked while a typed number is not 10 digits. */}
+            <button onClick={join} disabled={busy || !name.trim() || !isOptionalMobile10(phone)} className="w-full rounded-lg py-2.5 font-semibold shadow-sm transition active:scale-[0.99] disabled:opacity-60" style={{ background: accent, color: ink }}>
               {busy ? "Joining…" : "Join the queue"}
             </button>
           </div>
@@ -431,9 +465,24 @@ function QueueInner() {
                 <label className="mb-1 block text-sm font-medium text-card-foreground">Your name</label>
                 <input value={memberName} onChange={(e) => { setMemberName(e.target.value); }} className="mb-3 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring" style={{ caretColor: accent }} placeholder="Name" />
                 <label className="mb-1 block text-sm font-medium text-card-foreground">Your phone</label>
-                <input value={memberPhone} onChange={(e) => { setMemberPhone(e.target.value); }} inputMode="tel" className="mb-3 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring" style={{ caretColor: accent }} placeholder="Phone" />
+                <input
+                  value={memberPhone}
+                  onChange={(e) => { setMemberPhone(sanitizePhoneInput(e.target.value)); }}
+                  inputMode="numeric"
+                  autoComplete="tel"
+                  maxLength={13}
+                  className={`mb-1 w-full rounded-lg border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring ${memberPhone.length > 0 && !isMobile10(memberPhone) ? "border-red-500" : "border-input"}`}
+                  style={{ caretColor: accent }}
+                  placeholder="10-digit mobile"
+                />
+                {memberPhone.length > 0 && !isMobile10(memberPhone) ? (
+                  <p className="mb-3 text-xs text-red-600 dark:text-red-400">{MOBILE_10_ERROR}</p>
+                ) : (
+                  <p className="mb-3 text-xs text-muted-foreground">A 10-digit mobile number.</p>
+                )}
                 {memberError ? <p className="mb-3 text-sm text-red-600 dark:text-red-400">{memberError}</p> : null}
-                <button onClick={submitMember} disabled={memberBusy} className="w-full rounded-lg py-2.5 font-semibold shadow-sm transition active:scale-[0.99] disabled:opacity-60" style={{ background: accent, color: ink }}>
+                {/* Required here: 10 digits or the button stays disabled. */}
+                <button onClick={submitMember} disabled={memberBusy || !memberName.trim() || !isMobile10(memberPhone)} className="w-full rounded-lg py-2.5 font-semibold shadow-sm transition active:scale-[0.99] disabled:opacity-60" style={{ background: accent, color: ink }}>
                   {memberBusy ? "Adding…" : "Add me to the group"}
                 </button>
               </div>

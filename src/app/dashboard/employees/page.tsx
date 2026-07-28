@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useEffect, useRef } from "react";
+import { Suspense, useMemo, useState, useEffect, useRef } from "react";
 import {
   Card,
   CardContent,
@@ -52,6 +52,8 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/hooks/use-toast";
+import { useHighlightRow } from "@/hooks/use-highlight-row";
+import { isOptionalMobile10, MOBILE_10_ERROR, normalizeMobile10, PHONE_INPUT_PROPS, sanitizePhoneInput } from "@/lib/phone";
 import { addEmployeeToRestaurant, removeEmployeeFromRestaurant } from "@/services/authService";
 import type {
   User,
@@ -88,7 +90,9 @@ const addEmployeeSchema = z.object({
       if (!val) {return true;}
       return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val);
     }, { message: "Invalid email" }),
-  phone: z.string().optional(),
+  // Optional, but anything typed must be exactly 10 digits — POST
+  // /restaurant/users applies the same optional-field rule server-side.
+  phone: z.string().optional().refine(isOptionalMobile10, { message: MOBILE_10_ERROR }),
   address: z.string().optional(),
   role: z.enum(["employee", "admin", "valet"]),
   password: z.string().min(6, "Password must be at least 6 characters."),
@@ -96,13 +100,15 @@ const addEmployeeSchema = z.object({
 
 type AddEmployeeFormData = z.infer<typeof addEmployeeSchema>;
 
-export default function EmployeesPage() {
+function EmployeesPageInner() {
   const { user } = useAuth();
   const { toast } = useToast();
   const hasShownAccessToastRef = useRef(false);
 
   const [employees, setEmployees] = useState<User[]>([]);
   const [roleDefinitions, setRoleDefinitions] = useState<RoleDefinition[]>([]);
+  // An employee-related notification links here as ?highlightEmployee=<id>.
+  const highlight = useHighlightRow("highlightEmployee", employees.length);
 
   const [isAddEmployeeDialogOpen, setIsAddEmployeeDialogOpen] = useState(false);
   const [isCreateRoleDialogOpen, setIsCreateRoleDialogOpen] = useState(false);
@@ -282,7 +288,8 @@ export default function EmployeesPage() {
         employeeId: typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : String(Date.now()) + '-' + Math.random().toString(36).slice(2,8),
         username: data.username,
         email: data.email?.trim() ? data.email.trim() : null,
-        ph: data.phone ?? null,
+        // Blank stays blank; a typed number is stored as bare 10 digits.
+        ph: data.phone?.trim() ? normalizeMobile10(data.phone) : null,
         add: data.address ?? null,
         role: data.role,
         password: data.password,
@@ -565,7 +572,7 @@ export default function EmployeesPage() {
                 });
 
                 return (
-                  <TableRow key={employee.employee_id ?? employee.employee_Username ?? `emp-${idx}`}>
+                  <TableRow key={employee.employee_id ?? employee.employee_Username ?? `emp-${idx}`} {...highlight.rowProps(employee.employee_id)}>
                     <TableCell className="font-medium">
                       <span className="inline-flex items-center gap-1.5">
                         {`${employee.emp_Fname ?? ''}${employee.emp_Lname ? ` ${employee.emp_Lname}` : ''}`.trim() || employee.employee_id}
@@ -869,6 +876,9 @@ function AddEmployeeForm({ onSubmit }: { onSubmit: (data: AddEmployeeFormData) =
     reset();
   };
 
+  // Keeps the phone field at 10 bare digits as it is typed or pasted.
+  const phoneField = register("phone");
+
   return (
     <form onSubmit={handleSubmit(handleFormSubmit)} className="grid gap-4 py-4">
       <div className="grid grid-cols-4 items-center gap-4">
@@ -902,7 +912,14 @@ function AddEmployeeForm({ onSubmit }: { onSubmit: (data: AddEmployeeFormData) =
       <div className="grid grid-cols-4 items-center gap-4">
         <Label htmlFor="phone" className="text-right">Phone</Label>
         <div className="col-span-3">
-          <Input id="phone" {...register("phone")} placeholder="e.g., +919876543210" />
+          <Input
+            id="phone"
+            type="tel"
+            {...PHONE_INPUT_PROPS}
+            {...phoneField}
+            onChange={(e) => { e.target.value = sanitizePhoneInput(e.target.value); void phoneField.onChange(e); }}
+            placeholder="10-digit mobile (optional)"
+          />
           {errors.phone ? <p className="mt-1 text-sm text-destructive">{errors.phone.message}</p> : null}
         </div>
       </div>
@@ -957,5 +974,15 @@ function AddEmployeeForm({ onSubmit }: { onSubmit: (data: AddEmployeeFormData) =
         <Button type="submit">Save Employee</Button>
       </DialogFooter>
     </form>
+  );
+}
+
+// useSearchParams (via useHighlightRow) requires a Suspense boundary
+// (same pattern as the accounting and queue pages).
+export default function EmployeesPage() {
+  return (
+    <Suspense fallback={<div className="py-10 text-center text-muted-foreground">Loading…</div>}>
+      <EmployeesPageInner />
+    </Suspense>
   );
 }

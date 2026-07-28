@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import {
   Card,
   CardContent,
@@ -72,6 +72,7 @@ import {
 } from "@/lib/db";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/hooks/use-toast";
+import { useHighlightRow } from "@/hooks/use-highlight-row";
 
 export interface InventoryItem {
   id: string;
@@ -92,13 +93,16 @@ const inventorySchema = z.object({
 
 type InventoryFormData = z.infer<typeof inventorySchema>;
 
-export default function InventoryPage() {
+function InventoryPageInner() {
   const { user } = useAuth();
   const { toast } = useToast();
   const restaurantId = user?.restaurantUsername ?? "";
   const isAdmin = !!user && (user.role === "admin" || (Array.isArray(user.role_all) && user.role_all.includes("admin")));
 
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
+  // A low-stock notification links here as ?highlightInventory=<barcode>, which
+  // is exactly InventoryItem.id — ring and scroll to that item.
+  const highlight = useHighlightRow("highlightInventory", inventory.length);
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [movements, setMovements] = useState<StockMovement[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
@@ -221,7 +225,7 @@ export default function InventoryPage() {
               {inventory.map((item) => {
                 const days = daysToExpiry(item);
                 return (
-                <TableRow key={item.id}>
+                <TableRow key={item.id} {...highlight.rowProps(item.id)}>
                   <TableCell className="font-medium">
                     <div>{item.name}</div>
                     <div className="text-sm text-muted-foreground md:hidden">{item.category}</div>
@@ -928,5 +932,15 @@ function InventoryForm({ categories, inventory, onSubmit, afterSubmit }: { categ
         <Button type="submit">Save Item</Button>
       </DialogFooter>
     </form>
+  );
+}
+
+// useSearchParams (via useHighlightRow) requires a Suspense boundary
+// (same pattern as the accounting and queue pages).
+export default function InventoryPage() {
+  return (
+    <Suspense fallback={<div className="py-10 text-center text-muted-foreground">Loading…</div>}>
+      <InventoryPageInner />
+    </Suspense>
   );
 }

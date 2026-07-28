@@ -41,6 +41,11 @@ export function RealtimeProvider({ children, restaurantId }: { children: ReactNo
       "booking:status_updated",
       "table:added",
       "table:deleted",
+      "table:updated",
+      // Orders/KDS listen for these on the `realtime:event` bridge below; without
+      // them here a new or changed order only appeared on the next 10s poll.
+      "order:updated",
+      "bill:updated",
       "valet:created",
       "valet:updated",
       "valet:bay_added",

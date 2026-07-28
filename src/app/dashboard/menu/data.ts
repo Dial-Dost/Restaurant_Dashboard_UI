@@ -15,6 +15,13 @@ export interface MenuItem {
   station?: string | null;
   // Allergen tags shown to guests on the QR menu, e.g. ["gluten", "nuts"].
   allergens?: string[];
+  /**
+   * Human description of the dish ("a few lines"), shown to guests when they open
+   * the item on the QR order page. Stored server-side as the `blurb` key INSIDE
+   * the Menu.description JSON blob (never as its own column) and capped at 500
+   * characters. Semantics on write: omitted => keep what is stored, "" => clear.
+   */
+  blurb?: string;
 }
 
 export const initialMenuItems: MenuItem[] = [

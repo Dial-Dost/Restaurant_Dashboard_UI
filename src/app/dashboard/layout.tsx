@@ -40,6 +40,7 @@ import Image from 'next/image';
 import { ThemeProvider } from '@/components/ThemeProvider';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { OutletSwitcher } from './outlet-switcher';
+import { NotificationsBell } from '@/components/notifications-bell';
 import { SubscriptionBanner } from '@/components/subscription-banner';
 import { usePathname, useRouter } from 'next/navigation';
 import { useTranslation } from '@/context/LanguageContext';
@@ -199,6 +200,9 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
             {/* Add nav items here */}
           </div>
           <OutletSwitcher />
+          {/* Clicking one resolves its target server-side, then opens the exact
+              record — or explains why it can't be opened from this outlet. */}
+          <NotificationsBell />
           <ThemeToggle />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>

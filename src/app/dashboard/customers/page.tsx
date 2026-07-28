@@ -37,6 +37,7 @@ import { z } from "zod";
 import { useAuth } from "@/context/AuthContext";
 import { getCustomers, addCustomer, getCustomerInsights, type CustomerInsight, type CustomerSegment } from "@/lib/db";
 import { useCurrency } from "@/hooks/use-currency";
+import { isMobile10, MOBILE_10_ERROR, normalizeMobile10, PHONE_INPUT_PROPS, sanitizePhoneInput } from "@/lib/phone";
 
 
 export interface Customer {
@@ -56,7 +57,9 @@ export interface Customer {
 const customerSchema = z.object({
     name: z.string().min(1, "Name is required."),
     email: z.string().email("Invalid email address."),
-    phone: z.string().min(10, "Phone number is too short."),
+    // Exactly 10 digits — POST /add-customer rejects anything else with the same
+    // message, so a too-short OR too-long number can never reach the API.
+    phone: z.string().refine(isMobile10, MOBILE_10_ERROR),
     billAmount: z.coerce.number().positive("Bill amount must be positive."),
     gender: z.string().optional(),
     ageGroup: z.string().optional(),
@@ -104,6 +107,9 @@ export default function CustomersPage() {
     if (!user) {return;}
     const newCustomer: Customer = {
       ...data,
+      // Store the bare 10 digits so "+91 98765 43210" and "9876543210" are the
+      // same customer (matching the backend's own normalization).
+      phone: normalizeMobile10(data.phone) ?? data.phone,
       totalBookings: 1,
       status: 'In-house',
     };
@@ -281,6 +287,9 @@ function CustomerForm({ onSubmit, afterSubmit }: { onSubmit: (data: CustomerForm
         afterSubmit();
     }
 
+    // Keeps the phone field at 10 bare digits as it is typed or pasted.
+    const phoneField = register("phone");
+
     return (
         <form onSubmit={handleSubmit(handleFormSubmit)} className="grid gap-4 py-4">
           <div className="grid grid-cols-4 items-center gap-4">
@@ -300,7 +309,14 @@ function CustomerForm({ onSubmit, afterSubmit }: { onSubmit: (data: CustomerForm
           <div className="grid grid-cols-4 items-center gap-4">
             <Label htmlFor="phone" className="text-right">Phone</Label>
             <div className="col-span-3">
-              <Input id="phone" {...register("phone")} placeholder="555-123-4567" />
+              <Input
+                id="phone"
+                type="tel"
+                {...PHONE_INPUT_PROPS}
+                {...phoneField}
+                onChange={(e) => { e.target.value = sanitizePhoneInput(e.target.value); void phoneField.onChange(e); }}
+                placeholder="10-digit mobile"
+              />
               {errors.phone && <p className="text-sm text-destructive mt-1">{errors.phone.message}</p>}
             </div>
           </div>

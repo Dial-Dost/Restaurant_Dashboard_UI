@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useRef } from "react";
+import { Suspense, useEffect, useMemo, useState, useRef } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,7 @@ import {
 import { useAuth } from "@/context/AuthContext";
 import { useRealtime } from "@/context/RealtimeContext";
 import { useToast } from "@/hooks/use-toast";
+import { useHighlightRow } from "@/hooks/use-highlight-row";
 import { requestBackend } from "@/lib/db";
 import { Activity, RefreshCw, Clock, Package, Users, ArrowUpDown, Camera, Loader2 } from "lucide-react";
 
@@ -163,12 +164,15 @@ function moveStage(stage: ValetStage, delta: number): ValetStage {
   return VALET_STAGES[next];
 }
 
-export default function ValetDashboardPage() {
+function ValetDashboardPageInner() {
   const { user } = useAuth();
   const { toast } = useToast();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<ValetInfoResponse | null>(null);
+  // A valet notification links here as ?highlightValet=<booking id>; ring and
+  // scroll to that vehicle record instead of dropping the user on the dashboard.
+  const highlight = useHighlightRow("highlightValet", data?.bookings?.length ?? 0);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [draftTableByBookingId, setDraftTableByBookingId] = useState<Record<string, string>>({});
   const [draftStageByBookingId, setDraftStageByBookingId] = useState<Record<string, ValetStage>>({});
@@ -1894,7 +1898,11 @@ export default function ValetDashboardPage() {
                 );
 
                 return (
-                  <div key={bookingId ?? `${booking.customer_name}-${index}`} className={`rounded-md border p-3 ${isDirty ? "bg-yellow-50" : ""}`}>
+                  <div
+                    key={bookingId ?? `${booking.customer_name}-${index}`}
+                    id={highlight.rowProps(bookingId).id}
+                    className={`rounded-md border p-3 ${isDirty ? "bg-yellow-50" : ""} ${highlight.rowProps(bookingId).className}`}
+                  >
                     <div className="mb-2 flex items-center justify-between">
                       <p className="font-medium">
                         {booking.customer_name ?? "Guest"} - {formatTicket(bookingId, index)}
@@ -2315,5 +2323,15 @@ export default function ValetDashboardPage() {
 
 
     </div>
+  );
+}
+
+// useSearchParams (via useHighlightRow) requires a Suspense boundary
+// (same pattern as the accounting and queue pages).
+export default function ValetDashboardPage() {
+  return (
+    <Suspense fallback={<div className="py-10 text-center text-muted-foreground">Loading…</div>}>
+      <ValetDashboardPageInner />
+    </Suspense>
   );
 }

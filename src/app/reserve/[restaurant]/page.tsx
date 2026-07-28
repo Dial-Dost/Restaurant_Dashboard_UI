@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { guestBackendBase } from "@/lib/guest-backend";
+import { isMobile10, MOBILE_10_ERROR, normalizeMobile10, sanitizePhoneInput } from "@/lib/phone";
 
 const BASE = guestBackendBase();
 const DEFAULT_ACCENT = "#ea580c";
@@ -94,9 +95,13 @@ export default function ReservePage() {
     })();
   }, [restaurant]);
 
+  // POST /qr/:slug/reserve requires a 10-digit mobile, so keep submit disabled
+  // until the field actually is one — otherwise the guest fills the whole form
+  // and only then gets a 400.
+  const phoneOk = isMobile10(phone);
   const canSubmit = useMemo(
-    () => name.trim() && phone.trim() && date && time && party > 0 && !submitting,
-    [name, phone, date, time, party, submitting],
+    () => Boolean(name.trim()) && phoneOk && Boolean(date) && Boolean(time) && party > 0 && !submitting,
+    [name, phoneOk, date, time, party, submitting],
   );
 
   const submit = async () => {
@@ -109,7 +114,7 @@ export default function ReservePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: name.trim(),
-          phone: phone.trim(),
+          phone: normalizeMobile10(phone) ?? phone.trim(),
           email: email.trim() || undefined,
           party_size: party,
           date: iso,
@@ -208,11 +213,18 @@ export default function ReservePage() {
             Please note: this booking carries a minimum spend of ₹{done.min_spend}.
           </p>
         )}
-        <p className="text-sm text-neutral-500">
-          {done.table_name
-            ? `A table is held for you. The restaurant will confirm shortly.`
-            : `The restaurant will confirm availability and call you back shortly.`}
-        </p>
+        {done.table_name ? (
+          <p className="text-sm text-neutral-500">A table is held for you. The restaurant will confirm shortly.</p>
+        ) : (
+          // No single table could hold the party. The public page has no way to
+          // show a staff seating chooser (the suggester is staff-only), and we
+          // never club tables behind anyone's back — so say so plainly and point
+          // the guest at the phone. The request is still recorded for the staff.
+          <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
+            We couldn&apos;t hold a single table for {party} {party > 1 ? "guests" : "guest"} automatically. Your request has
+            been sent to the restaurant — please call them to confirm, as a large party may need two tables put together.
+          </p>
+        )}
       </div>
     );
   }
@@ -265,7 +277,16 @@ export default function ReservePage() {
           <input value={name} onChange={(e) => { setName(e.target.value); }} className={inputCls} placeholder="Full name" />
         </Field>
         <Field label="Phone number">
-          <input value={phone} onChange={(e) => { setPhone(e.target.value); }} className={inputCls} placeholder="10-digit mobile" inputMode="tel" />
+          <input
+            value={phone}
+            onChange={(e) => { setPhone(sanitizePhoneInput(e.target.value)); }}
+            className={inputCls}
+            placeholder="10-digit mobile"
+            inputMode="numeric"
+            autoComplete="tel"
+            maxLength={13}
+          />
+          {phone.length > 0 && !phoneOk && <p className="mt-1 text-xs text-red-600">{MOBILE_10_ERROR}</p>}
         </Field>
         <Field label="Email (optional)">
           <input value={email} onChange={(e) => { setEmail(e.target.value); }} className={inputCls} placeholder="you@email.com" inputMode="email" />

@@ -1,13 +1,25 @@
 "use client";
 
-// Public customer feedback form — ported verbatim in behavior from the standalone
-// Restaurant_Feedback_UI Vite app (src/App.tsx) so the form no longer needs its
-// own server. Same URL params (rid/eid/oid + restaurantId/employeeId/outletId),
-// same localStorage keys, same valet gate → categories → NPS → submit flow.
-import type { FormEvent} from "react";
-import { Suspense, useEffect, useMemo, useState, type CSSProperties } from "react";
+// Public customer feedback form (the valet step is the first screen of this same
+// flow) — behaviour ported verbatim from the standalone Restaurant_Feedback_UI
+// Vite app (src/App.tsx). Same URL params (rid/eid/oid + restaurantId/employeeId/
+// outletId), same localStorage keys, same valet gate → categories → NPS → submit
+// flow. Only the PRESENTATION changed: it now renders in the same premium-dark
+// design language as the guest ordering page and derives every colour from the
+// same brand ramp (see @/lib/guest-theme), so the three customer-facing surfaces
+// look like one product and react to brand_config identically.
+import type { CSSProperties, FormEvent, ReactNode } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { DM_Sans } from "next/font/google";
+import { fontStack, loadBrandFont, loadDesignFonts } from "@/lib/brand-fonts";
+import {
+  DEFAULT_ACCENT,
+  GUEST_CSS,
+  type GuestBrandConfig,
+  guestThemeVars,
+  pickHex,
+  resolveGuestTheme,
+} from "@/lib/guest-theme";
 import {
   type CategoryQuestion,
   type FeedbackFormConfig,
@@ -21,8 +33,19 @@ import {
 } from "./api";
 import styles from "./feedback.module.css";
 
-// Same face the standalone app loaded from Google Fonts, but self-hosted by Next.
-const dmSans = DM_Sans({ subsets: ["latin"], weight: ["400", "500", "600", "700"] });
+// Material Symbols glyph (the .ms class comes from GUEST_CSS; renders as nothing
+// until the icon font has loaded).
+function Icon({ name, size, filled, style }: { name: string; size?: number; filled?: boolean; style?: CSSProperties }) {
+  return (
+    <span
+      className="ms"
+      aria-hidden="true"
+      style={{ fontSize: size ?? 18, ...(filled ? { fontVariationSettings: "'FILL' 1" } : null), ...style }}
+    >
+      {name}
+    </span>
+  );
+}
 
 type RatingMap = Record<number, number>;
 type QuestionMap = Record<number, { mainQuestion: string; followUpQuestion: string | null }>;
@@ -59,15 +82,17 @@ const DEFAULT_CONFIG: FeedbackFormConfig = {
   categories: DEFAULT_CATEGORIES.map((c) => ({ key: c.key, label: c.label })),
 };
 
-// Light, neutral surfaces + the same DEFAULT accent (#ea580c) the customer order
-// and queue pages use, so an unbranded restaurant looks identical across all three.
+// The near-black shell + the same DEFAULT accent (#ea580c) the customer order page
+// uses, so an unbranded restaurant looks identical across both. These tokens are
+// ALSO what gets recorded with the submission (`image_theme`), so they track the
+// resolved ramp rather than the old light palette.
 const fallbackTheme: ThemeTokens = {
-  background: "#fafafa",
-  surface: "#ffffff",
-  text: "#171717",
-  accent: "#ea580c",
-  mutedText: "#737373",
-  ring: "#ea580c",
+  background: "#08080A",
+  surface: "#16161A",
+  text: "#ECEAE6",
+  accent: DEFAULT_ACCENT,
+  mutedText: "#9A978F",
+  ring: DEFAULT_ACCENT,
 };
 
 function getTodayDateString(): string {
@@ -129,16 +154,45 @@ function buildFallbackSecondPrompt(reason: string): string {
   return "Thanks for sharing that. What one small change would have improved this for you?";
 }
 
+// Near-black page shell with the two floating accent orbs behind everything —
+// the same base every guest surface sits on.
+function Shell({ themeVars, children }: { themeVars: CSSProperties; children: ReactNode }) {
+  return (
+    <div className={styles.pageShell} style={themeVars}>
+      <style>{GUEST_CSS}</style>
+      <div className={`${styles.orb} ${styles.orbTop}`} />
+      <div className={`${styles.orb} ${styles.orbBottom}`} />
+      {children}
+    </div>
+  );
+}
+
+// The branded hero: accent wash (gradient or flat, per header_style) under a dark
+// scrim, with the restaurant's logo/name and the form's title.
+function Hero({ logo, name, title, subtitle }: { logo?: string | null; name?: string; title: string; subtitle?: string }) {
+  return (
+    <section className={styles.introCard}>
+      <div className={styles.heroWash} />
+      <div className={styles.heroScrim} />
+      <div className={styles.heroGlow} />
+      <div className={styles.heroInner}>
+        {logo ? <img className={styles.brandLogo} src={logo} alt="" /> : null}
+        {name ? <p className={styles.eyebrow}>{name}</p> : null}
+        <h1>{title}</h1>
+        {subtitle ? <p className={styles.introSub}>{subtitle}</p> : null}
+      </div>
+    </section>
+  );
+}
+
+// 1–5 stars, Material Symbols (filled + accent when selected) — same icon family
+// as the ordering page. Behaviour unchanged: tapping a star sets that rating.
 function StarRating({
   value,
   onChange,
-  accent,
-  text,
 }: {
   value: number;
   onChange: (value: number) => void;
-  accent: string;
-  text: string;
 }) {
   return (
     <div className={styles.starGroup} role="radiogroup" aria-label="Rating">
@@ -148,12 +202,12 @@ function StarRating({
           <button
             type="button"
             key={star}
-            className={styles.star}
+            className={`${styles.star} ${active ? styles.starOn : ""}`}
             onClick={() => { onChange(star); }}
             aria-label={`Rate ${star} out of 5`}
-            style={{ color: active ? accent : text, opacity: active ? 1 : 0.33 }}
+            aria-pressed={active}
           >
-            ★
+            <Icon name="star" filled={active} />
           </button>
         );
       })}
@@ -170,6 +224,11 @@ function FeedbackForm({
   employeeId: string;
   outletId: string;
 }) {
+  const [accent, setAccent] = useState(DEFAULT_ACCENT);
+  // The tenant's customer-page branding (accent, body font, hero wash, control
+  // shape, panel material). Null until branding resolves — every use falls back to
+  // the shipped defaults, so an untouched tenant looks exactly like the order page.
+  const [brandConfig, setBrandConfig] = useState<GuestBrandConfig | null>(null);
   const [theme, setTheme] = useState<ThemeTokens>(fallbackTheme);
   const [categories, setCategories] = useState<CategoryQuestion[]>(DEFAULT_CATEGORIES);
   const [config, setConfig] = useState<FeedbackFormConfig | null>(null);
@@ -202,16 +261,43 @@ function FeedbackForm({
   const [valetGateMessage, setValetGateMessage] = useState("");
   const [submissionSummary, setSubmissionSummary] = useState<SubmissionSummary | null>(null);
 
-  // The old SPA set --bg/--surface/… on <html>; here the tokens are scoped to the
-  // page root (namespaced --fb-*) so the dashboard's own theme vars stay intact.
-  const themeVars = {
-    "--fb-bg": theme.background,
-    "--fb-surface": theme.surface,
-    "--fb-text": theme.text,
-    "--fb-muted": theme.mutedText,
-    "--fb-accent": theme.accent,
-    "--fb-ring": theme.ring,
-  } as CSSProperties;
+  // The same surface theme the guest ordering page builds: the 6-stop accent ramp
+  // plus the panel material / control radius / hero wash the tenant chose. Scoped
+  // to this page's root element, so the dashboard's own theme vars stay intact.
+  const guestTheme = useMemo(() => resolveGuestTheme(accent, brandConfig), [accent, brandConfig]);
+  const themeVars: CSSProperties = {
+    ...guestThemeVars(guestTheme),
+    // The tenant's brand font drives body text; the Instrument Serif display face
+    // and the thin Roboto numerals are design constants (set in the CSS module).
+    fontFamily: brandConfig?.font ? fontStack(brandConfig.font) : "Roboto, system-ui, sans-serif",
+  };
+
+  // The frosted-glass blur is applied INLINE rather than in the CSS module: Next's
+  // CSS minifier drops `backdrop-filter: blur(var(--blur))` (a var() inside the
+  // filter function), which would silently kill the glass material — and with it
+  // the difference between the frosted / solid / tinted surface styles.
+  const panelGlass: CSSProperties = {
+    backdropFilter: `blur(${guestTheme.blur})`,
+    WebkitBackdropFilter: `blur(${guestTheme.blur})`,
+  };
+
+  // Load the tenant's chosen Google Font, plus the design constants (Instrument
+  // Serif display, Roboto numerals, Material Symbols icons).
+  useEffect(() => { if (brandConfig?.font) {loadBrandFont(brandConfig.font);} }, [brandConfig?.font]);
+  useEffect(() => { loadDesignFonts(); }, []);
+
+  // Keep the recorded theme tokens in step with the resolved ramp (submitted as
+  // `image_theme`, exactly as before — only the values are now the dark ones).
+  useEffect(() => {
+    setTheme({
+      background: "#08080A",
+      surface: "#16161A",
+      text: "#ECEAE6",
+      mutedText: "#9A978F",
+      accent: guestTheme.acc,
+      ring: guestTheme.acc,
+    });
+  }, [guestTheme.acc]);
 
   // Persist only NON-empty values so we never cache a fallback/blank tenant that a
   // later visitor (without ?rid=) would inherit.
@@ -243,14 +329,14 @@ function FeedbackForm({
         }
         // Skip the valet gate entirely when the restaurant doesn't use valet.
         if (!cfg.valet_enabled) {setValetGateComplete(true);}
-        // Apply the restaurant's accent over the same neutral surfaces the order/queue
-        // pages use — identical theming across all three customer-facing surfaces.
-        // Same precedence as the order/queue pages: logo-derived primary → the
-        // admin-set theme_color → the shared default. Keeps all three identical.
-        const accent = (b?.theme_primary || b?.theme_color || "").trim();
-        if (accent) {
-          setTheme({ background: "#fafafa", surface: "#ffffff", text: "#171717", mutedText: "#737373", accent, ring: accent });
-        }
+        // Theme from the SAME object, with the SAME precedence, as the guest order
+        // page: brand_config.color_primary → the logo-derived primary → the
+        // admin-set theme_color → the shared default. brand_config also carries the
+        // body font, hero wash, control shape and panel material.
+        const bcfg = b?.brand_config && typeof b.brand_config === "object" ? b.brand_config : null;
+        setBrandConfig(bcfg);
+        const themePref = pickHex(bcfg?.color_primary, b?.theme_primary, b?.theme_color);
+        if (themePref) {setAccent(themePref);}
       })
       .catch(() => {
         if (active) {
@@ -579,53 +665,59 @@ function FeedbackForm({
   // render the form (and never submit) rather than write into some other tenant.
   if (!restaurantId.trim()) {
     return (
-      <div className={`${styles.pageShell} ${dmSans.className}`} style={themeVars}>
+      <Shell themeVars={themeVars}>
         <main className={styles.feedbackWrap}>
-          <section className={styles.introCard} style={{ textAlign: "center" }}>
-            <h1>Invalid feedback link</h1>
-            <p>This link is missing its restaurant details. Please scan the QR code on your bill again.</p>
-          </section>
+          <Hero
+            title="Invalid feedback link"
+            subtitle="This link is missing its restaurant details. Please scan the QR code on your bill again."
+          />
         </main>
-      </div>
+      </Shell>
     );
   }
 
   return (
-    <div className={`${styles.pageShell} ${dmSans.className}`} style={themeVars}>
+    <Shell themeVars={themeVars}>
       <main className={styles.feedbackWrap}>
-        <section className={styles.introCard}>
-          {brandLogo ? <img className={styles.brandLogo} src={brandLogo} alt="" /> : null}
-          {brandName ? <p className={styles.eyebrow}>{brandName}</p> : null}
-          <h1>{config?.title ?? "How was your visit?"}</h1>
-          <p className={styles.introSub}>{config?.subtitle ?? "We'd love to hear about your experience — it only takes a moment."}</p>
-        </section>
+        <Hero
+          logo={brandLogo}
+          name={brandName}
+          title={config?.title ?? "How was your visit?"}
+          subtitle={config?.subtitle ?? "We'd love to hear about your experience — it only takes a moment."}
+        />
 
         {!config ? (
-          <section className={styles.feedbackCard} role="status" aria-live="polite">
+          <section className={styles.feedbackCard} style={panelGlass} role="status" aria-live="polite">
             <p className={styles.message}>Loading…</p>
           </section>
         ) : submissionSummary ? (
-          <section className={`${styles.feedbackCard} ${styles.submissionScreen}`} role="status" aria-live="polite">
+          <section className={`${styles.feedbackCard} ${styles.submissionScreen}`} style={panelGlass} role="status" aria-live="polite">
             <div className={styles.successIcon} aria-hidden="true">
-              ✓
+              <Icon name="check" size={40} />
             </div>
             <h2>Feedback Submitted</h2>
             <p className={styles.submissionText}>
               Thank you{submissionSummary.customerName ? `, ${submissionSummary.customerName}` : ""}. Your response has been recorded.
             </p>
+            {/* The guest's own average, in the design's thin numeral face. */}
+            <div className={styles.scoreRow}>
+              <span className={styles.scoreNum}>{submissionSummary.averageScore.toFixed(1)}</span>
+              <span className={styles.scoreOf}>/ 5</span>
+            </div>
             {submissionSummary.averageScore >= 4 && config?.review_url ? (
               <a
-                className={styles.anotherFeedbackBtn}
+                className={`${styles.anotherFeedbackBtn} ${styles.reviewBtn}`}
                 href={config.review_url}
                 target="_blank"
                 rel="noopener noreferrer"
-                style={{ display: "inline-block", textDecoration: "none", marginBottom: 10 }}
+                style={{ marginBottom: 4 }}
               >
-                ⭐ Loved it? Leave us a review
+                <Icon name="star" filled size={16} style={{ verticalAlign: "-2px", marginRight: 6 }} />
+                Loved it? Leave us a review
               </a>
             ) : submissionSummary.averageScore <= 3 ? (
               <p className={styles.submissionText}>
-                We're sorry it wasn't perfect — the team has been notified and will personally make it right.
+                We&apos;re sorry it wasn&apos;t perfect — the team has been notified and will personally make it right.
               </p>
             ) : null}
             <button
@@ -640,38 +732,47 @@ function FeedbackForm({
             </button>
           </section>
         ) : !valetGateComplete ? (
-          <section className={styles.feedbackCard}>
+          /* VALET STEP — first screen of the flow when the restaurant uses valet. */
+          <section className={styles.feedbackCard} style={panelGlass}>
+            <p className={styles.sectionLabel}>
+              <Icon name="directions_car" size={14} />
+              Valet parking
+            </p>
+            <h2 className={styles.panelTitle}>Shall we bring your car around?</h2>
+            <p className={styles.panelNote}>
+              Enter your vehicle number and our team will have it ready as you leave.
+            </p>
+
             <div className={styles.headerGrid}>
               <label className={styles.field}>
                 Vehicle Number (if you used valet)
                 <input
+                  className={styles.plateInput}
                   value={numberPlate}
                   onChange={(e) => { setNumberPlate(e.target.value.toUpperCase()); }}
-                  placeholder="e.g. KA01AB1234"
+                  placeholder="KA01AB1234"
                 />
               </label>
             </div>
 
             <div className={styles.footerRow}>
-              <p>
-                Using valet? Enter your vehicle number so our team can have your car ready as you leave.
-              </p>
               <button type="button" disabled={valetGateSubmitting} onClick={onEnterWithValet}>
                 {valetGateSubmitting ? "Checking..." : "Submit Vehicle Number"}
               </button>
-            </div>
-
-            <div className={styles.footerRow}>
-              <p>Did not use valet?</p>
-              <button type="button" disabled={valetGateSubmitting} onClick={onContinueWithoutValet}>
+              <button
+                type="button"
+                className={styles.ghostBtn}
+                disabled={valetGateSubmitting}
+                onClick={onContinueWithoutValet}
+              >
                 Continue Without Valet
               </button>
             </div>
 
-            {valetGateMessage ? <p className={styles.message}>{valetGateMessage}</p> : null}
+            {valetGateMessage ? <p className={`${styles.message} ${styles.messageWarn}`}>{valetGateMessage}</p> : null}
           </section>
         ) : (
-          <form className={styles.feedbackCard} onSubmit={onSubmit}>
+          <form className={styles.feedbackCard} style={panelGlass} onSubmit={onSubmit}>
             <div className={styles.headerGrid}>
               <label className={styles.field}>
                 Your Name (optional)
@@ -680,7 +781,10 @@ function FeedbackForm({
             </div>
 
             {numberPlate.trim() ? (
-              <p className={styles.message}>Valet vehicle verified: {numberPlate.trim()}</p>
+              <p className={styles.statusPill}>
+                <Icon name="directions_car" size={14} />
+                Valet vehicle verified: {numberPlate.trim()}
+              </p>
             ) : (
               <p className={styles.message}>Continuing without valet.</p>
             )}
@@ -693,8 +797,6 @@ function FeedbackForm({
                     <StarRating
                       value={ratings[category.id] ?? 0}
                       onChange={(value) => onRateCategory(category.id, value)}
-                      accent={theme.accent}
-                      text={theme.text}
                     />
                   </div>
                   <p className={styles.question}>{questions[category.id]?.mainQuestion ?? "Loading question..."}</p>
@@ -819,29 +921,28 @@ function FeedbackForm({
               ))}
             </div>
 
+            {/* NPS 0–10 — a 6-column grid so all eleven chips fit a 375px screen
+                without any horizontal scroll. Tapping the selected score clears it,
+                exactly as before. */}
             <div className={styles.field}>
               How likely are you to recommend us? (0–10)
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+              <div className={styles.npsGrid}>
                 {Array.from({ length: 11 }, (_, score) => (
                   <button
                     key={score}
                     type="button"
                     aria-pressed={nps === score}
+                    className={`${styles.npsBtn} ${nps === score ? styles.npsBtnOn : ""}`}
                     onClick={() => { setNps((current) => (current === score ? null : score)); }}
-                    style={{
-                      minWidth: 34,
-                      padding: "8px 0",
-                      borderRadius: 8,
-                      border: `1px solid ${nps === score ? theme.accent : "rgba(128,128,128,0.4)"}`,
-                      background: nps === score ? theme.accent : "transparent",
-                      color: nps === score ? theme.surface : theme.text,
-                      cursor: "pointer",
-                    }}
                   >
                     {score}
                   </button>
                 ))}
               </div>
+              <p className={styles.npsScale}>
+                <span>Not likely</span>
+                <span>Very likely</span>
+              </p>
             </div>
 
             <label className={styles.field}>
@@ -858,11 +959,11 @@ function FeedbackForm({
               {submitting ? "Submitting…" : "Submit feedback"}
             </button>
 
-            {message ? <p className={styles.message}>{message}</p> : null}
+            {message ? <p className={`${styles.message} ${styles.messageWarn}`}>{message}</p> : null}
           </form>
         )}
       </main>
-    </div>
+    </Shell>
   );
 }
 
@@ -882,7 +983,7 @@ function FeedbackGate() {
   }, [search]);
 
   if (!identity) {
-    return <div className={`${styles.pageShell} ${dmSans.className}`} />;
+    return <div className={styles.pageShell} />;
   }
 
   return <FeedbackForm restaurantId={identity.rid} employeeId={identity.eid} outletId={identity.oid} />;
