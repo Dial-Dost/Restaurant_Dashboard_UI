@@ -65,6 +65,14 @@ const SURFACE_OPTIONS: { value: SurfaceStyle; label: string; hint: string }[] = 
 
 interface BrandForm {
   color_primary: string
+  color_secondary: string
+  color_accent: string
+  color_bg: string
+  color_card: string
+  color_text: string
+  color_success: string
+  color_warning: string
+  color_error: string
   font: string
   header_style: HeaderStyle
   button_shape: ButtonShape
@@ -75,11 +83,67 @@ interface BrandForm {
 // design as delivered (keeping the tenant's own accent).
 const defaultForm = (accent: string): BrandForm => ({
   color_primary: accent,
+  // Blank = "derive it from the accent", which is exactly what the server does.
+  // An owner only overrides the roles they actually care about.
+  color_secondary: "",
+  color_accent: "",
+  color_bg: "",
+  color_card: "",
+  color_text: "",
+  color_success: "",
+  color_warning: "",
+  color_error: "",
   font: "Inter",
   header_style: "gradient",
   button_shape: "rounded",
   surface_style: "frosted",
 })
+
+// One editable colour ROLE. Leaving it blank means "derive from the accent",
+// which is what the server does — owners override only what they care about.
+function ColorRole({
+  label, hint, value, disabled, derived, onChange,
+}: {
+  label: string; hint: string; value: string; disabled: boolean; derived?: string;
+  onChange: (v: string) => void;
+}) {
+  const valid = !value || isHex(value)
+  return (
+    <div className="space-y-1.5">
+      <Label className="text-xs font-medium">{label}</Label>
+      <div className="flex items-center gap-2">
+        <input
+          type="color"
+          aria-label={label}
+          disabled={disabled}
+          value={isHex(value) ? value : (derived && isHex(derived) ? derived : "#000000")}
+          onChange={(e) => { onChange(e.target.value); }}
+          className="h-9 w-10 shrink-0 cursor-pointer rounded-md border bg-transparent p-0.5 disabled:cursor-not-allowed disabled:opacity-50"
+        />
+        <Input
+          value={value}
+          disabled={disabled}
+          maxLength={7}
+          spellCheck={false}
+          placeholder={derived ? `auto — ${derived}` : "auto"}
+          onChange={(e) => {
+            let v = e.target.value.trim()
+            if (v && !v.startsWith("#")) {v = `#${v}`}
+            onChange(v)
+          }}
+          className={cn("h-9 font-mono text-xs uppercase", !valid && "border-destructive")}
+        />
+        {value ? (
+          <Button type="button" variant="ghost" size="sm" disabled={disabled}
+            onClick={() => { onChange("") }} className="h-9 shrink-0 px-2 text-xs">
+            Auto
+          </Button>
+        ) : null}
+      </div>
+      <p className="text-[11px] text-muted-foreground">{hint}</p>
+    </div>
+  )
+}
 
 // One accent stop of the derived ramp, with its resolved hex underneath.
 function Swatch({ name, hex, note }: { name: string; hex: string; note: string }) {
@@ -286,8 +350,18 @@ export function BrandingCustomizer(props: {
         loadedAccent.current = accent
         const base = defaultForm(accent)
         const allowedFonts = (brand_field_options?.font?.length ? brand_field_options.font : brand_fonts).concat(BRAND_FONTS)
+        // Only a valid hex is adopted; anything else stays blank = "derive it".
+        const hexOrBlank = (v: unknown) => (typeof v === "string" && isHex(v) ? v : "")
         setForm({
           color_primary: accent,
+          color_secondary: hexOrBlank(cfg.color_secondary),
+          color_accent: hexOrBlank((cfg as Record<string, unknown>).color_accent),
+          color_bg: hexOrBlank(cfg.color_bg),
+          color_card: hexOrBlank(cfg.color_card),
+          color_text: hexOrBlank(cfg.color_text),
+          color_success: hexOrBlank((cfg as Record<string, unknown>).color_success),
+          color_warning: hexOrBlank((cfg as Record<string, unknown>).color_warning),
+          color_error: hexOrBlank((cfg as Record<string, unknown>).color_error),
           font: cfg.font && allowedFonts.includes(cfg.font) ? cfg.font : base.font,
           header_style: cfg.header_style === "solid" ? "solid" : "gradient",
           button_shape:
@@ -298,7 +372,10 @@ export function BrandingCustomizer(props: {
         if (brand_field_options?.font?.length) {setFonts(brand_field_options.font)}
         else if (brand_fonts.length > 0) {setFonts(brand_fonts)}
         if (brand_fields?.live?.length) {setLive(brand_fields.live)}
-        const legacyKeys = brand_fields?.legacy?.length ? brand_fields.legacy : [...LEGACY_FIELDS]
+        // An EMPTY array means the server has retired nothing — only a MISSING
+        // field should fall back to the built-in list. Using `.length` here kept
+        // showing the revived palette keys as dead notes after they went live.
+        const legacyKeys = Array.isArray(brand_fields?.legacy) ? brand_fields.legacy : [...LEGACY_FIELDS]
         setRetired(
           legacyKeys
             .map((k) => ({ key: k, value: String((brand_config as Record<string, unknown>)[k] ?? "") }))
@@ -333,6 +410,17 @@ export function BrandingCustomizer(props: {
       // rewritten by an editor that no longer shows them.
       const saved = await saveBrandConfig(restaurantId, {
         color_primary: form.color_primary,
+        // A blank role means "derive from the accent". SetBranding REPLACES
+        // brand_config with the sanitized payload, so omitting the key (undefined
+        // is dropped by JSON.stringify) clears any previous override.
+        color_secondary: form.color_secondary || undefined,
+        color_accent: form.color_accent || undefined,
+        color_bg: form.color_bg || undefined,
+        color_card: form.color_card || undefined,
+        color_text: form.color_text || undefined,
+        color_success: form.color_success || undefined,
+        color_warning: form.color_warning || undefined,
+        color_error: form.color_error || undefined,
         font: form.font,
         header_style: form.header_style,
         button_shape: form.button_shape,
@@ -410,6 +498,50 @@ export function BrandingCustomizer(props: {
                   <Swatch name="On acc" hex={theme.onAcc} note="ink on top of the accent" />
                 </div>
               </div>
+            )}
+
+            {/* Every other colour ROLE the guest surfaces use. Blank = derived
+                from the accent by the server, so an owner can theme as little or
+                as much as they want without producing an incoherent palette. */}
+            {shows("color_secondary") && (
+              <ColorRole label="Secondary colour" hint="Chips, secondary buttons." disabled={!isAdmin}
+                value={form.color_secondary} derived={theme.accMid}
+                onChange={(v) => { set("color_secondary", v) }} />
+            )}
+            {shows("color_accent") && (
+              <ColorRole label="Highlight colour" hint="Badges and price emphasis." disabled={!isAdmin}
+                value={form.color_accent} derived={theme.accHi}
+                onChange={(v) => { set("color_accent", v) }} />
+            )}
+            {shows("color_bg") && (
+              <ColorRole label="Page background" hint="The shell behind everything." disabled={!isAdmin}
+                value={form.color_bg} derived="#08080A"
+                onChange={(v) => { set("color_bg", v) }} />
+            )}
+            {shows("color_card") && (
+              <ColorRole label="Card surface" hint="Panel base; transparency comes from the panel material." disabled={!isAdmin}
+                value={form.color_card} derived="#1A1A1F"
+                onChange={(v) => { set("color_card", v) }} />
+            )}
+            {shows("color_text") && (
+              <ColorRole label="Body text" hint="Main ink colour on dark surfaces." disabled={!isAdmin}
+                value={form.color_text} derived="#ECEAE6"
+                onChange={(v) => { set("color_text", v) }} />
+            )}
+            {shows("color_success") && (
+              <ColorRole label="Success" hint="Confirmations, ready/seated states." disabled={!isAdmin}
+                value={form.color_success} derived="#8FB27C"
+                onChange={(v) => { set("color_success", v) }} />
+            )}
+            {shows("color_warning") && (
+              <ColorRole label="Warning" hint="Waiting and caution states." disabled={!isAdmin}
+                value={form.color_warning} derived="#E4C48C"
+                onChange={(v) => { set("color_warning", v) }} />
+            )}
+            {shows("color_error") && (
+              <ColorRole label="Error" hint="Failures and destructive actions." disabled={!isAdmin}
+                value={form.color_error} derived="#E0A79B"
+                onChange={(v) => { set("color_error", v) }} />
             )}
 
             {shows("font") && (

@@ -94,7 +94,11 @@ const addEmployeeSchema = z.object({
   // /restaurant/users applies the same optional-field rule server-side.
   phone: z.string().optional().refine(isOptionalMobile10, { message: MOBILE_10_ERROR }),
   address: z.string().optional(),
-  role: z.enum(["employee", "admin", "valet"]),
+  // Any built-in role name OR a custom role's uuid. The old z.enum only allowed
+  // employee/admin/valet, so choosing Cashier/Captain/Manager failed validation
+  // and a CUSTOM role could not be picked at all. The server validates the value
+  // (an unknown role is rejected there), so a non-empty string is right here.
+  role: z.string().min(1, "Pick a role"),
   password: z.string().min(6, "Password must be at least 6 characters."),
 });
 
@@ -485,7 +489,7 @@ function EmployeesPageInner() {
               <DialogTitle>Add New Employee</DialogTitle>
               <DialogDescription>Fill in the details for the new employee.</DialogDescription>
             </DialogHeader>
-            <AddEmployeeForm onSubmit={handleAddEmployee} />
+            <AddEmployeeForm onSubmit={handleAddEmployee} customRoles={roleDefinitions} />
           </DialogContent>
         </Dialog>
       </div>
@@ -860,7 +864,7 @@ function EmployeesPageInner() {
   );
 }
 
-function AddEmployeeForm({ onSubmit }: { onSubmit: (data: AddEmployeeFormData) => void }) {
+function AddEmployeeForm({ onSubmit, customRoles = [] }: { onSubmit: (data: AddEmployeeFormData) => void; customRoles?: RoleDefinition[] }) {
   const {
     register,
     handleSubmit,
@@ -952,6 +956,14 @@ function AddEmployeeForm({ onSubmit }: { onSubmit: (data: AddEmployeeFormData) =
                   <SelectItem value="cashier">Cashier</SelectItem>
                   <SelectItem value="captain">Captain</SelectItem>
                   <SelectItem value="manager">Manager</SelectItem>
+                  {/* Custom roles from Roles & Permissions — assigned by uuid, which
+                      the backend resolves against "Roles". Without these a custom
+                      role could only be granted AFTER the user was created. */}
+                  {customRoles
+                    .filter((r) => r.id && r.role_name)
+                    .map((r) => (
+                      <SelectItem key={r.id} value={r.id}>{r.role_name} (custom)</SelectItem>
+                    ))}
                 </SelectContent>
               </Select>
             )}

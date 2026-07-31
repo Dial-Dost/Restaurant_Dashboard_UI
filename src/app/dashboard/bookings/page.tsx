@@ -1,7 +1,7 @@
 
 "use client";
 
-import { Suspense, useState, useEffect } from "react";
+import { Fragment, Suspense, useState, useEffect, useMemo } from "react";
 import {
   Card,
   CardContent,
@@ -38,7 +38,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Link2, MoreHorizontal, PlusCircle } from "lucide-react";
+import { ChevronDown, ChevronRight, Link2, MoreHorizontal, PlusCircle, Search, X } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -55,6 +55,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import {
   getBookings as getBookingsData,
+  getCustomers as getCustomersData,
   getTables as getTablesData,
   getSeatingSuggestion,
   assignBookingTables,
@@ -62,8 +63,11 @@ import {
   type SeatingSuggestion,
 } from "@/lib/db"; //addAuditLogEntry,
 import { useAuth } from "@/context/AuthContext";
+import { cn } from "@/lib/utils";
 import { useHighlightRow } from "@/hooks/use-highlight-row";
 import { isMobile10, MOBILE_10_ERROR, normalizeMobile10, PHONE_INPUT_PROPS, sanitizePhoneInput } from "@/lib/phone";
+import { formatDate, formatDateTime, formatFullDateTime, formatLongDate, formatTime } from "@/lib/tz";
+import { useTimezone } from "@/lib/use-timezone";
 import { type Booking } from "./data";
 import { type Table as TableType } from "../tables/data";
 
@@ -122,13 +126,110 @@ const BOOKING_WINDOWS: { value: BookingWindow; label: string }[] = [
   { value: 'all', label: 'All' },
 ];
 
+const digitsOnly = (value: string) => value.replace(/[^0-9]/g, "");
+
+/*
+  `booking.time` from the API already reads "Jul 28, 07:30 PM". The dense row
+  splits that: the clock alone in the Time column, with the day beside it only
+  when the list can span more than today (Past / All).
+*/
+const clockTime = (booking: Booking, timeZone: string): string => {
+  if (!booking.date_time) {return booking.time;}
+  return formatTime(booking.date_time, timeZone, booking.time);
+};
+
+/** Short "28 Jul" for the dense row; the expanded panel spells the date out. */
+const shortDate = (iso: string | null | undefined, timeZone: string): string => {
+  if (!iso) {return "";}
+  const long = formatLongDate(iso, timeZone, "");
+  // "28 Jul 2026" -> "28 Jul"; the year is noise in a dense row.
+  return long ? long.split(" ").slice(0, 2).join(" ") : "";
+};
+
+/** Full reserved window: "Mon, 28 Jul 2026, 19:30 — 21:00 (90 min)". */
+const bookingWindowLabel = (booking: Booking, timeZone: string): string => {
+  if (!booking.date_time) {return booking.time;}
+  const start = new Date(booking.date_time);
+  if (Number.isNaN(start.getTime())) {return booking.time;}
+  const mins = booking.duration_mins && booking.duration_mins > 0 ? booking.duration_mins : BOOKING_DURATION_MINS;
+  const end = new Date(start.getTime() + mins * 60_000);
+  // The reservation was TAKEN in the restaurant's zone (the backend parses the
+  // booking wall clock with the same setting), so it must be READ back in it.
+  const day = formatLongDate(start, timeZone);
+  return `${day}, ${formatTime(start, timeZone)} — ${formatTime(end, timeZone)} (${mins} min)`;
+};
+
+/*
+  Everything one booking can be found by, flattened once per render pass.
+  /get-bookings carries no phone number, so the contact is joined in from
+  /get-customers on customer_id and indexed here both raw and digits-only —
+  "98765" has to match "+91 98765 43210".
+*/
+const bookingHaystack = (booking: Booking, phone: string, timeZone: string): string =>
+  [
+    booking.customer,
+    phone,
+    bookingTableLabel(booking),
+    booking.status,
+    booking.source,
+    booking.booked_from ?? "",
+    booking.notes ?? "",
+    booking.time,
+    shortDate(booking.date_time, timeZone),
+    booking.date_time ? formatDate(booking.date_time, timeZone, "") : "",
+    booking.date_time ? booking.date_time.slice(0, 10) : "",
+    `${booking.guests} guests`,
+    booking.deposit ? `deposit ${booking.deposit.status}` : "",
+  ]
+    .join(" ")
+    .toLowerCase();
+
+/**
+ * A query made only of digits and phone punctuation is a PHONE lookup, matched
+ * against the number's digits so "+91 98765" finds "9876543210". Anything else
+ * is a plain term-AND text search ("liam 19:" narrows down), which is what
+ * keeps a short term like "T2" matching the table and not every row that
+ * happens to contain a 2.
+ */
+const matchesQuery = (haystack: string, phone: string, query: string): boolean => {
+  const trimmed = query.trim().toLowerCase();
+  if (!trimmed) {return true;}
+
+  const queryDigits = digitsOnly(trimmed);
+  if (queryDigits.length >= 3 && /^[+\d\s().-]+$/.test(trimmed)) {
+    const phoneDigits = digitsOnly(phone);
+    // Tolerate a typed country code / trunk zero the stored number omits.
+    const bare = queryDigits.replace(/^(91|0)/, "");
+    return (
+      (phoneDigits !== "" && (phoneDigits.includes(queryDigits) || phoneDigits.includes(bare))) ||
+      haystack.includes(trimmed)
+    );
+  }
+
+  return trimmed.split(/\s+/).filter(Boolean).every((term) => haystack.includes(term));
+};
+
+const statusBadgeVariant = (status: string): "default" | "secondary" | "outline" | "destructive" => {
+  if (status === "Confirmed") {return "default";}
+  if (status === "Arrived" || status === "Seated") {return "secondary";}
+  if (status === "Cancelled" || status === "No-show") {return "destructive";}
+  return "outline";
+};
+
 function BookingsPageInner() {
+  const { timezone } = useTimezone();
   const { user } = useAuth();
   const [bookings, setBookings] = useState<Booking[]>([]);
   // Upcoming / Past / All view. Default "upcoming" keeps today's operational
   // list, but past-dated bookings stay reachable so one never just disappears
   // the moment its slot ends (GET /get-bookings?window=).
   const [bookingWindow, setBookingWindow] = useState<BookingWindow>('upcoming');
+  // Free-text filter across name / phone / table / status / source / notes / date.
+  const [query, setQuery] = useState("");
+  // One expanded booking at a time — a hundred half-open rows is not scannable.
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  // customer_id -> phone, joined in from /get-customers (bookings carry no number).
+  const [phoneByCustomer, setPhoneByCustomer] = useState<Record<string, string>>({});
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [tables, setTables] = useState<TableType[]>([]);
   // Re-seating an existing booking (assign a table, or club several together).
@@ -140,6 +241,23 @@ function BookingsPageInner() {
   // A reservation notification links here as ?highlightBooking=<booking id>;
   // ring and scroll to that row rather than dropping the user on the list.
   const highlight = useHighlightRow("highlightBooking", bookings.length);
+
+  const phoneFor = (booking: Booking) =>
+    (booking.customer_id ? phoneByCustomer[booking.customer_id] : "") ?? "";
+
+  const visibleBookings = useMemo(
+    () => bookings.filter((booking) => {
+      const phone = phoneFor(booking);
+      return matchesQuery(bookingHaystack(booking, phone, timezone), phone, query);
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [bookings, phoneByCustomer, query],
+  );
+
+  // A deep-linked booking must not stay hidden behind an active search.
+  useEffect(() => {
+    if (highlight.id) {setQuery("");}
+  }, [highlight.id]);
 
   // const recordAuditEntry = async (action: string, details: string) => {
   //   if (!user?.restaurantUsername) return;
@@ -214,6 +332,20 @@ function BookingsPageInner() {
       } catch (error) {
         console.error("Failed to load tables", error);
         if (isActive) {setTables([]);}
+      }
+
+      // Contact numbers for search + the detail panel. Best-effort: a role
+      // without the customers permission just gets no phone column.
+      try {
+        const customers = await getCustomersData(user.restaurantUsername);
+        if (!isActive) {return;}
+        const byId: Record<string, string> = {};
+        for (const customer of Array.isArray(customers) ? customers : []) {
+          if (customer.customerId && customer.phone) {byId[customer.customerId] = customer.phone;}
+        }
+        setPhoneByCustomer(byId);
+      } catch (error) {
+        console.warn("Failed to load customer contacts", error);
       }
     })();
 
@@ -396,7 +528,7 @@ function BookingsPageInner() {
         </Dialog>
       </div>
       <Card>
-        <CardHeader>
+        <CardHeader className="pb-3">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <CardTitle>
@@ -408,6 +540,7 @@ function BookingsPageInner() {
                   : bookingWindow === "all"
                   ? "Every booking — upcoming first, then past."
                   : "Active and upcoming bookings for today."}
+                {" "}Click a row for the full detail.
               </CardDescription>
             </div>
             <div className="flex w-fit gap-1 rounded-md border p-1">
@@ -424,99 +557,157 @@ function BookingsPageInner() {
               ))}
             </div>
           </div>
+          <div className="flex flex-col gap-2 pt-2 sm:flex-row sm:items-center">
+            <div className="relative w-full sm:max-w-sm">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={query}
+                onChange={(e) => { setQuery(e.target.value); }}
+                placeholder="Search name, phone, table, status, source, date…"
+                aria-label="Search bookings"
+                className="pl-8 pr-8"
+              />
+              {query ? (
+                <button
+                  type="button"
+                  onClick={() => { setQuery(""); }}
+                  aria-label="Clear search"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              ) : null}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {query
+                ? `${visibleBookings.length} of ${bookings.length} booking${bookings.length === 1 ? "" : "s"} match`
+                : `${bookings.length} booking${bookings.length === 1 ? "" : "s"}`}
+            </p>
+          </div>
         </CardHeader>
         <CardContent>
+          {/*
+            Dense list: a service can hold ~100 bookings, so every row is one
+            line of ~34px and the wide fields (notes, source, contact) live in
+            the expansion instead of stretching the grid.
+          */}
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Customer</TableHead>
-                <TableHead className="hidden md:table-cell">Time</TableHead>
-                <TableHead className="hidden md:table-cell text-center">Guests</TableHead>
-                <TableHead className="hidden lg:table-cell">Table</TableHead>
-                <TableHead className="hidden lg:table-cell">Source</TableHead>
-                <TableHead className="hidden xl:table-cell">Notes</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>
+                <TableHead className="w-8 px-1" />
+                <TableHead className="h-9 w-[86px] px-2">Time</TableHead>
+                <TableHead className="h-9 px-2">Customer</TableHead>
+                <TableHead className="h-9 w-[52px] px-2 text-center">Pax</TableHead>
+                <TableHead className="hidden h-9 w-[120px] px-2 sm:table-cell">Table</TableHead>
+                <TableHead className="hidden h-9 w-[110px] px-2 lg:table-cell">Source</TableHead>
+                <TableHead className="h-9 w-[130px] px-2">Status</TableHead>
+                <TableHead className="h-9 w-[44px] px-1">
                   <span className="sr-only">Actions</span>
                 </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {bookings.map((booking) => (
-                <TableRow key={booking.id} {...highlight.rowProps(booking.id)}>
-                  <TableCell className="font-medium">
-                    <div>{booking.customer}</div>
-                    <div className="text-sm text-muted-foreground md:hidden">{booking.time} - {booking.guests} guests</div>
-                  </TableCell>
-                  <TableCell className="hidden md:table-cell">{booking.time}</TableCell>
-                  <TableCell className="hidden md:table-cell text-center">{booking.guests}</TableCell>
-                  <TableCell className="hidden lg:table-cell">
-                    <span className="flex items-center gap-1">
-                      {isCombinedBooking(booking) ? <Link2 className="h-3.5 w-3.5 text-amber-500" /> : null}
-                      {bookingTableLabel(booking)}
-                    </span>
-                    {isCombinedBooking(booking) ? (
-                      <span className="text-xs text-muted-foreground">Combined tables</span>
-                    ) : null}
-                  </TableCell>
-                  <TableCell className="hidden lg:table-cell">{booking.source}</TableCell>
-                  <TableCell className="hidden xl:table-cell whitespace-pre-wrap">
-                    {booking.notes || "-"}
-                    {booking.min_spend ? (
-                      <div className="mt-1 text-xs text-muted-foreground">Min spend ₹{booking.min_spend}</div>
-                    ) : null}
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex flex-col items-start gap-1">
-                      <Badge
-                        variant={
-                          booking.status === "Confirmed"
-                            ? "default"
-                            : booking.status === "Arrived" || booking.status === "Seated"
-                            ? "secondary"
-                            : "outline"
+              {visibleBookings.map((booking) => {
+                const rowProps = highlight.rowProps(booking.id);
+                const isExpanded = expandedId === booking.id;
+                const phone = phoneFor(booking);
+                const toggle = () => { setExpandedId(isExpanded ? null : booking.id); };
+                return (
+                  <Fragment key={booking.id}>
+                    <TableRow
+                      {...rowProps}
+                      role="button"
+                      tabIndex={0}
+                      aria-expanded={isExpanded}
+                      onClick={toggle}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          toggle();
                         }
+                      }}
+                      className={cn(rowProps.className, "cursor-pointer", isExpanded && "bg-muted/50")}
+                    >
+                      <TableCell className="px-1 py-1.5 text-muted-foreground">
+                        {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap px-2 py-1.5 text-sm tabular-nums">
+                        {clockTime(booking, timezone)}
+                        {bookingWindow !== "upcoming" && shortDate(booking.date_time, timezone) ? (
+                          <span className="ml-1.5 text-xs text-muted-foreground">{shortDate(booking.date_time, timezone)}</span>
+                        ) : null}
+                      </TableCell>
+                      <TableCell className="max-w-[220px] truncate px-2 py-1.5 text-sm font-medium" title={booking.customer}>
+                        {booking.customer}
+                        <span className="ml-2 text-xs font-normal text-muted-foreground sm:hidden">
+                          {bookingTableLabel(booking)}
+                        </span>
+                      </TableCell>
+                      <TableCell className="px-2 py-1.5 text-center text-sm tabular-nums">{booking.guests}</TableCell>
+                      <TableCell className="hidden px-2 py-1.5 text-sm sm:table-cell">
+                        <span className="flex items-center gap-1">
+                          {isCombinedBooking(booking) ? <Link2 className="h-3.5 w-3.5 shrink-0 text-amber-500" /> : null}
+                          <span className="truncate">{bookingTableLabel(booking)}</span>
+                        </span>
+                      </TableCell>
+                      <TableCell className="hidden truncate px-2 py-1.5 text-sm lg:table-cell">{booking.source}</TableCell>
+                      <TableCell className="px-2 py-1.5">
+                        <div className="flex flex-wrap items-center gap-1">
+                          <Badge variant={statusBadgeVariant(booking.status)} className="text-[10px]">
+                            {booking.status}
+                          </Badge>
+                          <DepositBadge deposit={booking.deposit} compact />
+                        </div>
+                      </TableCell>
+                      <TableCell
+                        className="px-1 py-1.5"
+                        onClick={(event) => { event.stopPropagation(); }}
                       >
-                        {booking.status}
-                      </Badge>
-                      <DepositBadge deposit={booking.deposit} />
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button aria-haspopup="true" size="icon" variant="ghost">
-                          <MoreHorizontal className="h-4 w-4" />
-                          <span className="sr-only">Toggle menu</span>
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuLabel>Actions</DropdownMenuLabel>
-                        <DropdownMenuSub>
-                          <DropdownMenuSubTrigger>Change Status</DropdownMenuSubTrigger>
-                          <DropdownMenuSubContent>
-                            <DropdownMenuItem onClick={() => handleStatusChange(booking, 'Confirmed')}>Confirmed</DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => handleStatusChange(booking, 'Arrived')}>Arrived</DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => handleStatusChange(booking, 'Seated')}>Seated</DropdownMenuItem>
-                          </DropdownMenuSubContent>
-                        </DropdownMenuSub>
-                        <DropdownMenuItem onSelect={() => { openAssignTables(booking); }}>
-                          Assign / combine tables
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem onClick={() => handleCancelBooking(booking)} className="text-destructive">
-                          Cancel
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </TableCell>
-                </TableRow>
-              ))}
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button aria-haspopup="true" size="icon" variant="ghost" className="h-7 w-7">
+                              <MoreHorizontal className="h-4 w-4" />
+                              <span className="sr-only">Toggle menu</span>
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuLabel>Actions</DropdownMenuLabel>
+                            <DropdownMenuSub>
+                              <DropdownMenuSubTrigger>Change Status</DropdownMenuSubTrigger>
+                              <DropdownMenuSubContent>
+                                <DropdownMenuItem onClick={() => handleStatusChange(booking, 'Confirmed')}>Confirmed</DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => handleStatusChange(booking, 'Arrived')}>Arrived</DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => handleStatusChange(booking, 'Seated')}>Seated</DropdownMenuItem>
+                              </DropdownMenuSubContent>
+                            </DropdownMenuSub>
+                            <DropdownMenuItem onSelect={() => { openAssignTables(booking); }}>
+                              Assign / combine tables
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem onClick={() => handleCancelBooking(booking)} className="text-destructive">
+                              Cancel
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </TableCell>
+                    </TableRow>
+                    {isExpanded ? (
+                      <TableRow className="hover:bg-transparent">
+                        <TableCell colSpan={8} className="bg-muted/30 px-4 py-3">
+                          <BookingDetail booking={booking} phone={phone} />
+                        </TableCell>
+                      </TableRow>
+                    ) : null}
+                  </Fragment>
+                );
+              })}
             </TableBody>
           </Table>
-          {bookings.length === 0 && (
+          {visibleBookings.length === 0 && (
             <div className="py-10 text-center text-sm text-muted-foreground">
-              {bookingWindow === "upcoming"
+              {query
+                ? `No booking matches “${query}”.`
+                : bookingWindow === "upcoming"
                 ? "No upcoming bookings — switch to Past or All to see earlier reservations."
                 : bookingWindow === "past"
                 ? "No past bookings yet."
@@ -575,6 +766,7 @@ interface OutboundMessage {
 }
 
 function RecentMessagesCard() {
+  const { timezone } = useTimezone();
   const { user } = useAuth();
   const [messages, setMessages] = useState<OutboundMessage[] | null>(null);
 
@@ -639,8 +831,8 @@ function RecentMessagesCard() {
           <TableBody>
             {messages.map((m) => (
               <TableRow key={m.id}>
-                <TableCell className="whitespace-nowrap text-sm">
-                  {new Date(m.created_at).toLocaleString()}
+                <TableCell className="whitespace-nowrap text-sm" title={formatFullDateTime(m.created_at, timezone)}>
+                  {formatDateTime(m.created_at, timezone)}
                 </TableCell>
                 <TableCell className="text-sm">
                   <div>{m.to_phone || "-"}</div>
@@ -673,7 +865,8 @@ function RecentMessagesCard() {
 
 // Reservation-deposit state badge: pending (unpaid Razorpay order), paid,
 // refund_due (early cancel — refund manually from Razorpay) or forfeited.
-function DepositBadge({ deposit }: { deposit?: Booking["deposit"] }) {
+// `compact` is the dense-row form: the amount only, full wording on hover.
+function DepositBadge({ deposit, compact = false }: { deposit?: Booking["deposit"]; compact?: boolean }) {
   if (!deposit) {return null;}
   const styles: Record<string, string> = {
     pending: "border-amber-300 bg-amber-50 text-amber-800",
@@ -687,10 +880,94 @@ function DepositBadge({ deposit }: { deposit?: Booking["deposit"] }) {
     refund_due: `Refund due ₹${deposit.amount}`,
     forfeited: `Deposit ₹${deposit.amount} forfeited`,
   };
+  const compactLabels: Record<string, string> = {
+    pending: `₹${deposit.amount} due`,
+    paid: `₹${deposit.amount} paid`,
+    refund_due: `₹${deposit.amount} refund`,
+    forfeited: `₹${deposit.amount} kept`,
+  };
+  const full = labels[deposit.status] ?? `Deposit ₹${deposit.amount}`;
   return (
-    <Badge variant="outline" className={styles[deposit.status] ?? ""}>
-      {labels[deposit.status] ?? `Deposit ₹${deposit.amount}`}
+    <Badge
+      variant="outline"
+      title={compact ? full : undefined}
+      className={cn(styles[deposit.status] ?? "", compact && "text-[10px]")}
+    >
+      {compact ? (compactLabels[deposit.status] ?? `₹${deposit.amount}`) : full}
     </Badge>
+  );
+}
+
+/*
+  The expansion behind a booking row. Everything the dense grid cannot afford to
+  show inline: the reserved window, the party, the contact, every table it holds
+  (clubbed sets read "T1 + T2"), where it came from, notes, deposit and minimum
+  spend. Read-only — the row's own menu is still the single place things change.
+*/
+function BookingDetail({ booking, phone }: { booking: Booking; phone: string }) {
+  const { timezone } = useTimezone();
+  const tableNames = Array.isArray(booking.table_names) && booking.table_names.length > 0
+    ? booking.table_names
+    : (booking.table ? [booking.table] : []);
+
+  const field = (label: string, value: React.ReactNode) => (
+    <div className="min-w-0">
+      <dt className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</dt>
+      <dd className="mt-0.5 text-sm">{value}</dd>
+    </div>
+  );
+
+  return (
+    <div className="space-y-3">
+      <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-2 lg:grid-cols-4">
+        {field("When", bookingWindowLabel(booking, timezone))}
+        {field("Party", `${booking.guests} guest${booking.guests === 1 ? "" : "s"}`)}
+        {field(
+          "Contact",
+          phone ? (
+            <a href={`tel:${digitsOnly(phone)}`} className="underline underline-offset-2">
+              {phone}
+            </a>
+          ) : (
+            <span className="text-muted-foreground">Not on file</span>
+          ),
+        )}
+        {field(
+          "Table(s)",
+          tableNames.length > 0 ? (
+            <span className="flex items-center gap-1">
+              {isCombinedBooking(booking) ? <Link2 className="h-3.5 w-3.5 text-amber-500" /> : null}
+              {tableNames.join(" + ")}
+              {isCombinedBooking(booking) ? (
+                <span className="text-xs text-muted-foreground">(clubbed, {tableNames[0]} primary)</span>
+              ) : null}
+            </span>
+          ) : (
+            <span className="text-muted-foreground">Unassigned</span>
+          ),
+        )}
+        {field("Source", booking.source || "Unknown")}
+        {field("Taken on", booking.booked_from ? booking.booked_from : <span className="text-muted-foreground">—</span>)}
+        {field(
+          "Status",
+          <span className="flex flex-wrap items-center gap-1">
+            <Badge variant={statusBadgeVariant(booking.status)}>{booking.status}</Badge>
+            <DepositBadge deposit={booking.deposit} />
+          </span>,
+        )}
+        {field(
+          "Min spend",
+          booking.min_spend ? `₹${booking.min_spend}` : <span className="text-muted-foreground">None</span>,
+        )}
+      </dl>
+      <div>
+        <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Notes</p>
+        <p className="mt-0.5 whitespace-pre-wrap text-sm">
+          {booking.notes || <span className="text-muted-foreground">No notes.</span>}
+        </p>
+      </div>
+      <p className="font-mono text-[10px] text-muted-foreground">Booking {booking.id}</p>
+    </div>
   );
 }
 

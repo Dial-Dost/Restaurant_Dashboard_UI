@@ -72,6 +72,8 @@ import {
 } from "@/lib/db";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/hooks/use-toast";
+import { formatDate, formatDateTime, formatFullDateTime } from "@/lib/tz";
+import { useTimezone } from "@/lib/use-timezone";
 import { useHighlightRow } from "@/hooks/use-highlight-row";
 
 export interface InventoryItem {
@@ -94,6 +96,7 @@ const inventorySchema = z.object({
 type InventoryFormData = z.infer<typeof inventorySchema>;
 
 function InventoryPageInner() {
+  const { timezone } = useTimezone();
   const { user } = useAuth();
   const { toast } = useToast();
   const restaurantId = user?.restaurantUsername ?? "";
@@ -328,7 +331,7 @@ function InventoryPageInner() {
                     .join(" · ");
                   return (
                     <TableRow key={mv.id}>
-                      <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{new Date(mv.created_at).toLocaleString()}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground whitespace-nowrap" title={formatFullDateTime(mv.created_at, timezone)}>{formatDateTime(mv.created_at, timezone)}</TableCell>
                       <TableCell>{mv.item_name ?? mv.inventory_id}</TableCell>
                       <TableCell className="capitalize">{mv.kind}</TableCell>
                       <TableCell className={`text-right font-medium ${mv.delta < 0 ? "text-destructive" : "text-green-600"}`}>
@@ -517,6 +520,7 @@ function PriceHistoryDialog({
   item: InventoryItem;
   onClose: () => void;
 }) {
+  const { timezone } = useTimezone();
   const [points, setPoints] = useState<PricePoint[] | null>(null);
 
   useEffect(() => {
@@ -555,7 +559,7 @@ function PriceHistoryDialog({
                   const changed = prev != null && prev !== p.unit_cost;
                   return (
                     <TableRow key={`${p.date}-${i}`}>
-                      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{new Date(p.date).toLocaleDateString()}</TableCell>
+                      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{formatDate(p.date, timezone)}</TableCell>
                       <TableCell>{p.vendor ?? "—"}</TableCell>
                       <TableCell className="text-right">{p.qty}</TableCell>
                       <TableCell className={`text-right font-medium ${changed ? (p.unit_cost > (prev ?? 0) ? "text-destructive" : "text-green-600") : ""}`}>

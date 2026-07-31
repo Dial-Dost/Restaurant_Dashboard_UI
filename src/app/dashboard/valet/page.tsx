@@ -18,6 +18,8 @@ import { useRealtime } from "@/context/RealtimeContext";
 import { useToast } from "@/hooks/use-toast";
 import { useHighlightRow } from "@/hooks/use-highlight-row";
 import { requestBackend } from "@/lib/db";
+import { dayKeyInZone, formatTime, todayInZone, utcToWallClockInZone } from "@/lib/tz";
+import { useTimezone } from "@/lib/use-timezone";
 import { Activity, RefreshCw, Clock, Package, Users, ArrowUpDown, Camera, Loader2 } from "lucide-react";
 
 interface ValetBays {
@@ -108,27 +110,19 @@ function isPickupStage(stage: ValetStage): boolean {
   return stage === "Car arrived at entrance";
 }
 
-function formatTime(value?: string): string {
+// Named formatClock, not formatTime, so it cannot shadow the shared tz helper.
+function formatClock(value: string | null | undefined, timeZone: string): string {
   if (!value) {
     return "N/A";
   }
-
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return value;
-  }
-
-  return parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return formatTime(value, timeZone, value);
 }
 
-function getCurrentLocalDateTimeValue(): string {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
-  const hours = String(now.getHours()).padStart(2, "0");
-  const minutes = String(now.getMinutes()).padStart(2, "0");
-  return `${year}-${month}-${day}T${hours}:${minutes}`;
+// Seeds a datetime-local input with "now" as the RESTAURANT reads it, so a
+// valet booking taken on a device set to another zone still defaults to the
+// house clock the rest of the screen shows.
+function getCurrentLocalDateTimeValue(timeZone: string): string {
+  return utcToWallClockInZone(new Date(), timeZone);
 }
 
 function formatTicket(bookingId?: string, index?: number): string {
@@ -165,6 +159,7 @@ function moveStage(stage: ValetStage, delta: number): ValetStage {
 }
 
 function ValetDashboardPageInner() {
+  const { timezone } = useTimezone();
   const { user } = useAuth();
   const { toast } = useToast();
   const [loading, setLoading] = useState(true);
@@ -190,14 +185,14 @@ function ValetDashboardPageInner() {
   const [recordSearchQuery, setRecordSearchQuery] = useState("");
   const [recordStageFilter, setRecordStageFilter] = useState<"all" | ValetStage>("all");
   const [recordBayFilter, setRecordBayFilter] = useState<string>("all");
-  const [recordDate, setRecordDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
+  const [recordDate, setRecordDate] = useState<string>(() => todayInZone(timezone));
   const [sortAsc, setSortAsc] = useState<boolean>(false);
   const [showAllParked, setShowAllParked] = useState(false);
   const [showAllIncoming, setShowAllIncoming] = useState(false);
   const [showAllPickup, setShowAllPickup] = useState(false);
   const [newGuestName, setNewGuestName] = useState("");
   const [newVehiclePlate, setNewVehiclePlate] = useState("");
-  const [newDateTime, setNewDateTime] = useState<string>(() => getCurrentLocalDateTimeValue());
+  const [newDateTime, setNewDateTime] = useState<string>(() => getCurrentLocalDateTimeValue(timezone));
   const [newRecordBayValue, setNewRecordBayValue] = useState<string>("__default_main__");
   const [creating, setCreating] = useState(false);
   const [scanningPlate, setScanningPlate] = useState(false);
@@ -914,7 +909,7 @@ function ValetDashboardPageInner() {
       toast({ title: "Valet Record Added", description: `${newGuestName.trim() || "Guest"} was added.` });
       setNewGuestName("");
       setNewVehiclePlate("");
-      setNewDateTime(getCurrentLocalDateTimeValue());
+      setNewDateTime(getCurrentLocalDateTimeValue(timezone));
       setNewRecordBayValue("__default_main__");
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Unable to create valet record.";
@@ -1028,7 +1023,7 @@ function ValetDashboardPageInner() {
         if (!raw) {return false;}
         const d = new Date(raw);
         if (Number.isNaN(d.getTime())) {return false;}
-        if (d.toISOString().slice(0, 10) !== recordDate) {return false;}
+        if (dayKeyInZone(d, timezone) !== recordDate) {return false;}
       }
 
       // Search query
@@ -1907,7 +1902,7 @@ function ValetDashboardPageInner() {
                       <p className="font-medium">
                         {booking.customer_name ?? "Guest"} - {formatTicket(bookingId, index)}
                       </p>
-                      <p className="text-xs text-muted-foreground">{formatTime(booking.booking_date_time)}</p>
+                      <p className="text-xs text-muted-foreground">{formatClock(booking.booking_date_time, timezone)}</p>
                     </div>
                     <p className="mb-2 text-sm text-muted-foreground">Vehicle Plate: {extractVehiclePlate(booking)}</p>
 
@@ -2208,7 +2203,7 @@ function ValetDashboardPageInner() {
                       ) : null}
                       <p className="text-sm text-muted-foreground">Bay: {booking.bay_name ?? (booking.bay_id ? (data?.bays ?? []).find((b) => b.Bay_id === booking.bay_id)?.Bay_name : undefined) ?? "Main"}</p>
                       <p className="text-sm text-muted-foreground">Stage: {stage}</p>
-                      <p className="text-sm text-muted-foreground">Time: {formatTime(booking.booking_date_time)}</p>
+                      <p className="text-sm text-muted-foreground">Time: {formatClock(booking.booking_date_time, timezone)}</p>
                     </div>
                   );
                 })}
@@ -2258,7 +2253,7 @@ function ValetDashboardPageInner() {
                       ) : null}
                       <p className="text-sm text-muted-foreground">Bay: {booking.bay_name ?? (booking.bay_id ? (data?.bays ?? []).find((b) => b.Bay_id === booking.bay_id)?.Bay_name : undefined) ?? "Main"}</p>
                       <p className="text-sm text-muted-foreground">Stage: {stage}</p>
-                      <p className="text-sm text-muted-foreground">Time: {formatTime(booking.booking_date_time)}</p>
+                      <p className="text-sm text-muted-foreground">Time: {formatClock(booking.booking_date_time, timezone)}</p>
                     </div>
                   );
                 })}
@@ -2306,7 +2301,7 @@ function ValetDashboardPageInner() {
                       ) : null}
                       <p className="text-sm text-muted-foreground">Bay: {booking.bay_name ?? (booking.bay_id ? (data?.bays ?? []).find((b) => b.Bay_id === booking.bay_id)?.Bay_name : undefined) ?? "Main"}</p>
                       <p className="text-sm text-muted-foreground">Stage: {stage}</p>
-                      <p className="text-sm text-muted-foreground">ETA: {formatTime(booking.booking_date_time)}</p>
+                      <p className="text-sm text-muted-foreground">ETA: {formatClock(booking.booking_date_time, timezone)}</p>
                     </div>
                   );
                 })}

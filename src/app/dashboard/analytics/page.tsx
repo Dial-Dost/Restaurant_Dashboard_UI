@@ -1,34 +1,24 @@
 "use client"
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import {
-  ChartContainer,
-  ChartTooltip,
-  ChartTooltipContent,
-} from "@/components/ui/chart"
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis, Line, LineChart, Pie, PieChart, Cell, Tooltip, ResponsiveContainer, LabelList } from "recharts"
+import { InteractiveChart, type IvPoint } from "./interactive-chart"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import Link from "next/link"
 import { useAuth } from "@/context/AuthContext"
 import { useCurrency } from "@/hooks/use-currency"
-import { getMenuInsights, type MenuInsights, type PriceSuggestion, type SuppressedSuggestion, applyMenuItemPrice, getOperationsAnalytics, type OperationsAnalytics, getApcTrends, type ApcTrendPoint, getAdvancedAnalytics, type AdvancedAnalytics, getOutletsComparison, type OutletComparison, createCampaign, deleteCampaign, getKitchenAnalytics, type KitchenAnalytics, type KitchenDishStat, type KitchenSectionStat, getMetricExplainers, type MetricExplainer, type MetricExplainers } from "@/lib/db"
+import { getMenuInsights, type MenuInsights, type PriceSuggestion, type SuppressedSuggestion, applyMenuItemPrice, getOperationsAnalytics, type OperationsAnalytics, getApcTrends, type ApcTrendPoint, getAdvancedAnalytics, type AdvancedAnalytics, getOutletsComparison, type OutletComparison, createCampaign, deleteCampaign, getKitchenAnalytics, type KitchenAnalytics, type KitchenDishStat, type KitchenSectionStat, getMetricExplainers, type MetricExplainer, type MetricExplainers, getOverviewInsights, type OverviewInsights, type OverviewMetric } from "@/lib/db"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { useToast } from "@/hooks/use-toast"
-import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, Download, Flame, HelpCircle, Info, Maximize2, Trophy, Lightbulb, Snail, TriangleAlert } from "lucide-react"
+import { formatLongDate, formatMonth, timezoneCaption, todayInZone } from "@/lib/tz"
+import { useTimezone } from "@/lib/use-timezone"
+import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, Download, Filter, Flame, HelpCircle, Info, Maximize2, Trophy, Lightbulb, Snail, TriangleAlert, X } from "lucide-react"
 
-const ordersChartConfig = {
-  orders: {
-    label: "Orders",
-    color: "hsl(var(--primary))",
-  },
-}
-
-const trendsChartConfig = {
-  total_revenue: { label: "Revenue", color: "hsl(var(--primary))" },
-  monthly_apc: { label: "APC", color: "hsl(var(--primary))" },
-}
+// Series colour for every InteractiveChart on the page — one accent, so the
+// tooltip swatch, the bars and the line always agree.
+const SERIES_COLOR = "hsl(var(--primary))"
 
 const KPI_COLORS: Record<string, string> = {
   blue: "border-blue-300 bg-blue-50 text-blue-900 dark:border-blue-900 dark:bg-blue-950 dark:text-blue-200",
@@ -273,6 +263,18 @@ function SectionHeaderRow({ children, control }: { children: ReactNode; control:
 // Categorical palette shared by pie slices and bar fills.
 const DRILL_PALETTE = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#0891b2", "#db2777", "#65a30d", "#ea580c", "#4f46e5"]
 
+// "2nd", "3rd", … — used in the drill-down prose ("the 3rd slowest station").
+function ordinalWord(n: number): string {
+  const rem100 = n % 100
+  if (rem100 >= 11 && rem100 <= 13) {return `${n}th`}
+  switch (n % 10) {
+    case 1: return `${n}st`
+    case 2: return `${n}nd`
+    case 3: return `${n}rd`
+    default: return `${n}th`
+  }
+}
+
 // Prep times are stored in ms and always read as "Xm Ys".
 function fmtPrepMs(ms: number | null | undefined): string {
   const total = Math.max(0, Math.round(Number(ms ?? 0) / 1000));
@@ -306,13 +308,11 @@ const csvEscape = (v: CsvCell): string => {
 const toCsv = (rows: CsvCell[][]): string => rows.map((r) => r.map(csvEscape).join(",")).join("\r\n")
 
 const csvSlug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
-const csvToday = () => {
-  const d = new Date()
-  const p = (n: number) => String(n).padStart(2, "0")
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
-}
-const csvFilename = (restaurant: string | undefined, section: string) =>
-  `${csvSlug(restaurant ?? "restaurant") || "restaurant"}-${csvSlug(section) || "section"}-${csvToday()}.csv`
+// A report filename is dated by the RESTAURANT's day — an export pulled at
+// 00:30 IST belongs to that business day, not to the viewer's yesterday.
+const csvToday = (timeZone: string) => todayInZone(timeZone)
+const csvFilename = (restaurant: string | undefined, section: string, timeZone: string) =>
+  `${csvSlug(restaurant ?? "restaurant") || "restaurant"}-${csvSlug(section) || "section"}-${csvToday(timeZone)}.csv`
 
 function downloadCsv(filename: string, rows: CsvCell[][]) {
   // No BOM: the file is plain UTF-8 (Blob text is encoded as UTF-8).
@@ -388,6 +388,22 @@ interface MetricDetail {
   rows?: DrillRow[]
   unit?: DrillUnit
   breakdownTitle?: string
+  /**
+   * Bar breakdowns are normally re-sorted biggest-first and capped at 8 (a
+   * ranking). Chronological drill-downs (a month, an hour) set this so the
+   * breakdown keeps the order it was built in and reads as a timeline.
+   */
+  keepOrder?: boolean
+  /**
+   * The filters the clicked element implies, shown as chips at the top of the
+   * dialog ("Section: pastry", "Window: last 30 days") so it is obvious which
+   * slice every number below belongs to.
+   */
+  filters?: string[]
+  /** Historical series for this data point, drawn as a small line chart. */
+  history?: { title?: string; rows: DrillRow[]; unit?: DrillUnit }
+  /** The underlying rows contributing to this data point. */
+  records?: { title?: string; columns: string[]; rows: (string | number)[][]; note?: string }
   footnote?: string
   link?: string
   linkLabel?: string
@@ -488,14 +504,77 @@ function ExplainerHint({ label, onOpen }: { label: string; onOpen: () => void })
 }
 
 // Theme-aware tooltip (the built-in recharts one is not) — mirrors the card
-// tooltip styling used elsewhere on the page.
-function DrillTooltip({ active, payload, fmt }: { active?: boolean; payload?: any[]; fmt: (n: number) => string }) {
+// tooltip styling used elsewhere on the page. Carries the same facts as the
+// InteractiveChart tooltip: exact value, share of the breakdown and rank.
+function DrillTooltip({ active, payload, fmt, rows }: { active?: boolean; payload?: any[]; fmt: (n: number) => string; rows: DrillRow[] }) {
   if (!active || !payload?.length) {return null}
   const p = payload[0]
+  const name = String(p?.payload?.name ?? "")
+  const value = Number(p?.value ?? 0)
+  const total = rows.reduce((s, r) => s + (Number.isFinite(r.value) ? r.value : 0), 0)
+  const rank = 1 + rows.filter((r) => r.value > value).length
   return (
-    <div className="rounded-lg border border-border/50 bg-background px-2.5 py-1.5 text-xs shadow-xl">
-      <div className="font-medium text-foreground">{p?.payload?.name}</div>
-      <div className="text-muted-foreground">{fmt(Number(p?.value ?? 0))}</div>
+    <div className="animate-in fade-in-0 zoom-in-95 min-w-[150px] rounded-lg border border-border/60 bg-background/95 px-2.5 py-1.5 text-xs shadow-xl backdrop-blur duration-150">
+      <div className="truncate font-semibold text-foreground">{name}</div>
+      <div className="mt-0.5 text-sm font-bold tabular-nums text-foreground">{fmt(value)}</div>
+      <div className="mt-1 space-y-0.5 border-t pt-1 text-[10px] text-muted-foreground">
+        {total > 0 && <div className="flex justify-between gap-3"><span>Share</span><span className="tabular-nums text-foreground">{Math.round((value / total) * 1000) / 10}%</span></div>}
+        <div className="flex justify-between gap-3"><span>Rank</span><span className="tabular-nums text-foreground">{rank} of {rows.length}</span></div>
+      </div>
+    </div>
+  )
+}
+
+// Historical mini-series inside the drill-down: how this metric has moved over
+// the periods the page already has in memory.
+function DrillHistory({ rows, fmt, title }: { rows: DrillRow[]; fmt: (n: number) => string; title?: string }) {
+  if (rows.length < 2) {return null}
+  return (
+    <div className="grid gap-1.5">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{title ?? "History"}</p>
+      <div className="h-[130px] w-full rounded-lg border p-1">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={rows} margin={{ top: 6, right: 10, left: 0, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+            <XAxis dataKey="name" tickLine={false} axisLine={false} tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 10 }} interval="preserveStartEnd" />
+            <YAxis width={44} tickLine={false} axisLine={false} tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 10 }} tickFormatter={(v: number) => fmt(Number(v))} />
+            <Tooltip content={(props) => <DrillTooltip {...props} fmt={fmt} rows={rows} />} />
+            <Line type="monotone" dataKey="value" stroke={SERIES_COLOR} strokeWidth={2} dot={{ r: 2 }} activeDot={{ r: 4 }} />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  )
+}
+
+// The underlying records behind a clicked element — the actual rows the number
+// was computed from, straight out of the payload the page already holds.
+function DrillRecords({ columns, rows, title, note }: { columns: string[]; rows: (string | number)[][]; title?: string; note?: string }) {
+  if (rows.length === 0) {return null}
+  return (
+    <div className="grid gap-1.5">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{title ?? "Underlying records"}</p>
+      <div className="max-h-[220px] overflow-auto rounded-lg border">
+        <table className="w-full text-xs">
+          <thead className="sticky top-0 bg-muted/70 text-left text-muted-foreground backdrop-blur">
+            <tr>
+              {columns.map((c, i) => (
+                <th key={c} className={`whitespace-nowrap px-2 py-1.5 font-medium ${i === 0 ? "" : "text-right"}`}>{c}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, ri) => (
+              <tr key={ri} className="border-t">
+                {r.map((cell, ci) => (
+                  <td key={ci} className={`px-2 py-1.5 ${ci === 0 ? "max-w-[180px] truncate font-medium" : "whitespace-nowrap text-right tabular-nums"}`}>{cell}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {note && <p className="text-[10px] text-muted-foreground">{note}</p>}
     </div>
   )
 }
@@ -551,7 +630,7 @@ function DrillChart({ rows, kind, fmt, total }: { rows: DrillRow[]; kind: "pie" 
                   <Cell key={i} fill={DRILL_PALETTE[i % DRILL_PALETTE.length]} stroke="hsl(var(--background))" strokeWidth={2} />
                 ))}
               </Pie>
-              <Tooltip content={(props) => <DrillTooltip {...props} fmt={fmt} />} />
+              <Tooltip content={(props) => <DrillTooltip {...props} fmt={fmt} rows={rows} />} />
             </PieChart>
           </ResponsiveContainer>
         </div>
@@ -575,7 +654,7 @@ function DrillChart({ rows, kind, fmt, total }: { rows: DrillRow[]; kind: "pie" 
               tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11 }}
               tickFormatter={(v: string) => (v && v.length > 16 ? `${v.slice(0, 15)}…` : v)}
             />
-            <Tooltip cursor={{ fill: "hsl(var(--muted))", fillOpacity: 0.5 }} content={(props) => <DrillTooltip {...props} fmt={fmt} />} />
+            <Tooltip cursor={{ fill: "hsl(var(--muted))", fillOpacity: 0.5 }} content={(props) => <DrillTooltip {...props} fmt={fmt} rows={rows} />} />
             <Bar dataKey="value" radius={[0, 4, 4, 0]}>
               {rows.map((_, i) => (
                 <Cell key={i} fill={DRILL_PALETTE[i % DRILL_PALETTE.length]} />
@@ -644,9 +723,11 @@ function MetricDetailDialog({ detail, explainers, money, onOpenChange, onOpenVie
   const fmt = (n: number) => formatDrill(n, unit, money)
   const kind: DrillChartKind = detail?.chart ?? ((detail?.rows?.length ?? 0) > 0 ? "bar" : "none")
   const raw = (detail?.rows ?? []).filter((r) => Number.isFinite(r.value))
-  // Bars: biggest first, capped at 8. Pies keep composition order.
-  const rows = kind === "bar" ? [...raw].sort((a, b) => b.value - a.value).slice(0, 8) : raw
+  // Bars: biggest first, capped at 8 (a ranking). Pies keep composition order,
+  // and so does an explicitly chronological breakdown (`keepOrder`).
+  const rows = kind === "bar" && !detail?.keepOrder ? [...raw].sort((a, b) => b.value - a.value).slice(0, 8) : raw
   const total = rows.reduce((s, r) => s + (r.value || 0), 0)
+  const historyFmt = (n: number) => formatDrill(n, detail?.history?.unit ?? unit, money)
 
   return (
     <Dialog open={detail != null} onOpenChange={onOpenChange}>
@@ -661,6 +742,17 @@ function MetricDetailDialog({ detail, explainers, money, onOpenChange, onOpenVie
               <div className="text-3xl font-bold">{detail.value}</div>
               {detail.sub && <p className="text-xs text-muted-foreground">{detail.sub}</p>}
             </DialogHeader>
+
+            {/* Filters carried in from the clicked element — the slice every
+                number below is scoped to. */}
+            {(detail.filters?.length ?? 0) > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Filter className="h-3 w-3 shrink-0 text-muted-foreground" />
+                {detail.filters?.map((f) => (
+                  <span key={f} className="rounded-full border bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">{f}</span>
+                ))}
+              </div>
+            )}
 
             <ExplainerBlock explainer={explainer} />
             {detail.note && <p className="text-sm text-muted-foreground">{detail.note}</p>}
@@ -681,6 +773,13 @@ function MetricDetailDialog({ detail, explainers, money, onOpenChange, onOpenVie
                   <DrillChart rows={rows} kind={kind} fmt={fmt} total={kind === "pie" ? (total || null) : null} />
                 </div>
               )
+            )}
+
+            {detail.history && (
+              <DrillHistory rows={detail.history.rows} fmt={historyFmt} title={detail.history.title} />
+            )}
+            {detail.records && (
+              <DrillRecords columns={detail.records.columns} rows={detail.records.rows} title={detail.records.title} note={detail.records.note} />
             )}
 
             {/* Footer actions. At least one is always present: a metric with no
@@ -713,12 +812,10 @@ function MetricDetailDialog({ detail, explainers, money, onOpenChange, onOpenVie
 // with the cooldown release date when it sent one. Names are capped so the
 // line stays a single readable row.
 const PAUSED_NAMES_SHOWN = 3;
-function pausedSummary(items: SuppressedSuggestion[], count: number): string {
+function pausedSummary(items: SuppressedSuggestion[], count: number, timeZone: string): string {
   const shown = items.slice(0, PAUSED_NAMES_SHOWN).map((s) => {
-    const when = s.reason === "cooldown" && s.retry_after ? new Date(s.retry_after) : null;
-    return when && !Number.isNaN(when.getTime())
-      ? `${s.name} (until ${when.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })})`
-      : s.name;
+    const when = s.reason === "cooldown" && s.retry_after ? formatLongDate(s.retry_after, timeZone, "") : "";
+    return when ? `${s.name} (until ${when})` : s.name;
   });
   const more = Math.max(0, count - shown.length);
   return `Paused: ${shown.join(", ")}${more > 0 ? ` and ${more} more` : ""}.`;
@@ -727,12 +824,10 @@ function pausedSummary(items: SuppressedSuggestion[], count: number): string {
 // The backend now sends a written `explanation` for every withheld item. This is
 // only the fallback for an older backend that sends the bare guard code — the
 // code itself is still what we branch on, never rendered.
-function suppressedExplanation(s: SuppressedSuggestion): string {
+function suppressedExplanation(s: SuppressedSuggestion, timeZone: string): string {
   if (s.explanation) {return s.explanation;}
-  const when = s.retry_after ? new Date(s.retry_after) : null;
-  const until = when && !Number.isNaN(when.getTime())
-    ? ` until ${when.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`
-    : "";
+  const whenText = s.retry_after ? formatLongDate(s.retry_after, timeZone, "") : "";
+  const until = whenText ? ` until ${whenText}` : "";
   switch (s.reason) {
     case "cooldown": return `Paused${until}: the price moved recently, so there isn't a full period of sales at the new price yet.`;
     case "drift_cap": return "Already as far from its original price as automatic suggestions are allowed to go.";
@@ -790,6 +885,7 @@ function PriceExplainer({ s, delta, deltaPct }: { s: PriceSuggestion; delta: str
 }
 
 function ActionableInsights({ view, onOpenView }: { view: ViewId; onOpenView: (v: ViewId) => void }) {
+  const { timezone } = useTimezone();
   const { user } = useAuth();
   const { currency, currencySymbol } = useCurrency();
   const { toast } = useToast();
@@ -1083,7 +1179,7 @@ function ActionableInsights({ view, onOpenView }: { view: ViewId; onOpenView: (v
                         rows.push([]);
                         rows.push([`Held back for now (${suppressed.count})`]);
                         rows.push(["Item", "Why it is paused"]);
-                        for (const s of suppressed.items) {rows.push([s.name, suppressedExplanation(s)]);}
+                        for (const s of suppressed.items) {rows.push([s.name, suppressedExplanation(s, timezone)]);}
                       }
                       return rows;
                     }}
@@ -1097,7 +1193,7 @@ function ActionableInsights({ view, onOpenView }: { view: ViewId; onOpenView: (v
                   exists — so a suggestion is never stacked on top of itself.
                 </CardDescription>
                 {hasSuppressed && (
-                  <p className="mt-1 text-xs text-muted-foreground">{pausedSummary(suppressed.items, suppressed.count)}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{pausedSummary(suppressed.items, suppressed.count, timezone)}</p>
                 )}
               </SectionHeaderRow>
             </CardHeader>
@@ -1137,7 +1233,7 @@ function ActionableInsights({ view, onOpenView }: { view: ViewId; onOpenView: (v
                     {suppressed.items.map((s, i) => (
                       <li key={s.id ?? `${s.name}-${i}`} className="text-xs">
                         <span className="font-medium">{s.name}</span>
-                        <span className="text-muted-foreground"> — {suppressedExplanation(s)}</span>
+                        <span className="text-muted-foreground"> — {suppressedExplanation(s, timezone)}</span>
                       </li>
                     ))}
                   </ul>
@@ -1156,7 +1252,7 @@ function ActionableInsights({ view, onOpenView }: { view: ViewId; onOpenView: (v
                   label="Price suggestions (all paused)"
                   build={() => [
                     ["Item", "Why it is paused"],
-                    ...suppressed.items.map((s) => [s.name, suppressedExplanation(s)]),
+                    ...suppressed.items.map((s) => [s.name, suppressedExplanation(s, timezone)]),
                   ]}
                 />
               }>
@@ -1172,7 +1268,7 @@ function ActionableInsights({ view, onOpenView }: { view: ViewId; onOpenView: (v
                 {suppressed.items.map((s, i) => (
                   <li key={s.id ?? `${s.name}-${i}`} className="text-xs">
                     <span className="font-medium">{s.name}</span>
-                    <span className="text-muted-foreground"> — {suppressedExplanation(s)}</span>
+                    <span className="text-muted-foreground"> — {suppressedExplanation(s, timezone)}</span>
                   </li>
                 ))}
               </ul>
@@ -1271,10 +1367,14 @@ function ActionableInsights({ view, onOpenView }: { view: ViewId; onOpenView: (v
 
 // Real operational charts (replaces the previous hardcoded mock data): peak order
 // times by hour and order volume by day of week, computed from actual orders.
-function OperationsCharts({ view }: { view: ViewId }) {
+function OperationsCharts({ view, onOpenView }: { view: ViewId; onOpenView: (v: ViewId) => void }) {
   const { user } = useAuth();
+  const { currencySymbol } = useCurrency();
+  const explainers = useMetricExplainers();
   const [data, setData] = useState<OperationsAnalytics | null>(null);
   const [loading, setLoading] = useState(true);
+  const [detail, setDetail] = useState<MetricDetail | null>(null);
+  const money = (n: number | null | undefined) => `${currencySymbol}${Number(n ?? 0).toFixed(0)}`;
 
   useEffect(() => {
     if (!user?.restaurantUsername) {return;}
@@ -1288,9 +1388,122 @@ function OperationsCharts({ view }: { view: ViewId }) {
 
   if (!inView(view, "operations")) {return null;}
 
-  const byHour = (data?.by_hour ?? []).map((h) => ({ time: `${String(h.hour).padStart(2, "0")}:00`, orders: h.orders }));
-  const byWeekday = (data?.by_weekday ?? []).map((w) => ({ day: w.label, orders: w.orders }));
-  const hasData = (data?.by_hour ?? []).some((h) => h.orders > 0);
+  const hours = data?.by_hour ?? [];
+  const weekdays = data?.by_weekday ?? [];
+  const byHour = hours.map((h) => ({ time: `${String(h.hour).padStart(2, "0")}:00`, orders: h.orders }));
+  const byWeekday = weekdays.map((w) => ({ day: w.label, orders: w.orders }));
+  const hasData = hours.some((h) => h.orders > 0);
+
+  const hourOrders = hours.reduce((s, h) => s + h.orders, 0);
+  const weekdayOrders = weekdays.reduce((s, w) => s + w.orders, 0);
+  const busiestHour = hours.reduce<typeof hours[number] | null>((m, h) => (h.orders > (m?.orders ?? -1) ? h : m), null);
+  const quietestHour = hours.filter((h) => h.orders > 0).reduce<typeof hours[number] | null>((m, h) => (h.orders < (m?.orders ?? Infinity) ? h : m), null);
+  const busiestDay = weekdays.reduce<typeof weekdays[number] | null>((m, w) => (w.orders > (m?.orders ?? -1) ? w : m), null);
+  const avgHourOrders = hours.length > 0 ? hourOrders / hours.length : 0;
+  const hourLabel = (h: number) => `${String(h).padStart(2, "0")}:00`;
+
+  // Hover points. Each carries the context the tooltip shows beyond the value:
+  // the money behind the count, and the average ticket.
+  const hourPoints: IvPoint[] = hours.map((h) => ({
+    key: `h-${h.hour}`,
+    label: hourLabel(h.hour),
+    value: h.orders,
+    caption: `${hourLabel(h.hour)}–${hourLabel((h.hour + 1) % 24)} UTC · last 30 days`,
+    meta: [
+      { label: "Revenue", value: money(h.revenue) },
+      { label: "Avg ticket", value: h.orders > 0 ? money(h.revenue / h.orders) : "—" },
+    ],
+  }));
+  const weekdayPoints: IvPoint[] = weekdays.map((w) => ({
+    key: `w-${w.weekday}`,
+    label: w.label,
+    value: w.orders,
+    caption: `Every ${w.label} in the last 30 days`,
+    meta: [
+      { label: "Revenue", value: money(w.revenue) },
+      { label: "Avg ticket", value: w.orders > 0 ? money(w.revenue / w.orders) : "—" },
+    ],
+  }));
+
+  // Clicking an hour: how it compares, what it earned, and the whole day's
+  // shape as history so the peak is visible in context.
+  const openHour = (index: number) => {
+    const h = hours[index];
+    if (!h) {return;}
+    const share = hourOrders > 0 ? (h.orders / hourOrders) * 100 : 0;
+    const rank = 1 + hours.filter((x) => x.orders > h.orders).length;
+    setDetail({
+      title: `Orders at ${hourLabel(h.hour)}`,
+      value: `${h.orders}`,
+      sub: `${hourLabel(h.hour)}–${hourLabel((h.hour + 1) % 24)} UTC · last 30 days`,
+      filters: [`Hour: ${hourLabel(h.hour)} UTC`, "Window: last 30 days", "Metric: orders placed"],
+      note: [
+        `This hour took ${h.orders} of the ${hourOrders} orders in the window (${Math.round(share * 10) / 10}%) and ${money(h.revenue)} of revenue — the ${rank === 1 ? "busiest" : `${ordinalWord(rank)} busiest`} hour of the day, against an average hour of ${Math.round(avgHourOrders * 10) / 10}.`,
+        rank > 1 && busiestHour ? `Your peak is ${hourLabel(busiestHour.hour)} with ${busiestHour.orders}.` : "",
+      ].filter(Boolean).join(" "),
+      chart: "bar",
+      keepOrder: true,
+      unit: "count",
+      breakdownTitle: "How this hour compares",
+      rows: [
+        { name: hourLabel(h.hour), value: h.orders },
+        { name: busiestHour ? `Busiest (${hourLabel(busiestHour.hour)})` : "Busiest", value: busiestHour?.orders ?? 0 },
+        { name: "Average hour", value: Math.round(avgHourOrders * 10) / 10 },
+        { name: quietestHour ? `Quietest (${hourLabel(quietestHour.hour)})` : "Quietest", value: quietestHour?.orders ?? 0 },
+      ],
+      history: { title: "Orders across the whole day", rows: hours.map((x) => ({ name: hourLabel(x.hour), value: x.orders })), unit: "count" },
+      records: {
+        title: "Figures behind this hour",
+        columns: ["Measure", "Value"],
+        rows: [
+          ["Orders", h.orders],
+          ["Revenue", money(h.revenue)],
+          ["Average ticket", h.orders > 0 ? money(h.revenue / h.orders) : "—"],
+          ["Share of 30-day orders", `${Math.round(share * 10) / 10}%`],
+          ["Rank among 24 hours", `${rank} of ${hours.length}`],
+        ],
+      },
+      footnote: "Last 30 days · times are UTC",
+      link: "/dashboard/orders",
+      linkLabel: "Open orders",
+      view: "operations",
+    });
+  };
+
+  const openWeekday = (index: number) => {
+    const w = weekdays[index];
+    if (!w) {return;}
+    const share = weekdayOrders > 0 ? (w.orders / weekdayOrders) * 100 : 0;
+    const rank = 1 + weekdays.filter((x) => x.orders > w.orders).length;
+    setDetail({
+      title: `${w.label} orders`,
+      value: `${w.orders}`,
+      sub: `Every ${w.label} in the last 30 days`,
+      filters: [`Day: ${w.label}`, "Window: last 30 days", "Metric: orders placed"],
+      note: `${w.label} carried ${Math.round(share * 10) / 10}% of the week's ${weekdayOrders} orders and ${money(w.revenue)} of revenue — ${rank === 1 ? "your busiest day" : `the ${ordinalWord(rank)} busiest day, behind ${busiestDay?.label ?? "—"}`}.`,
+      chart: "bar",
+      keepOrder: true,
+      unit: "count",
+      breakdownTitle: "Orders by day of week",
+      rows: weekdays.map((x) => ({ name: x.label, value: x.orders })),
+      history: { title: "Revenue by day of week", rows: weekdays.map((x) => ({ name: x.label.slice(0, 3), value: x.revenue })), unit: "money" },
+      records: {
+        title: "Figures behind this day",
+        columns: ["Measure", "Value"],
+        rows: [
+          ["Orders", w.orders],
+          ["Revenue", money(w.revenue)],
+          ["Average ticket", w.orders > 0 ? money(w.revenue / w.orders) : "—"],
+          ["Share of week", `${Math.round(share * 10) / 10}%`],
+          ["Rank", `${rank} of ${weekdays.length}`],
+        ],
+      },
+      footnote: "Last 30 days",
+      link: "/dashboard/orders",
+      linkLabel: "Open orders",
+      view: "operations",
+    });
+  };
 
   const empty = (
     <div className="py-10 text-center text-muted-foreground">No orders in the last 30 days yet.</div>
@@ -1311,20 +1524,22 @@ function OperationsCharts({ view }: { view: ViewId }) {
             />
           ) : null}>
             <CardTitle>Peak Order Times</CardTitle>
-            <CardDescription>Order volume by hour of day (UTC), last 30 days.</CardDescription>
+            <CardDescription>Order volume by hour of day (UTC), last 30 days. Hover any hour for its figures; click it for the full breakdown.</CardDescription>
           </SectionHeaderRow>
         </CardHeader>
         <CardContent>
           {loading ? spinner : !hasData ? empty : (
-            <ChartContainer config={ordersChartConfig} className="h-[260px] w-full">
-              <LineChart data={byHour} margin={{ top: 5, right: 10, left: -20, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="time" interval={2} />
-                <YAxis allowDecimals={false} />
-                <ChartTooltip content={<ChartTooltipContent />} />
-                <Line type="monotone" dataKey="orders" stroke="var(--color-orders)" strokeWidth={2} dot={false} />
-              </LineChart>
-            </ChartContainer>
+            <InteractiveChart
+              kind="line"
+              points={hourPoints}
+              fmt={(n) => `${Math.round(n * 10) / 10}`}
+              seriesLabel="orders"
+              chartLabel="Orders by hour of day"
+              color={SERIES_COLOR}
+              height={260}
+              xInterval={2}
+              onSelect={(_p, i) => { openHour(i); }}
+            />
           )}
         </CardContent>
       </Card>
@@ -1338,23 +1553,26 @@ function OperationsCharts({ view }: { view: ViewId }) {
             />
           ) : null}>
             <CardTitle>Orders by Day of Week</CardTitle>
-            <CardDescription>Which days are busiest, last 30 days.</CardDescription>
+            <CardDescription>Which days are busiest, last 30 days. Every bar is hoverable and clickable.</CardDescription>
           </SectionHeaderRow>
         </CardHeader>
         <CardContent>
           {loading ? spinner : !hasData ? empty : (
-            <ChartContainer config={ordersChartConfig} className="h-[280px] w-full">
-              <BarChart data={byWeekday} margin={{ top: 5, right: 10, left: -20, bottom: 5 }}>
-                <CartesianGrid vertical={false} />
-                <XAxis dataKey="day" />
-                <YAxis allowDecimals={false} />
-                <ChartTooltip content={<ChartTooltipContent />} />
-                <Bar dataKey="orders" fill="var(--color-orders)" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ChartContainer>
+            <InteractiveChart
+              kind="bar"
+              points={weekdayPoints}
+              fmt={(n) => `${Math.round(n * 10) / 10}`}
+              seriesLabel="orders"
+              chartLabel="Orders by day of week"
+              color={SERIES_COLOR}
+              height={280}
+              onSelect={(_p, i) => { openWeekday(i); }}
+            />
           )}
         </CardContent>
       </Card>
+
+      <MetricDetailDialog detail={detail} explainers={explainers} money={money} onOpenView={onOpenView} onOpenChange={(o) => { if (!o) {setDetail(null);} }} />
     </div>
   );
 }
@@ -1366,6 +1584,23 @@ function OperationsCharts({ view }: { view: ViewId }) {
 // This is a FIRST-CLASS section: it has its own "Kitchen" view, still appears in
 // Operations/Everything, and shows a compact cut on Overview so the numbers are
 // discoverable without hunting through the view picker.
+
+// `by_section_items` — item-wise prep time grouped per kitchen section. Additive
+// on the wire (an older backend simply omits it), and typed here rather than in
+// db.ts because it is read by exactly one card. Each entry is the station's own
+// aggregate plus the individual dishes routed to it; `dishes` is capped server
+// side at 25, with `dishes_total` giving the true count.
+interface KitchenSectionItems {
+  section: string
+  items_timed: number
+  avg_prep_ms: number
+  max_prep_ms: number
+  p90_prep_ms?: number
+  dishes_total: number
+  dishes: KitchenDishStat[]
+}
+type KitchenAnalyticsWithItems = KitchenAnalytics & { by_section_items?: KitchenSectionItems[] }
+
 function KitchenAnalyticsView({ view, onOpenView }: { view: ViewId; onOpenView: (v: ViewId) => void }) {
   const { user } = useAuth();
   const { currency, currencySymbol } = useCurrency();
@@ -1375,6 +1610,9 @@ function KitchenAnalyticsView({ view, onOpenView }: { view: ViewId; onOpenView: 
   const [dishSort, setDishSort] = useSectionSort("avg_prep_ms");
   const [sectionSort, setSectionSort] = useSectionSort("avg_prep_ms");
   const [detail, setDetail] = useState<MetricDetail | null>(null);
+  // Set by clicking a bar in the item-wise chart: the station the item table
+  // below is filtered to. null = every station.
+  const [itemSection, setItemSection] = useState<string | null>(null);
   const money = (n: number | null | undefined) => `${currencySymbol}${Number(n ?? 0).toFixed(0)}`;
   // Every prep-time drill-down belongs to the Kitchen view, so stamp it once
   // here rather than repeating `view: "kitchen"` on seven detail objects.
@@ -1417,6 +1655,9 @@ function KitchenAnalyticsView({ view, onOpenView }: { view: ViewId; onOpenView: 
   const summary = data?.order_summary;
   const byDishRaw = data?.by_dish ?? [];
   const bySectionRaw = data?.by_section ?? [];
+  // Item-wise prep time per kitchen section. Built from the FULL dish set server
+  // side, so a fast station is never empty just because it missed the by_dish cap.
+  const sectionItems: KitchenSectionItems[] = (data as KitchenAnalyticsWithItems | null)?.by_section_items ?? [];
   const hasData = (summary?.orders_timed ?? 0) > 0 || byDishRaw.length > 0 || bySectionRaw.length > 0;
   const periodDays = data?.period_days ?? 30;
   const windowLabel = `Last ${periodDays} days`;
@@ -1531,6 +1772,117 @@ function KitchenAnalyticsView({ view, onOpenView }: { view: ViewId; onOpenView: 
     footnote: windowLabel,
   });
 
+  // --- Item-wise prep time per kitchen section ------------------------------
+  // The chart is the station roll-up; the tables beneath are the individual
+  // dishes inside each station. Clicking a bar pre-applies that station as the
+  // table's filter AND opens the station drill-down, so one click both narrows
+  // the page and explains what was clicked.
+  const itemSectionP90 = (s: KitchenSectionItems) => s.p90_prep_ms ?? s.max_prep_ms;
+  const sectionItemsSorted = [...sectionItems].sort((a, b) => b.avg_prep_ms - a.avg_prep_ms);
+  const kitchenAvg = Number(summary?.avg_prep_ms ?? 0);
+  const sectionItemPoints: IvPoint[] = sectionItemsSorted.map((s) => ({
+    key: `si-${s.section}`,
+    label: s.section,
+    value: s.avg_prep_ms,
+    caption: `${s.dishes_total} dish${s.dishes_total === 1 ? "" : "es"} · ${s.items_timed} item${s.items_timed === 1 ? "" : "s"} timed · ${windowLabel.toLowerCase()}`,
+    meta: [
+      { label: "P90", value: fmtPrepMs(itemSectionP90(s)) },
+      { label: "Slowest item", value: fmtPrepMs(s.max_prep_ms) },
+      { label: "vs kitchen avg", value: kitchenAvg > 0 ? `${s.avg_prep_ms >= kitchenAvg ? "+" : "−"}${fmtPrepMs(Math.abs(s.avg_prep_ms - kitchenAvg))}` : "—" },
+    ],
+  }));
+  const shownSectionItems = itemSection ? sectionItemsSorted.filter((s) => s.section === itemSection) : sectionItemsSorted;
+
+  // Drill-down for a whole station in the item-wise view.
+  const sectionItemsDetail = (s: KitchenSectionItems): MetricDetail => {
+    const totalItems = sectionItems.reduce((n, x) => n + x.items_timed, 0);
+    const share = totalItems > 0 ? (s.items_timed / totalItems) * 100 : 0;
+    const rank = 1 + sectionItems.filter((x) => x.avg_prep_ms > s.avg_prep_ms).length;
+    const slowest = [...s.dishes].sort((a, b) => b.avg_prep_ms - a.avg_prep_ms)[0];
+    return {
+      title: `${s.section} — item-wise prep`,
+      value: fmtPrepMs(s.avg_prep_ms),
+      sub: `${s.dishes_total} dish${s.dishes_total === 1 ? "" : "es"} · ${s.items_timed} item${s.items_timed === 1 ? "" : "s"} timed`,
+      filters: [`Section: ${s.section}`, `Window: last ${periodDays} days`, "Metric: average prep time"],
+      explainerKey: "section_avg_prep",
+      note: [
+        `${s.section} handled ${s.items_timed} of the ${totalItems} timed items (${Math.round(share * 10) / 10}%) and is the ${rank === 1 ? "slowest" : `${ordinalWord(rank)} slowest`} of ${sectionItems.length} station${sectionItems.length === 1 ? "" : "s"}.`,
+        kitchenAvg > 0 ? `That is ${s.avg_prep_ms >= kitchenAvg ? "above" : "below"} the ${fmtPrepMs(kitchenAvg)} kitchen average by ${fmtPrepMs(Math.abs(s.avg_prep_ms - kitchenAvg))}.` : "",
+        `Nine in ten of its items were out inside ${fmtPrepMs(itemSectionP90(s))}; the slowest single item took ${fmtPrepMs(s.max_prep_ms)}.`,
+        slowest ? `Its slowest dish is ${slowest.name} at ${fmtPrepMs(slowest.avg_prep_ms)}.` : "",
+      ].filter(Boolean).join(" "),
+      chart: "bar",
+      unit: "ms",
+      breakdownTitle: "Slowest dishes in this station",
+      rows: s.dishes.map((d) => ({ name: d.name, value: d.avg_prep_ms })),
+      records: {
+        title: `Every timed dish in ${s.section}`,
+        columns: ["Dish", "Timed", "Avg", "P90", "Max"],
+        rows: [...s.dishes]
+          .sort((a, b) => b.avg_prep_ms - a.avg_prep_ms)
+          .map((d) => [d.name, d.count, fmtPrepMs(d.avg_prep_ms), fmtPrepMs(dishP90(d)), fmtPrepMs(d.max_prep_ms)]),
+        note: s.dishes.length < s.dishes_total ? `Showing the ${s.dishes.length} slowest of ${s.dishes_total} dishes routed here.` : undefined,
+      },
+      footnote: windowLabel,
+      link: "/dashboard/menu",
+      linkLabel: "Open menu",
+    };
+  };
+
+  // Drill-down for a single dish inside a station.
+  const sectionItemDishDetail = (s: KitchenSectionItems, d: KitchenDishStat): MetricDetail => {
+    const share = s.items_timed > 0 ? (d.count / s.items_timed) * 100 : 0;
+    const rank = 1 + s.dishes.filter((x) => x.avg_prep_ms > d.avg_prep_ms).length;
+    const spread = d.min_prep_ms != null ? d.max_prep_ms - d.min_prep_ms : null;
+    return {
+      title: d.name,
+      value: fmtPrepMs(d.avg_prep_ms),
+      sub: `${s.section} · ${d.count} timing${d.count === 1 ? "" : "s"} recorded`,
+      filters: [`Section: ${s.section}`, `Dish: ${d.name}`, `Window: last ${periodDays} days`],
+      explainerKey: "avg_prep_ms",
+      note: [
+        `${d.name} was timed ${d.count} time${d.count === 1 ? "" : "s"}, ${Math.round(share * 10) / 10}% of everything ${s.section} sent out, and is the ${rank === 1 ? "slowest" : `${ordinalWord(rank)} slowest`} of the ${s.dishes.length} dish${s.dishes.length === 1 ? "" : "es"} shown for that station.`,
+        `Its station averages ${fmtPrepMs(s.avg_prep_ms)} and the whole kitchen ${fmtPrepMs(kitchenAvg)}.`,
+        spread != null ? `Fastest to slowest spans ${fmtPrepMs(spread)}, so ${spread > d.avg_prep_ms ? "the timings are very uneven — one bad ticket is moving this average" : "the timings are fairly consistent"}.` : "",
+        d.count <= 2 ? "Only a couple of timings, so treat this average as indicative rather than settled." : "",
+      ].filter(Boolean).join(" "),
+      chart: "bar",
+      keepOrder: true,
+      unit: "ms",
+      breakdownTitle: "This dish's own spread",
+      rows: [
+        ...(d.min_prep_ms != null ? [{ name: "Fastest", value: d.min_prep_ms }] : []),
+        { name: "Average", value: d.avg_prep_ms },
+        { name: "P90", value: dishP90(d) },
+        { name: "Slowest", value: d.max_prep_ms },
+      ],
+      records: {
+        title: `Its neighbours in ${s.section}`,
+        columns: ["Dish", "Timed", "Avg", "P90", "Max"],
+        rows: [...s.dishes]
+          .sort((a, b) => b.avg_prep_ms - a.avg_prep_ms)
+          .map((x) => [x.name === d.name ? `${x.name} ◀` : x.name, x.count, fmtPrepMs(x.avg_prep_ms), fmtPrepMs(dishP90(x)), fmtPrepMs(x.max_prep_ms)]),
+        note: "◀ marks the dish you clicked.",
+      },
+      footnote: windowLabel,
+      link: "/dashboard/menu",
+      linkLabel: "Open menu",
+    };
+  };
+
+  const sectionItemsCardDetail: MetricDetail = {
+    title: "Item-wise prep by section",
+    value: fmtPrepMs(kitchenAvg),
+    sub: `${sectionItems.length} station${sectionItems.length === 1 ? "" : "s"} · ${sectionItems.reduce((n, s) => n + s.items_timed, 0)} items timed`,
+    explainerKey: "section_avg_prep",
+    note: "Each station's own average, and every dish routed to it. A station's number is the average of its items, not of its dishes — a single high-volume dish therefore moves it more than a rare one.",
+    chart: "bar",
+    unit: "ms",
+    breakdownTitle: "Average prep by kitchen section",
+    rows: sectionItems.map((s) => ({ name: s.section, value: s.avg_prep_ms })),
+    footnote: windowLabel,
+  };
+
   const spinner = <Card><CardContent className="py-10 text-center text-muted-foreground">Loading kitchen timings…</CardContent></Card>;
 
   if (loading) {return spinner;}
@@ -1637,6 +1989,140 @@ function KitchenAnalyticsView({ view, onOpenView }: { view: ViewId; onOpenView: 
         </Card>
       )}
 
+      {/* NEW: item-wise prep time grouped per kitchen section. The chart is the
+          station roll-up; the panels below are the individual dishes inside each
+          station. Clicking a bar filters the panels to that station. */}
+      {sectionItems.length > 0 && !compact && (
+        <Card>
+          <CardHeader>
+            <SectionHeaderRow control={
+              <HeaderControls>
+                {itemSection && (
+                  <Button variant="outline" size="sm" className="shrink-0" onClick={() => { setItemSection(null); }}>
+                    <X className="mr-1 h-3.5 w-3.5" /> Clear filter
+                  </Button>
+                )}
+                <SectionDownload
+                  id="kitchen-section-items"
+                  label="Kitchen — item-wise prep by section"
+                  build={() => [
+                    ["Section", "Dish", "Timed count", "Avg prep", "P90 prep", "Max prep", "Fastest", "Section avg", "Section items timed"],
+                    // Exactly the rows on screen: the filter, and the same order.
+                    ...shownSectionItems.flatMap((s) =>
+                      [...s.dishes]
+                        .sort((a, b) => b.avg_prep_ms - a.avg_prep_ms)
+                        .map((d) => [
+                          s.section, d.name, d.count,
+                          fmtPrepMs(d.avg_prep_ms), fmtPrepMs(dishP90(d)), fmtPrepMs(d.max_prep_ms),
+                          d.min_prep_ms != null ? fmtPrepMs(d.min_prep_ms) : "",
+                          fmtPrepMs(s.avg_prep_ms), s.items_timed,
+                        ]),
+                    ),
+                  ]}
+                />
+              </HeaderControls>
+            }>
+              <CardTitle className="flex items-center gap-2">
+                Item-wise prep time by kitchen section
+                <ExplainerHint label="item-wise prep time by section" onOpen={() => { openDetail(sectionItemsCardDetail); }} />
+              </CardTitle>
+              <CardDescription>
+                Every station&apos;s average, and the individual dishes behind it. Hover a bar for the station&apos;s figures; click it to filter the list below to that station and open its breakdown.
+              </CardDescription>
+            </SectionHeaderRow>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <InteractiveChart
+              kind="bar"
+              points={sectionItemPoints}
+              fmt={(n) => fmtPrepMs(n)}
+              tickFmt={(n) => `${Math.round(Number(n) / 60000)}m`}
+              seriesLabel="average prep"
+              chartLabel="Average prep time by kitchen section"
+              color={SERIES_COLOR}
+              height={240}
+              onSelect={(p) => { setItemSection(p.label); openDetail(sectionItemsDetail(sectionItemsSorted.find((s) => s.section === p.label) ?? sectionItemsSorted[0])); }}
+            />
+
+            {itemSection && (
+              <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                <Filter className="h-3 w-3 text-muted-foreground" />
+                <span className="text-muted-foreground">Filtered to</span>
+                <span className="rounded-full border bg-primary/10 px-2 py-0.5 font-medium text-primary">{itemSection}</span>
+                <button
+                  type="button"
+                  onClick={() => { setItemSection(null); }}
+                  className="rounded-md px-1.5 py-0.5 font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                >
+                  Show all {sectionItemsSorted.length} stations
+                </button>
+              </div>
+            )}
+
+            {shownSectionItems.map((s) => (
+              <div key={s.section} className="rounded-lg border">
+                <button
+                  type="button"
+                  onClick={() => { openDetail(sectionItemsDetail(s)); }}
+                  className="group flex w-full flex-wrap items-center justify-between gap-2 rounded-t-lg border-b bg-muted/40 px-3 py-2 text-left transition-colors hover:bg-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                  aria-label={`${s.section}: average prep ${fmtPrepMs(s.avg_prep_ms)} across ${s.items_timed} timed items. Press Enter for a detailed breakdown.`}
+                >
+                  <span className="flex min-w-0 items-center gap-2">
+                    <Flame className="h-4 w-4 shrink-0 text-orange-500" />
+                    <span className="truncate text-sm font-semibold">{s.section}</span>
+                    <span className="shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                      {s.dishes_total} dish{s.dishes_total === 1 ? "" : "es"} · {s.items_timed} timed
+                    </span>
+                  </span>
+                  <span className="flex shrink-0 items-center gap-3 text-xs">
+                    <span className="tabular-nums text-muted-foreground">p90 {fmtPrepMs(itemSectionP90(s))}</span>
+                    <span className="text-sm font-bold tabular-nums">{fmtPrepMs(s.avg_prep_ms)}</span>
+                    <ChevronRight className="h-3.5 w-3.5 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+                  </span>
+                </button>
+                <div className="max-h-72 overflow-y-auto">
+                  <table className="w-full text-sm">
+                    <thead className="sticky top-0 bg-background text-left text-xs text-muted-foreground">
+                      <tr className="border-b">
+                        <th className="py-1.5 pl-3 pr-2 font-medium">Dish</th>
+                        <th className="py-1.5 pr-2 text-right font-medium">Timed</th>
+                        <th className="py-1.5 pr-2 text-right font-medium">Avg</th>
+                        <th className="py-1.5 pr-2 text-right font-medium">P90</th>
+                        <th className="py-1.5 pr-3 text-right font-medium">Max</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...s.dishes].sort((a, b) => b.avg_prep_ms - a.avg_prep_ms).map((d, i) => (
+                        <tr
+                          key={`${s.section}-${d.id ?? d.name}-${i}`}
+                          tabIndex={0}
+                          role="button"
+                          aria-label={`${d.name} in ${s.section}: average prep ${fmtPrepMs(d.avg_prep_ms)} over ${d.count} timings. Press Enter for a detailed breakdown.`}
+                          onClick={() => { openDetail(sectionItemDishDetail(s, d)); }}
+                          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openDetail(sectionItemDishDetail(s, d)); } }}
+                          className="cursor-pointer border-b transition-colors last:border-0 hover:bg-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+                        >
+                          <td className="max-w-[220px] truncate py-1.5 pl-3 pr-2 font-medium" title={d.min_prep_ms != null ? `Fastest recorded: ${fmtPrepMs(d.min_prep_ms)}` : undefined}>{d.name}</td>
+                          <td className="py-1.5 pr-2 text-right tabular-nums">{d.count}</td>
+                          <td className="py-1.5 pr-2 text-right font-semibold tabular-nums">{fmtPrepMs(d.avg_prep_ms)}</td>
+                          <td className="py-1.5 pr-2 text-right tabular-nums text-muted-foreground">{fmtPrepMs(dishP90(d))}</td>
+                          <td className="py-1.5 pr-3 text-right tabular-nums text-muted-foreground">{fmtPrepMs(d.max_prep_ms)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {s.dishes.length < s.dishes_total && (
+                  <p className="border-t px-3 py-1.5 text-[11px] text-muted-foreground">
+                    Showing the {s.dishes.length} slowest of {s.dishes_total} dishes routed to {s.section}.
+                  </p>
+                )}
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
       {byDishRaw.length > 0 && (
         <Card>
           <CardHeader>
@@ -1730,10 +2216,13 @@ function KitchenAnalyticsView({ view, onOpenView }: { view: ViewId; onOpenView: 
 }
 
 function PerformanceTrends({ view, onOpenView }: { view: ViewId; onOpenView: (v: ViewId) => void }) {
+  const { timezone } = useTimezone();
   const { user } = useAuth();
   const { currency, currencySymbol } = useCurrency();
   const [data, setData] = useState<ApcTrendPoint[] | null>(null);
   const [loading, setLoading] = useState(true);
+  const [detail, setDetail] = useState<MetricDetail | null>(null);
+  const explainers = useMetricExplainers();
   const money = (n: number | null | undefined) => `${currencySymbol}${Number(n ?? 0).toFixed(0)}`;
 
   useEffect(() => {
@@ -1754,6 +2243,107 @@ function PerformanceTrends({ view, onOpenView }: { view: ViewId; onOpenView: (v:
   const hasData = series.some((p) => p.total_revenue > 0 || p.bills > 0);
   const spinner = <div className="py-10 text-center text-muted-foreground">Loading…</div>;
   const empty = <div className="py-10 text-center text-muted-foreground">No revenue recorded in the last 12 months yet.</div>;
+
+  // Compact axis money so a 6-figure month still fits the 52px gutter.
+  const moneyTick = (n: number) => {
+    const v = Number(n ?? 0);
+    if (Math.abs(v) >= 1_000_000) {return `${currencySymbol}${(v / 1_000_000).toFixed(1)}M`;}
+    if (Math.abs(v) >= 1_000) {return `${currencySymbol}${Math.round(v / 1_000)}k`;}
+    return `${currencySymbol}${Math.round(v)}`;
+  };
+  const monthCaption = (p: ApcTrendPoint) =>
+    p.period_start ? formatMonth(p.period_start, timezone, true, p.month) : p.month;
+  const revenuePoints: IvPoint[] = series.map((p) => ({
+    key: `rev-${p.month}`,
+    label: p.month,
+    value: Number(p.total_revenue ?? 0),
+    caption: monthCaption(p),
+    meta: [
+      { label: "Bills", value: `${p.bills}` },
+      { label: "Covers", value: `${p.total_covers}` },
+      { label: "APC", value: money(p.monthly_apc) },
+    ],
+  }));
+  const apcPoints: IvPoint[] = series.map((p) => ({
+    key: `apc-${p.month}`,
+    label: p.month,
+    value: Number(p.monthly_apc ?? 0),
+    caption: monthCaption(p),
+    meta: [
+      { label: "Revenue", value: money(p.total_revenue) },
+      { label: "Covers", value: `${p.total_covers}` },
+      { label: "Bills", value: `${p.bills}` },
+    ],
+  }));
+
+  // One month, opened from either chart. `focus` decides which number is the
+  // headline; everything else becomes supporting context for the same month.
+  const openMonth = (index: number, focus: "revenue" | "apc") => {
+    const p = series[index];
+    if (!p) {return;}
+    const prev = index > 0 ? series[index - 1] : null;
+    const totalRevenue = series.reduce((s, x) => s + Number(x.total_revenue ?? 0), 0);
+    const share = totalRevenue > 0 ? (Number(p.total_revenue ?? 0) / totalRevenue) * 100 : 0;
+    const revRank = 1 + series.filter((x) => Number(x.total_revenue ?? 0) > Number(p.total_revenue ?? 0)).length;
+    const isRevenue = focus === "revenue";
+    // Deltas are always quoted for the metric you clicked, with the other one
+    // trailing as context.
+    const cur = isRevenue ? Number(p.total_revenue ?? 0) : Number(p.monthly_apc ?? 0);
+    const was = prev ? (isRevenue ? Number(prev.total_revenue ?? 0) : Number(prev.monthly_apc ?? 0)) : null;
+    const delta = was != null ? cur - was : null;
+    const deltaPct = was != null && was !== 0 ? ((cur - was) / Math.abs(was)) * 100 : null;
+    const otherDelta = prev
+      ? (isRevenue ? Number(p.monthly_apc ?? 0) - Number(prev.monthly_apc ?? 0) : Number(p.total_revenue ?? 0) - Number(prev.total_revenue ?? 0))
+      : null;
+    setDetail({
+      title: isRevenue ? `Revenue — ${p.month}` : `APC — ${p.month}`,
+      value: isRevenue ? money(p.total_revenue) : money(p.monthly_apc),
+      sub: monthCaption(p),
+      filters: [`Month: ${p.month}`, `Metric: ${isRevenue ? "revenue" : "average per cover"}`, "Window: last 12 months"],
+      explainerKey: isRevenue ? "revenue" : "apc",
+      note: [
+        isRevenue
+          ? `${p.month} took ${money(p.total_revenue)} across ${p.bills} bill${p.bills === 1 ? "" : "s"} and ${p.total_covers} cover${p.total_covers === 1 ? "" : "s"} — ${Math.round(share * 10) / 10}% of the last 12 months, the ${ordinalWord(revRank)} biggest of ${series.length}.`
+          : `Each cover spent ${money(p.monthly_apc)} on average in ${p.month}, from ${money(p.total_revenue)} over ${p.total_covers} cover${p.total_covers === 1 ? "" : "s"}.`,
+        prev && delta != null
+          ? `That is ${delta >= 0 ? "up" : "down"} ${money(Math.abs(delta))}${deltaPct != null ? ` (${Math.abs(Math.round(deltaPct * 10) / 10)}%)` : ""} on ${prev.month}${otherDelta != null ? `, with ${isRevenue ? "APC" : "revenue"} ${otherDelta >= 0 ? "up" : "down"} ${money(Math.abs(otherDelta))}` : ""}.`
+          : "This is the first month in the window, so there is nothing to compare it against yet.",
+      ].join(" "),
+      chart: "bar",
+      keepOrder: true,
+      unit: "money",
+      breakdownTitle: prev ? `${prev.month} vs ${p.month}` : "This month",
+      rows: [
+        ...(prev ? [{ name: `${prev.month} revenue`, value: Number(prev.total_revenue ?? 0) }] : []),
+        { name: `${p.month} revenue`, value: Number(p.total_revenue ?? 0) },
+        ...(prev ? [{ name: `${prev.month} APC`, value: Number(prev.monthly_apc ?? 0) }] : []),
+        { name: `${p.month} APC`, value: Number(p.monthly_apc ?? 0) },
+      ],
+      history: {
+        title: isRevenue ? "Revenue across the last 12 months" : "APC across the last 12 months",
+        rows: series.map((x) => ({ name: x.month, value: Number(isRevenue ? x.total_revenue ?? 0 : x.monthly_apc ?? 0) })),
+        unit: "money",
+      },
+      records: {
+        title: "The months behind this trend",
+        columns: ["Month", "Revenue", "Covers", "Bills", "APC"],
+        // Newest first, matching the table on the card, with the clicked month
+        // marked so it is findable in a 12-row list.
+        rows: [...series].reverse().map((x) => [
+          x.month === p.month ? `${x.month} ◀` : x.month,
+          money(x.total_revenue),
+          x.total_covers,
+          x.bills,
+          money(x.monthly_apc),
+        ]),
+        note: "◀ marks the month you clicked.",
+      },
+      footnote: "Last 12 months",
+      link: "/dashboard/accounting",
+      linkLabel: "Open accounting",
+      view: "sales",
+    });
+  };
 
   return (
     <div className="grid gap-4 md:gap-8">
@@ -1778,20 +2368,22 @@ function PerformanceTrends({ view, onOpenView }: { view: ViewId; onOpenView: (v:
             </HeaderControls>
           }>
             <CardTitle>Revenue over time</CardTitle>
-            <CardDescription>Monthly revenue across the last 12 months.</CardDescription>
+            <CardDescription>Monthly revenue across the last 12 months. Hover a month for bills, covers and APC; click it for the month&apos;s full breakdown.</CardDescription>
           </SectionHeaderRow>
         </CardHeader>
         <CardContent>
           {loading ? spinner : !hasData ? empty : (
-            <ChartContainer config={trendsChartConfig} className="h-[280px] w-full">
-              <BarChart data={series} margin={{ top: 5, right: 10, left: -20, bottom: 5 }}>
-                <CartesianGrid vertical={false} />
-                <XAxis dataKey="month" />
-                <YAxis />
-                <ChartTooltip content={<ChartTooltipContent />} />
-                <Bar dataKey="total_revenue" fill="var(--color-total_revenue)" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ChartContainer>
+            <InteractiveChart
+              kind="bar"
+              points={revenuePoints}
+              fmt={(n) => money(n)}
+              tickFmt={moneyTick}
+              seriesLabel="revenue"
+              chartLabel="Monthly revenue, last 12 months"
+              color={SERIES_COLOR}
+              height={280}
+              onSelect={(_p, i) => { openMonth(i, "revenue"); }}
+            />
           )}
         </CardContent>
       </Card>
@@ -1816,21 +2408,24 @@ function PerformanceTrends({ view, onOpenView }: { view: ViewId; onOpenView: (v:
             />
           ) : null}>
             <CardTitle>APC over time</CardTitle>
-            <CardDescription>Average-per-cover (revenue &divide; covers) by month, with the underlying numbers.</CardDescription>
+            <CardDescription>Average-per-cover (revenue &divide; covers) by month, with the underlying numbers. Hover or click any point — the table rows open the same detail.</CardDescription>
           </SectionHeaderRow>
         </CardHeader>
         <CardContent>
           {loading ? spinner : !hasData ? empty : (
             <>
-              <ChartContainer config={trendsChartConfig} className="h-[220px] w-full">
-                <LineChart data={series} margin={{ top: 5, right: 10, left: -20, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="month" />
-                  <YAxis />
-                  <ChartTooltip content={<ChartTooltipContent />} />
-                  <Line type="monotone" dataKey="monthly_apc" stroke="var(--color-monthly_apc)" strokeWidth={2} dot={false} />
-                </LineChart>
-              </ChartContainer>
+              <InteractiveChart
+                kind="line"
+                points={apcPoints}
+                fmt={(n) => money(n)}
+                tickFmt={moneyTick}
+                seriesLabel="per cover"
+                chartLabel="Average per cover by month, last 12 months"
+                color={SERIES_COLOR}
+                height={220}
+                showShare={false}
+                onSelect={(_p, i) => { openMonth(i, "apc"); }}
+              />
               <div className="mt-4 overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="text-left text-muted-foreground">
@@ -1843,8 +2438,19 @@ function PerformanceTrends({ view, onOpenView }: { view: ViewId; onOpenView: (v:
                     </tr>
                   </thead>
                   <tbody>
-                    {[...series].reverse().map((p) => (
-                      <tr key={p.month} className="border-b last:border-0">
+                    {/* Rows are the same data points as the line above, so they
+                        open the same drill-down — the index maps back through
+                        the un-reversed series. */}
+                    {[...series].reverse().map((p, ri) => (
+                      <tr
+                        key={p.month}
+                        tabIndex={0}
+                        role="button"
+                        aria-label={`${p.month}: revenue ${money(p.total_revenue)}, APC ${money(p.monthly_apc)}. Press Enter for a detailed breakdown.`}
+                        onClick={() => { openMonth(series.length - 1 - ri, "apc"); }}
+                        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openMonth(series.length - 1 - ri, "apc"); } }}
+                        className="cursor-pointer border-b transition-colors last:border-0 hover:bg-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                      >
                         <td className="py-2 pr-3 whitespace-nowrap font-medium">{p.month}</td>
                         <td className="py-2 pr-3 text-right">{money(p.total_revenue)}</td>
                         <td className="py-2 pr-3 text-right">{p.total_covers}</td>
@@ -1860,6 +2466,8 @@ function PerformanceTrends({ view, onOpenView }: { view: ViewId; onOpenView: (v:
         </CardContent>
       </Card>
       )}
+
+      <MetricDetailDialog detail={detail} explainers={explainers} money={money} onOpenView={onOpenView} onOpenChange={(o) => { if (!o) {setDetail(null);} }} />
     </div>
   );
 }
@@ -2804,6 +3412,267 @@ function AdvancedAnalyticsView({ view, kpiSort, onOpenView }: { view: ViewId; kp
 
 // Side-by-side branch comparison — renders ONLY for restaurants with 2+ outlets
 // (single-outlet tenants see nothing, not an empty card).
+// Quick insights that LEAD the Overview tab: what sold, who sold it, how fast
+// the kitchen ran, when trade peaks, and what needs acting on. One server read
+// (/analytics/overview), composed from the same helpers the detail panels use,
+// so a figure here can never disagree with the screen it links to.
+function OverviewInsightsStrip({ view, onOpenView }: { view: ViewId; onOpenView: (v: ViewId) => void }) {
+  const { user } = useAuth()
+  const { currencySymbol } = useCurrency()
+  const [ins, setIns] = useState<OverviewInsights | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    if (!user?.restaurantUsername) {return}
+    let active = true
+    setLoading(true)
+    getOverviewInsights(user.restaurantUsername, 30)
+      .then((d) => { if (active) {setIns(d)} })
+      .finally(() => { if (active) {setLoading(false)} })
+    return () => { active = false }
+  }, [user?.restaurantUsername])
+
+  // Overview is the point of this strip; "Everything" shows it too.
+  if (!(view === "overview" || view === "everything")) {return null}
+
+  const money = (n: number | null | undefined) => `${currencySymbol}${Number(n ?? 0).toFixed(0)}`
+  const prep = (msVal: number | null | undefined) => {
+    const total = Math.round(Number(msVal ?? 0) / 1000)
+    if (total <= 0) {return "—"}
+    return `${Math.floor(total / 60)}m ${total % 60}s`
+  }
+
+  if (loading) {
+    return (
+      <Card>
+        <CardContent className="py-10 text-center text-sm text-muted-foreground">Loading insights…</CardContent>
+      </Card>
+    )
+  }
+  if (!ins) {return null}
+
+  const dishes = ins.top_dishes_by_revenue ?? []
+  const staff = ins.top_staff ?? []
+  const attention = ins.needs_attention ?? []
+  const topDishRev = dishes[0]?.revenue ?? 0
+  const topStaffRev = staff[0]?.revenue ?? 0
+
+  // A metric with no comparison is not an insight — always show the window in
+  // words, and never rely on colour alone to carry the direction.
+  const Delta = ({ m }: { m: OverviewMetric }) => {
+    if (m.pct_change === null) {
+      return <span className="text-[11px] text-muted-foreground">no prior baseline</span>
+    }
+    const up = m.direction === "up"
+    const flat = m.direction === "flat"
+    return (
+      <span className={`text-[11px] ${flat ? "text-muted-foreground" : up ? "text-green-600" : "text-orange-600"}`}>
+        {flat ? "–" : up ? "▲" : "▼"} {Math.abs(m.pct_change).toFixed(1)}% <span className="text-muted-foreground">{m.compared_to}</span>
+      </span>
+    )
+  }
+
+  const headline: { label: string; m: OverviewMetric; money: boolean; view: ViewId }[] = [
+    { label: "Revenue", m: ins.headline.revenue, money: true, view: "sales" },
+    { label: "Bills", m: ins.headline.bills, money: false, view: "sales" },
+    { label: "Covers", m: ins.headline.covers, money: false, view: "operations" },
+    { label: "APC", m: ins.headline.apc, money: true, view: "sales" },
+  ]
+
+  const moduleHref: Record<string, string> = {
+    Inventory: "/dashboard/inventory",
+    Bills: "/dashboard/accounting",
+    Accounting: "/dashboard/accounting",
+    Menu: "/dashboard/menu",
+    Waitlist: "/dashboard/waitlist",
+    Analytics: "/dashboard/analytics",
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <CardTitle>At a glance</CardTitle>
+            <CardDescription>
+              Last {ins.window_days} days · {timezoneCaption(ins.timezone)}
+            </CardDescription>
+          </div>
+          <SectionDownload
+            id="overview-insights"
+            label="At a glance"
+            build={() => [
+              ["Metric", "Value", "Previous", "Change %", "Compared to"],
+              ...headline.map((h) => [h.label, h.m.value, h.m.previous, h.m.pct_change ?? "", h.m.compared_to]),
+              [],
+              ["Top dish", "Qty", "Revenue", "Share %"],
+              ...dishes.map((d) => [d.name, d.quantity, d.revenue, d.share_pct]),
+              [],
+              ["Staff", "Orders", "Revenue"],
+              ...staff.map((s) => [s.employee_name, s.orders, s.revenue]),
+            ]}
+          />
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        {/* headline + deltas */}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {headline.map((h) => (
+            <button
+              key={h.label}
+              type="button"
+              onClick={() => { onOpenView(h.view) }}
+              className="rounded-lg border p-3 text-left transition-colors hover:bg-muted"
+            >
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{h.label}</p>
+              <p className="mt-0.5 text-lg font-semibold tabular-nums">
+                {h.money ? money(h.m.value) : Math.round(h.m.value)}
+              </p>
+              <Delta m={h.m} />
+            </button>
+          ))}
+        </div>
+        <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
+          <span>Today <span className="font-semibold text-foreground tabular-nums">{money(ins.headline.today_revenue)}</span></span>
+          <span>Yesterday <span className="font-semibold text-foreground tabular-nums">{money(ins.headline.yesterday_revenue)}</span></span>
+        </div>
+
+        {/* needs attention — the only actionable part, so it comes first */}
+        {attention.length > 0 && (
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Needs attention</p>
+            <ul className="space-y-1">
+              {attention.map((a) => {
+                const href = moduleHref[a.module]
+                const row = (
+                  <span className="flex items-center gap-2">
+                    <span
+                      className={`inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-[11px] font-bold ${
+                        a.severity === "high"
+                          ? "bg-destructive/15 text-destructive"
+                          : a.severity === "medium"
+                            ? "bg-amber-500/15 text-amber-700 dark:text-amber-400"
+                            : "bg-muted text-muted-foreground"
+                      }`}
+                    >
+                      {a.count}
+                    </span>
+                    <span className="text-sm">{a.label}</span>
+                  </span>
+                )
+                return (
+                  <li key={a.key}>
+                    {href
+                      ? <Link href={href} className="block rounded-md px-1 py-1 hover:bg-muted">{row}</Link>
+                      : <div className="px-1 py-1">{row}</div>}
+                  </li>
+                )
+              })}
+            </ul>
+          </div>
+        )}
+
+        <div className="grid gap-6 lg:grid-cols-2">
+          {/* top sellers */}
+          {dishes.length > 0 && (
+            <div>
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Top selling dishes</p>
+              <div className="space-y-2">
+                {dishes.map((d) => (
+                  <button
+                    key={d.name}
+                    type="button"
+                    onClick={() => { onOpenView("menu") }}
+                    className="block w-full text-left"
+                    title={`${d.name} — ${d.quantity} sold, ${d.share_pct.toFixed(1)}% of counted sales`}
+                  >
+                    <div className="flex items-baseline justify-between gap-2 text-sm">
+                      <span className="truncate">{d.name}</span>
+                      <span className="shrink-0 font-semibold tabular-nums">{money(d.revenue)}</span>
+                    </div>
+                    <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted">
+                      <div
+                        className="h-full rounded-full bg-primary"
+                        style={{ width: `${topDishRev > 0 ? Math.max(2, (d.revenue / topDishRev) * 100) : 0}%` }}
+                      />
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">
+                      {d.quantity} sold · {d.share_pct.toFixed(1)}% of sales
+                    </p>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* staff */}
+          {staff.length > 0 && (
+            <div>
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Best performing staff</p>
+              <div className="space-y-2">
+                {staff.map((s) => (
+                  <button
+                    key={s.employee_id || s.employee_name}
+                    type="button"
+                    onClick={() => { onOpenView("staff") }}
+                    className="block w-full text-left"
+                  >
+                    <div className="flex items-baseline justify-between gap-2 text-sm">
+                      <span className="truncate">{s.employee_name}</span>
+                      <span className="shrink-0 font-semibold tabular-nums">{money(s.revenue)}</span>
+                    </div>
+                    <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted">
+                      <div
+                        className="h-full rounded-full bg-primary/70"
+                        style={{ width: `${topStaffRev > 0 ? Math.max(2, (s.revenue / topStaffRev) * 100) : 0}%` }}
+                      />
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">
+                      {s.orders} orders
+                      {s.avg_rating != null ? ` · ${s.avg_rating.toFixed(1)}★` : ""}
+                      {s.hours_worked != null ? ` · ${s.hours_worked.toFixed(1)}h` : ""}
+                    </p>
+                  </button>
+                ))}
+              </div>
+              {staff[0]?.ranked_by ? (
+                <p className="mt-2 text-[11px] text-muted-foreground">Ranked by {staff[0].ranked_by}.</p>
+              ) : null}
+            </div>
+          )}
+        </div>
+
+        {/* kitchen + peak trade */}
+        <div>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Kitchen &amp; peak trade</p>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <MetricTile label="Avg prep" value={prep(ins.kitchen.avg_prep_ms)} sub={`${ins.kitchen.orders_timed} orders timed`} onOpen={() => { onOpenView("kitchen") }} />
+            <MetricTile label="Slowest 10%" value={prep(ins.kitchen.p90_prep_ms)} sub="p90 prep time" onOpen={() => { onOpenView("kitchen") }} />
+            <MetricTile
+              label="Busiest hour"
+              value={ins.peak.hour === null ? "—" : `${String(ins.peak.hour).padStart(2, "0")}:00`}
+              sub={`${ins.peak.hour_orders} orders`}
+              onOpen={() => { onOpenView("operations") }}
+            />
+            <MetricTile
+              label="Busiest day"
+              value={ins.peak.weekday || "—"}
+              sub={`${ins.peak.weekday_orders} orders`}
+              onOpen={() => { onOpenView("operations") }}
+            />
+          </div>
+          {ins.kitchen.slowest_section ? (
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              Slowest section <span className="font-medium text-foreground">{ins.kitchen.slowest_section}</span> ({prep(ins.kitchen.slowest_section_avg_ms)})
+              {ins.kitchen.slowest_dish ? <> · slowest dish <span className="font-medium text-foreground">{ins.kitchen.slowest_dish}</span> ({prep(ins.kitchen.slowest_dish_avg_ms)})</> : null}
+            </p>
+          ) : null}
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
 function OutletsComparisonCard({ view, onOpenView }: { view: ViewId; onOpenView: (v: ViewId) => void }) {
   const { user } = useAuth();
   const { currency, currencySymbol } = useCurrency();
@@ -2892,6 +3761,7 @@ function OutletsComparisonCard({ view, onOpenView }: { view: ViewId; onOpenView:
 }
 
 export default function AnalyticsPage() {
+  const { timezone } = useTimezone();
   const { user } = useAuth();
   const [view, setView] = useState<ViewId>("overview");
   const [kpiSort, setKpiSort] = useState<KpiSort>("severity");
@@ -2928,7 +3798,7 @@ export default function AnalyticsPage() {
       rows.push([s.label]);
       rows.push(...body);
     }
-    downloadCsv(csvFilename(user?.restaurantUsername, `analytics-${view}`), rows);
+    downloadCsv(csvFilename(user?.restaurantUsername, `analytics-${view}`, timezone), rows);
   };
 
   // Restore persisted choices after mount (localStorage is client-only, and
@@ -2960,7 +3830,10 @@ export default function AnalyticsPage() {
   return (
     <div className="grid gap-4 md:gap-8">
       <div className="flex items-center justify-between">
-        <h1 className="text-lg font-semibold md:text-2xl">Analytics</h1>
+        <div>
+          <h1 className="text-lg font-semibold md:text-2xl">Analytics</h1>
+          <p className="text-xs text-muted-foreground">All times in restaurant time · {timezoneCaption(timezone)}</p>
+        </div>
       </div>
 
       {/* Sticky toolbar: pick a view (only that slice renders) + KPI sort.
@@ -3022,11 +3895,12 @@ export default function AnalyticsPage() {
           so switching views from a card or a drill-down behaves exactly like
           clicking the chip in the toolbar (persisted + scrolled to the top). */}
       <CsvRegistryContext.Provider value={registry}>
+        <OverviewInsightsStrip view={view} onOpenView={pickView} />
         <OutletsComparisonCard view={view} onOpenView={pickView} />
         <AdvancedAnalyticsView view={view} kpiSort={kpiSort} onOpenView={pickView} />
         <ActionableInsights view={view} onOpenView={pickView} />
         <PerformanceTrends view={view} onOpenView={pickView} />
-        <OperationsCharts view={view} />
+        <OperationsCharts view={view} onOpenView={pickView} />
         <KitchenAnalyticsView view={view} onOpenView={pickView} />
       </CsvRegistryContext.Provider>
 

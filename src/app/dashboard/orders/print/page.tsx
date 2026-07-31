@@ -9,6 +9,8 @@ import { getRestaurantProfile, getRestaurantLogo, getBillByOrder, getBillForTabl
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import Image from 'next/image';
+import { DEFAULT_TIMEZONE, formatDateTime } from '@/lib/tz';
+import { useTimezone } from '@/lib/use-timezone';
 
 interface OrderItem {
     id: string;
@@ -42,6 +44,9 @@ interface Order {
 }
 
 function PrintPageContents() {
+    // A bill handed to a guest must carry the restaurant's clock, not the
+    // clock of whatever machine happens to be driving the printer.
+    const { timezone } = useTimezone();
     const searchParams = useSearchParams();
     const orderKey = searchParams.get('orderKey');
     const legacyOrderData = searchParams.get('order');
@@ -167,7 +172,7 @@ function PrintPageContents() {
                         <button
                                 onClick={async () => {
                                     // Passed logoBase64 to the encoder
-                                    const esc = await generateEscPos(user, profile, cashierName, bill, order, logoBase64);
+                                    const esc = await generateEscPos(user, profile, cashierName, bill, order, logoBase64, timezone);
                                     if (!esc) {return;}
 
                                     // Convert ESC/POS > readable text preview
@@ -229,7 +234,7 @@ function PrintPageContents() {
                             <p><strong>Customer Name:</strong> {order.customer}</p>
                         </div>
                         <div className="border-t border-black pt-2 w-full text-center flex justify-between">
-                            <p><strong>Date:</strong> {new Date().toLocaleString()}</p>
+                            <p><strong>Date:</strong> {formatDateTime(Date.now(), timezone)}</p>
                             <p><strong>Dine In:</strong> {order.table}</p>
                            
                         </div>
@@ -327,7 +332,7 @@ export default function PrintPage() {
     );
 }
 
-export async function generateEscPos(user: any, profile: any, cashierName: string, bill: any, orderArg?: any, logoBase64?: string | null): Promise<Uint8Array | null> {
+export async function generateEscPos(user: any, profile: any, cashierName: string, bill: any, orderArg?: any, logoBase64?: string | null, timeZone: string = DEFAULT_TIMEZONE): Promise<Uint8Array | null> {
     try {
         let order = orderArg ?? null;
 
@@ -476,7 +481,7 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
 
         encoder.line(lineSeparator);
 
-        const orderDate = new Date().toLocaleString(); 
+        const orderDate = formatDateTime(Date.now(), timeZone); 
         encoder.line(leftRight(`Date: ${orderDate}`, `Dine In: ${order.table || 'N/A'}`, MAX_CHARS));
         
         const displayId = bill.bill_no || '';

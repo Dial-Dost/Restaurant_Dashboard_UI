@@ -9,6 +9,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Clock, LogIn, LogOut, RefreshCw } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/hooks/use-toast";
+import { daysAgoInZone, formatDateTime, formatTime, todayInZone } from "@/lib/tz";
+import { useTimezone } from "@/lib/use-timezone";
 import type {
   MyAttendance,
   AttendanceSummaryRow,
@@ -28,12 +30,14 @@ const fmtMinutes = (m: number) => {
   return h > 0 ? `${h}h ${r}m` : `${r}m`;
 };
 
-const todayIso = () => new Date().toISOString().slice(0, 10);
-const daysAgoIso = (n: number) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
-
 export default function AttendancePage() {
   const { user } = useAuth();
   const { toast } = useToast();
+  const { timezone } = useTimezone();
+  // A shift that starts at 22:00 and ends at 02:00 belongs to the restaurant's
+  // day, not UTC's — the old `toISOString().slice(0, 10)` split those in two.
+  const todayIso = useCallback(() => todayInZone(timezone), [timezone]);
+  const daysAgoIso = useCallback((n: number) => daysAgoInZone(n, timezone), [timezone]);
   const restaurantId = user?.restaurantUsername ?? "";
 
   const isManager = useMemo(() => {
@@ -119,7 +123,7 @@ export default function AttendancePage() {
             {me?.clocked_in ? (
               <p className="text-sm">
                 <span className="font-medium text-green-600">Clocked in</span>
-                {me.since ? ` since ${new Date(me.since).toLocaleTimeString()}` : ""}
+                {me.since ? ` since ${formatTime(me.since, timezone)}` : ""}
               </p>
             ) : (
               <p className="text-sm text-muted-foreground">Not clocked in</p>
@@ -149,8 +153,8 @@ export default function AttendancePage() {
                 <div className="min-w-0 flex-1">
                   <p className="font-medium">{p.name}</p>
                   <p className="text-xs text-muted-foreground">
-                    Clocked in {new Date(p.clock_in).toLocaleString()}
-                    {p.clock_out ? ` → out ${new Date(p.clock_out).toLocaleTimeString()}` : " · still on shift"}
+                    Clocked in {formatDateTime(p.clock_in, timezone)}
+                    {p.clock_out ? ` → out ${formatTime(p.clock_out, timezone)}` : " · still on shift"}
                   </p>
                 </div>
                 <Button size="sm" onClick={async () => { try { await reviewClockIn(restaurantId, p.id, true); toast({ title: "Clock-in approved" }); await loadSummary(); } catch (e: any) { toast({ title: "Couldn't approve", description: String(e?.message ?? e), variant: "destructive" }); } }}>Approve</Button>

@@ -8,6 +8,9 @@ import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts"
 import { useAuth } from "@/context/AuthContext"
 import { useCurrency } from "@/hooks/use-currency"
+import { timezoneCaption } from "@/lib/tz"
+import { useTimezone } from "@/lib/use-timezone"
+import { ClosedBillsSection } from "@/components/closed-bills"
 import { getMonthlyHistory, type MonthlyHistoryRow } from "@/lib/db"
 
 const chartConfig = {
@@ -28,14 +31,19 @@ function prettyMonth(ym: string): string {
   return idx >= 0 && idx < 12 ? `${MONTH_NAMES[idx]} ${y}` : ym
 }
 
-// Drill-down: "2026-06" → the accounting page filtered to that whole month.
-// (Computes the month's real last day — not a blind "-31".)
-function monthDrilldownHref(ym: string): string {
+// "2026-06" → that month's real first/last day (not a blind "-31").
+function monthRange(ym: string): { from: string; to: string } | null {
   const [y, m] = ym.split("-").map(Number)
-  if (!y || !m) {return "/dashboard/accounting"}
+  if (!y || !m) {return null}
   const lastDay = new Date(y, m, 0).getDate() // day 0 of next month = last of this one
   const mm = String(m).padStart(2, "0")
-  return `/dashboard/accounting?from=${y}-${mm}-01&to=${y}-${mm}-${String(lastDay).padStart(2, "0")}`
+  return { from: `${y}-${mm}-01`, to: `${y}-${mm}-${String(lastDay).padStart(2, "0")}` }
+}
+
+// Drill-down: "2026-06" → the accounting page filtered to that whole month.
+function monthDrilldownHref(ym: string): string {
+  const r = monthRange(ym)
+  return r ? `/dashboard/accounting?from=${r.from}&to=${r.to}` : "/dashboard/accounting"
 }
 
 // One labeled figure in the expanded month panel.
@@ -51,11 +59,14 @@ function Stat({ label, value }: { label: string; value: string }) {
 export default function HistoryPage() {
   const { user } = useAuth()
   const { currency } = useCurrency()
+  const { timezone } = useTimezone()
   const [months, setMonths] = useState(36)
   const [rows, setRows] = useState<MonthlyHistoryRow[]>([])
   const [loading, setLoading] = useState(true)
   const [hideEmpty, setHideEmpty] = useState(true)
   const [openMonth, setOpenMonth] = useState<string | null>(null)
+  // Seeds the closed-bills section below; a month row can narrow it to that month.
+  const [billRange, setBillRange] = useState<{ from: string; to: string } | null>(null)
   const money = (n: number | null | undefined) => `${currency}${Number(n ?? 0).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`
 
   useEffect(() => {
@@ -82,6 +93,7 @@ export default function HistoryPage() {
         <div>
           <h1 className="text-lg font-semibold md:text-2xl">History</h1>
           <p className="text-sm text-muted-foreground">Month-by-month summary of the whole business, up to 3 years back.</p>
+          <p className="text-xs text-muted-foreground">All times in restaurant time · {timezoneCaption(timezone)}</p>
         </div>
         <div className="flex gap-1 rounded-lg border p-1">
           {RANGES.map((r) => (
@@ -173,7 +185,19 @@ export default function HistoryPage() {
                           <Stat label="New customers" value={r.new_customers ? String(r.new_customers) : "—"} />
                           <Stat label="Avg TAT" value={r.avg_tat_min != null ? `${Math.round(r.avg_tat_min)} min` : "—"} />
                         </div>
-                        <div className="mt-4">
+                        <div className="mt-4 flex flex-wrap items-center gap-4">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const range = monthRange(r.month)
+                              if (!range) {return}
+                              setBillRange(range)
+                              document.getElementById("closed-bills-section")?.scrollIntoView({ behavior: "smooth" })
+                            }}
+                            className="text-sm font-medium text-primary underline-offset-2 hover:underline"
+                          >
+                            Browse {prettyMonth(r.month)}&apos;s bills ↓
+                          </button>
                           <Link
                             href={monthDrilldownHref(r.month)}
                             title={`Open ${prettyMonth(r.month)} in Accounting`}
@@ -191,6 +215,14 @@ export default function HistoryPage() {
           )}
         </CardContent>
       </Card>
+
+      <ClosedBillsSection
+        rid={user?.restaurantUsername ?? ""}
+        from={billRange?.from}
+        to={billRange?.to}
+        ownDateFilter
+        description="Every bill this business has settled. Leave the dates blank for all time, or open a month above and jump straight to its bills."
+      />
     </div>
   )
 }

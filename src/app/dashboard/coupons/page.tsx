@@ -26,6 +26,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { PlusCircle, Trash2, Ticket, Pencil, Gift } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/hooks/use-toast";
+import { formatDate, utcToWallClockInZone, wallClockToUtcInZone } from "@/lib/tz";
+import { useTimezone } from "@/lib/use-timezone";
 import type { Coupon, CouponInput} from "@/lib/db";
 import { getCoupons, saveCoupon, deleteCoupon, createGiftVoucher } from "@/lib/db";
 
@@ -43,18 +45,22 @@ const blank: CouponInput = {
   active: true,
 };
 
-// ISO <-> input[type=datetime-local] helpers.
-const toLocalInput = (iso: string | null | undefined) => {
-  if (!iso) {return "";}
-  const d = new Date(iso);
-  const off = d.getTimezoneOffset();
-  return new Date(d.getTime() - off * 60000).toISOString().slice(0, 16);
-};
-const fromLocalInput = (v: string) => (v ? new Date(v).toISOString() : null);
-
 export default function CouponsPage() {
   const { user } = useAuth();
   const { toast } = useToast();
+  const { timezone } = useTimezone();
+  // ISO <-> input[type=datetime-local]. The bare wall clock in the input means
+  // RESTAURANT time: "valid until 31 Dec 23:59" has to be the restaurant's
+  // midnight, not the browser's, or a coupon dies hours early for an owner
+  // travelling east.
+  const toLocalInput = useCallback(
+    (iso: string | null | undefined) => (iso ? utcToWallClockInZone(iso, timezone) : ""),
+    [timezone],
+  );
+  const fromLocalInput = useCallback(
+    (v: string) => (v ? (wallClockToUtcInZone(v, timezone)?.toISOString() ?? null) : null),
+    [timezone],
+  );
   const restaurantId = user?.restaurantUsername ?? "";
   const isAdmin = !!user && (user.role === "admin" || (Array.isArray(user.role_all) && user.role_all.includes("admin")));
 
@@ -190,7 +196,7 @@ export default function CouponsPage() {
                     c.max_discount ? `cap ₹${c.max_discount}` : null,
                     c.usage_limit != null ? `${c.usage_limit} total` : null,
                     c.per_customer_limit != null ? `${c.per_customer_limit}/customer` : null,
-                    c.valid_to ? `until ${new Date(c.valid_to).toLocaleDateString()}` : null,
+                    c.valid_to ? `until ${formatDate(c.valid_to, timezone)}` : null,
                   ].filter(Boolean).join(" · ");
                   return (
                     <TableRow key={c.id}>

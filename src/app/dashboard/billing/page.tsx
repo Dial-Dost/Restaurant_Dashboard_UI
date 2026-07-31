@@ -5,6 +5,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import { Check, RefreshCw, Crown } from "lucide-react"
 import { useAuth } from "@/context/AuthContext"
+import { formatDate, formatFullDateTime } from "@/lib/tz"
+import { useTimezone } from "@/lib/use-timezone"
 import { useToast } from "@/hooks/use-toast"
 import {
   getBilling, changePlan, billingPayCreate, billingPayVerify,
@@ -49,6 +51,7 @@ const STATUS_STYLES: Record<string, string> = {
 }
 
 export default function BillingPage() {
+  const { timezone } = useTimezone()
   const { user } = useAuth()
   const { toast } = useToast()
   const rid = user?.restaurantUsername ?? ""
@@ -239,7 +242,7 @@ export default function BillingPage() {
                     <tbody>
                       {info.invoices.map((inv) => (
                         <tr key={inv.id} className="border-b last:border-0">
-                          <td className="py-2 pr-3 whitespace-nowrap">{new Date(inv.created_at).toLocaleDateString()}</td>
+                          <td className="py-2 pr-3 whitespace-nowrap" title={formatFullDateTime(inv.created_at, timezone)}>{formatDate(inv.created_at, timezone)}</td>
                           <td className="py-2 pr-3">{inv.note ?? "—"}</td>
                           <td className="py-2 pr-3 text-right">{money(inv.amount_cents)}</td>
                           <td className="py-2 pr-3">{inv.status}</td>

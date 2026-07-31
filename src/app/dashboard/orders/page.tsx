@@ -84,6 +84,8 @@ import { useAuth } from "@/context/AuthContext";
 import { useCurrency } from "@/hooks/use-currency";
 import { useToast } from "@/hooks/use-toast";
 import { useHighlightRow } from "@/hooks/use-highlight-row";
+import { dayKeyInZone, formatDate, formatDateTime, formatFullDateTime, formatTime, timezoneAbbreviation, todayInZone } from "@/lib/tz";
+import { useTimezone } from "@/lib/use-timezone";
 import type { MenuItem } from "../menu/data";
 import { BillActions } from "./bill-actions";
 import { OrdersScopeNotice } from "./orders-scope-notice";
@@ -166,6 +168,13 @@ export interface Order {
   // "Barked" step: when the expo announced the order to the kitchen. Null =
   // awaiting bark (greyed, no running timers); missing (old backend) = barked.
   barked_at?: string | null;
+  // When the ticket was placed — the instant the Orders tab shows on each row.
+  // Null on rows that predate the column; the UI renders those as "—" rather
+  // than inventing a time from `updated_at`.
+  created_at?: string | null;
+  // Last change to the ticket (status walk, item split/move/void). Stamped by a
+  // BEFORE UPDATE trigger backend-side, so it is never stale.
+  updated_at?: string | null;
 }
 
 // Un-barked orders sit greyed with idle timers until the expo barks them.
@@ -323,16 +332,12 @@ const deriveDefaultsForCharges = (defaultTax: Record<string, number> | null): {
   return { serviceChargePercentage, applyServiceCharge, taxes };
 };
 
-const formatOrderedAt = (isoOrString?: string) => {
+// Same `dd/mm/yy hh:mm` shape as before, but rendered in the RESTAURANT's zone
+// instead of the viewer's browser zone — a manager checking the pass from home,
+// or an owner abroad, must read the same clock the kitchen did.
+const formatOrderedAt = (isoOrString: string | null | undefined, timeZone: string) => {
   if (!isoOrString) {return "";}
-  const d = new Date(isoOrString);
-  if (Number.isNaN(d.getTime())) {return String(isoOrString);}
-  const dd = String(d.getDate()).padStart(2, '0');
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const yy = String(d.getFullYear()).slice(-2);
-  const hh = String(d.getHours()).padStart(2, '0');
-  const min = String(d.getMinutes()).padStart(2, '0');
-  return `${dd}/${mm}/${yy} ${hh}:${min}`;
+  return formatDateTime(isoOrString, timeZone, String(isoOrString));
 }
 
 const dedupeOrdersById = (items: Order[]) => {
@@ -374,6 +379,11 @@ function OrdersDashboard() {
   const { currencySymbol } = useCurrency();
   const { user } = useAuth();
   const { toast } = useToast();
+  // Every instant on this screen renders in the restaurant's zone, not the browser's.
+  const { timezone } = useTimezone();
+  // The restaurant's current calendar day, used to decide whether a row's
+  // "Placed" cell needs a date next to the clock.
+  const todayKey = todayInZone(timezone);
   const hasRole = (role: "admin" | "employee" | "valet" | "waiter" | "cashier" | "captain" | "manager") => {
     if (!user) {return false;}
     if (user.role === role) {return true;}
@@ -1309,7 +1319,7 @@ function OrdersDashboard() {
                     {" "}(≈{currencySymbol}{request.amount.toFixed(2)})
                   </div>
                   <div className="text-xs text-muted-foreground">
-                    Requested by {request.requested_by ?? "unknown"} · {formatOrderedAt(request.created_at)}
+                    Requested by {request.requested_by ?? "unknown"} · {formatOrderedAt(request.created_at, timezone)}
                     {request.reason ? ` · “${request.reason}”` : ""}
                   </div>
                 </div>
@@ -1416,6 +1426,7 @@ function OrdersDashboard() {
             <TableHeader>
               <TableRow>
                 <TableHead>Table</TableHead>
+                <TableHead className="whitespace-nowrap">Placed</TableHead>
                 <TableHead>Order Details</TableHead>
                 <TableHead className="hidden md:table-cell text-right">Total</TableHead>
                 <TableHead className="hidden md:table-cell">APC Zone</TableHead>
@@ -1438,6 +1449,29 @@ function OrdersDashboard() {
                 >
                   <TableCell className="font-medium">
                     <div>{order.table}</div>
+                  </TableCell>
+                  {/* When the ticket was placed. The clock alone for today's
+                      orders (the common case — the grid is a live board), with
+                      the date appended once a row is older, so a stale ticket
+                      can't be misread as a fresh one. Hover gives the full
+                      instant with the zone spelled out. */}
+                  <TableCell
+                    className="whitespace-nowrap"
+                    title={order.created_at ? formatFullDateTime(order.created_at, timezone) : "Placed time not recorded for this order"}
+                  >
+                    {order.created_at ? (
+                      <div className="flex items-center gap-1.5">
+                        <Clock className="h-3 w-3 shrink-0 text-muted-foreground" />
+                        <span className="tabular-nums">{formatTime(order.created_at, timezone)}</span>
+                        {dayKeyInZone(order.created_at, timezone) !== todayKey ? (
+                          <span className="text-xs text-muted-foreground">
+                            {formatDate(order.created_at, timezone)}
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    )}
                   </TableCell>
                   <TableCell>
                     <div className="font-medium">{(order as any).items_flattened?.length ? (order as any).items_flattened.map((i: any) => `${i.quantity}x ${i.name}${i.note ? ` (${i.note})` : ""}`).join(', ') : order.items.map(i => `${i.quantity}x ${i.name}${i.note ? ` (${i.note})` : ""}`).join(', ')}</div>
@@ -2019,6 +2053,20 @@ function KitchenDisplay({ orders, restaurantId, onRefresh, managedSections = [],
   };
 
   // Bark the ticket to the kitchen — the prep timers start at this instant.
+  // Undo a mis-tapped serve. The server refuses this once the WHOLE order is
+  // Served, so the button is disabled in that case rather than erroring.
+  const handleUnserve = async (orderId: string, itemId: string) => {
+    setBusyItem(itemId);
+    try {
+      await requestBackend({ path: `/orders/${encodeURIComponent(orderId)}/items/${encodeURIComponent(itemId)}/unserve`, method: "POST", restaurantId });
+      await onRefresh();
+    } catch (err: unknown) {
+      toast({ title: "Unable to undo", description: String((err as Error)?.message ?? err), variant: "destructive" });
+    } finally {
+      setBusyItem(null);
+    }
+  };
+
   const handleBark = async (orderId: string) => {
     setBusyItem(orderId);
     try {
@@ -2109,6 +2157,8 @@ function KitchenDisplay({ orders, restaurantId, onRefresh, managedSections = [],
                   const orderMs = timerElapsedMs(order.timing?.order, now);
                   // Un-barked tickets sit greyed with idle timers until barked.
                   const barked = isOrderBarked(order);
+                  // Items can only be un-served while the ORDER is still in progress; once it is Served as a whole the server refuses.
+                  const orderFullyServed = !["preparing", "pending"].includes(String(order.status ?? "").toLowerCase());
                   return (
                     <Card key={order.id} className={`border-dashed ${barked ? "" : "bg-muted/40"}`}>
                       <CardHeader className="pb-2">
@@ -2151,7 +2201,13 @@ function KitchenDisplay({ orders, restaurantId, onRefresh, managedSections = [],
                               </div>
                               <div className="flex shrink-0 items-center gap-1">
                                 {!barked ? null : served ? (
-                                  <CheckCircle2 className="h-4 w-4 text-green-600" />
+                                  // Was a dead icon — now the undo control.
+                                  <Button size="sm" variant="ghost" className="h-7 px-2"
+                                    title={orderFullyServed ? "The whole order is served — items can no longer be undone" : "Undo served"}
+                                    disabled={busyItem === item.id || orderFullyServed}
+                                    onClick={() => { void handleUnserve(order.id, item.id); }}>
+                                    <CheckCircle2 className={`h-4 w-4 ${orderFullyServed ? "text-muted-foreground" : "text-green-600"}`} />
+                                  </Button>
                                 ) : held ? (
                                   <Button size="sm" variant="outline" className="h-7 px-2 text-xs" disabled={busyItem === item.id} onClick={() => { void handleFire(order.id, item.id); }}>
                                     <Flame className="mr-1 h-3 w-3 text-orange-500" /> Fire
@@ -2231,6 +2287,10 @@ function KitchenDisplay({ orders, restaurantId, onRefresh, managedSections = [],
 function KitchenKioskDisplay({ station }: { station: string }) {
   const { user } = useAuth();
   const { toast } = useToast();
+  // The wall clock on a kitchen kiosk must be the restaurant's own time — this
+  // is a shared screen and staff read it as the house clock, so the device's
+  // own timezone (often just wrong on a cheap tablet) must not leak into it.
+  const { timezone } = useTimezone();
   const restaurantId = user?.restaurantUsername ?? "";
   const [orders, setOrders] = useState<Order[]>([]);
   const [now, setNow] = useState(() => Date.now());
@@ -2323,6 +2383,19 @@ function KitchenKioskDisplay({ station }: { station: string }) {
     }
   };
 
+  // Undo a mis-tapped serve (server refuses once the whole order is Served).
+  const handleUnserve = async (orderId: string, itemId: string) => {
+    setBusyItem(itemId);
+    try {
+      await requestBackend({ path: `/orders/${encodeURIComponent(orderId)}/items/${encodeURIComponent(itemId)}/unserve`, method: "POST", restaurantId });
+      await load();
+    } catch (err: unknown) {
+      toast({ title: "Unable to undo", description: String((err as Error)?.message ?? err), variant: "destructive" });
+    } finally {
+      setBusyItem(null);
+    }
+  };
+
   const handleServe = async (orderId: string, itemId: string) => {
     setBusyItem(itemId);
     try {
@@ -2377,7 +2450,8 @@ function KitchenKioskDisplay({ station }: { station: string }) {
           ) : null}
           <span className="hidden sm:inline">{tickets.length} active ticket{tickets.length === 1 ? "" : "s"}</span>
           <span className="flex items-center gap-1 tabular-nums">
-            <Clock className="h-4 w-4" />{new Date(now).toLocaleTimeString()}
+            <Clock className="h-4 w-4" />{formatTime(now, timezone)}
+            <span className="text-xs opacity-70">{timezoneAbbreviation(timezone, now)}</span>
           </span>
         </div>
       </header>
@@ -2408,6 +2482,8 @@ function KitchenKioskDisplay({ station }: { station: string }) {
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
             {tickets.map(({ order, items }) => {
               const barked = isOrderBarked(order);
+              // Items can only be un-served while the ORDER is still in progress; once it is Served as a whole the server refuses.
+              const orderFullyServed = !["preparing", "pending"].includes(String(order.status ?? "").toLowerCase());
               const orderMs = timerElapsedMs(order.timing?.order, now);
               const u = barked ? urgency(order) : "fresh";
               const accent = !barked
@@ -2458,7 +2534,12 @@ function KitchenKioskDisplay({ station }: { station: string }) {
                           </div>
                           <div className="flex shrink-0 items-center gap-1.5">
                             {!barked ? null : served ? (
-                              <CheckCircle2 className="h-6 w-6 text-green-600" />
+                              <Button size="sm" variant="ghost" className="h-9 px-2"
+                                title={orderFullyServed ? "The whole order is served — items can no longer be undone" : "Undo served"}
+                                disabled={busyItem === item.id || orderFullyServed}
+                                onClick={() => { void handleUnserve(order.id, item.id); }}>
+                                <CheckCircle2 className={`h-6 w-6 ${orderFullyServed ? "text-muted-foreground" : "text-green-600"}`} />
+                              </Button>
                             ) : held ? (
                               <Button size="sm" variant="outline" className="h-9 px-3 text-sm" disabled={busyItem === item.id} onClick={() => { void handleFire(order.id, item.id); }}>
                                 <Flame className="mr-1 h-4 w-4 text-orange-500" /> Fire
@@ -2921,6 +3002,7 @@ EditOrderDialog.displayName = "EditOrderDialog";
 
 const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menuItems, canEditPrice }: { order: Order | null, open: boolean, onOpenChange: (open: boolean) => void, onSave: (updated: Order) => Promise<void>, menuItems: MenuItem[], canEditPrice?: boolean }) => {
   const { currencySymbol } = useCurrency();
+  const { timezone } = useTimezone();
   const [localItems, setLocalItems] = useState<OrderItem[]>([]);
   const [newItemName, setNewItemName] = useState("");
   const [newItemNote, setNewItemNote] = useState("");
@@ -3053,7 +3135,7 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
                     <TableCell className="text-muted-foreground text-center">
                       <div className="flex items-center justify-center">
                         <Clock className="h-3 w-3 mr-1" />
-                        {formatOrderedAt(item.orderedAt)}
+                        {formatOrderedAt(item.orderedAt, timezone)}
                       </div>
                     </TableCell>
                     <TableCell className="text-right">{currencySymbol}{(item.price * item.quantity).toFixed(2)}</TableCell>
@@ -3131,6 +3213,8 @@ OrderDetailsDialog.displayName = "OrderDetailsDialog";
 const OrderViewDialog = React.memo(({ order, open, onOpenChange, onRefreshOrders }: { order: Order | null, open: boolean, onOpenChange: (open: boolean) => void, onRefreshOrders?: () => Promise<void> }) => {
   const { currencySymbol } = useCurrency();
   const { user } = useAuth();
+  // Read before the early return — this component already calls useState below it.
+  const { timezone } = useTimezone();
   if (!order) {return null;}
 
   const calculatedTaxes = calculateTaxes(order.subtotal, order.taxes);
@@ -3231,7 +3315,7 @@ const OrderViewDialog = React.memo(({ order, open, onOpenChange, onRefreshOrders
         <TableCell className="text-muted-foreground text-center">
           <div className="flex items-center justify-center">
             <Clock className="h-3 w-3 mr-1" />
-            {formatOrderedAt(item.orderedAt)}
+            {formatOrderedAt(item.orderedAt, timezone)}
           </div>
         </TableCell>
         <TableCell className="text-right">{currencySymbol}{(item.price * item.quantity).toFixed(2)}</TableCell>

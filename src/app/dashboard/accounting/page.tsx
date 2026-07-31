@@ -11,6 +11,7 @@ import { Trash2, Download, Plus } from "lucide-react"
 import { useAuth } from "@/context/AuthContext"
 import { useCurrency } from "@/hooks/use-currency"
 import { useToast } from "@/hooks/use-toast"
+import { ClosedBillsSection } from "@/components/closed-bills"
 import {
   getSalesReport, getGstReport, getProfitAndLoss, getExpenses, addExpense, deleteExpense, getTallyXml,
   getPayroll, setPayrollProfile, payPayroll, getPayrollCsv,
@@ -18,14 +19,10 @@ import {
   type SalesReport, type GstReport, type ProfitAndLoss, type ExpenseRow, type PayrollData, type PayrollRow,
   type BalanceSheet, type ReconciliationRow, type DiscountsReport,
 } from "@/lib/db"
+import { daysAgoInZone, formatDate, formatFullDateTime, monthKeyInZone, timezoneCaption, todayInZone } from "@/lib/tz"
+import { useTimezone } from "@/lib/use-timezone"
 
 const salesChartConfig = { sales: { label: "Sales", color: "hsl(var(--primary))" } }
-
-function isoDaysAgo(days: number): string {
-  const d = new Date()
-  d.setDate(d.getDate() - days)
-  return d.toISOString().slice(0, 10)
-}
 
 const isIsoDate = (s: string | null | undefined): s is string => !!s && /^\d{4}-\d{2}-\d{2}$/.test(s)
 
@@ -33,7 +30,15 @@ function AccountingInner() {
   const { user } = useAuth()
   const { currency } = useCurrency()
   const { toast } = useToast()
+  const { timezone } = useTimezone()
   const rid = user?.restaurantUsername ?? ""
+
+  // Every date boundary on this page is a RESTAURANT day, not a UTC one. The
+  // previous `new Date().toISOString().slice(0, 10)` was a UTC day key, so for a
+  // restaurant on IST every sale rung up between midnight and 05:30 fell into the
+  // previous day — precisely the late-night covers, and precisely the numbers an
+  // accountant reconciles against the till.
+  const isoDaysAgo = useCallback((days: number) => daysAgoInZone(days, timezone), [timezone])
 
   // Drill-down entry point: History month rows link here with ?from=&to= so the
   // page opens straight on that month's records instead of the default 30 days.
@@ -152,7 +157,15 @@ function AccountingInner() {
   return (
     <div className="grid gap-4 md:gap-8">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-lg font-semibold md:text-2xl">Accounting</h1>
+        <div>
+          <h1 className="text-lg font-semibold md:text-2xl">Accounting</h1>
+          {/* Which zone these numbers are in. Without it a date range is
+              ambiguous — an accountant reading "1st to 31st" has no way to know
+              whose midnight closed the month. */}
+          <p className="text-xs text-muted-foreground" title={`All dates and totals on this page are bucketed by the restaurant's calendar day in ${timezone}. Now: ${formatFullDateTime(Date.now(), timezone)}`}>
+            All dates in restaurant time · {timezoneCaption(timezone)}
+          </p>
+        </div>
         <div className="flex flex-wrap items-center gap-2">
           <Input type="date" value={from} onChange={(e) => { setFrom(e.target.value); }} className="w-auto" />
           <span className="text-muted-foreground">→</span>
@@ -239,6 +252,14 @@ function AccountingInner() {
           </CardContent>
         </Card>
       </div>
+
+      {/* The source records behind every figure above — same date range. */}
+      <ClosedBillsSection
+        rid={rid}
+        from={from}
+        to={to}
+        description="The individual settled bills behind the sales, GST and discount figures above. Open one for its line items, taxes, service charge, payment and settlement trail."
+      />
 
       <Card id="discounts-section" className="scroll-mt-20">
         <CardHeader>
@@ -365,7 +386,9 @@ export default function AccountingPage() {
 }
 
 function BalanceSheetSection({ rid, money }: { rid: string; money: (n: number | null | undefined) => string }) {
-  const [asOf, setAsOf] = useState(() => isoDaysAgo(0))
+  const { timezone } = useTimezone()
+  // "As of today" means the restaurant's today.
+  const [asOf, setAsOf] = useState(() => todayInZone(timezone))
   const [data, setData] = useState<BalanceSheet | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -433,7 +456,8 @@ function BalanceSheetSection({ rid, money }: { rid: string; money: (n: number | 
 
 function ReconciliationSection({ rid, money }: { rid: string; money: (n: number | null | undefined) => string }) {
   const { toast } = useToast()
-  const [date, setDate] = useState(() => isoDaysAgo(0))
+  const { timezone } = useTimezone()
+  const [date, setDate] = useState(() => todayInZone(timezone))
   const [rows, setRows] = useState<ReconciliationRow[]>([])
   const [loading, setLoading] = useState(true)
   const [actuals, setActuals] = useState<Record<string, string>>({})
@@ -532,7 +556,8 @@ function ReconciliationSection({ rid, money }: { rid: string; money: (n: number 
 
 function PayrollSection({ rid, money, onPaid }: { rid: string; money: (n: number | null | undefined) => string; onPaid: () => void }) {
   const { toast } = useToast()
-  const [month, setMonth] = useState(() => new Date().toISOString().slice(0, 7))
+  const { timezone } = useTimezone()
+  const [month, setMonth] = useState(() => monthKeyInZone(new Date(), timezone))
   const [data, setData] = useState<PayrollData | null>(null)
   const [loading, setLoading] = useState(true)
   const [editing, setEditing] = useState<string | null>(null)
@@ -654,7 +679,7 @@ function PayrollSection({ rid, money, onPaid }: { rid: string; money: (n: number
                   </div>
                   {r.paid ? (
                     <span className="rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-semibold text-green-800 dark:bg-green-950 dark:text-green-300">
-                      Paid {money(r.paid_amount)}{r.paid_at ? ` · ${new Date(r.paid_at).toLocaleDateString()}` : ""}
+                      Paid {money(r.paid_amount)}{r.paid_at ? ` · ${formatDate(r.paid_at, timezone)}` : ""}
                     </span>
                   ) : (
                     <>

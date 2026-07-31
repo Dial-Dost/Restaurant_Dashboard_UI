@@ -46,6 +46,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useTranslation } from '@/context/LanguageContext';
 import { useAuth } from '@/context/AuthContext';
 import { RealtimeProvider } from '@/context/RealtimeContext';
+import { TimezoneProvider } from '@/lib/use-timezone';
 import Dock from '@/components/ui/Dock';
 import '@/components/ui/Dock.css';
 
@@ -305,13 +306,22 @@ export default function DashboardLayout({
   const { user } = useAuth();
   const restaurantId = user?.restaurantUsername ?? "";
 
+  // TimezoneProvider wraps even the no-restaurant case so that every screen can
+  // call useTimezone() unconditionally; with an empty id it simply stays on the
+  // default and never fetches.
   if (!restaurantId) {
-    return <LayoutContent>{children}</LayoutContent>;
+    return (
+      <TimezoneProvider restaurantId="">
+        <LayoutContent>{children}</LayoutContent>
+      </TimezoneProvider>
+    );
   }
 
   return (
     <RealtimeProvider restaurantId={restaurantId}>
-      <LayoutContent>{children}</LayoutContent>
+      <TimezoneProvider restaurantId={restaurantId}>
+        <LayoutContent>{children}</LayoutContent>
+      </TimezoneProvider>
     </RealtimeProvider>
   );
 }

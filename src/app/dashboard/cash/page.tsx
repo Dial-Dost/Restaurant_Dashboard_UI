@@ -9,27 +9,22 @@ import { Lock, Unlock, RefreshCw } from "lucide-react"
 import { useAuth } from "@/context/AuthContext"
 import { useCurrency } from "@/hooks/use-currency"
 import { useToast } from "@/hooks/use-toast"
+import { daysAgoInZone, formatDateTime, timezoneCaption } from "@/lib/tz"
+import { useTimezone } from "@/lib/use-timezone"
 import {
   getCurrentCashSession, getCashSessions, openCashSession, closeCashSession,
   type CashSession, type CurrentCashSession,
 } from "@/lib/db"
 
-function isoDaysAgo(days: number): string {
-  const d = new Date()
-  d.setDate(d.getDate() - days)
-  return d.toISOString().slice(0, 10)
-}
-
-function fmtTime(iso: string | null): string {
-  if (!iso) {return "—"}
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString()
-}
-
 export default function CashPage() {
   const { user } = useAuth()
   const { currency } = useCurrency()
   const { toast } = useToast()
+  const { timezone } = useTimezone()
+  // A cash session opened at 23:00 and closed at 01:00 is ONE shift on the
+  // restaurant's calendar; a UTC day key would file it under two.
+  const isoDaysAgo = useCallback((days: number) => daysAgoInZone(days, timezone), [timezone])
+  const fmtTime = useCallback((iso: string | null) => formatDateTime(iso, timezone), [timezone])
   const rid = user?.restaurantUsername ?? ""
 
   const [loading, setLoading] = useState(true)
@@ -111,6 +106,7 @@ export default function CashPage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Cash register</h1>
           <p className="text-sm text-muted-foreground">Open a drawer with a float, then count down at end of shift to see the variance.</p>
+          <p className="text-xs text-muted-foreground">All times in restaurant time · {timezoneCaption(timezone)}</p>
         </div>
         <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
           <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} /> Refresh

@@ -35,6 +35,7 @@ import { useCurrency } from "@/hooks/use-currency"
 import type { RestaurantProfile} from "@/lib/db";
 import { getRestaurantProfile, updateRestaurantProfile, getRequireTableOtp, setRequireTableOtp } from "@/lib/db"
 import { BrandingCustomizer } from "./branding-customizer"
+import { TimezoneSelector } from "./timezone-selector"
 
 const settingsFormSchema = z.object({
   name: z
@@ -385,6 +386,10 @@ export function SettingsForm() {
                     />
             </CardContent>
         </Card>
+
+        {user?.restaurantUsername ? (
+          <TimezoneSelector restaurantId={user.restaurantUsername} isAdmin={hasRole("admin")} />
+        ) : null}
 
         <Card>
           <CardHeader>

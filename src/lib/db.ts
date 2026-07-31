@@ -253,18 +253,27 @@ const stableTableId = (tableName: string, fallback = 1): number => {
     return normalized > 0 ? normalized : fallback;
 };
 
-const formatBookingTime = (isoString: string): string => {
+// "Jul 28, 07:30 PM" for a reservation. This runs on the SERVER (db.ts is
+// "use server"), so the old zone-less toLocaleString rendered in the Node
+// process's zone — usually UTC in a container — and a 7:30 PM table showed as
+// 2:00 PM. The tenant zone is passed in explicitly instead.
+const formatBookingTime = (isoString: string, timeZone: string): string => {
     const value = new Date(isoString);
     if (Number.isNaN(value.getTime())) {
         return isoString;
     }
-    return value.toLocaleString(undefined, {
-        month: 'short',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: true,
-    });
+    try {
+        return value.toLocaleString('en-US', {
+            timeZone,
+            month: 'short',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: true,
+        });
+    } catch {
+        return isoString;
+    }
 };
 
 const toCustomerStatus = (hasBooking: unknown): Customer['status'] =>
@@ -701,10 +710,13 @@ const readErrorMessage = async (response: Response): Promise<string> => {
     return `Request failed with status ${response.status}`;
 };
 
-const mapBooking = (item: any): Booking => ({
+const mapBooking = (timeZone: string) => (item: any): Booking => ({
     id: String(item.booking_id ?? item.id ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
     customer: item.customer_name ?? 'Guest',
-    time: formatBookingTime(String(item.booking_date_time ?? '')),
+    // The booking rows carry no phone number; the id is what lets a screen join
+    // against /get-customers to show (and search by) the guest's contact.
+    customer_id: typeof item.customer_id === 'string' && item.customer_id ? item.customer_id : null,
+    time: formatBookingTime(String(item.booking_date_time ?? ''), timeZone),
     // Raw ISO start — the display `time` is localized text, so keep the machine
     // value for anything that needs the actual window (seating suggestions).
     date_time: typeof item.booking_date_time === 'string' ? item.booking_date_time : null,
@@ -716,6 +728,10 @@ const mapBooking = (item: any): Booking => ({
         ? (item.table_names as unknown[]).filter((n): n is string => typeof n === 'string' && n.trim().length > 0)
         : (item.table_name ? [String(item.table_name)] : []),
     source: item.source ?? 'Unknown',
+    // Which surface created the booking ("qr", "dashboard", …) — distinct from
+    // `source`, which is the channel the guest came through.
+    booked_from: typeof item.from === 'string' && item.from ? item.from : null,
+    duration_mins: Number(item.duration_mins) > 0 ? Number(item.duration_mins) : null,
     status: item.status ?? (item.active ? 'Arrived' : 'Confirmed'),
     notes: item.notes ?? item.additional_information ?? '',
     deposit: item.deposit && typeof item.deposit === 'object' ? item.deposit : null,
@@ -747,6 +763,9 @@ const mapTable = (item: any, index: number): Table => {
         status: toTableStatus(item.booked, item.reserved, item.occupied, item.payment_pending),
         qr_token: typeof item.qr_token === 'string' && item.qr_token ? item.qr_token : null,
         order_otp: typeof item.order_otp === 'string' && item.order_otp ? item.order_otp : null,
+        // Restaurant-level OTP gate (`require_table_otp`). Older cached snapshots
+        // predate the flag, so absent means "off" and the chip stays hidden.
+        otp_required: item.otp_required === true,
     };
 };
 
@@ -868,6 +887,11 @@ const mapOrder = (item: any): Order => ({
     bill_id: typeof item.bill_id === 'string' ? item.bill_id : null,
     // Per-order/per-item prep timers (KDS ageing) — passed through verbatim.
     timing: item.timing && typeof item.timing === 'object' ? item.timing : null,
+    // When the ticket was placed, and when it last changed. GET /orders returns
+    // both; the mapper used to drop them, so no screen could show "ordered at".
+    // Pre-existing rows predate the columns and read null — hence the guards.
+    created_at: typeof item.created_at === 'string' ? item.created_at : null,
+    updated_at: typeof item.updated_at === 'string' ? item.updated_at : null,
 });
 
 const readLocalField = async <T>(restaurantId: string, field: keyof RestaurantData): Promise<T> => {
@@ -1133,14 +1157,20 @@ export const getBookings = async (
     windowView?: 'upcoming' | 'past' | 'all',
 ): Promise<Booking[]> => {
     const windowParam = windowView ? `&window=${encodeURIComponent(windowView)}` : '';
-    const data = await backendJson<any[]>(
-        `/get-bookings?restaurantId=${encodeURIComponent(restaurantId)}${windowParam}`,
-        restaurantId,
-        { method: 'GET' },
-    );
+    // The display string is a wall clock, so it needs the restaurant's zone.
+    // Fetched alongside rather than per-row; a failure just falls back to the
+    // default, which is what the backend would have applied anyway.
+    const [data, timeZone] = await Promise.all([
+        backendJson<any[]>(
+            `/get-bookings?restaurantId=${encodeURIComponent(restaurantId)}${windowParam}`,
+            restaurantId,
+            { method: 'GET' },
+        ),
+        getRestaurantTimezone(restaurantId).then((tz) => tz || 'Asia/Kolkata').catch(() => 'Asia/Kolkata'),
+    ]);
 
     if (Array.isArray(data)) {
-        const mapped = data.map(mapBooking);
+        const mapped = data.map(mapBooking(timeZone));
         // Only the default (upcoming) view is the canonical live set; a past/all
         // snapshot must not overwrite the fallback cache other screens read.
         if (!windowView || windowView === 'upcoming') {
@@ -1469,6 +1499,129 @@ export const getBillForTable = async (restaurantId: string, tableName: string) =
     try { return await response.json(); } catch { return null; }
 };
 
+// --- Closed bills -----------------------------------------------------------
+// GET /bills/closed and /bills/closed/:id, both gated by the existing "View Bill"
+// action. `/bill-for-table` only ever returns the OPEN bill, so these two reads
+// are the only way to browse or re-open a settled one.
+
+export interface ClosedBillItem { name: string; price: number; quantity: number; note: string | null; line_total: number }
+export interface BillTaxLine { name: string; percentage: number; amount: number }
+
+export interface ClosedBillSummary {
+    id: string;
+    bill_no: string | null;
+    status: number;
+    table_id: string | null;
+    table_name: string | null;
+    covers: number | null;
+    grand_total: number;
+    // Genuine tax only — a "Service Charge" line stored inside the tax breakdown
+    // is lifted out into service_charge by the backend, so it is never counted
+    // twice. INVARIANT: taxable_base + service_charge + tax_total === grand_total.
+    tax_total: number;
+    taxable_base: number;
+    service_charge: number;
+    service_charge_percent: number;
+    payment_method: string | null;
+    payment_splits: PaymentSplit[];
+    discount_type: 'percent' | 'flat' | null;
+    discount_value: number;
+    // null in the LIST read (it cannot size a percent discount without the
+    // pre-discount subtotal); always a number in the detail read.
+    discount_amount: number | null;
+    coupon_code: string | null;
+    refunded: boolean;
+    refund_amount: number;
+    apc: number | null;
+    created_at: string;
+    closed_at: string | null;
+    admin_approved_at: string | null;
+    settled_at: string | null;
+    closed_by: string | null;
+    admin_approved_by: string | null;
+    waiter_confirmed_by: string | null;
+}
+
+export interface ClosedBillDetail extends ClosedBillSummary {
+    items: ClosedBillItem[];
+    order_ids: string[];
+    orders: { id: string; created_at: string; status: string; subtotal: number; item_count: number }[];
+    items_subtotal: number;
+    discount_amount: number;
+    discounted_subtotal: number;
+    taxes: BillTaxLine[];
+    target_apc: number;
+    customer: string | null;
+    seated_at: string | null;
+    left_at: string | null;
+    waiter_confirmed_at: string | null;
+    refunded_at: string | null;
+    refunded_by: string | null;
+    refund_reason: string | null;
+    refund_ref: string | null;
+    payment_proof_screenshot_url: string | null;
+    reason: string | null;
+    created_by: string | null;
+    // false when the reconstructed line items don't add up to the stored total
+    // (an item was edited after settlement, say) — the UI warns instead of lying.
+    totals_reconciled: boolean;
+}
+
+export interface ClosedBillPage {
+    bills: ClosedBillSummary[];
+    total: number;
+    limit: number;
+    offset: number;
+    has_more: boolean;
+}
+
+export interface ClosedBillFilter {
+    limit?: number;
+    offset?: number;
+    from?: string;
+    to?: string;
+    table?: string;
+    payment_method?: string;
+    search?: string;
+}
+
+// Paged, newest settled first. Returns null when the backend is unreachable or
+// refuses — an empty page is a real "no bills", so the two must stay separable
+// or the UI would report an outage as "no results".
+export const getClosedBills = async (restaurantId: string, opts: ClosedBillFilter = {}): Promise<ClosedBillPage | null> => {
+    const limit = Math.max(1, Math.min(opts.limit ?? 25, 200));
+    const offset = Math.max(0, opts.offset ?? 0);
+    const qs = new URLSearchParams({ restaurantId });
+    qs.set('limit', String(limit));
+    qs.set('offset', String(offset));
+    if (opts.from) {qs.set('from', opts.from);}
+    if (opts.to) {qs.set('to', opts.to);}
+    if (opts.table) {qs.set('table', opts.table);}
+    if (opts.payment_method) {qs.set('payment_method', opts.payment_method);}
+    if (opts.search) {qs.set('search', opts.search);}
+
+    const data = await backendJson<Partial<ClosedBillPage>>(`/bills/closed?${qs.toString()}`, restaurantId, { method: 'GET' });
+    if (!data || !Array.isArray(data.bills)) {return null;}
+    return {
+        bills: data.bills,
+        total: Number(data.total ?? data.bills.length),
+        limit,
+        offset,
+        has_more: data.has_more === true,
+    };
+};
+
+// null on 404 / unreachable backend — the caller shows "couldn't load" rather
+// than a half-empty bill.
+export const getClosedBill = async (restaurantId: string, billId: string): Promise<ClosedBillDetail | null> => {
+    if (!billId) {return null;}
+    return backendJson<ClosedBillDetail>(
+        `/bills/closed/${encodeURIComponent(billId)}?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+};
+
 export const getAuditLogs = async (
     restaurantId: string,
     opts: { limit?: number; offset?: number; category?: string; search?: string; from?: string; to?: string } = {},
@@ -1492,6 +1645,51 @@ export const getAuditLogs = async (
     }
 
     return filtered ? [] : readLocalField<AuditLog[]>(restaurantId, 'auditLogs');
+};
+
+export interface AuditLogPage {
+    logs: AuditLog[];
+    total: number;
+    limit: number;
+    offset: number;
+    has_more: boolean;
+}
+
+// ONE page of audit entries plus the total matching the same filters, so an
+// infinite scroller knows when to stop. Asks for `meta=1` (the enveloped body);
+// the bare-array default that getAuditLogs and the owner app rely on is untouched.
+// Ordering on the server is (created_at desc, id desc) — a total order — so
+// offset paging can neither duplicate nor skip a row.
+// Returns null when the request fails, so the scroller can say "couldn't load"
+// instead of silently rendering an outage as the end of the list.
+export const getAuditLogPage = async (
+    restaurantId: string,
+    opts: { limit?: number; offset?: number; category?: string; search?: string; from?: string; to?: string } = {},
+): Promise<AuditLogPage | null> => {
+    const limit = Math.max(1, Math.min(opts.limit ?? 50, 500));
+    const offset = Math.max(0, opts.offset ?? 0);
+    const qs = new URLSearchParams({ restaurantId, meta: '1' });
+    qs.set('limit', String(limit));
+    qs.set('offset', String(offset));
+    if (opts.category && opts.category !== 'All') {qs.set('category', opts.category);}
+    if (opts.search) {qs.set('search', opts.search);}
+    if (opts.from) {qs.set('from', opts.from);}
+    if (opts.to) {qs.set('to', opts.to);}
+
+    const data = await backendJson<{ logs?: unknown[]; total?: number; has_more?: boolean }>(
+        `/audit-logs?${qs.toString()}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+    if (!data || !Array.isArray(data.logs)) {return null;}
+    const logs = data.logs.map(mapAuditLog);
+    return {
+        logs,
+        total: Number(data.total ?? logs.length),
+        limit,
+        offset,
+        has_more: data.has_more === true,
+    };
 };
 
 export type UndoAuditLogResult =
@@ -2951,6 +3149,61 @@ export const getKitchenAnalytics = async (
     return data ?? emptyKitchenAnalytics(days);
 };
 
+
+// --- Overview quick insights ------------------------------------------------
+// ONE read behind the Overview tab. Composed server-side from the same helpers
+// the detail panels use, so an Overview figure can never disagree with the
+// screen it drills into. Arrays are always present (never null) so the UI does
+// not need null-guards on a brand-new tenant.
+export interface OverviewMetric {
+    value: number;
+    previous: number;
+    /** null when there is no baseline — a change against zero is not a percentage. */
+    pct_change: number | null;
+    direction: 'up' | 'down' | 'flat';
+    compared_to: string;
+}
+export interface OverviewDish { name: string; category: string; quantity: number; revenue: number; share_pct: number }
+export interface OverviewStaff {
+    employee_id: string; employee_name: string; orders: number; revenue: number;
+    avg_rating: number | null; hours_worked: number | null; ranked_by: string;
+}
+export interface OverviewInsights {
+    window_days: number;
+    timezone: string;
+    generated_at: string;
+    headline: {
+        revenue: OverviewMetric; bills: OverviewMetric; covers: OverviewMetric; apc: OverviewMetric;
+        today_revenue: number; yesterday_revenue: number;
+    };
+    top_dishes_by_revenue: OverviewDish[];
+    top_dishes_by_quantity: OverviewDish[];
+    slow_movers: { name: string; category: string; quantity: number; current_price: number }[];
+    top_staff: OverviewStaff[];
+    kitchen: {
+        avg_prep_ms: number; p90_prep_ms: number; slowest_section: string | null;
+        slowest_section_avg_ms: number; slowest_dish: string | null; slowest_dish_avg_ms: number; orders_timed: number;
+    };
+    peak: {
+        hour: number | null; hour_orders: number; hour_revenue: number;
+        weekday: string | null; weekday_orders: number; weekday_revenue: number;
+    };
+    needs_attention: { key: string; label: string; count: number; severity: 'high' | 'medium' | 'low'; module: string }[];
+}
+
+export const getOverviewInsights = async (
+    restaurantId: string,
+    days = 30,
+): Promise<OverviewInsights | null> => {
+    // A failed insight read must never blank the whole Overview tab — the caller
+    // renders its existing sections when this is null.
+    return await backendJson<OverviewInsights>(
+        `/analytics/overview?days=${days}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+};
+
 // --- Metric explainers ------------------------------------------------------
 // "What does this number mean?" copy for the analytics cards. Static text with
 // no tenant data, so it is fetched once per tab and cached in module scope —
@@ -3416,6 +3669,58 @@ export const setRequireTableOtp = async (restaurantId: string, enabled: boolean)
     try { const j = await res.json(); return j?.require_table_otp === true; } catch { return enabled; }
 };
 
+// --- Restaurant timezone (IANA id in /restaurant/settings) ------------------
+// The zone every timestamp in the dashboard is rendered in, and the zone a
+// "day" means for tally. Read with the rest of the settings document; the
+// selectable list comes from its own endpoint because it is derived from the
+// runtime's ICU data rather than stored per tenant.
+//
+// The backend 400s an unknown zone rather than silently coercing it, so a failed
+// save must surface — `sanitizeTimezone` on this side is only for RENDERING a
+// value that is already stored, never for deciding what to send.
+export const getRestaurantTimezone = async (restaurantId: string): Promise<string> => {
+    const res = await backendCall('/restaurant/settings', restaurantId, { method: 'GET' });
+    if (!res?.ok) {return '';}
+    try { const j = await res.json(); return typeof j?.timezone === 'string' ? j.timezone : ''; } catch { return ''; }
+};
+
+export interface TimezoneOptions {
+    /** Every zone the backend will accept, already unioned with UTC/default/current. */
+    timezones: string[];
+    /** The zone in force for this restaurant right now. */
+    current: string;
+    /** What a tenant that never chose one gets. */
+    default: string;
+}
+export const getTimezoneOptions = async (restaurantId: string): Promise<TimezoneOptions> => {
+    const fallback: TimezoneOptions = { timezones: [], current: '', default: 'Asia/Kolkata' };
+    const res = await backendCall('/restaurant/timezones', restaurantId, { method: 'GET' });
+    if (!res?.ok) {return fallback;}
+    try {
+        const j = await res.json();
+        return {
+            timezones: Array.isArray(j?.timezones) ? j.timezones.map((s: unknown) => String(s)) : [],
+            current: typeof j?.current === 'string' ? j.current : '',
+            default: typeof j?.default === 'string' ? j.default : 'Asia/Kolkata',
+        };
+    } catch {
+        return fallback;
+    }
+};
+
+export const setRestaurantTimezone = async (restaurantId: string, timezone: string): Promise<string> => {
+    const res = await backendCall('/restaurant/settings', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // Only the key being changed — /restaurant/settings merges on omit, so
+        // sending the whole document would risk stamping stale values (taxes,
+        // payment keys) that this form never loaded.
+        body: JSON.stringify({ timezone }),
+    });
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to save the restaurant timezone');}
+    try { const j = await res.json(); return typeof j?.timezone === 'string' ? j.timezone : timezone; } catch { return timezone; }
+};
+
 // --- Customer-page branding (brand_config) ----------------------------------
 // The guest-page customization shown on every customer surface (QR order page,
 // feedback form, valet step). Read the resolved config, the curated font
@@ -3436,7 +3741,16 @@ export interface BrandFieldOptions {
 }
 // brand_config as the editor writes it — `surface_style` (panel material) is the
 // newer live key; the guest pages read the same shape via GuestBrandConfig.
-export type BrandConfigPatch = BrandConfig & { surface_style?: string };
+// The revived palette roles the guest surfaces now consume. BrandConfig (shared
+// with the guest theme helper) predates them, so they are declared here until it
+// catches up — every one is optional and blank means "derive from the accent".
+export type BrandConfigPatch = BrandConfig & {
+    surface_style?: string;
+    color_accent?: string;
+    color_success?: string;
+    color_warning?: string;
+    color_error?: string;
+};
 export interface BrandConfigSettings {
     brand_config: BrandConfigPatch;
     brand_fonts: string[];

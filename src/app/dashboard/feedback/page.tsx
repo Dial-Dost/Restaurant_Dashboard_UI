@@ -20,6 +20,8 @@ import { useRealtime } from "@/context/RealtimeContext";
 import { useToast } from "@/hooks/use-toast";
 import { useHighlightRow } from "@/hooks/use-highlight-row";
 import { requestBackend } from "@/lib/db";
+import { dayKeyInZone, formatDateTime, formatLongDate, formatMonth, startOfWeekInZone, timezoneCaption, todayInZone, yearInZone } from "@/lib/tz";
+import { useTimezone } from "@/lib/use-timezone";
 
 interface FeedbackCategoryRating {
   key: string;
@@ -61,20 +63,14 @@ interface FeedbackSummary {
   last30DaysResponses: number;
 }
 
-function formatDate(input?: string | null): string {
-  if (!input) {
-    return "Unknown";
-  }
-  const date = new Date(input);
-  if (Number.isNaN(date.getTime())) {
-    return "Unknown";
-  }
-  return date.toLocaleString();
+function formatDate(input: string | null | undefined, timeZone: string): string {
+  return formatDateTime(input, timeZone, "Unknown");
 }
 
 function FeedbackPageInner() {
   const { user } = useAuth();
   const { toast } = useToast();
+  const { timezone } = useTimezone();
   const [entries, setEntries] = useState<FeedbackEntry[]>([]);
   /** Which feedback card is expanded (one at a time keeps the list scannable). */
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -89,20 +85,12 @@ function FeedbackPageInner() {
   const [loading, setLoading] = useState(true);
   const { lastEvent } = useRealtime();
   const [stats, setStats] = useState<{ daily?: any; weekly?: any; overall?: any[]; monthly?: any; yearly?: any } | null>(null);
-  const [dailyDate, setDailyDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
-  const [weeklyStart, setWeeklyStart] = useState<string>(() => {
-    const d = new Date();
-    const day = d.getDay();
-    const diff = (day + 6) % 7; // days since Monday
-    d.setDate(d.getDate() - diff);
-    return d.toISOString().slice(0, 10);
-  });
-  const [monthlyStart, setMonthlyStart] = useState<string>(() => {
-    const d = new Date();
-    d.setDate(1);
-    return d.toISOString().slice(0, 10);
-  });
-  const [yearlyYear, setYearlyYear] = useState<number>(() => new Date().getFullYear());
+  // Which day/week/month/year is "current" depends on where the restaurant is,
+  // not on where the person reading the report is.
+  const [dailyDate, setDailyDate] = useState<string>(() => todayInZone(timezone));
+  const [weeklyStart, setWeeklyStart] = useState<string>(() => startOfWeekInZone(timezone));
+  const [monthlyStart, setMonthlyStart] = useState<string>(() => `${dayKeyInZone(new Date(), timezone).slice(0, 7)}-01`);
+  const [yearlyYear, setYearlyYear] = useState<number>(() => yearInZone(timezone));
 
   useEffect(() => {
     let active = true;
@@ -357,35 +345,25 @@ function FeedbackPageInner() {
     return year + delta;
   }
 
+  // NB: `iso` here is a bare calendar date (YYYY-MM-DD), not an instant, so it
+  // must NOT be shifted into any zone — anchor and read it in UTC so the label
+  // says the same day everywhere.
   function formatISODate(iso: string) {
-    try {
-      const d = new Date(iso + "T00:00:00");
-      return d.toLocaleDateString();
-    } catch (_) {
-      return iso;
-    }
+    const [y, m, d] = iso.split("-").map(Number);
+    if (!y || !m || !d) {return iso;}
+    return formatLongDate(Date.UTC(y, m - 1, d), "UTC", iso);
   }
 
   function formatMonthWeek(iso: string) {
-    try {
-      const d = new Date(iso + "T00:00:00");
-      const month = d.toLocaleString(undefined, { month: "long" });
-      const weekNo = Math.ceil(d.getDate() / 7);
-      return `${month} W${weekNo}`;
-    } catch (_) {
-      return iso;
-    }
+    const [y, m, d] = iso.split("-").map(Number);
+    if (!y || !m || !d) {return iso;}
+    return `${formatMonth(Date.UTC(y, m - 1, d), "UTC", false, iso)} W${Math.ceil(d / 7)}`;
   }
 
   function formatMonthlyLabel(iso: string) {
-    try {
-      const d = new Date(iso + "T00:00:00");
-      const month = d.toLocaleString(undefined, { month: "long" });
-      const year = d.getFullYear();
-      return `${month} ${year}`;
-    } catch (_) {
-      return iso;
-    }
+    const [y, m, d] = iso.split("-").map(Number);
+    if (!y || !m || !d) {return iso;}
+    return formatMonth(Date.UTC(y, m - 1, d), "UTC", true, iso);
   }
 
   const resolveEmployeeName = useCallback((employeeId: any) => {
@@ -552,7 +530,7 @@ function FeedbackPageInner() {
               </div>
               <div className="flex items-center gap-2">
                 <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setDailyDate(shiftDate(dailyDate, -1)); }}>Prev</button>
-                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setDailyDate(new Date().toISOString().slice(0,10)); }}>Now</button>
+                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setDailyDate(todayInZone(timezone)); }}>Now</button>
                 <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setDailyDate(shiftDate(dailyDate, 1)); }}>Next</button>
               </div>
             </CardHeader>
@@ -588,7 +566,7 @@ function FeedbackPageInner() {
               <div className="flex items-center gap-2">
                 <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setWeeklyStart(shiftWeek(weeklyStart, -1)); }}>Prev</button>
                 <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setWeeklyStart(() => {
-                  const d = new Date(); const day = d.getDay(); const diff = (day + 6) % 7; d.setDate(d.getDate() - diff); return d.toISOString().slice(0,10);
+                  return startOfWeekInZone(timezone);
                 }); }}>Now</button>
                 <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setWeeklyStart(shiftWeek(weeklyStart, 1)); }}>Next</button>
               </div>
@@ -624,7 +602,7 @@ function FeedbackPageInner() {
               </div>
               <div className="flex items-center gap-2">
                 <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setMonthlyStart(shiftMonth(monthlyStart, -1)); }}>Prev</button>
-                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setMonthlyStart(() => { const d=new Date(); d.setDate(1); return d.toISOString().slice(0,10); }); }}>Now</button>
+                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setMonthlyStart(`${dayKeyInZone(new Date(), timezone).slice(0, 7)}-01`); }}>Now</button>
                 <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setMonthlyStart(shiftMonth(monthlyStart, 1)); }}>Next</button>
               </div>
             </CardHeader>
@@ -653,7 +631,7 @@ function FeedbackPageInner() {
               </div>
               <div className="flex items-center gap-2">
                 <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setYearlyYear(shiftYear(yearlyYear, -1)); }}>Prev</button>
-                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setYearlyYear(new Date().getFullYear()); }}>Now</button>
+                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setYearlyYear(yearInZone(timezone)); }}>Now</button>
                 <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setYearlyYear(shiftYear(yearlyYear, 1)); }}>Next</button>
               </div>
             </CardHeader>
@@ -680,7 +658,10 @@ function FeedbackPageInner() {
       </div>
       
       <div className="flex items-center justify-between">
-        <h1 className="text-lg font-semibold md:text-2xl">Feedback</h1>
+        <div>
+          <h1 className="text-lg font-semibold md:text-2xl">Feedback</h1>
+          <p className="text-xs text-muted-foreground">All times in restaurant time · {timezoneCaption(timezone)}</p>
+        </div>
       </div>
 
       <div className="grid gap-4 md:grid-cols-3">
@@ -899,7 +880,7 @@ function FeedbackPageInner() {
                   </span>
                   <span className="flex shrink-0 items-center gap-2">
                     <Badge>{score ? `${score}/5` : "No score"}</Badge>
-                    <span className="text-xs text-muted-foreground">{formatDate(entry.submitted_at)}</span>
+                    <span className="text-xs text-muted-foreground">{formatDate(entry.submitted_at, timezone)}</span>
                   </span>
                 </button>
 
@@ -940,7 +921,7 @@ function FeedbackPageInner() {
                       {score ? <span>Overall <strong className="text-foreground">{score}/5</strong> (average of {entry.category_ratings.length})</span> : null}
                       {typeof entry.nps === "number" ? <span>Recommend score <strong className="text-foreground">{entry.nps}/10</strong></span> : null}
                       {entry.source ? <span>Source: {entry.source}</span> : null}
-                      {entry.visit_date ? <span>Visit: {formatDate(entry.visit_date)}</span> : null}
+                      {entry.visit_date ? <span>Visit: {formatDate(entry.visit_date, timezone)}</span> : null}
                     </div>
 
                     {entry.comments?.trim() ? (

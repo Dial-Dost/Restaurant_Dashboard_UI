@@ -165,3 +165,111 @@ export const GUEST_CSS = `
 @keyframes rfSheetUp{from{transform:translateY(100%);}to{transform:translateY(0);}}
 @keyframes rfFadeIn{from{opacity:0;}to{opacity:1;}}
 `;
+
+// ---------------------------------------------------------------------------
+// Brand PALETTE — the nine colour ROLES the backend resolves for every tenant
+// and returns from GET /qr/:slug/menu (and /qr/:slug/branding) as
+// `brand_palette`. Every value is already a #rrggbb (never null) with defaults
+// that reproduce the shipped dark design exactly.
+//
+// The ramp above answers "what is the brand accent"; this answers "what is the
+// page made of" — page, panel, ink, and the three semantic states. Guest pages
+// should theme from BOTH: `resolveGuestTheme(palette.primary, brand_config)`
+// for the accent ramp/material, `resolveGuestPalette(brand_palette)` for the
+// shell + status colours. Nothing here changes what the order page renders —
+// it is additive, so the order page keeps its current output byte-for-byte.
+// ---------------------------------------------------------------------------
+export interface GuestPalette {
+  primary: string; secondary: string; accent: string;
+  background: string; surface: string; text: string;
+  success: string; warning: string; error: string;
+}
+
+// Mirrors the backend's BRAND_PALETTE_DEFAULTS / BRAND_DEFAULT_PRIMARY, so a
+// page that cannot reach the API still paints the shipped look rather than an
+// unstyled (i.e. monochrome) fallback.
+export const PALETTE_DEFAULTS: GuestPalette = {
+  primary: DEFAULT_ACCENT,
+  secondary: "#c2410c",
+  accent: "#fdba74",
+  background: SHELL.bg,
+  surface: "#1A1A1F",
+  text: SHELL.ink,
+  success: "#8FB27C",
+  warning: "#E4C48C",
+  error: SHELL.warn,
+};
+
+// "#rrggbb" → "r,g,b" for rgba() compositing in CSS custom properties.
+export function rgbOf(hex: string): string {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec((hex ?? "").trim());
+  if (!m) {return "0,0,0";}
+  const n = parseInt(m[1], 16);
+  return `${(n >> 16) & 0xff},${(n >> 8) & 0xff},${n & 0xff}`;
+}
+
+// Validate a raw `brand_palette` payload into a complete palette. Anything the
+// tenant hasn't set (or that arrives malformed) falls back to a value DERIVED
+// from the tenant's own primary where a derivation exists (secondary/accent),
+// and to the shipped design constant otherwise — so a partially configured
+// tenant is still fully branded, never grey.
+export function resolveGuestPalette(raw: unknown, fallbackPrimary?: string | null): GuestPalette {
+  const p = (raw ?? {}) as Record<string, unknown>;
+  const primary = pickHex(p.primary, fallbackPrimary) ?? PALETTE_DEFAULTS.primary;
+  const { h, s } = hexToHS(primary);
+  const derived = rampHS(h, s);
+  return {
+    primary,
+    secondary: pickHex(p.secondary) ?? derived.accMid,
+    accent: pickHex(p.accent) ?? derived.accHi,
+    background: pickHex(p.background) ?? PALETTE_DEFAULTS.background,
+    surface: pickHex(p.surface) ?? PALETTE_DEFAULTS.surface,
+    text: pickHex(p.text) ?? PALETTE_DEFAULTS.text,
+    success: pickHex(p.success) ?? PALETTE_DEFAULTS.success,
+    warning: pickHex(p.warning) ?? PALETTE_DEFAULTS.warning,
+    error: pickHex(p.error) ?? PALETTE_DEFAULTS.error,
+  };
+}
+
+// The palette as CSS custom properties, to be spread alongside guestThemeVars()
+// on a guest page root. Both the flat hex and an "r,g,b" triplet are exposed so
+// markup can tint/scrim a role (rgba(var(--okRGB),0.14)) without re-parsing hex.
+// Muted/dim ink is deliberately NOT a separate role: it is the tenant's own text
+// colour at reduced alpha, so the greys track the brand instead of being fixed.
+export function paletteVars(p: GuestPalette): CSSProperties {
+  return {
+    "--bg": p.background, "--bgRGB": rgbOf(p.background),
+    "--surface": p.surface, "--surfaceRGB": rgbOf(p.surface),
+    "--ink": p.text, "--inkRGB": rgbOf(p.text),
+    "--brand": p.primary, "--brandRGB": rgbOf(p.primary),
+    "--brand2": p.secondary, "--brand2RGB": rgbOf(p.secondary),
+    "--brand3": p.accent, "--brand3RGB": rgbOf(p.accent),
+    "--ok": p.success, "--okRGB": rgbOf(p.success),
+    "--warn": p.warning, "--warnRGB": rgbOf(p.warning),
+    "--err": p.error, "--errRGB": rgbOf(p.error),
+  } as CSSProperties;
+}
+
+// Extra motion + material utilities for the waitlist / reservation surfaces.
+// Kept separate from GUEST_CSS so the order page's injected stylesheet is
+// unchanged; pages that want these inject both strings.
+export const GUEST_FX_CSS = `
+@keyframes rfRise{from{opacity:0;transform:translateY(14px);}to{opacity:1;transform:translateY(0);}}
+@keyframes rfHalo{0%{transform:scale(0.86);opacity:0.55;}70%{transform:scale(1.35);opacity:0;}100%{transform:scale(1.35);opacity:0;}}
+@keyframes rfShimmer{0%{background-position:-220% 0;}100%{background-position:220% 0;}}
+@keyframes rfSpin{to{transform:rotate(360deg);}}
+@keyframes rfBellSwing{0%,60%,100%{transform:rotate(0deg);}70%{transform:rotate(13deg);}80%{transform:rotate(-11deg);}90%{transform:rotate(6deg);}}
+.rf-rise{animation:rfRise .45s cubic-bezier(.22,.9,.28,1) both;}
+.rf-skel{background:linear-gradient(90deg,rgba(var(--inkRGB),0.05) 25%,rgba(var(--inkRGB),0.12) 45%,rgba(var(--inkRGB),0.05) 65%);background-size:220% 100%;animation:rfShimmer 1.5s linear infinite;border-radius:10px;}
+.rf-press{transition:transform .16s cubic-bezier(.22,.9,.28,1),box-shadow .2s ease,background-color .2s ease,border-color .2s ease,opacity .2s ease;}
+.rf-press:active{transform:scale(.97);}
+.rf-field{width:100%;font-size:16px;line-height:1.35;color:var(--ink);background:rgba(var(--bgRGB),0.55);border:1.5px solid rgba(var(--inkRGB),0.10);border-radius:var(--rCtrl);padding:12px 14px;outline:none;caret-color:var(--accHi);transition:border-color .2s ease,box-shadow .2s ease,background-color .2s ease;-webkit-appearance:none;appearance:none;}
+.rf-field::placeholder{color:rgba(var(--inkRGB),0.32);}
+.rf-field:focus{border-color:rgba(var(--accRGB),0.8);background:rgba(var(--bgRGB),0.72);box-shadow:0 0 0 4px rgba(var(--accRGB),0.15);}
+.rf-field[aria-invalid="true"]{border-color:rgba(var(--errRGB),0.75);}
+.rf-field[aria-invalid="true"]:focus{box-shadow:0 0 0 4px rgba(var(--errRGB),0.16);}
+.rf-field::-webkit-calendar-picker-indicator{filter:invert(1);opacity:.55;cursor:pointer;}
+@media (prefers-reduced-motion:reduce){
+.rf-rise,.rf-skel,.rf-press{animation:none!important;transition:none!important;}
+}
+`;
