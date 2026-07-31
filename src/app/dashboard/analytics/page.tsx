@@ -3473,10 +3473,12 @@ function OverviewInsightsStrip({ view, onOpenView }: { view: ViewId; onOpenView:
   }
 
   const headline: { label: string; m: OverviewMetric; money: boolean; view: ViewId }[] = [
-    { label: "Revenue", m: ins.headline.revenue, money: true, view: "sales" },
+    // These come from settled bill totals, i.e. WITH tax and service charge. The
+    // Overview APC card next to them is deliberately PRE-tax, so both say which.
+    { label: "Revenue (incl. tax)", m: ins.headline.revenue, money: true, view: "sales" },
     { label: "Bills", m: ins.headline.bills, money: false, view: "sales" },
     { label: "Covers", m: ins.headline.covers, money: false, view: "operations" },
-    { label: "APC", m: ins.headline.apc, money: true, view: "sales" },
+    { label: "APC (incl. tax)", m: ins.headline.apc, money: true, view: "sales" },
   ]
 
   const moduleHref: Record<string, string> = {
@@ -3495,7 +3497,7 @@ function OverviewInsightsStrip({ view, onOpenView }: { view: ViewId; onOpenView:
           <div>
             <CardTitle>At a glance</CardTitle>
             <CardDescription>
-              Last {ins.window_days} days · {timezoneCaption(ins.timezone)}
+              Last {ins.window_days} days · {timezoneCaption(ins.timezone)} · money shown incl. tax
             </CardDescription>
           </div>
           <SectionDownload
