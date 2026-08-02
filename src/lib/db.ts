@@ -3168,6 +3168,42 @@ export interface OverviewStaff {
     employee_id: string; employee_name: string; orders: number; revenue: number;
     avg_rating: number | null; hours_worked: number | null; ranked_by: string;
 }
+/** One named offender behind an attention row. */
+export interface AttentionItem {
+    /** The thing itself — "T4", "Paneer Tikka", "Tomatoes". */
+    label: string;
+    /** What is wrong with it, already humanised — "2 kg left", "open 2 days". */
+    sub?: string;
+    /** Money or quantity as a RAW number; format it with the restaurant's currency. */
+    value?: number;
+    /** Real record id, for focusing exactly this row. */
+    id?: string;
+}
+/** Where an attention row should take you. `module`/`params` are the Flutter
+ *  app's routing; `href` is ours and is the only field this dashboard should
+ *  navigate with — it already includes any query string the destination page
+ *  actually parses. */
+export interface AttentionDeepLink {
+    module: string;
+    params?: Record<string, string>;
+    href?: string;
+}
+export interface AttentionRow {
+    key: string;
+    label: string;
+    count: number;
+    severity: 'high' | 'medium' | 'low';
+    /** Legacy single-label route kept for older clients. Prefer deep_link.href —
+     *  for pending_discounts this is still the dead 'Bills' label. */
+    module: string;
+    /** One line naming the real offenders — "Tomatoes (2 kg left) and 4 more". */
+    detail: string;
+    /** Up to 4 entries; the row's `count` is the true total. */
+    items: AttentionItem[];
+    /** Money at stake, when the row is about money. */
+    amount?: number;
+    deep_link: AttentionDeepLink;
+}
 export interface OverviewInsights {
     window_days: number;
     timezone: string;
@@ -3188,7 +3224,7 @@ export interface OverviewInsights {
         hour: number | null; hour_orders: number; hour_revenue: number;
         weekday: string | null; weekday_orders: number; weekday_revenue: number;
     };
-    needs_attention: { key: string; label: string; count: number; severity: 'high' | 'medium' | 'low'; module: string }[];
+    needs_attention: AttentionRow[];
 }
 
 export const getOverviewInsights = async (

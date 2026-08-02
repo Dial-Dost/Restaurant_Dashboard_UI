@@ -8,7 +8,7 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState, type R
 import Link from "next/link"
 import { useAuth } from "@/context/AuthContext"
 import { useCurrency } from "@/hooks/use-currency"
-import { getMenuInsights, type MenuInsights, type PriceSuggestion, type SuppressedSuggestion, applyMenuItemPrice, getOperationsAnalytics, type OperationsAnalytics, getApcTrends, type ApcTrendPoint, getAdvancedAnalytics, type AdvancedAnalytics, getOutletsComparison, type OutletComparison, createCampaign, deleteCampaign, getKitchenAnalytics, type KitchenAnalytics, type KitchenDishStat, type KitchenSectionStat, getMetricExplainers, type MetricExplainer, type MetricExplainers, getOverviewInsights, type OverviewInsights, type OverviewMetric } from "@/lib/db"
+import { getMenuInsights, type MenuInsights, type PriceSuggestion, type SuppressedSuggestion, applyMenuItemPrice, getOperationsAnalytics, type OperationsAnalytics, getApcTrends, type ApcTrendPoint, getAdvancedAnalytics, type AdvancedAnalytics, getOutletsComparison, type OutletComparison, createCampaign, deleteCampaign, getKitchenAnalytics, type KitchenAnalytics, type KitchenDishStat, type KitchenSectionStat, getMetricExplainers, type MetricExplainer, type MetricExplainers, getOverviewInsights, type OverviewInsights, type OverviewMetric, type AttentionItem, type AttentionRow } from "@/lib/db"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { useToast } from "@/hooks/use-toast"
@@ -3410,6 +3410,15 @@ function AdvancedAnalyticsView({ view, kpiSort, onOpenView }: { view: ViewId; kp
   );
 }
 
+// Severity has to survive greyscale, a colour-blind reader and a screen reader,
+// so each level carries a WORD and an icon as well as its colour — the same rule
+// the Delta arrows below follow.
+const ATTENTION_SEVERITY: Record<AttentionRow["severity"], { word: string; pill: string; icon: typeof TriangleAlert }> = {
+  high: { word: "Urgent", pill: "border-red-300 bg-red-50 text-red-900 dark:border-red-900 dark:bg-red-950 dark:text-red-200", icon: TriangleAlert },
+  medium: { word: "Soon", pill: "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100", icon: Info },
+  low: { word: "Watch", pill: "border-border bg-muted text-muted-foreground", icon: Info },
+}
+
 // Side-by-side branch comparison — renders ONLY for restaurants with 2+ outlets
 // (single-outlet tenants see nothing, not an empty card).
 // Quick insights that LEAD the Overview tab: what sold, who sold it, how fast
@@ -3488,6 +3497,26 @@ function OverviewInsightsStrip({ view, onOpenView }: { view: ViewId; onOpenView:
     Menu: "/dashboard/menu",
     Waitlist: "/dashboard/waitlist",
     Analytics: "/dashboard/analytics",
+    Orders: "/dashboard/orders",
+    Tables: "/dashboard/tables",
+  }
+
+  // deep_link.href is the only route the backend has confirmed the destination
+  // page actually parses, so it wins. moduleHref is the pre-deep_link fallback
+  // and is wrong for some rows — pending_discounts still reports module "Bills",
+  // which lands on accounting where the request is not actionable.
+  const attentionHref = (a: AttentionRow): string | undefined =>
+    a.deep_link?.href ?? (a.deep_link?.module ? moduleHref[a.deep_link.module] : undefined) ?? moduleHref[a.module]
+
+  // `sub` normally spells the same number out ("20 kg left", "20% off · 200"),
+  // so printing `value` next to it just says it twice. Only surface the formatted
+  // number when the sentence is missing it.
+  const chipValue = (it: AttentionItem, asMoney: boolean): string | null => {
+    if (typeof it.value !== "number" || !Number.isFinite(it.value)) {return null}
+    const rounded = Math.round(it.value)
+    const sub = it.sub ?? ""
+    if (sub.includes(String(rounded)) || sub.includes(rounded.toLocaleString())) {return null}
+    return asMoney ? money(it.value) : rounded.toLocaleString()
   }
 
   return (
@@ -3512,6 +3541,14 @@ function OverviewInsightsStrip({ view, onOpenView }: { view: ViewId; onOpenView:
               [],
               ["Staff", "Orders", "Revenue"],
               ...staff.map((s) => [s.employee_name, s.orders, s.revenue]),
+              [],
+              ["Needs attention", "Severity", "Count", "Amount", "Summary", "Opens"],
+              ...attention.map((a) => [a.label, a.severity, a.count, a.amount ?? "", a.detail, attentionHref(a) ?? ""]),
+              [],
+              // The named offenders are the point of the row, so they export as
+              // their own rows rather than being flattened into `Summary`.
+              ["Attention item", "Belongs to", "Detail", "Value", "Record id"],
+              ...attention.flatMap((a) => (a.items ?? []).map((it) => [it.label, a.label, it.sub ?? "", it.value ?? "", it.id ?? ""])),
             ]}
           />
         </div>
@@ -3539,40 +3576,90 @@ function OverviewInsightsStrip({ view, onOpenView }: { view: ViewId; onOpenView:
           <span>Yesterday <span className="font-semibold text-foreground tabular-nums">{money(ins.headline.yesterday_revenue)}</span></span>
         </div>
 
-        {/* needs attention — the only actionable part, so it comes first */}
-        {attention.length > 0 && (
-          <div>
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Needs attention</p>
-            <ul className="space-y-1">
+        {/* needs attention — the only actionable part, so it comes first. Each
+            row names its real offenders inline: the complaint about the old
+            strip was that "3 things need attention" told you nothing until you
+            clicked through to a whole module page. */}
+        <div>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Needs attention</p>
+          {attention.length === 0 ? (
+            <p className="flex items-center gap-2 rounded-md border border-green-300 bg-green-50 px-2 py-1.5 text-sm text-green-900 dark:border-green-900 dark:bg-green-950 dark:text-green-200">
+              <Check className="h-4 w-4 shrink-0" aria-hidden="true" />
+              All clear — no low stock, unsettled bills or pending approvals right now.
+            </p>
+          ) : (
+            <ul className="space-y-1.5">
               {attention.map((a) => {
-                const href = moduleHref[a.module]
-                const row = (
-                  <span className="flex items-center gap-2">
-                    <span
-                      className={`inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-[11px] font-bold ${
-                        a.severity === "high"
-                          ? "bg-destructive/15 text-destructive"
-                          : a.severity === "medium"
-                            ? "bg-amber-500/15 text-amber-700 dark:text-amber-400"
-                            : "bg-muted text-muted-foreground"
-                      }`}
-                    >
-                      {a.count}
-                    </span>
-                    <span className="text-sm">{a.label}</span>
-                  </span>
+                const sev = ATTENTION_SEVERITY[a.severity] ?? ATTENTION_SEVERITY.low
+                const SevIcon = sev.icon
+                const href = attentionHref(a)
+                const hasAmount = typeof a.amount === "number" && Number.isFinite(a.amount) && a.amount > 0
+                // The backend caps `items` at 4 already; slicing keeps a future
+                // widening of that cap from swamping this glance surface.
+                const items = (a.items ?? []).slice(0, 4)
+                const hidden = Math.max(0, a.count - items.length)
+                const body = (
+                  <>
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <span className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${sev.pill}`}>
+                        <SevIcon className="h-3 w-3 shrink-0" aria-hidden="true" />
+                        {sev.word}
+                      </span>
+                      <span className="text-sm font-medium">{a.label}</span>
+                      <span className="text-xs tabular-nums text-muted-foreground">({a.count})</span>
+                      {hasAmount && (
+                        <span className="ml-auto shrink-0 text-sm font-semibold tabular-nums">{money(a.amount)}</span>
+                      )}
+                    </div>
+                    {/* `detail` is the same offenders as `items`, joined into a
+                        sentence by the backend — showing both would print every
+                        name twice, so the chips win when they exist and the
+                        sentence covers older payloads that carry no items. */}
+                    {items.length > 0 ? (
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {items.map((it, i) => {
+                          const val = chipValue(it, hasAmount)
+                          return (
+                            <span
+                              key={it.id ?? `${a.key}-${String(i)}`}
+                              className="inline-flex max-w-full items-baseline gap-1 rounded-md border bg-muted/40 px-1.5 py-0.5 text-[11px]"
+                            >
+                              <span className="min-w-0 truncate font-medium">{it.label}</span>
+                              {it.sub && <span className="min-w-0 truncate text-muted-foreground">{it.sub}</span>}
+                              {val && <span className="shrink-0 font-semibold tabular-nums">{val}</span>}
+                            </span>
+                          )
+                        })}
+                        {hidden > 0 && (
+                          <span className="inline-flex items-center rounded-md border border-dashed px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                            +{hidden} more
+                          </span>
+                        )}
+                      </div>
+                    ) : a.detail ? (
+                      <p className="mt-0.5 truncate text-xs text-muted-foreground">{a.detail}</p>
+                    ) : null}
+                  </>
                 )
                 return (
                   <li key={a.key}>
-                    {href
-                      ? <Link href={href} className="block rounded-md px-1 py-1 hover:bg-muted">{row}</Link>
-                      : <div className="px-1 py-1">{row}</div>}
+                    {href ? (
+                      <Link
+                        href={href}
+                        title={a.detail || a.label}
+                        className="block rounded-md border border-transparent px-2 py-1.5 transition-colors hover:border-border hover:bg-muted"
+                      >
+                        {body}
+                      </Link>
+                    ) : (
+                      <div className="px-2 py-1.5">{body}</div>
+                    )}
                   </li>
                 )
               })}
             </ul>
-          </div>
-        )}
+          )}
+        </div>
 
         <div className="grid gap-6 lg:grid-cols-2">
           {/* top sellers */}

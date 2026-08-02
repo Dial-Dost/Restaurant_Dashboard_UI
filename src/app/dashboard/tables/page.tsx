@@ -374,6 +374,13 @@ export default function TablesPage() {
     // live table list in without taking `layout` as a dependency (which loops).
     const [layout, setLayoutState] = useState<TableLayout>({ sections: [] });
     const layoutRef = useRef<TableLayout>({ sections: [] });
+    // The zone roster from GET /table-sections — the server's answer to WHICH
+    // zones exist, including the empty ones no table points at. null means "not
+    // known" (never read, read failed, or the user lacks the permission that
+    // gates the route); existence is only enforced against a roster we actually
+    // hold, so a failed read can never look like a deletion.
+    const [serverZones, setServerZones] = useState<string[] | null>(null);
+    const serverZonesRef = useRef<string[] | null>(null);
     const [sectionDialog, setSectionDialog] = useState<{ mode: "add" | "rename"; id?: string } | null>(null);
     const [sectionName, setSectionName] = useState("");
     const [savingSection, setSavingSection] = useState(false);
@@ -411,6 +418,13 @@ export default function TablesPage() {
         }
     }, [user?.restaurantUsername, user?.outlet_id]);
 
+    // Same single write path for the roster. It is never persisted to storage:
+    // it is the server's list, re-read on every load, not a browser preference.
+    const commitZones = useCallback((next: string[] | null) => {
+        serverZonesRef.current = next;
+        setServerZones(next);
+    }, []);
+
     useEffect(() => {
         if (!user?.restaurantUsername) {
             return;
@@ -420,26 +434,69 @@ export default function TablesPage() {
         setLayoutState(stored);
     }, [user?.restaurantUsername, user?.outlet_id]);
 
-    // Fold the server's sections into the remembered arrangement: the column
-    // decides which zone each table is in, the stored layout only decides the
-    // order. Deleted tables drop out; new ones land under whatever their row says.
+    // Fold the server's sections into the remembered arrangement: the roster
+    // decides which zones exist, the column decides which zone each table is in,
+    // and the stored layout only decides the order. Deleted tables drop out; new
+    // ones land under whatever their row says.
     useEffect(() => {
         if (!user?.restaurantUsername || tablesData.length === 0) {
             return;
         }
-        const reconciled = applyServerSections(layoutRef.current, tablesData);
+        const reconciled = applyServerSections(layoutRef.current, tablesData, serverZones);
         if (JSON.stringify(reconciled) === JSON.stringify(layoutRef.current)) {
             return;
         }
         commitLayout(reconciled);
-    }, [tablesData, user?.restaurantUsername, commitLayout]);
+    }, [tablesData, serverZones, user?.restaurantUsername, commitLayout]);
+
+    /*
+        The zone roster — including zones no table points at, which is the whole
+        reason it exists. `GET /table-sections` is gated on "Manage Table Sections",
+        the same permission that reveals the add/rename/delete controls, so it is
+        only asked for when the user holds it: a waiter would collect a 403 on every
+        load and gain nothing, since a zone that HOLDS tables still arrives with the
+        tables themselves.
+
+        Every failure path leaves the roster unknown (null), never empty. Reporting
+        "no zones" off a failed read would reconcile every empty zone off the floor
+        — the read is not allowed to look like a deletion.
+    */
+    const loadSectionRoster = async () => {
+        if (!user?.restaurantUsername || !canManageSections) {
+            commitZones(null);
+            return;
+        }
+        try {
+            const response = await requestBackend<{ sections?: { section?: string }[] }>({
+                path: "/table-sections",
+                method: "GET",
+                restaurantId: user.restaurantUsername,
+            });
+            if (!response.ok || !Array.isArray(response.data?.sections)) {
+                console.warn("Failed to load the table section roster", response.status, response.text);
+                commitZones(null);
+                return;
+            }
+            commitZones(
+                response.data.sections
+                    .map((entry) => (typeof entry?.section === "string" ? entry.section.trim() : ""))
+                    .filter((name) => name.length > 0),
+            );
+        } catch (error) {
+            console.warn("Failed to load the table section roster", error);
+            commitZones(null);
+        }
+    };
 
     const loadTables = async () => {
         if (!user?.restaurantUsername) {
             setTablesData([]);
             setTableOccupancyByName({});
+            commitZones(null);
             return;
         }
+
+        await loadSectionRoster();
 
         try {
             const data = await getTables(user.restaurantUsername);
@@ -726,11 +783,15 @@ export default function TablesPage() {
 
     /*
         Every section write is optimistic: the layout moves first so the floor
-        never stalls under the cursor, then the single-row write goes out, and a
-        rejection puts the previous layout straight back and reloads the truth.
+        never stalls under the cursor, then the write goes out, and a rejection
+        puts the previous layout AND the previous roster straight back and
+        reloads the truth. Both, because the roster is what decides a zone
+        exists — rolling back one without the other leaves a zone that is drawn
+        but not real, or real but not drawn.
     */
-    const revertLayout = useCallback((previous: TableLayout, title: string, error: unknown) => {
+    const revertLayout = useCallback((previous: TableLayout, previousZones: string[] | null, title: string, error: unknown) => {
         commitLayout(previous);
+        commitZones(previousZones);
         toast({
             title,
             description: String((error as any)?.message ?? "The change was rolled back."),
@@ -738,7 +799,14 @@ export default function TablesPage() {
         });
         loadTables().catch((err) => { console.error("reload after failed section write", err); });
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [commitLayout, toast]);
+    }, [commitLayout, commitZones, toast]);
+
+    // The section routes answer with {"error":"…"}; the raw body would put JSON
+    // in front of the owner.
+    const backendMessage = (response: { data: unknown; text: string }, fallback: string): string => {
+        const message = (response.data as { error?: unknown } | null)?.error;
+        return typeof message === "string" && message.trim() ? message : (response.text || fallback);
+    };
 
     const handleSaveSection = async () => {
         if (!sectionDialog || !user?.restaurantUsername) {return;}
@@ -761,28 +829,65 @@ export default function TablesPage() {
         }
 
         const previous = layoutRef.current;
+        const previousZones = serverZonesRef.current;
         const current = previous.sections.find((section) => section.id === sectionDialog.id);
 
         if (sectionDialog.mode === "add") {
-            // A section with no tables in it has no row to live on server-side,
-            // so it is remembered here until the first table is dropped in.
+            /*
+                Optimistic on BOTH the layout and the roster. The roster is what
+                decides a zone exists, so a zone added to the layout alone would be
+                reconciled straight back off the floor on the very next render.
+                Then POST /table-sections makes it real — and audited, and visible
+                to the owner app and every other browser, which writing it to
+                localStorage never was.
+            */
             commitLayout(addSection(previous, trimmed));
+            commitZones(previousZones ? [...previousZones, trimmed] : previousZones);
             setSectionDialog(null);
-            toast({ title: "Section created", description: `Drag tables into "${trimmed}".` });
+            setSavingSection(true);
+            try {
+                const response = await requestBackend<{ section?: string }>({
+                    path: "/table-sections",
+                    method: "POST",
+                    restaurantId: user.restaurantUsername,
+                    body: { name: trimmed },
+                });
+                if (!response.ok) {
+                    throw new Error(backendMessage(response, "Failed to create the section"));
+                }
+                toast({ title: "Section created", description: `Drag tables into "${trimmed}".` });
+                await loadSectionRoster();
+            } catch (error) {
+                revertLayout(previous, previousZones, "Unable to create the section", error);
+            } finally {
+                setSavingSection(false);
+            }
+            return;
+        }
+
+        if (!current) {
+            // Reconciled away under the open dialog, or deleted on another device.
+            setSectionDialog(null);
+            toast({
+                title: "Section not found",
+                description: "That section is no longer on the floor.",
+                variant: "destructive",
+            });
             return;
         }
 
         commitLayout(renameSection(previous, sectionDialog.id ?? "", trimmed));
+        // The roster is keyed by name, so it has to follow the rename or the next
+        // reconcile drops the section it can no longer find under its new heading.
+        commitZones(previousZones
+            ? previousZones.map((zone) => (zone.toLowerCase() === current.name.toLowerCase() ? trimmed : zone))
+            : previousZones);
         setSectionDialog(null);
-
-        // Renaming an empty (not-yet-real) section is likewise local only.
-        if (!current || current.tables.length === 0) {
-            toast({ title: "Section renamed", description: `Now called "${trimmed}".` });
-            return;
-        }
 
         setSavingSection(true);
         try {
+            // An empty section now has a roster row of its own, so it is renamed on
+            // the server exactly like a full one — no local-only shortcut.
             const response = await requestBackend<{ section?: string; updated?: number }>({
                 path: `/table-sections/${encodeURIComponent(current.name)}`,
                 method: "PATCH",
@@ -790,7 +895,7 @@ export default function TablesPage() {
                 body: { name: trimmed },
             });
             if (!response.ok) {
-                throw new Error(response.text || "Failed to rename the section");
+                throw new Error(backendMessage(response, "Failed to rename the section"));
             }
             // Re-label the rows in memory before the refetch lands, otherwise the
             // reconcile briefly reads the OLD name off the stale snapshot and
@@ -799,13 +904,16 @@ export default function TablesPage() {
             setTablesData((tables) => tables.map((table) =>
                 moved.has(table.name.toLowerCase()) ? { ...table, section: trimmed } : table,
             ));
+            const updated = response.data?.updated ?? current.tables.length;
             toast({
                 title: "Section renamed",
-                description: `${response.data?.updated ?? current.tables.length} table${(response.data?.updated ?? current.tables.length) === 1 ? "" : "s"} now in "${trimmed}".`,
+                description: updated > 0
+                    ? `${updated} table${updated === 1 ? "" : "s"} now in "${trimmed}".`
+                    : `The empty section is now called "${trimmed}".`,
             });
             await loadTables();
         } catch (error) {
-            revertLayout(previous, "Unable to rename the section", error);
+            revertLayout(previous, previousZones, "Unable to rename the section", error);
         } finally {
             setSavingSection(false);
         }
@@ -814,24 +922,25 @@ export default function TablesPage() {
     const handleRemoveSection = async (sectionId: string, name: string) => {
         if (!ensureAdmin() || !user?.restaurantUsername) {return;}
         const previous = layoutRef.current;
+        const previousZones = serverZonesRef.current;
         const doomed = previous.sections.find((section) => section.id === sectionId);
+        if (!doomed) {return;}
         commitLayout(removeSection(previous, sectionId));
-
-        // Empty section: nothing carries the label server-side, nothing to write.
-        if (!doomed || doomed.tables.length === 0) {
-            toast({ title: "Section deleted", description: `"${name}" was empty, so nothing moved.` });
-            return;
-        }
+        commitZones(previousZones
+            ? previousZones.filter((zone) => zone.toLowerCase() !== doomed.name.toLowerCase())
+            : previousZones);
 
         try {
-            // Un-labels the tables; the DELETE route never deletes a table.
+            // Un-labels the tables and drops the roster row; the DELETE route never
+            // deletes a table. An empty section has a roster row of its own now, so
+            // it needs this call every bit as much as a full one does.
             const response = await requestBackend({
                 path: `/table-sections/${encodeURIComponent(doomed.name)}`,
                 method: "DELETE",
                 restaurantId: user.restaurantUsername,
             });
             if (!response.ok) {
-                throw new Error(response.text || "Failed to remove the section");
+                throw new Error(backendMessage(response, "Failed to remove the section"));
             }
             // Same reason as the rename: un-label the rows in memory first.
             const freed = new Set(doomed.tables);
@@ -840,11 +949,13 @@ export default function TablesPage() {
             ));
             toast({
                 title: "Section deleted",
-                description: `Tables from "${name}" moved back to Unassigned.`,
+                description: doomed.tables.length === 0
+                    ? `"${name}" was empty, so nothing moved.`
+                    : `Tables from "${name}" moved back to Unassigned.`,
             });
             await loadTables();
         } catch (error) {
-            revertLayout(previous, "Unable to remove the section", error);
+            revertLayout(previous, previousZones, "Unable to remove the section", error);
         }
     };
 
@@ -867,7 +978,9 @@ export default function TablesPage() {
         if (!dragged) {return;}
 
         const previous = layoutRef.current;
-        const current = applyServerSections(previous, tablesData);
+        const previousZones = serverZonesRef.current;
+        // Reconciled with the roster so an EMPTY zone is a valid drop target.
+        const current = applyServerSections(previous, tablesData, previousZones);
         const draggedKey = dragged.name.toLowerCase();
         const fromSection = current.sections.find((section) => section.tables.includes(draggedKey));
 
@@ -937,7 +1050,8 @@ export default function TablesPage() {
                 description: `${dragged.name} is now in ${targetName}.`,
             });
         } catch (error) {
-            revertLayout(previous, `Could not move ${dragged.name}`, error);
+            // A move never touches the roster, so it is handed back unchanged.
+            revertLayout(previous, previousZones, `Could not move ${dragged.name}`, error);
         }
   };
 
@@ -951,7 +1065,7 @@ export default function TablesPage() {
     // Render straight off a reconciled copy so a table is never invisible for the
     // frame between the tables loading and the persist effect running.
     const renderSections = useMemo(() => {
-        const reconciled = applyServerSections(layout, tablesData);
+        const reconciled = applyServerSections(layout, tablesData, serverZones);
         return reconciled.sections.map((section) => ({
             id: section.id,
             name: section.name,
@@ -959,7 +1073,7 @@ export default function TablesPage() {
                 .map((name) => tablesByKey.get(name))
                 .filter((table): table is Table => Boolean(table)),
         }));
-    }, [layout, tablesData, tablesByKey]);
+    }, [layout, tablesData, tablesByKey, serverZones]);
 
     const hasCustomSections = renderSections.some((section) => !isUnassignedSection(section.id));
   const totalTables = tablesData.length;
@@ -1278,7 +1392,8 @@ export default function TablesPage() {
                     />
                     {sectionDialog?.mode === "add" ? (
                         <p className="text-xs text-muted-foreground">
-                            A new section is empty until you drag a table into it.
+                            The section is saved on the server straight away, so every device sees it —
+                            it just holds no tables until you drag one in.
                         </p>
                     ) : null}
                 </div>

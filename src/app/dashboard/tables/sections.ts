@@ -3,24 +3,22 @@
 
   WHERE THE TRUTH LIVES
   ---------------------
-  On the SERVER, in one nullable text column: `Tables.section`. A section is
-  nothing but the distinct set of values in that column — there is no Sections
-  table — so moving a table between zones is ONE single-row write
-  (`PATCH /table/:name { section }`) and never a bulk floor rewrite. Membership
-  therefore survives a reload, a different browser and a different device.
+  On the SERVER, in two places, and `GET /table-sections` unions them:
+    * `Tables.section` — which zone each table is IN. Moving a table is ONE
+      single-row write (`PATCH /table/:name { section }`), never a bulk floor
+      rewrite.
+    * `Table_sections` (migration 023) — which zone NAMES exist. This is what
+      lets a zone holding no tables survive a reload; before it existed, "Add
+      Section" could only write to localStorage, so a new zone was never
+      audited and never left the browser that created it.
 
   WHAT IS STILL LOCAL, AND WHY
   ----------------------------
-  Two things the column cannot express:
-    * the ORDER of cards inside a section, and the order of the sections
-      themselves — there is no position column, and inventing one would mean
-      writing every row on every drop;
-    * a section that has just been created and holds NO tables yet. Server-side
-      such a section does not exist (nothing carries the label), so it is held
-      here until the first table is dropped into it, at which point the PATCH
-      makes it real.
-  Both are presentation hints: losing them costs a bit of arrangement, never a
-  table's zone. `applyServerSections` always lets the server win on membership.
+  Only ORDER: of the cards inside a section, and of the sections themselves.
+  There is no position column, and inventing one would mean writing every row
+  on every drop. That is a presentation hint — losing it costs a bit of
+  arrangement, never a table's zone and no longer a zone itself.
+  `applyServerSections` lets the server win on both membership and existence.
 */
 
 /** A named zone plus the tables it holds, in the order they are shown. */
@@ -144,15 +142,24 @@ export const saveLayout = (restaurantId: string, outletId: string | null | undef
 };
 
 /**
- * Fold the server's `Tables.section` values into the locally remembered
- * arrangement. THE SERVER WINS ON MEMBERSHIP: the stored layout only supplies
- * the order of the cards and of the sections, plus any section the owner
- * created that holds no tables yet (which cannot exist server-side).
+ * Fold the server's zones into the locally remembered arrangement. THE SERVER
+ * WINS: `tables` (i.e. `Tables.section`) decides membership, and `serverZones`
+ * — the roster from `GET /table-sections` — decides which zones exist at all.
+ * The stored layout only supplies the order of the cards and of the sections.
+ *
+ * Pass `serverZones` as null/undefined when the roster could not be read (the
+ * request failed, or the user lacks "Manage Table Sections", which gates that
+ * route). Existence is then NOT enforced and locally remembered empty zones are
+ * left alone — a failed read must never look like "the owner deleted them".
  *
  * Also drops tables that no longer exist and files brand-new ones under the
  * section their row names, so a table is never invisible.
  */
-export const applyServerSections = (layout: TableLayout, tables: SectionedTable[]): TableLayout => {
+export const applyServerSections = (
+  layout: TableLayout,
+  tables: SectionedTable[],
+  serverZones?: readonly string[] | null,
+): TableLayout => {
   // tableKey -> section id it belongs to according to the server.
   const owner = new Map<string, string>();
   // section id -> the name to display (server spelling wins over the stored one).
@@ -163,6 +170,13 @@ export const applyServerSections = (layout: TableLayout, tables: SectionedTable[
     const id = label ? sectionIdForName(label) : UNASSIGNED_SECTION_ID;
     if (label && !names.has(id)) {names.set(id, label);}
     owner.set(table.name.toLowerCase(), id);
+  }
+
+  for (const zone of serverZones ?? []) {
+    const label = normalizeSectionName(zone);
+    if (!label) {continue;}
+    const id = sectionIdForName(label);
+    if (!names.has(id)) {names.set(id, label);}
   }
 
   // Sections in their remembered order first, then any the server knows about
@@ -205,7 +219,12 @@ export const applyServerSections = (layout: TableLayout, tables: SectionedTable[
     place(table.name.toLowerCase());
   }
 
-  return { sections: ordered };
+  // With a roster in hand, the server also decides which zones EXIST: one this
+  // browser remembers but the roster does not list has been deleted elsewhere
+  // (or is a leftover from the localStorage-only era). Only ever an empty one —
+  // a zone holding tables is in `names` by construction — so no table can be
+  // hidden by this.
+  return { sections: serverZones == null ? ordered : ordered.filter((section) => names.has(section.id)) };
 };
 
 /** Section id a table currently sits in (Unassigned when it is not placed). */
@@ -252,9 +271,9 @@ export const moveTable = (
 };
 
 /**
- * Add an EMPTY section. Nothing is written to the server: with no table
- * carrying the label there is no row to put it on. It becomes real (and
- * therefore visible to every other device) the moment a table is dropped in.
+ * Add an EMPTY section to the local arrangement. This is the OPTIMISTIC half
+ * of a create — the caller must `POST /table-sections` to make the zone real,
+ * and put this layout back if that call is refused.
  */
 export const addSection = (layout: TableLayout, name: string): TableLayout => {
   const trimmed = normalizeSectionName(name);
