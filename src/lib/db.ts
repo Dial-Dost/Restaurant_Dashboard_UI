@@ -215,25 +215,32 @@ const defaultRestaurantData = (restaurantName: string): RestaurantData => ({
     customers: [],
     inventory: [],
     menuItems: [],
-    menuCategories: ['Appetizers', 'Main Courses', 'Desserts', 'Beverages'],
+    // Empty, like every other collection here. This used to hold a demo list
+    // ('Appetizers', 'Main Courses', …) which a failed GET /menu/categories then
+    // served as if it were the restaurant's own menu — categories that exist
+    // nowhere, offered in the Add Item dropdown to file real dishes into.
+    menuCategories: [],
     orders: [],
     tables: [],
     auditLogs: [],
 });
 
+// The store is an offline snapshot cache keyed by restaurant username, nothing
+// more — the backend is the source of truth. A missing key therefore means
+// "nothing cached for this tenant yet", not "unknown tenant", so it is created on
+// demand. Throwing here made every getter fail for any tenant the process had not
+// already seen (this file is "use server", so the map is one per server process),
+// which meant a successful backend response was discarded on the way to being
+// cached. Name and id are filled in when the caller knows them.
 const ensureLocalRestaurant = (restaurant_username: string, restaurantName?: string, restaurantId?: string): RestaurantRecord => {
     const existing = restaurantStore.get(restaurant_username);
     if (existing) {
         return existing;
     }
 
-    if (!restaurantName || !restaurantId) {
-        throw new Error("Missing restaurant_username or restaurantName for new restaurant");
-    }
-
-    const name = restaurantName;
+    const name = restaurantName ?? restaurant_username;
     const created: RestaurantRecord = {
-        res_id: restaurantId,
+        res_id: restaurantId ?? '',
         res_username: restaurant_username,
         Restaurant_name: name,
         users: [],
@@ -921,34 +928,6 @@ const addToLocalField = async (
     restaurant.data[field] = current as never;
 };
 
-const seedDefaultRestaurant = () => {
-    const id = getRestaurantUsernameFromName('CSR Organics');
-    if (restaurantStore.has(id)) {return;}
-    restaurantStore.set(id, {
-        res_id: '12fa3af0-f13d-4dfc-9b79-a6d634aa07dc',
-        res_username: id,
-        Restaurant_name: 'CSR Organics',
-        users: [
-            {
-                id: '12fa3af0-f13d-4dfc-9b79-a6d634aa07dc',
-                res_id: 'e47e69a8-fd5b-462e-bb33-92024b5ab347',
-                outlet_id: 'a5390f5a-f99c-4f8c-9916-ab5d6c4f8b99',
-                employee_id: '12fa3af0-f13d-4dfc-9b79-a6d634aa07dc',
-                employee_Username: 'admin',
-                emp_Fname: 'Admin',
-                emp_Lname: '-',
-                password: 'admin123',
-                role: 'admin',
-                role_all: ['admin'],
-                action_list: ['*'],
-            },
-        ],
-        data: defaultRestaurantData('CSR Organics'),
-    });
-};
-
-seedDefaultRestaurant();
-
 // --- User and Restaurant Management ---
 export const findRestaurantByName = async (name: string) => {
     const normalized = getRestaurantUsernameFromName(name);
@@ -1242,7 +1221,15 @@ export const getMenuCategories = async (restaurantId: string): Promise<string[]>
         return data;
     }
 
-    return readLocalField<string[]>(restaurantId, 'menuCategories');
+    // backendJson answers null for a 500, a 403 and an unreachable backend alike.
+    // The only honest fallback is a copy the backend actually returned earlier for
+    // this tenant; with none, the answer is "none" and it is said out loud, because
+    // a read that failed must never come back looking like the menu.
+    const cached = await readLocalField<string[]>(restaurantId, 'menuCategories');
+    console.warn(
+        `GET /menu/categories failed for ${restaurantId}; serving ${cached.length} cached categor${cached.length === 1 ? 'y' : 'ies'}`,
+    );
+    return cached;
 };
 
 export const getOrders = async (restaurantId: string, station?: string): Promise<Order[]> => {

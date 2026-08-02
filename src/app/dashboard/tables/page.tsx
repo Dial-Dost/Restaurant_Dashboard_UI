@@ -164,7 +164,7 @@ function SortableTable({
                         {...listeners}
                         {...attributes}
                         disabled={!canDrag}
-                        title={canDrag ? "Drag to another section" : "Only an admin can rearrange the floor"}
+                        title={canDrag ? "Drag to another section" : "Moving a table needs the “Table Added” permission"}
                         className={cn("p-1 shrink-0", canDrag ? "cursor-grab" : "cursor-not-allowed opacity-40")}
                     >
                         <GripVertical className="h-4 w-4 text-muted-foreground" />
@@ -342,6 +342,12 @@ function SectionDropZone({
 
 // Backend action id for "Manage Table Sections" (group: Tables).
 const MANAGE_SECTIONS_PERMISSION = "2f7c5a94-8e13-4b60-9d27-6a0f3c8e5b41";
+// "Table Added" — the permission PATCH /table/:name is gated on, i.e. the one a
+// drag between existing zones actually needs.
+const MOVE_TABLE_PERMISSION = "194ce6ee-b867-4be3-b5f0-48c28ce0a81b";
+
+const hasPermission = (actions: unknown, permission: string) =>
+    Array.isArray(actions) && (actions.includes("*") || actions.includes(permission));
 
 export default function TablesPage() {
   const router = useRouter();
@@ -349,9 +355,12 @@ export default function TablesPage() {
   // "Manage Table Sections". Creating/renaming/removing a ZONE needs it; moving a
   // table into an EXISTING zone deliberately does not, so the floor keeps working
   // mid-service. Without this gate a custom role saw the buttons and got a raw 403.
-  const canManageSections =
-    Array.isArray(user?.actions_set) &&
-    (user.actions_set.includes("*") || user.actions_set.includes(MANAGE_SECTIONS_PERMISSION));
+  const canManageSections = hasPermission(user?.actions_set, MANAGE_SECTIONS_PERMISSION);
+  // The other half of that split: dropping a table into an EXISTING zone is a
+  // plain move, so it must stay available to whoever the backend lets do it.
+  // Gating the drag on the admin ROLE instead made this permission unusable from
+  // here, which is the opposite of what the two-tier model is for.
+  const canMoveTables = hasPermission(user?.actions_set, MOVE_TABLE_PERMISSION);
   const [tablesData, setTablesData] = useState<Table[]>([]);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [newTableName, setNewTableName] = useState("");
@@ -404,7 +413,21 @@ export default function TablesPage() {
         return false;
     };
 
-    const isAdmin = hasRole("admin");
+    // Same shape as ensureAdmin, for the floor-plan routes the backend gates on a
+    // permission rather than a role — the toast has to name the permission the
+    // owner ticks, otherwise "required role: admin" sends them looking for a
+    // grant that does not exist.
+    const ensurePermission = (granted: boolean, permissionName: string) => {
+        if (granted) {
+            return true;
+        }
+        toast({
+            title: "Access denied",
+            description: `You do not have the required permission for this action. Required permission: ${permissionName}.`,
+            variant: "destructive",
+        });
+        return false;
+    };
 
   const sensors = useSensors(useSensor(PointerSensor));
 
@@ -770,13 +793,13 @@ export default function TablesPage() {
     // --- Sections -----------------------------------------------------------
 
     const openAddSection = () => {
-        if (!ensureAdmin()) {return;}
+        if (!ensurePermission(canManageSections, "Manage Table Sections")) {return;}
         setSectionName("");
         setSectionDialog({ mode: "add" });
     };
 
     const openRenameSection = (sectionId: string, currentName: string) => {
-        if (!ensureAdmin()) {return;}
+        if (!ensurePermission(canManageSections, "Manage Table Sections")) {return;}
         setSectionName(currentName);
         setSectionDialog({ mode: "rename", id: sectionId });
     };
@@ -920,7 +943,7 @@ export default function TablesPage() {
     };
 
     const handleRemoveSection = async (sectionId: string, name: string) => {
-        if (!ensureAdmin() || !user?.restaurantUsername) {return;}
+        if (!ensurePermission(canManageSections, "Manage Table Sections") || !user?.restaurantUsername) {return;}
         const previous = layoutRef.current;
         const previousZones = serverZonesRef.current;
         const doomed = previous.sections.find((section) => section.id === sectionId);
@@ -965,7 +988,10 @@ export default function TablesPage() {
 
   const handleDragEnd = async (event: DragEndEvent) => {
         setActiveId(null);
-        if (!ensureAdmin()) {
+        // A drop writes PATCH /table/:name, which needs "Table Added" — not the
+        // sections permission, and not the admin role. The grip is already
+        // disabled without it; this is the same check at the write.
+        if (!ensurePermission(canMoveTables, "Table Added")) {
             return;
         }
 
@@ -1257,9 +1283,9 @@ export default function TablesPage() {
                 <CardDescription className="text-sm text-muted-foreground">
                     {unavailableTables} of {totalTables} tables are currently booked or reserved.
                     {" "}
-                    {isAdmin
+                    {canMoveTables
                         ? "Drag a table by its grip to reorder it or move it into another section — a move is saved on the server as you drop."
-                        : "Only an admin can rearrange the floor."}
+                        : "Rearranging the floor needs the “Table Added” permission."}
                 </CardDescription>
             ) : (
                 <CardDescription className="text-sm text-muted-foreground">
@@ -1346,7 +1372,7 @@ export default function TablesPage() {
                                                         table={table}
                                                         occupancy={tableOccupancyByName[table.name.toLowerCase()] ?? null}
                                                         combined={combinedByName[table.name.toLowerCase()] ?? null}
-                                                        canDrag={isAdmin}
+                                                        canDrag={canMoveTables}
                                                         onRemove={handleRemoveTable}
                                                         onEdit={openEditTable}
                                                         onOpenOrders={openOrdersForTable}

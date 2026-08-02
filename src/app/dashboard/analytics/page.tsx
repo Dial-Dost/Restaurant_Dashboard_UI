@@ -1408,7 +1408,7 @@ function OperationsCharts({ view, onOpenView }: { view: ViewId; onOpenView: (v: 
     key: `h-${h.hour}`,
     label: hourLabel(h.hour),
     value: h.orders,
-    caption: `${hourLabel(h.hour)}–${hourLabel((h.hour + 1) % 24)} UTC · last 30 days`,
+    caption: `${hourLabel(h.hour)}–${hourLabel((h.hour + 1) % 24)} · last 30 days`,
     meta: [
       { label: "Revenue", value: money(h.revenue) },
       { label: "Avg ticket", value: h.orders > 0 ? money(h.revenue / h.orders) : "—" },
@@ -1435,8 +1435,8 @@ function OperationsCharts({ view, onOpenView }: { view: ViewId; onOpenView: (v: 
     setDetail({
       title: `Orders at ${hourLabel(h.hour)}`,
       value: `${h.orders}`,
-      sub: `${hourLabel(h.hour)}–${hourLabel((h.hour + 1) % 24)} UTC · last 30 days`,
-      filters: [`Hour: ${hourLabel(h.hour)} UTC`, "Window: last 30 days", "Metric: orders placed"],
+      sub: `${hourLabel(h.hour)}–${hourLabel((h.hour + 1) % 24)} · last 30 days`,
+      filters: [`Hour: ${hourLabel(h.hour)}`, "Window: last 30 days", "Metric: orders placed"],
       note: [
         `This hour took ${h.orders} of the ${hourOrders} orders in the window (${Math.round(share * 10) / 10}%) and ${money(h.revenue)} of revenue — the ${rank === 1 ? "busiest" : `${ordinalWord(rank)} busiest`} hour of the day, against an average hour of ${Math.round(avgHourOrders * 10) / 10}.`,
         rank > 1 && busiestHour ? `Your peak is ${hourLabel(busiestHour.hour)} with ${busiestHour.orders}.` : "",
@@ -1463,7 +1463,7 @@ function OperationsCharts({ view, onOpenView }: { view: ViewId; onOpenView: (v: 
           ["Rank among 24 hours", `${rank} of ${hours.length}`],
         ],
       },
-      footnote: "Last 30 days · times are UTC",
+      footnote: "Last 30 days · times are the restaurant's local time",
       link: "/dashboard/orders",
       linkLabel: "Open orders",
       view: "operations",
@@ -1520,11 +1520,11 @@ function OperationsCharts({ view, onOpenView }: { view: ViewId; onOpenView: (v: 
             <SectionDownload
               id="peak-order-times"
               label="Peak order times"
-              build={() => [["Hour (UTC)", "Orders"], ...byHour.map((h) => [h.time, h.orders])]}
+              build={() => [["Hour", "Orders"], ...byHour.map((h) => [h.time, h.orders])]}
             />
           ) : null}>
             <CardTitle>Peak Order Times</CardTitle>
-            <CardDescription>Order volume by hour of day (UTC), last 30 days. Hover any hour for its figures; click it for the full breakdown.</CardDescription>
+            <CardDescription>Order volume by hour of day (restaurant local time), last 30 days. Hover any hour for its figures; click it for the full breakdown.</CardDescription>
           </SectionHeaderRow>
         </CardHeader>
         <CardContent>
