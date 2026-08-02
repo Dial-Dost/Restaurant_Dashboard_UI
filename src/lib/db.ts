@@ -1609,6 +1609,83 @@ export const getClosedBill = async (restaurantId: string, billId: string): Promi
     );
 };
 
+// --- Open (unsettled) bills --------------------------------------------------
+// GET /bills/open, the complement of /bills/closed and behind the same "View
+// Bill" action. Everything else in accounting reads SETTLED bills, so this is the
+// only place "who owes me money right now" is answerable.
+//
+// The money is fully computed server-side and obeys the same invariant as a
+// settled bill — taxable_base + service_charge + tax_total === grand_total, with
+// a "Service Charge" entry lifted out of the tax breakdown. Do not recompute it
+// here: an un-confirmed bill's stored total_amt is the PRE-TAX subtotal, and the
+// backend is what knows the difference.
+
+export interface OpenBillSummary {
+    id: string;
+    bill_no: string | null;
+    status: number;
+    table_id: string | null;
+    table_name: string | null;
+    covers: number | null;
+    order_count: number;
+    grand_total: number;
+    taxable_base: number;
+    service_charge: number;
+    service_charge_percent: number;
+    taxes: BillTaxLine[];
+    tax_total: number;
+    discount_type: 'percent' | 'flat' | null;
+    discount_value: number;
+    coupon_code: string | null;
+    apc: number | null;
+    // 'running' = still being added to; 'awaiting_approval' = the waiter has taken
+    // payment and an admin must approve it; 'approved' = momentary, approval
+    // closes the bill in the same transaction.
+    stage: 'running' | 'awaiting_approval' | 'approved';
+    totals_snapshotted: boolean;
+    payment_method: string | null;
+    opened_by: string | null;
+    opened_at: string;
+    opened_at_local: string;
+    age_minutes: number;
+}
+
+export interface OpenBillPage {
+    bills: OpenBillSummary[];
+    total: number;
+    limit: number;
+    offset: number;
+    has_more: boolean;
+    // Across EVERY open bill, not just this page — the figure an owner reacts to.
+    outstanding_total: number;
+    timezone: string;
+}
+
+// null on an unreachable/refusing backend, so the UI can tell an outage apart
+// from a genuinely empty floor (same contract as getClosedBills).
+export const getOpenBills = async (
+    restaurantId: string,
+    opts: { limit?: number; offset?: number } = {},
+): Promise<OpenBillPage | null> => {
+    const limit = Math.max(1, Math.min(opts.limit ?? 25, 200));
+    const offset = Math.max(0, opts.offset ?? 0);
+    const qs = new URLSearchParams({ restaurantId });
+    qs.set('limit', String(limit));
+    qs.set('offset', String(offset));
+
+    const data = await backendJson<Partial<OpenBillPage>>(`/bills/open?${qs.toString()}`, restaurantId, { method: 'GET' });
+    if (!data || !Array.isArray(data.bills)) {return null;}
+    return {
+        bills: data.bills,
+        total: Number(data.total ?? data.bills.length),
+        limit,
+        offset,
+        has_more: data.has_more === true,
+        outstanding_total: Number(data.outstanding_total ?? 0),
+        timezone: String(data.timezone ?? ''),
+    };
+};
+
 export const getAuditLogs = async (
     restaurantId: string,
     opts: { limit?: number; offset?: number; category?: string; search?: string; from?: string; to?: string } = {},

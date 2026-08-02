@@ -7,6 +7,7 @@ import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Badge } from "@/components/ui/badge"
 import { Trash2, Download, Plus } from "lucide-react"
 import { useAuth } from "@/context/AuthContext"
 import { useCurrency } from "@/hooks/use-currency"
@@ -15,14 +16,17 @@ import { ClosedBillsSection } from "@/components/closed-bills"
 import {
   getSalesReport, getGstReport, getProfitAndLoss, getExpenses, addExpense, deleteExpense, getTallyXml,
   getPayroll, setPayrollProfile, payPayroll, getPayrollCsv,
-  getBalanceSheet, getReconciliation, saveReconciliation, getDiscountsReport,
+  getBalanceSheet, getReconciliation, saveReconciliation, getDiscountsReport, getOpenBills,
   type SalesReport, type GstReport, type ProfitAndLoss, type ExpenseRow, type PayrollData, type PayrollRow,
-  type BalanceSheet, type ReconciliationRow, type DiscountsReport,
+  type BalanceSheet, type ReconciliationRow, type DiscountsReport, type OpenBillSummary,
 } from "@/lib/db"
 import { daysAgoInZone, formatDate, formatFullDateTime, monthKeyInZone, timezoneCaption, todayInZone } from "@/lib/tz"
 import { useTimezone } from "@/lib/use-timezone"
 
 const salesChartConfig = { sales: { label: "Sales", color: "hsl(var(--primary))" } }
+
+// Open bills are bounded by table count, so one page almost always covers them all.
+const PAGE_SIZE = 25
 
 const isIsoDate = (s: string | null | undefined): s is string => !!s && /^\d{4}-\d{2}-\d{2}$/.test(s)
 
@@ -57,6 +61,8 @@ function AccountingInner() {
   const [pnl, setPnl] = useState<ProfitAndLoss | null>(null)
   const [expenses, setExpenses] = useState<ExpenseRow[]>([])
   const [discounts, setDiscounts] = useState<DiscountsReport | null>(null)
+  // Lifted out of OpenBillsSection so the summary tile can show it up front.
+  const [outstanding, setOutstanding] = useState(0)
 
   // New-expense form
   const [exCategory, setExCategory] = useState("General")
@@ -180,7 +186,7 @@ function AccountingInner() {
       </div>
 
       {/* Summary cards drill down to the section holding their source records. */}
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
         <a href="#sales-section" className="block" title="Jump to daily sales">
           <Card className="h-full transition-shadow hover:shadow-md"><CardHeader className="pb-2"><CardDescription>Net sales ↗</CardDescription><CardTitle className="text-2xl">{money(sales?.net_sales)}</CardTitle></CardHeader></Card>
         </a>
@@ -191,6 +197,16 @@ function AccountingInner() {
           <Card className="h-full transition-shadow hover:shadow-md"><CardHeader className="pb-2"><CardDescription>Expenses ↗</CardDescription><CardTitle className="text-2xl">{money(pnl?.total_expenses)}</CardTitle></CardHeader></Card>
         </a>
         <Card><CardHeader className="pb-2"><CardDescription>Net profit</CardDescription><CardTitle className="text-2xl">{money(pnl?.net_profit)}</CardTitle></CardHeader></Card>
+        {/* Not a range figure like its four neighbours — it is the money sitting
+            uncollected RIGHT NOW, which is why it says "now" on the tile. */}
+        <a href="#open-bills-section" className="block" title="Jump to open bills">
+          <Card className="h-full transition-shadow hover:shadow-md">
+            <CardHeader className="pb-2">
+              <CardDescription>Outstanding now ↗</CardDescription>
+              <CardTitle className={`text-2xl ${outstanding > 0 ? "text-amber-600 dark:text-amber-400" : ""}`}>{money(outstanding)}</CardTitle>
+            </CardHeader>
+          </Card>
+        </a>
       </div>
 
       <Card id="sales-section" className="scroll-mt-20">
@@ -252,6 +268,11 @@ function AccountingInner() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Money still on the floor. Deliberately ABOVE the settled bills and
+          outside the date range: everything else on this page reports a closed
+          period, this one is the present tense. */}
+      <OpenBillsSection rid={rid} onTotal={setOutstanding} />
 
       {/* The source records behind every figure above — same date range. */}
       <ClosedBillsSection
@@ -382,6 +403,179 @@ export default function AccountingPage() {
     <Suspense fallback={<div className="py-10 text-center text-muted-foreground">Loading…</div>}>
       <AccountingInner />
     </Suspense>
+  )
+}
+
+// Open (unsettled) bills — the only list of them anywhere in the product.
+//
+// Everything else on this page reports a CLOSED period from settled bills, so
+// until now "who owes me money right now" had no answer and the Overview's
+// unsettled-bills alert had nowhere to link but the floor plan. Hence: no date
+// range (it is live state), and the outstanding total stated before the rows.
+//
+// Every figure comes from the backend already split into taxable base / service
+// charge / tax. Nothing is recomputed here — a bill the waiter hasn't confirmed
+// yet stores its PRE-TAX subtotal in the database, and only the server knows to
+// re-price it.
+function OpenBillsSection({ rid, onTotal }: { rid: string; onTotal: (n: number) => void }) {
+  const { timezone } = useTimezone()
+  const { currencySymbol } = useCurrency()
+  const exact = (n: number | null | undefined) =>
+    `${currencySymbol}${Number(n ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
+  const [bills, setBills] = useState<OpenBillSummary[]>([])
+  const [outstanding, setOutstanding] = useState(0)
+  const [total, setTotal] = useState(0)
+  const [hasMore, setHasMore] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
+  // An empty floor and an unreachable backend must not render the same, or an
+  // outage reads as "nobody owes you anything".
+  const [failed, setFailed] = useState(false)
+
+  const load = useCallback(async () => {
+    if (!rid) {return}
+    setLoading(true)
+    const page = await getOpenBills(rid, { limit: PAGE_SIZE, offset: 0 })
+    if (!page) {
+      setFailed(true)
+      setBills([])
+      setLoading(false)
+      return
+    }
+    setFailed(false)
+    setBills(page.bills)
+    setTotal(page.total)
+    setHasMore(page.has_more)
+    setOutstanding(page.outstanding_total)
+    onTotal(page.outstanding_total)
+    setLoading(false)
+  }, [rid, onTotal])
+
+  useEffect(() => { void load() }, [load])
+
+  const loadMore = async () => {
+    setLoadingMore(true)
+    const page = await getOpenBills(rid, { limit: PAGE_SIZE, offset: bills.length })
+    if (page) {
+      setBills((prev) => [...prev, ...page.bills])
+      setHasMore(page.has_more)
+    }
+    setLoadingMore(false)
+  }
+
+  // Rough age, in the units a manager thinks in.
+  const age = (minutes: number) => {
+    if (minutes < 60) {return `${minutes}m`}
+    if (minutes < 60 * 24) {return `${Math.floor(minutes / 60)}h ${minutes % 60}m`}
+    const days = Math.floor(minutes / (60 * 24))
+    return `${days}d ${Math.floor((minutes % (60 * 24)) / 60)}h`
+  }
+
+  const stale = bills.filter((b) => b.age_minutes >= 60 * 24).length
+  const awaiting = bills.filter((b) => b.stage !== "running").length
+
+  return (
+    <Card id="open-bills-section" className="scroll-mt-20">
+      <CardHeader>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <CardTitle>Open bills — money on the floor</CardTitle>
+            <CardDescription>
+              Every bill that has not been settled, right now. Not filtered by the date range above —
+              these are live, and none of them are counted in the sales, GST or P&amp;L figures until they close.
+            </CardDescription>
+          </div>
+          <div className="text-right">
+            <p className="text-xs text-muted-foreground">Total outstanding</p>
+            <p className={`text-2xl font-semibold ${outstanding > 0 ? "text-amber-600 dark:text-amber-400" : ""}`}>{exact(outstanding)}</p>
+            <p className="text-xs text-muted-foreground">
+              {total} open bill{total === 1 ? "" : "s"}
+              {awaiting > 0 ? ` · ${awaiting} awaiting approval` : ""}
+              {stale > 0 ? ` · ${stale} over a day old` : ""}
+            </p>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {loading ? (
+          <p className="py-6 text-center text-sm text-muted-foreground">Loading…</p>
+        ) : failed ? (
+          <div className="py-6 text-center text-sm text-muted-foreground">
+            <p>Couldn&apos;t load open bills.</p>
+            <Button variant="outline" size="sm" className="mt-2" onClick={() => void load()}>Retry</Button>
+          </div>
+        ) : bills.length === 0 ? (
+          <p className="py-6 text-center text-sm text-muted-foreground">Nothing outstanding — every bill is settled.</p>
+        ) : (
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[46rem] text-sm">
+                <thead>
+                  <tr className="border-b text-left text-xs uppercase text-muted-foreground">
+                    <th className="py-2 pr-3 font-medium">Table</th>
+                    <th className="py-2 pr-3 font-medium">Opened</th>
+                    <th className="py-2 pr-3 font-medium">Open for</th>
+                    <th className="py-2 pr-3 font-medium">Covers</th>
+                    <th className="py-2 pr-3 font-medium">Orders</th>
+                    <th className="py-2 pr-3 font-medium">Opened by</th>
+                    <th className="py-2 pr-3 text-right font-medium">Running total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {bills.map((b) => (
+                    <tr key={b.id} className="border-b last:border-0 align-top">
+                      <td className="py-2 pr-3">
+                        <span className="font-medium">{b.table_name ?? "—"}</span>
+                        {b.bill_no && <span className="ml-2 text-xs text-muted-foreground">#{b.bill_no}</span>}
+                        {b.stage !== "running" && (
+                          <Badge variant="outline" className="ml-2 border-amber-500 text-amber-600 dark:text-amber-400">
+                            {b.stage === "awaiting_approval" ? "Payment awaiting approval" : "Approved"}
+                          </Badge>
+                        )}
+                        {b.coupon_code && <span className="ml-2 text-xs text-muted-foreground">{b.coupon_code}</span>}
+                      </td>
+                      {/* The restaurant's own wall clock, computed server-side —
+                          an accountant reads the same time the till printed. */}
+                      <td className="py-2 pr-3 whitespace-nowrap text-muted-foreground">{b.opened_at_local || "—"}</td>
+                      <td className={`py-2 pr-3 whitespace-nowrap ${b.age_minutes >= 60 * 24 ? "font-medium text-amber-600 dark:text-amber-400" : "text-muted-foreground"}`}>
+                        {age(b.age_minutes)}
+                      </td>
+                      <td className="py-2 pr-3 text-muted-foreground">{b.covers ?? "—"}</td>
+                      <td className="py-2 pr-3 text-muted-foreground">{b.order_count}</td>
+                      <td className="py-2 pr-3 text-muted-foreground">{b.opened_by ?? "—"}</td>
+                      <td className="py-2 pr-3 text-right">
+                        <span className="font-semibold">{exact(b.grand_total)}</span>
+                        {/* The tax-inclusive total is what the guest owes; the
+                            split below is what the owner actually keeps. */}
+                        <span className="block text-xs text-muted-foreground">
+                          {exact(b.taxable_base)} base
+                          {b.service_charge > 0 ? ` · ${exact(b.service_charge)} svc` : ""}
+                          {b.tax_total > 0 ? ` · ${exact(b.tax_total)} tax` : ""}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs text-muted-foreground">
+                Showing {bills.length} of {total} · times in {timezoneCaption(timezone)}
+              </p>
+              <div className="flex gap-2">
+                <Button variant="ghost" size="sm" onClick={() => void load()}>Refresh</Button>
+                {hasMore && (
+                  <Button variant="outline" size="sm" onClick={() => void loadMore()} disabled={loadingMore}>
+                    {loadingMore ? "Loading…" : "Load more"}
+                  </Button>
+                )}
+              </div>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 
