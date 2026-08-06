@@ -103,6 +103,10 @@ const STRINGS: Record<Lang, Record<string, string>> = {
     menuEmptyBody: "You're still in the queue — we'll call you the moment a table frees up.",
     savePicks: "Save my picks",
     saved: "Saved",
+    confirmTitle: "Confirm your pre-order",
+    confirmBody: "Once you're seated, this goes straight to the kitchen as your order. Nothing is charged now — you can still change it while you wait.",
+    confirmYes: "Confirm pre-order",
+    confirmNo: "Cancel",
     item: "item",
     items: "items",
     popupBody: "Please head over to the host now to be seated.",
@@ -170,6 +174,10 @@ const STRINGS: Record<Lang, Record<string, string>> = {
     menuEmptyBody: "आप कतार में बने हुए हैं — टेबल खाली होते ही हम बुला लेंगे।",
     savePicks: "मेरी पसंद सेव करें",
     saved: "सेव हो गया",
+    confirmTitle: "अपना प्री-ऑर्डर पक्का करें",
+    confirmBody: "बैठते ही यह सीधे किचन को आपके ऑर्डर के रूप में चला जाएगा। अभी कोई पैसा नहीं लिया जा रहा — इंतज़ार के दौरान आप इसे बदल भी सकते हैं।",
+    confirmYes: "प्री-ऑर्डर पक्का करें",
+    confirmNo: "रहने दें",
     item: "आइटम",
     items: "आइटम",
     popupBody: "कृपया अभी होस्ट के पास पहुँचें, वे आपको बैठा देंगे।",
@@ -532,8 +540,15 @@ function QueueInner() {
       .filter((x): x is PreItem => x != null);
   }, [cart, menu]);
 
+  // The guest confirms ONCE before anything is held. Tapping "save my picks" used
+  // to POST immediately and show a small "Saved" chip — from the guest's side
+  // that gave no sense that these items become a real order the moment they sit
+  // down. So the tap now opens the summary below, and only the confirm sends.
+  const [confirming, setConfirming] = useState(false);
+
   const savePreorder = async () => {
     if (!token) {return;}
+    setConfirming(false);
     setBusy(true);
     try {
       const r = await fetch(`${BASE}/qr/${encodeURIComponent(restaurant)}/waitlist/${token}/preorder`, {
@@ -1000,9 +1015,71 @@ function QueueInner() {
               </div>
               <div className="rf-num text-[23px] leading-tight" style={{ color: "var(--ink)" }}>{money(cartTotal)}</div>
             </div>
-            <button onClick={savePreorder} disabled={busy} className="rf-press flex flex-shrink-0 items-center gap-1.5 px-4 py-3 text-[13px] font-bold disabled:opacity-50" style={PRIMARY_BTN}>
+            <button onClick={() => setConfirming(true)} disabled={busy || cartItems().length === 0} className="rf-press flex flex-shrink-0 items-center gap-1.5 px-4 py-3 text-[13px] font-bold disabled:opacity-50" style={PRIMARY_BTN}>
               <Icon name="bookmark_added" style={{ fontSize: 17 }} />{t("savePicks")}
             </button>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Pre-order confirmation. Deliberately a blocking step and not a toast:
+          confirming here is the guest agreeing that these items become a real
+          order the moment they sit down, so it has to be read, not glimpsed. */}
+      {confirming ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-6"
+          style={{ background: "rgba(var(--bgRGB),0.78)", backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)", animation: "rfFadeIn .2s ease both" }}
+          onClick={() => { setConfirming(false); }}
+        >
+          <div
+            className="rf-rise w-full max-w-sm px-6 pb-6 pt-7"
+            style={{ ...PANEL, background: "rgba(var(--surfaceRGB),0.92)" }}
+            onClick={(e) => { e.stopPropagation(); }}
+          >
+            <div className="flex items-center gap-2.5">
+              <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full" style={{ background: "rgba(var(--accRGB),0.16)" }}>
+                <Icon name="bookmark_added" style={{ fontSize: 19, color: "var(--accHi)" }} />
+              </span>
+              <h2 className="rf-serif text-[21px] leading-tight" style={{ color: "var(--ink)" }}>{t("confirmTitle")}</h2>
+            </div>
+
+            <p className="mt-3 text-[13px] leading-relaxed" style={muted()}>{t("confirmBody")}</p>
+
+            {/* What they are agreeing to, itemised — a total alone is not consent. */}
+            <div className="mt-4 max-h-52 overflow-y-auto rounded-xl" style={{ background: "rgba(var(--bgRGB),0.5)" }}>
+              {cartItems().map((it) => (
+                <div key={it.id} className="flex items-baseline justify-between gap-3 px-3.5 py-2 text-[13px]">
+                  <span style={{ color: "var(--accHi)" }} className="rf-num flex-shrink-0">{it.quantity}&times;</span>
+                  <span className="flex-1 truncate" style={{ color: "var(--ink)" }}>{it.name}</span>
+                  <span className="rf-num flex-shrink-0" style={muted()}>{money(it.price * it.quantity)}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-3 flex items-baseline justify-between px-1">
+              <span className="text-[12px] font-bold uppercase tracking-wide" style={muted()}>
+                {cartCount} {cartCount === 1 ? t("item") : t("items")}
+              </span>
+              <span className="rf-num text-[19px]" style={{ color: "var(--ink)" }}>{money(cartTotal)}</span>
+            </div>
+
+            <div className="mt-5 flex gap-2.5">
+              <button
+                onClick={() => { setConfirming(false); }}
+                className="rf-press flex-1 rounded-full py-3 text-[13px] font-bold"
+                style={{ background: "rgba(var(--inkRGB),0.10)", color: "var(--ink)" }}
+              >
+                {t("confirmNo")}
+              </button>
+              <button
+                onClick={savePreorder}
+                disabled={busy}
+                className="rf-press flex-1 rounded-full py-3 text-[13px] font-bold disabled:opacity-50"
+                style={PRIMARY_BTN}
+              >
+                {t("confirmYes")}
+              </button>
+            </div>
           </div>
         </div>
       ) : null}
