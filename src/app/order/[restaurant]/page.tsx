@@ -2,7 +2,7 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
-import { guestBackendBase } from "@/lib/guest-backend";
+import { guestBackendBase, readGuestJson, readGuestBody, GUEST_UNREACHABLE } from "@/lib/guest-backend";
 import { fontStack, loadBrandFont, loadDesignFonts } from "@/lib/brand-fonts";
 import {
   DEFAULT_ACCENT,
@@ -352,8 +352,8 @@ function OrderInner() {
       const res = await fetch(`${BASE}/qr/${encodeURIComponent(restaurant)}/bill?t=${encodeURIComponent(token)}`, {
         cache: "no-store",
       });
-      const data = await res.json();
-      if (res.ok) {
+      const { ok, data } = await readGuestBody(res);
+      if (ok) {
         const subtotal = Number(data?.subtotal ?? data?.total_amt ?? 0);
         const taxes: TaxLine[] = Array.isArray(data?.taxes) ? data.taxes : [];
         const grand = Number(data?.grand_total ?? data?.total_amt ?? subtotal);
@@ -379,8 +379,7 @@ function OrderInner() {
     (async () => {
       try {
         const res = await fetch(`${BASE}/qr/${encodeURIComponent(restaurant)}/menu`, { cache: "no-store" });
-        const data = await res.json();
-        if (!res.ok) {throw new Error(data?.error ?? "Failed to load menu");}
+        const data: any = await readGuestJson(res, "Failed to load menu");
         if (!active) {return;}
         setRestaurantName(data.restaurant_name ?? restaurant);
         setLogoUrl(typeof data.logo_url === "string" ? data.logo_url : "");
@@ -515,12 +514,12 @@ function OrderInner() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      const data = await res.json();
-      if (!res.ok) {
+      const { ok, status, data } = await readGuestBody(res);
+      if (!ok) {
         // A stale/rotated code (e.g. table was released & re-seated) — drop the
         // saved verification so the guest is re-prompted with the gate.
         if (data?.code === "otp_required" || data?.code === "otp_wrong") {clearOtpVerified();}
-        throw new Error(data?.error ?? "Order failed");
+        throw new Error(data?.error ?? (status >= 500 ? GUEST_UNREACHABLE : "Order failed"));
       }
       setBillTotal(Number(data?.bill_total ?? cartTotal));
       void loadBill(); // refresh the authoritative bill (incl. taxes)
