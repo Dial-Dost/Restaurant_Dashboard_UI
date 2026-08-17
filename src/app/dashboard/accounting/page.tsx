@@ -13,8 +13,9 @@ import { useAuth } from "@/context/AuthContext"
 import { useCurrency } from "@/hooks/use-currency"
 import { useToast } from "@/hooks/use-toast"
 import { ClosedBillsSection } from "@/components/closed-bills"
+import { ScheduledReportsSection } from "./scheduled-reports"
 import {
-  getSalesReport, getGstReport, getProfitAndLoss, getExpenses, addExpense, deleteExpense, getTallyXml,
+  getSalesReport, getGstReport, getProfitAndLoss, getExpenses, addExpense, deleteExpense, getSalesCsv, getTallyXml,
   getPayroll, setPayrollProfile, payPayroll, getPayrollCsv,
   getBalanceSheet, getReconciliation, saveReconciliation, getDiscountsReport, getOpenBills,
   type SalesReport, type GstReport, type ProfitAndLoss, type ExpenseRow, type PayrollData, type PayrollRow,
@@ -142,20 +143,25 @@ function AccountingInner() {
     }
   }
 
-  const exportSalesCsv = () => {
-    if (!sales) {return}
-    const rows: (string | number)[][] = [
-      ["Date", "Bills", "Sales", "Tax", "Refunds"],
-      ...sales.by_day.map((d) => [d.date, d.bills, d.sales, d.tax, d.refund]),
-      ["Total", sales.bill_count, sales.total_sales, sales.total_tax, sales.total_refund],
-    ]
-    const csv = rows.map((r) => r.map((c) => `${c}`).join(",")).join("\n")
-    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }))
-    const a = document.createElement("a")
-    a.href = url
-    a.download = `sales_${sales.from}_to_${sales.to}.csv`
-    a.click()
-    URL.revokeObjectURL(url)
+  // Downloaded from the backend, not built here — the same bytes the SCHEDULED
+  // sales report delivers, because both come out of renderSalesCsv. Assembling a
+  // second copy in the browser is what let the two drift: this one joined on ","
+  // with no escaping and had no Service Charge column, so the owner clicking
+  // "Sales CSV" and the owner opening their 8am scheduled file got two different
+  // sheets for the same range. Shaped exactly like exportTally below.
+  const exportSalesCsv = async () => {
+    try {
+      const csv = await getSalesCsv(rid, from, to)
+      const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }))
+      const a = document.createElement("a")
+      a.href = url
+      // The backend's own Content-Disposition name for this range.
+      a.download = `sales_${sales?.from ?? from}_to_${sales?.to ?? to}.csv`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      toast({ title: "Could not export sales CSV", description: String((e as Error)?.message ?? e), variant: "destructive" })
+    }
   }
 
   const byDay = (sales?.by_day ?? []).map((d) => ({ date: d.date.slice(5), sales: d.sales }))
@@ -393,6 +399,10 @@ function AccountingInner() {
       </div>
 
       <PayrollSection rid={rid} money={money} onPaid={() => void load()} />
+
+      {/* Configuration rather than a report, so it sits last: the same sales,
+          GST and P&L numbers above, built on a schedule instead of on demand. */}
+      <ScheduledReportsSection rid={rid} />
     </div>
   )
 }

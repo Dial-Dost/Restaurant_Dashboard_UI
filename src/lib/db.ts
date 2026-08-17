@@ -3407,6 +3407,22 @@ export const saveReconciliation = async (
     return res.json();
 };
 
+// The interactive Sales CSV, FETCHED rather than assembled here.
+//
+// The backend renders this file with renderSalesCsv (Restaurant_Backend's
+// report_render.ts:23, served by index.ts:7361) and the scheduled delivery
+// renders it through that same function, so the file an owner clicks and the
+// file a schedule delivers are byte-identical by construction. The page used to
+// build its own third version in the browser, which quoted nothing (a comma in
+// any field split it into two columns) and omitted the Service Charge column
+// that SalesReport.by_day already carries — the owner's own income missing from
+// the sheet they reconcile with.
+export const getSalesCsv = async (restaurantId: string, from?: string, to?: string): Promise<string> => {
+    const res = await backendCall(`/reports/sales.csv?restaurantId=${encodeURIComponent(restaurantId)}${qFromTo(from, to)}`, restaurantId, { method: 'GET' });
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to export sales');}
+    return res.text();
+};
+
 // Tally-compatible voucher XML (string) for import into Tally.
 export const getTallyXml = async (restaurantId: string, from?: string, to?: string): Promise<string> => {
     const res = await backendCall(`/reports/tally.xml?restaurantId=${encodeURIComponent(restaurantId)}${qFromTo(from, to)}`, restaurantId, { method: 'GET' });
@@ -3431,6 +3447,168 @@ export const deleteExpense = async (restaurantId: string, id: string) => {
     const res = await backendCall(`/expenses/${encodeURIComponent(id)}`, restaurantId, { method: 'DELETE' });
     if (!res?.ok) {throw new Error('Unable to delete expense');}
     return { acknowledged: true };
+};
+
+// --- Scheduled report delivery ----------------------------------------------
+// A schedule is a ROW, not a scalar setting, so these are CRUD wrappers rather
+// than the merge-on-omit POST /restaurant/settings shape — there is no single
+// document to merge into. They sit under /reports/ deliberately: that prefix is
+// already gated by the accounting plan feature and by the same permission that
+// guards the interactive reports, so a 403 here is a plan or a role, not a bug.
+//
+// Every timestamp crosses the wire as an ISO string, and every `hour_local` is
+// the RESTAURANT's wall clock — never the viewer's.
+
+export interface ReportSchedule {
+    id: string;
+    outlet_id: string;
+    name: string;
+    /** 'sales' | 'pnl' | 'gst'. Typed wide on purpose: the backend CHECK is the authority. */
+    report_key: string;
+    /** 'daily' | 'weekly' | 'monthly' */
+    frequency: string;
+    hour_local: number;
+    minute_local: number;
+    /** Weekly only. 0 = Sunday. */
+    weekday: number | null;
+    /** Monthly only, 1–28 so "the 31st" can never silently skip February. */
+    day_of_month: number | null;
+    channel: string;
+    format: string;
+    enabled: boolean;
+    last_occurrence_key: string | null;
+    /** The last occurrence's outcome — 'delivered' or 'failed', null before the first run. */
+    last_status: string | null;
+    last_error: string | null;
+    last_run_at: string | null;
+    /** The schedule disables itself once this reaches the backend's limit. */
+    consecutive_failures: number;
+    created_at: string;
+    updated_at: string;
+}
+
+export interface ReportDelivery {
+    id: string;
+    schedule_id: string;
+    outlet_id: string;
+    /** The tenant-local day the occurrence was due; null for a manual "run now". */
+    occurrence_key: string | null;
+    fire_at: string;
+    period_from: string;
+    period_to: string;
+    timezone: string;
+    /** 'claimed' | 'rendered' | 'delivered' | 'failed' | 'abandoned' */
+    status: string;
+    attempts: number;
+    channel: string | null;
+    artifact_name: string | null;
+    artifact_bytes: number | null;
+    artifact_truncated: boolean;
+    error: string | null;
+    delivered_at: string | null;
+    created_at: string;
+}
+
+/** Create and edit share one shape — the backend fills every omitted key from
+ *  the existing row on PATCH and from its own defaults on POST, so a one-key
+ *  patch (`{ enabled: false }`) is safe and does not stamp stale values. */
+export interface ReportSchedulePatch {
+    name?: string;
+    report_key?: string;
+    frequency?: string;
+    hour_local?: number;
+    minute_local?: number;
+    weekday?: number | null;
+    day_of_month?: number | null;
+    channel?: string;
+    format?: string;
+    enabled?: boolean;
+}
+
+// null on an unreachable/refusing backend, so the UI can tell an outage apart
+// from a tenant that simply has no schedules yet (same contract as getOpenBills).
+export const getReportSchedules = async (restaurantId: string): Promise<ReportSchedule[] | null> => {
+    const data = await backendJson<{ schedules: ReportSchedule[] }>(
+        `/reports/schedules?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+    return Array.isArray(data?.schedules) ? data.schedules : null;
+};
+
+export const getReportDeliveries = async (
+    restaurantId: string,
+    opts: { scheduleId?: string; limit?: number } = {},
+): Promise<ReportDelivery[] | null> => {
+    const qs = new URLSearchParams({ restaurantId });
+    if (opts.scheduleId) {qs.set('schedule_id', opts.scheduleId);}
+    if (opts.limit) {qs.set('limit', String(opts.limit));}
+    const data = await backendJson<{ deliveries: ReportDelivery[] }>(
+        `/reports/deliveries?${qs.toString()}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+    return Array.isArray(data?.deliveries) ? data.deliveries : null;
+};
+
+export const createReportSchedule = async (restaurantId: string, input: ReportSchedulePatch): Promise<ReportSchedule> => {
+    const res = await backendCall('/reports/schedules', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+    });
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to create the scheduled report');}
+    return res.json();
+};
+
+export const updateReportSchedule = async (restaurantId: string, id: string, input: ReportSchedulePatch): Promise<ReportSchedule> => {
+    const res = await backendCall(`/reports/schedules/${encodeURIComponent(id)}`, restaurantId, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+    });
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to update the scheduled report');}
+    return res.json();
+};
+
+// Archives rather than destroys — the delivery history and the at-most-once
+// guard outlive the schedule, so the row stops firing but never disappears from
+// the record. The endpoint is DELETE for REST's sake; the effect is an archive.
+export const deleteReportSchedule = async (restaurantId: string, id: string): Promise<void> => {
+    const res = await backendCall(`/reports/schedules/${encodeURIComponent(id)}`, restaurantId, { method: 'DELETE' });
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to remove the scheduled report');}
+};
+
+/** QUEUES an extra occurrence — it is rendered by the next sweep tick, not
+ *  inline — and returns its delivery id so the caller can point at the row. */
+export const runReportScheduleNow = async (
+    restaurantId: string,
+    id: string,
+): Promise<{ queued: boolean; delivery_id: string | null; note: string | null }> => {
+    const res = await backendCall(`/reports/schedules/${encodeURIComponent(id)}/run-now`, restaurantId, { method: 'POST' });
+    // 409 is the per-minute dedup working, not a failure: the same manual run is
+    // already queued. Returned as an outcome rather than thrown so the caller can
+    // say so plainly — throwing made the dashboard shout "Couldn't queue this
+    // report" at a success the owner app was reporting as one.
+    if (res?.status === 409) {return { queued: false, delivery_id: null, note: await readErrorMessage(res) };}
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to queue this report');}
+    try {
+        const j = await res.json();
+        return { queued: true, delivery_id: typeof j?.delivery_id === 'string' ? j.delivery_id : null, note: null };
+    } catch { return { queued: true, delivery_id: null, note: null }; }
+};
+
+// The rendered artifact. This is the ONLY place a scheduled report's figures are
+// readable — the notification that announces one carries no money, because the
+// bell is readable by every authenticated employee.
+export const getReportDeliveryCsv = async (restaurantId: string, deliveryId: string): Promise<string> => {
+    const res = await backendCall(
+        `/reports/deliveries/${encodeURIComponent(deliveryId)}/download?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to download this report');}
+    return res.text();
 };
 
 // --- Cash register / day-close ----------------------------------------------
