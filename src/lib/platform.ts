@@ -108,6 +108,84 @@ export const suspendRestaurant = (id: string) =>
 export const activateRestaurant = (id: string) =>
 	platformFetch(`/platform/restaurants/${id}/activate`, { method: "POST" });
 
+// --- Tenant lifecycle: create, and the reversible half of "remove" ---------
+
+export interface CreateRestaurantInput {
+	res_name: string;
+	/**
+	 * The slug written to "Restaurant".res_username. Omit it and the backend
+	 * derives one from res_name; supply one and it must already be normalized —
+	 * POST /platform/restaurants answers 400 if the value changes under its own
+	 * normalizer. Use normalizeRestaurantSlug() before sending.
+	 */
+	res_username?: string;
+	owner_name: string;
+	owner_username: string;
+	/** A plan the operator already sold. Omitted, the tenant starts on a trial. */
+	plan_id?: string;
+	address?: string;
+	phone?: string;
+	email?: string;
+}
+
+export interface CreatedRestaurant {
+	restaurant: { id: string; res_username: string; res_name: string };
+	owner: {
+		username: string;
+		/**
+		 * Generated server-side and returned exactly ONCE, here. It is never stored,
+		 * never audited and cannot be shown again; a lost one is replaced with
+		 * resetOwnerPassword. Do not persist it anywhere on the client.
+		 */
+		temporary_password: string;
+	};
+}
+
+// Answers 409 when the slug is taken, with a message that names it — surface
+// that sentence rather than a generic failure, it is the operator's next step.
+export const createRestaurant = (body: CreateRestaurantInput) =>
+	platformFetch<CreatedRestaurant>("/platform/restaurants", { method: "POST", body: JSON.stringify(body) });
+
+/**
+ * Take a restaurant out of service. This is NOT a delete — the backend has no
+ * delete route, deliberately: every tenant table cascades from "Restaurant"(id),
+ * so one DELETE would erase the tenant's orders, bills, GST breakdowns and audit
+ * log irrecoverably. Archiving sets account_status = 'archived', cancels the
+ * subscription and revokes every live staff session; not one row is removed.
+ * restoreRestaurant is its exact inverse.
+ *
+ * `open_bills` is how many bills were still open at that moment. They stay open
+ * and unsettled — and this response is the ONLY place that count is reported.
+ */
+export const archiveRestaurant = (id: string, reason?: string) =>
+	platformFetch<{ ok: true; account_status: string; open_bills?: number | null; already_archived?: boolean }>(
+		`/platform/restaurants/${id}/archive`,
+		{ method: "POST", body: JSON.stringify(reason ? { reason } : {}) },
+	);
+
+/**
+ * Bring an archived restaurant back. Restores the subscription to whatever it
+ * was before the archive (read from that archive's own audit entry), so
+ * `subscription_status` can be null when the backend could not recover it — the
+ * plan then has to be re-assigned by hand. Staff sessions are not restored.
+ */
+export const restoreRestaurant = (id: string) =>
+	platformFetch<{
+		ok: true;
+		account_status: string;
+		subscription_status: string | null;
+		// Present when the tenant is back but its staff still cannot sign in: the
+		// subscription could not be rolled back to a signable status. Surfacing this
+		// is the whole point - a restore that reads "done" while nobody can log in is
+		// the worst possible outcome for an operator.
+		current_subscription_status?: string | null;
+		requires_plan_assignment?: boolean;
+		warning?: string;
+	}>(
+		`/platform/restaurants/${id}/restore`,
+		{ method: "POST" },
+	);
+
 export const setSubscription = (
 	id: string,
 	body: { plan_id?: string; status: string; trial_ends_at?: string; current_period_end?: string },
@@ -134,7 +212,7 @@ export const listInvoices = (id: string) =>
 export interface PlatformHealth {
 	db: boolean;
 	ts: string;
-	fleet?: { total: number; active: number; suspended: number; new_this_week: number } | null;
+	fleet?: { total: number; active: number; suspended: number; archived?: number; new_this_week: number } | null;
 	subscriptions?: { by_status: Record<string, number>; trials_expiring_soon: number };
 }
 

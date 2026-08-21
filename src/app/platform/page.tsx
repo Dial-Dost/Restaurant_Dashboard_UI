@@ -19,12 +19,24 @@ import {
 	getPlatformAudit,
 	resetOwnerPassword,
 	runBilling,
+	createRestaurant,
+	archiveRestaurant,
+	restoreRestaurant,
 	type PlatformRestaurant,
 	type PlatformPlan,
 	type PlatformInvoice,
 	type PlatformHealth,
 	type PlatformAuditEntry,
+	type CreatedRestaurant,
 } from "@/lib/platform";
+import {
+	EMPTY_CREATE_RESTAURANT_FORM,
+	archiveConfirmationMatches,
+	buildCreateRestaurantBody,
+	describePlatformError,
+	normalizeRestaurantSlug,
+	validateCreateRestaurant,
+} from "@/lib/platform-restaurant-actions";
 
 export default function PlatformDashboard() {
 	const router = useRouter();
@@ -32,7 +44,13 @@ export default function PlatformDashboard() {
 	const [plans, setPlans] = useState<PlatformPlan[]>([]);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
+	// Non-failure feedback, kept apart from `error` so an archive that succeeded AND
+	// stranded open bills can report both without one masquerading as the other.
+	const [notice, setNotice] = useState<string | null>(null);
 	const [busyId, setBusyId] = useState<string | null>(null);
+	// Archived tenants stay in the list by default. A hidden row is how an operator
+	// concludes a restaurant was deleted.
+	const [showArchived, setShowArchived] = useState(true);
 	const [newPlan, setNewPlan] = useState({ code: "", name: "", price: "", employees: "" });
 	const [editingPlanId, setEditingPlanId] = useState<string | null>(null);
 
@@ -68,11 +86,18 @@ export default function PlatformDashboard() {
 
 	const run = async (id: string, fn: () => Promise<unknown>) => {
 		setBusyId(id);
+		setNotice(null);
 		try {
-			await fn();
+			// Keep the result: restore answers 200 even when the tenant is back but
+			// unsignable, and says so in `warning`. Throwing that away left the
+			// operator with a green tick and a restaurant whose staff are locked out.
+			const out = (await fn()) as { warning?: string } | undefined;
+			if (out?.warning) { setNotice(out.warning); }
 			await load();
-		} catch (err: any) {
-			setError(err?.message ?? "Action failed");
+		} catch (err) {
+			// The backend's own sentence — "This restaurant is archived. Use Restore to
+			// bring it back." is an instruction; "Action failed" is not.
+			setError(describePlatformError(err, "Action failed"));
 		} finally {
 			setBusyId(null);
 		}
@@ -166,6 +191,110 @@ export default function PlatformDashboard() {
 		}
 	};
 
+	// --- Add a restaurant ---------------------------------------------------
+	// The only place in the product where an operator can bring a tenant into
+	// existence (the other path, POST /auth/register-restaurant, is public
+	// self-serve). On success the response carries the owner's temporary password
+	// ONCE, so the modal switches into a result state that must not be dismissed by
+	// a stray backdrop click.
+	const [createOpen, setCreateOpen] = useState(false);
+	const [createForm, setCreateForm] = useState(EMPTY_CREATE_RESTAURANT_FORM);
+	const [slugEdited, setSlugEdited] = useState(false);
+	const [createBusy, setCreateBusy] = useState(false);
+	const [createError, setCreateError] = useState<string | null>(null);
+	const [createResult, setCreateResult] = useState<CreatedRestaurant | null>(null);
+	const [copied, setCopied] = useState(false);
+
+	const openCreate = () => {
+		setCreateForm(EMPTY_CREATE_RESTAURANT_FORM);
+		setSlugEdited(false);
+		setCreateError(null);
+		setCreateResult(null);
+		setCopied(false);
+		setCreateOpen(true);
+	};
+	const closeCreate = () => { setCreateOpen(false); };
+
+	const doCreate = async (e: FormEvent) => {
+		e.preventDefault();
+		const invalid = validateCreateRestaurant(createForm);
+		if (invalid) {
+			setCreateError(invalid);
+			return;
+		}
+		setCreateBusy(true);
+		setCreateError(null);
+		try {
+			const created = await createRestaurant(buildCreateRestaurantBody(createForm));
+			setCreateResult(created);
+			await load();
+		} catch (err) {
+			// Verbatim. A slug collision answers 409 naming the slug, and choosing a
+			// different one is the operator's next move — "Failed to create restaurant"
+			// would send them to look for a fault that isn't there.
+			setCreateError(describePlatformError(err, "Failed to create restaurant"));
+		} finally {
+			setCreateBusy(false);
+		}
+	};
+
+	const copyTemporaryPassword = async () => {
+		if (!createResult) {return;}
+		try {
+			await navigator.clipboard.writeText(createResult.owner.temporary_password);
+			setCopied(true);
+		} catch {
+			// The clipboard API needs a secure context. The password is still on screen
+			// and selectable, so say that rather than losing it.
+			setCreateError("Couldn't reach the clipboard — select the password above and copy it by hand.");
+		}
+	};
+
+	// --- Archive / restore ---------------------------------------------------
+	// Archiving deletes nothing and Restore is its exact inverse, but it signs out
+	// every staff session and cancels the subscription — done to the wrong row in
+	// the middle of service that is a restaurant which cannot take an order or
+	// settle the bills already on its tables. So the confirm is typing the name,
+	// not clicking OK.
+	const [archiveFor, setArchiveFor] = useState<PlatformRestaurant | null>(null);
+	const [archiveConfirm, setArchiveConfirm] = useState("");
+	const [archiveReason, setArchiveReason] = useState("");
+	const [archiveBusy, setArchiveBusy] = useState(false);
+	const [archiveError, setArchiveError] = useState<string | null>(null);
+	const archiveConfirmed = archiveFor !== null && archiveConfirmationMatches(archiveConfirm, archiveFor.res_name);
+
+	const openArchive = (r: PlatformRestaurant) => {
+		setArchiveFor(r);
+		setArchiveConfirm("");
+		setArchiveReason("");
+		setArchiveError(null);
+	};
+
+	const doArchive = async () => {
+		// Re-checked here, not only on the button's disabled state: this is the guard.
+		if (!archiveFor || !archiveConfirmed) {return;}
+		const target = archiveFor;
+		setArchiveBusy(true);
+		setArchiveError(null);
+		try {
+			const res = await archiveRestaurant(target.id, archiveReason.trim() || undefined);
+			setArchiveFor(null);
+			await load();
+			// The open-bill count arrives WITH the archive — no endpoint reports it
+			// beforehand — so it is said here, after the fact. Those bills stay open on
+			// occupied tables and no one can sign in to settle them until a restore.
+			setNotice(
+				res.open_bills
+					? `${target.res_name} archived. ${String(res.open_bills)} bill(s) were still open and stay unsettled — restore the restaurant if staff need to close them.`
+					: `${target.res_name} archived. Its orders, bills, tax records and audit history are kept.`,
+			);
+		} catch (err) {
+			setArchiveError(describePlatformError(err, "Failed to archive restaurant"));
+		} finally {
+			setArchiveBusy(false);
+		}
+	};
+
 	const onLogout = async () => {
 		await platformLogout();
 		router.push("/platform/login");
@@ -204,24 +333,37 @@ export default function PlatformDashboard() {
 	const onToggleFeature = (p: PlatformPlan, key: string, include: boolean) =>
 		run(p.id, () => updatePlan(p.id, { features: { ...(p.features ?? {}), [key]: include } }));
 
+	// Archived tenants are counted on their own and left out of every other tile.
+	// "Restaurants: 40" is a number an operator quotes to someone, so it has to mean
+	// 40 restaurants they actually have — not 40 including the 12 who left. And a
+	// departed tenant is a settled outcome, so it must not sit in "Needs attention"
+	// forever, which is where a plain `account_status !== "active"` would park it.
+	const liveRestaurants = restaurants.filter((r) => r.account_status !== "archived");
+	const visibleRestaurants = showArchived ? restaurants : liveRestaurants;
 	const stats = {
-		total: restaurants.length,
-		active: restaurants.filter((r) => r.account_status === "active").length,
-		attention: restaurants.filter(
-			(r) => r.account_status !== "active" || ["past_due", "expired", "suspended"].includes(r.sub_status ?? ""),
+		total: liveRestaurants.length,
+		archived: restaurants.length - liveRestaurants.length,
+		active: liveRestaurants.filter((r) => r.account_status === "active").length,
+		attention: liveRestaurants.filter(
+			(r) => r.account_status !== "active" || ["past_due", "expired", "suspended", "cancelled"].includes(r.sub_status ?? ""),
 		).length,
-		trial: restaurants.filter((r) => r.sub_status === "trial").length,
-		staff: restaurants.reduce((s, r) => s + (r.employees ?? 0), 0),
-		outlets: restaurants.reduce((s, r) => s + (r.outlets ?? 0), 0),
+		trial: liveRestaurants.filter((r) => r.sub_status === "trial").length,
+		staff: liveRestaurants.reduce((s, r) => s + (r.employees ?? 0), 0),
+		outlets: liveRestaurants.reduce((s, r) => s + (r.outlets ?? 0), 0),
 	};
 
 	const statusBadge = (status: string) => {
+		// Grey, not red: an archived tenant and the cancelled subscription that goes
+		// with it are the intended end state of a deliberate operator action, not a
+		// fault anyone should be chasing.
 		const tone =
 			status === "active"
 				? "bg-green-100 text-green-800"
 				: status === "expired"
 					? "bg-amber-100 text-amber-800"
-					: "bg-red-100 text-red-800";
+					: status === "archived" || status === "cancelled"
+						? "bg-muted text-muted-foreground"
+						: "bg-red-100 text-red-800";
 		return <span className={`rounded px-2 py-0.5 text-xs font-medium ${tone}`}>{status}</span>;
 	};
 
@@ -234,6 +376,12 @@ export default function PlatformDashboard() {
 						<p className="text-sm text-muted-foreground">Monitor and manage every restaurant on your platform</p>
 					</div>
 					<div className="flex items-center gap-2">
+						<button
+							onClick={() => { openCreate(); }}
+							className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground"
+						>
+							Add restaurant
+						</button>
 						<button
 							onClick={async () => {
 								try {
@@ -263,6 +411,7 @@ export default function PlatformDashboard() {
 				</div>
 
 				{error && <p className="text-sm text-destructive">{error}</p>}
+				{notice && <p className="text-sm text-muted-foreground">{notice}</p>}
 
 				{/* System health banner */}
 				{health && (
@@ -275,6 +424,7 @@ export default function PlatformDashboard() {
 						{health.fleet && (
 							<span className="text-muted-foreground">
 								{health.fleet.new_this_week} new this week · {health.fleet.suspended} suspended
+								{health.fleet.archived ? ` · ${String(health.fleet.archived)} archived` : null}
 							</span>
 						)}
 						{health.subscriptions && health.subscriptions.trials_expiring_soon > 0 && (
@@ -287,13 +437,14 @@ export default function PlatformDashboard() {
 				)}
 
 				{/* At-a-glance health */}
-				<div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+				<div className={`grid grid-cols-2 gap-3 sm:grid-cols-3 ${stats.archived > 0 ? "lg:grid-cols-7" : "lg:grid-cols-6"}`}>
 					<Stat label="Restaurants" value={stats.total} />
 					<Stat label="Active" value={stats.active} tone="green" />
 					<Stat label="Needs attention" value={stats.attention} tone={stats.attention > 0 ? "red" : undefined} />
 					<Stat label="Trialing" value={stats.trial} tone="amber" />
 					<Stat label="Total staff" value={stats.staff} />
 					<Stat label="Total outlets" value={stats.outlets} />
+					{stats.archived > 0 && <Stat label="Archived" value={stats.archived} />}
 				</div>
 
 				{/* Subscription plans */}
@@ -373,94 +524,146 @@ export default function PlatformDashboard() {
 				{loading ? (
 					<p className="text-sm text-muted-foreground">Loading…</p>
 				) : (
-					<div className="overflow-x-auto rounded-lg border bg-card">
-						<table className="w-full text-sm">
-							<thead className="border-b bg-muted/40 text-left">
-								<tr>
-									<th className="px-4 py-2 font-medium">Restaurant</th>
-									<th className="px-4 py-2 font-medium">Account</th>
-									<th className="px-4 py-2 font-medium">Subscription</th>
-									<th className="px-4 py-2 font-medium">Plan</th>
-									<th className="px-4 py-2 font-medium">Staff</th>
-									<th className="px-4 py-2 font-medium">Outlets</th>
-									<th className="px-4 py-2 font-medium">Actions</th>
-								</tr>
-							</thead>
-							<tbody>
-								{restaurants.map((r) => (
-									<tr key={r.id} className="border-b last:border-0">
-										<td className="px-4 py-3">
-											<div className="font-medium">{r.res_name}</div>
-											<div className="text-xs text-muted-foreground">{r.res_username}</div>
-										</td>
-										<td className="px-4 py-3">{statusBadge(r.account_status)}</td>
-										<td className="px-4 py-3">{r.sub_status ? statusBadge(r.sub_status) : <span className="text-xs text-muted-foreground">none</span>}</td>
-										<td className="px-4 py-3">{r.plan_name ?? <span className="text-xs text-muted-foreground">—</span>}</td>
-										<td className="px-4 py-3 text-muted-foreground">{r.employees ?? "—"}</td>
-										<td className="px-4 py-3 text-muted-foreground">{r.outlets ?? "—"}</td>
-										<td className="px-4 py-3">
-											<div className="flex flex-wrap items-center gap-2">
-												{r.account_status === "active" ? (
-													<button
-														disabled={busyId === r.id}
-														onClick={() => run(r.id, () => suspendRestaurant(r.id))}
-														className="rounded-md border border-red-300 px-2 py-1 text-xs text-red-700 disabled:opacity-50"
-													>
-														Suspend
-													</button>
-												) : (
-													<button
-														disabled={busyId === r.id}
-														onClick={() => run(r.id, () => activateRestaurant(r.id))}
-														className="rounded-md border border-green-300 px-2 py-1 text-xs text-green-700 disabled:opacity-50"
-													>
-														Activate
-													</button>
-												)}
-												<select
-													disabled={busyId === r.id}
-													defaultValue=""
-													onChange={(e) => {
-														const planId = e.target.value;
-														if (planId) {void run(r.id, () => setSubscription(r.id, { plan_id: planId, status: "active" }));}
-													}}
-													className="rounded-md border px-2 py-1 text-xs"
-												>
-													<option value="" disabled>
-														Assign plan…
-													</option>
-													{plans.map((p) => (
-														<option key={p.id} value={p.id}>
-															{p.name}
-														</option>
-													))}
-												</select>
-												<button
-													onClick={() => void openBilling(r)}
-													className="rounded-md border px-2 py-1 text-xs"
-												>
-													Billing
-												</button>
-												<button
-													onClick={() => { setResetFor(r); setResetPw(""); setResetMsg(null); }}
-													className="rounded-md border px-2 py-1 text-xs"
-													title="Reset the owner's password if they're locked out"
-												>
-													Reset owner
-												</button>
-											</div>
-										</td>
-									</tr>
-								))}
-								{restaurants.length === 0 && (
+					<div className="space-y-2">
+						{stats.archived > 0 && (
+							<div className="flex items-center justify-between">
+								<h2 className="font-medium">Restaurants</h2>
+								<label className="flex items-center gap-2 text-xs text-muted-foreground">
+									<input
+										type="checkbox"
+										checked={showArchived}
+										onChange={(e) => { setShowArchived(e.target.checked); }}
+									/>
+									Show archived ({stats.archived})
+								</label>
+							</div>
+						)}
+						<div className="overflow-x-auto rounded-lg border bg-card">
+							<table className="w-full text-sm">
+								<thead className="border-b bg-muted/40 text-left">
 									<tr>
-										<td colSpan={7} className="px-4 py-6 text-center text-sm text-muted-foreground">
-											No restaurants yet.
-										</td>
+										<th className="px-4 py-2 font-medium">Restaurant</th>
+										<th className="px-4 py-2 font-medium">Account</th>
+										<th className="px-4 py-2 font-medium">Subscription</th>
+										<th className="px-4 py-2 font-medium">Plan</th>
+										<th className="px-4 py-2 font-medium">Staff</th>
+										<th className="px-4 py-2 font-medium">Outlets</th>
+										<th className="px-4 py-2 font-medium">Actions</th>
 									</tr>
-								)}
-							</tbody>
-						</table>
+								</thead>
+								<tbody>
+									{visibleRestaurants.map((r) => (
+										<tr key={r.id} className={`border-b last:border-0 ${r.account_status === "archived" ? "opacity-60" : ""}`}>
+											<td className="px-4 py-3">
+												<div className="font-medium">{r.res_name}</div>
+												<div className="text-xs text-muted-foreground">{r.res_username}</div>
+											</td>
+											<td className="px-4 py-3">{statusBadge(r.account_status)}</td>
+											<td className="px-4 py-3">{r.sub_status ? statusBadge(r.sub_status) : <span className="text-xs text-muted-foreground">none</span>}</td>
+											<td className="px-4 py-3">{r.plan_name ?? <span className="text-xs text-muted-foreground">—</span>}</td>
+											<td className="px-4 py-3 text-muted-foreground">{r.employees ?? "—"}</td>
+											<td className="px-4 py-3 text-muted-foreground">{r.outlets ?? "—"}</td>
+											<td className="px-4 py-3">
+												<div className="flex flex-wrap items-center gap-2">
+													{r.account_status === "archived" ? (
+														// An archived tenant has no live sessions, no subscription and nothing
+														// running to gate, so Suspend, the plan picker and Reset owner would all
+														// be acting on a restaurant that is not trading — and Activate in
+														// particular would half-revive it: live again, but on the cancelled
+														// subscription archiving left behind, i.e. unbilled. Restore is the way
+														// back. Billing stays, because the invoice history is precisely what
+														// archiving preserves.
+														<>
+															<button
+																disabled={busyId === r.id}
+																onClick={() => {
+																	if (confirm(`Bring ${r.res_name} back into service? Staff will be able to sign in again.`)) {
+																		void run(r.id, () => restoreRestaurant(r.id));
+																	}
+																}}
+																className="rounded-md border border-green-300 px-2 py-1 text-xs text-green-700 disabled:opacity-50"
+																title="Bring this restaurant back into service"
+															>
+																Restore
+															</button>
+															<button onClick={() => void openBilling(r)} className="rounded-md border px-2 py-1 text-xs">
+																Billing
+															</button>
+														</>
+													) : (
+														<>
+															{r.account_status === "active" ? (
+																<button
+																	disabled={busyId === r.id}
+																	onClick={() => run(r.id, () => suspendRestaurant(r.id))}
+																	className="rounded-md border border-red-300 px-2 py-1 text-xs text-red-700 disabled:opacity-50"
+																>
+																	Suspend
+																</button>
+															) : (
+																<button
+																	disabled={busyId === r.id}
+																	onClick={() => run(r.id, () => activateRestaurant(r.id))}
+																	className="rounded-md border border-green-300 px-2 py-1 text-xs text-green-700 disabled:opacity-50"
+																>
+																	Activate
+																</button>
+															)}
+															<select
+																disabled={busyId === r.id}
+																defaultValue=""
+																onChange={(e) => {
+																	const planId = e.target.value;
+																	if (planId) {void run(r.id, () => setSubscription(r.id, { plan_id: planId, status: "active" }));}
+																}}
+																className="rounded-md border px-2 py-1 text-xs"
+															>
+																<option value="" disabled>
+																	Assign plan…
+																</option>
+																{plans.map((p) => (
+																	<option key={p.id} value={p.id}>
+																		{p.name}
+																	</option>
+																))}
+															</select>
+															<button
+																onClick={() => void openBilling(r)}
+																className="rounded-md border px-2 py-1 text-xs"
+															>
+																Billing
+															</button>
+															<button
+																onClick={() => { setResetFor(r); setResetPw(""); setResetMsg(null); }}
+																className="rounded-md border px-2 py-1 text-xs"
+																title="Reset the owner's password if they're locked out"
+															>
+																Reset owner
+															</button>
+															<button
+																disabled={busyId === r.id}
+																onClick={() => { openArchive(r); }}
+																className="rounded-md border border-red-300 bg-red-50 px-2 py-1 text-xs text-red-800 disabled:opacity-50"
+																title="Take this restaurant out of service. Reversible, and every order, bill and tax record is kept."
+															>
+																Archive
+															</button>
+														</>
+													)}
+												</div>
+											</td>
+										</tr>
+									))}
+									{visibleRestaurants.length === 0 && (
+										<tr>
+											<td colSpan={7} className="px-4 py-6 text-center text-sm text-muted-foreground">
+												{restaurants.length === 0 ? "No restaurants yet." : "Every restaurant is archived — tick “Show archived” to see them."}
+											</td>
+										</tr>
+									)}
+								</tbody>
+							</table>
+						</div>
 					</div>
 				)}
 			</div>
@@ -515,6 +718,181 @@ export default function PlatformDashboard() {
 				</div>
 			)}
 
+			{/* Add-restaurant modal. Two states: the form, and then the credentials it
+			    hands back — the only moment the owner's password ever exists anywhere. */}
+			{createOpen && (
+				<div
+					className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+					onClick={() => {
+						// Backdrop dismissal is disabled while the password is on screen: it is
+						// shown once and nothing can bring it back.
+						if (!createResult) { closeCreate(); }
+					}}
+				>
+					<div className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-lg border bg-card p-5 shadow-lg" onClick={(e) => { e.stopPropagation(); }}>
+						{createResult ? (
+							<>
+								<h2 className="mb-3 text-lg font-semibold">{createResult.restaurant.res_name} is ready</h2>
+								<p className="mb-3 text-sm text-muted-foreground">
+									Hand these to the owner. The password is shown <span className="font-medium text-foreground">once</span> — it is not stored anywhere and cannot be shown again. If it is lost, use “Reset owner” on their row.
+								</p>
+								<dl className="mb-3 space-y-2 rounded-md border bg-muted/30 p-3 text-sm">
+									<div className="flex items-baseline justify-between gap-3">
+										<dt className="text-muted-foreground">Restaurant ID</dt>
+										<dd className="font-mono">{createResult.restaurant.res_username}</dd>
+									</div>
+									<div className="flex items-baseline justify-between gap-3">
+										<dt className="text-muted-foreground">Owner username</dt>
+										<dd className="font-mono">{createResult.owner.username}</dd>
+									</div>
+									<div className="flex items-baseline justify-between gap-3">
+										<dt className="text-muted-foreground">Temporary password</dt>
+										<dd className="select-all break-all font-mono">{createResult.owner.temporary_password}</dd>
+									</div>
+								</dl>
+								<p className="mb-3 text-xs text-muted-foreground">
+									Nothing forces a change at first sign-in, so tell the owner to set their own password under Settings.
+								</p>
+								{createError && <p className="mb-3 text-sm text-destructive">{createError}</p>}
+								<div className="flex justify-end gap-2">
+									<button onClick={() => void copyTemporaryPassword()} className="rounded-md border px-3 py-1.5 text-sm">
+										{copied ? "Copied" : "Copy password"}
+									</button>
+									<button onClick={closeCreate} className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground">
+										Done
+									</button>
+								</div>
+							</>
+						) : (
+							<form onSubmit={(e) => void doCreate(e)}>
+								<div className="mb-3 flex items-center justify-between">
+									<h2 className="text-lg font-semibold">Add restaurant</h2>
+									<button type="button" onClick={closeCreate} className="text-sm text-muted-foreground">Close</button>
+								</div>
+								<p className="mb-3 text-sm text-muted-foreground">
+									Creates the restaurant, its first outlet and an owner login. A temporary password is generated and shown once when this succeeds.
+								</p>
+								<div className="grid gap-3 sm:grid-cols-2">
+									<div className="space-y-1">
+										<label className="block text-xs text-muted-foreground">Restaurant name</label>
+										<input
+											value={createForm.resName}
+											onChange={(e) => {
+												const resName = e.target.value;
+												setCreateForm((f) => ({
+													...f,
+													resName,
+													// The ID follows the name only until the operator edits it
+													// themselves — being able to fix a colliding or ugly derived
+													// one is the whole reason this form exists.
+													resUsername: slugEdited ? f.resUsername : normalizeRestaurantSlug(resName),
+												}));
+											}}
+											placeholder="The Rustic Fork"
+											maxLength={120}
+											required
+											className="block w-full rounded-md border px-2 py-1.5 text-sm"
+										/>
+									</div>
+									<div className="space-y-1">
+										<label className="block text-xs text-muted-foreground">Restaurant ID</label>
+										<input
+											value={createForm.resUsername}
+											onChange={(e) => {
+												// Normalized on every keystroke, so what is on screen is exactly
+												// what gets stored — the backend rejects a supplied value that
+												// changes under its own normalizer, and this makes that
+												// rejection unreachable.
+												const resUsername = normalizeRestaurantSlug(e.target.value);
+												setSlugEdited(true);
+												setCreateForm((f) => ({ ...f, resUsername }));
+											}}
+											placeholder="therusticfork"
+											className="block w-full rounded-md border px-2 py-1.5 font-mono text-sm"
+										/>
+										<p className="text-xs text-muted-foreground">Lowercase letters and digits. It goes into every QR link and cannot be changed later.</p>
+									</div>
+									<div className="space-y-1">
+										<label className="block text-xs text-muted-foreground">Owner name</label>
+										<input
+											value={createForm.ownerName}
+											onChange={(e) => { const ownerName = e.target.value; setCreateForm((f) => ({ ...f, ownerName })); }}
+											placeholder="Priya Nair"
+											maxLength={120}
+											required
+											className="block w-full rounded-md border px-2 py-1.5 text-sm"
+										/>
+									</div>
+									<div className="space-y-1">
+										<label className="block text-xs text-muted-foreground">Owner username</label>
+										<input
+											value={createForm.ownerUsername}
+											onChange={(e) => { const ownerUsername = e.target.value; setCreateForm((f) => ({ ...f, ownerUsername })); }}
+											placeholder="priya"
+											maxLength={120}
+											required
+											className="block w-full rounded-md border px-2 py-1.5 font-mono text-sm"
+										/>
+										<p className="text-xs text-muted-foreground">What the owner types to sign in.</p>
+									</div>
+									<div className="space-y-1 sm:col-span-2">
+										<label className="block text-xs text-muted-foreground">Plan</label>
+										<select
+											value={createForm.planId}
+											onChange={(e) => { const planId = e.target.value; setCreateForm((f) => ({ ...f, planId })); }}
+											className="block w-full rounded-md border px-2 py-1.5 text-sm"
+										>
+											<option value="">Start a trial — no plan sold yet</option>
+											{plans.map((pl) => (
+												<option key={pl.id} value={pl.id}>
+													{pl.name} · ₹{(pl.price_cents / 100).toFixed(2)}/mo
+												</option>
+											))}
+										</select>
+									</div>
+									<div className="space-y-1 sm:col-span-2">
+										<label className="block text-xs text-muted-foreground">Address (optional)</label>
+										<input
+											value={createForm.address}
+											onChange={(e) => { const address = e.target.value; setCreateForm((f) => ({ ...f, address })); }}
+											className="block w-full rounded-md border px-2 py-1.5 text-sm"
+										/>
+									</div>
+									<div className="space-y-1">
+										<label className="block text-xs text-muted-foreground">Phone (optional)</label>
+										<input
+											value={createForm.phone}
+											onChange={(e) => { const phone = e.target.value; setCreateForm((f) => ({ ...f, phone })); }}
+											className="block w-full rounded-md border px-2 py-1.5 text-sm"
+										/>
+									</div>
+									<div className="space-y-1">
+										<label className="block text-xs text-muted-foreground">Email (optional)</label>
+										<input
+											value={createForm.email}
+											onChange={(e) => { const email = e.target.value; setCreateForm((f) => ({ ...f, email })); }}
+											type="email"
+											className="block w-full rounded-md border px-2 py-1.5 text-sm"
+										/>
+									</div>
+								</div>
+								{createError && <p className="mt-3 text-sm text-destructive">{createError}</p>}
+								<div className="mt-4 flex justify-end gap-2">
+									<button type="button" onClick={closeCreate} className="rounded-md border px-3 py-1.5 text-sm">Cancel</button>
+									<button
+										type="submit"
+										disabled={createBusy}
+										className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
+									>
+										{createBusy ? "Creating…" : "Create restaurant"}
+									</button>
+								</div>
+							</form>
+						)}
+					</div>
+				</div>
+			)}
+
 			{/* Reset-owner-password modal */}
 			{resetFor && (
 				<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => { setResetFor(null); }}>
@@ -542,6 +920,63 @@ export default function PlatformDashboard() {
 								className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
 							>
 								{resetBusy ? "Setting…" : "Set password"}
+							</button>
+						</div>
+					</div>
+				</div>
+			)}
+
+			{/* Archive-restaurant modal. The confirmation is typing the restaurant's
+			    name: archiving is reversible, but on the wrong row mid-service it takes
+			    a trading restaurant offline, and an OK button is one mis-click away. */}
+			{archiveFor && (
+				<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => { setArchiveFor(null); }}>
+					<div className="max-h-[85vh] w-full max-w-md overflow-y-auto rounded-lg border bg-card p-5 shadow-lg" onClick={(e) => { e.stopPropagation(); }}>
+						<div className="mb-3 flex items-center justify-between">
+							<h2 className="text-lg font-semibold">Archive {archiveFor.res_name}</h2>
+							<button onClick={() => { setArchiveFor(null); }} className="text-sm text-muted-foreground">Close</button>
+						</div>
+						<div className="mb-3 space-y-2 rounded-md border bg-muted/30 p-3 text-sm">
+							<p>
+								<span className="font-medium">Kept:</span> every order, bill, tax record, invoice and audit entry. Nothing is deleted, and Restore undoes this.
+							</p>
+							<p>
+								<span className="font-medium">Stops now:</span> staff can no longer sign in, and every live session is signed out. The subscription is cancelled, so billing stops.
+							</p>
+							<p className="text-muted-foreground">
+								Guest QR ordering is <span className="font-medium text-foreground">not</span> blocked yet, so orders can still arrive with nobody able to sign in and settle them. Any bill already open stays open on an occupied table until this restaurant is restored.
+							</p>
+						</div>
+						<div className="mb-3 space-y-1">
+							<label className="block text-xs text-muted-foreground">Reason (optional — recorded in the audit log)</label>
+							<input
+								value={archiveReason}
+								onChange={(e) => { setArchiveReason(e.target.value); }}
+								placeholder="Closed the business"
+								maxLength={500}
+								className="block w-full rounded-md border px-2 py-1.5 text-sm"
+							/>
+						</div>
+						<div className="mb-3 space-y-1">
+							<label className="block text-xs text-muted-foreground">
+								Type <span className="font-medium text-foreground">{archiveFor.res_name}</span> to confirm
+							</label>
+							<input
+								value={archiveConfirm}
+								onChange={(e) => { setArchiveConfirm(e.target.value); }}
+								autoFocus
+								className="block w-full rounded-md border px-2 py-1.5 text-sm"
+							/>
+						</div>
+						{archiveError && <p className="mb-3 text-sm text-destructive">{archiveError}</p>}
+						<div className="flex justify-end gap-2">
+							<button onClick={() => { setArchiveFor(null); }} className="rounded-md border px-3 py-1.5 text-sm">Cancel</button>
+							<button
+								disabled={archiveBusy || !archiveConfirmed}
+								onClick={() => void doArchive()}
+								className="rounded-md bg-destructive px-3 py-1.5 text-sm font-medium text-destructive-foreground disabled:opacity-50"
+							>
+								{archiveBusy ? "Archiving…" : "Archive restaurant"}
 							</button>
 						</div>
 					</div>
