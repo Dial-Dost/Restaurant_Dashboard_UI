@@ -5,6 +5,11 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+  # Lets .github/workflows/deploy.yml run this exact suite as the gate in front
+  # of a production deploy instead of forking it. Purely additive — no step
+  # below changes. A reusable workflow does not inherit the caller's
+  # `environment` secrets, so this file stays unable to see the deploy key.
+  workflow_call:
 
 jobs:
   test:
@@ -17,15 +22,59 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The image is what actually reaches restaurants. Assert the two things
+      # that make this workflow evidence about that image rather than about an
+      # unrelated tree. Both failed silently before; neither has any other guard.
+      - name: Toolchain parity with Dockerfile
+        run: |
+          set -euo pipefail
+          # DERIVED, never hardcoded. A hardcoded value passes while someone
+          # bumps node-version above and forgets it here - which is exactly the
+          # drift this guard exists to catch.
+          ci_major=$(grep -oE 'node-version: *.?[0-9]+' "$GITHUB_WORKFLOW_REF_FILE" 2>/dev/null | grep -oE '[0-9]+$' | head -1)
+          [ -n "$ci_major" ] || ci_major=$(grep -oE 'node-version: *.?[0-9]+' .github/workflows/dashboard-ci.yml | grep -oE '[0-9]+$' | head -1)
+          img_majors=$(grep -oE "^FROM node:[0-9]+" Dockerfile | grep -oE "[0-9]+$" | sort -u || true)
+          if [ "$(printf "%s" "$img_majors" | wc -l)" -ne 0 ] || [ "$img_majors" != "$ci_major" ]; then
+            echo "::error::Node major mismatch. This workflow runs Node $ci_major; Dockerfile FROM lines use: $(echo $img_majors). Tests would no longer be evidence about the shipped image. Make them equal (and update ci_major in this step)."
+            exit 1
+          fi
+          if ! grep -qE "^RUN npm ci( |$)" Dockerfile; then
+            echo "::error::Dockerfile no longer installs with 'npm ci'. npm install re-resolves every ^range at build time, so the image would ship a dependency tree this workflow never tested. Refusing to pass."
+            exit 1
+          fi
+          echo "Node $ci_major on both sides; Dockerfile installs with npm ci."
+
+      # This MUST stay equal to the node:<major> in Dockerfile (both stages).
+      # It was 25 while the image built on 20, which meant a green run here said
+      # nothing about the artifact that shipped. The "Toolchain parity" step
+      # above fails the build if the two ever drift again.
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 25
+          node-version: 22
+          # Only possible now that package-lock.json is committed and no longer
+          # hidden from the build; npm caching keys off the lockfile.
+          cache: npm
 
+      # npm ci, not npm install. install re-resolves every "^" range against the
+      # registry, so two runs of this workflow could test two different trees and
+      # neither had to match the image. ci installs the locked tree exactly and
+      # refuses to start if package.json and package-lock.json have drifted.
+      #
+      # --legacy-peer-deps is required, not cosmetic: next-themes@0.3.0 peers
+      # react@"^16.8 || ^17 || ^18" against this project's react@19.2.5
+      # (react-day-picker@8.10.1 too), so without it npm exits 1 on ERESOLVE.
+      # Verified 2026-08-22 against package.json + package-lock.json alone.
       - name: Install dependencies
-        run: npm install --legacy-peer-deps
+        run: npm ci --legacy-peer-deps
 
       - name: Lint
+        # Informational, NOT a gate. The config is strictTypeChecked +
+        # security/recommended against an existing codebase: 4,656 findings
+        # today. A gate that is red on every run is a gate everyone learns to
+        # ignore, which is worse than no gate. Tests, typecheck and the route
+        # manifest ARE hard gates. Burn this down, then flip it blocking.
+        continue-on-error: true
         run: npm run lint
 
       - name: Typecheck

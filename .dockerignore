@@ -1,13 +1,35 @@
 # Node
 node_modules
 npm-debug.log
-package-lock.json
+
+# package-lock.json is deliberately NOT ignored. It used to be, which meant the
+# Dockerfile could never see it: "COPY package.json package-lock.json* ./"
+# matched zero files for the lock, the trailing glob made that a non-error, and
+# the image fell back to an unpinned "npm install" that re-resolved every "^"
+# range against the registry at build time. CI tested one dependency tree and
+# production shipped another, with no signal that they differed. The lock is
+# force-added to git (listed in .gitignore but tracked), so it is always in the
+# build context; the Dockerfile now COPYs it without a glob, so if anyone
+# re-adds it here the build fails loudly instead of silently going unpinned.
 
 # Next.js build output
 .next
 .next/cache
 out
 dist
+
+# Installer artifacts (a ~94 MB APK and a ~16 MB zip, both git-tracked).
+# In production these are BIND-MOUNTED READ-ONLY into the container from
+# /opt/restaurant-dash/public/downloads, deliberately not baked into the image,
+# so baking them would push ~110 MB to the registry on every deploy only for the
+# mount to shadow it. Refreshing them is a separate, deliberate scp — shipping a
+# 94 MB APK to every restaurant is a release decision, not a side effect of a
+# dashboard code push.
+#
+# Consequence for LOCAL builds: an image built without that bind mount serves
+# 404 for /downloads/*. rd-deploy asserts the mount is present before and after
+# every dashboard deploy so this cannot regress unnoticed in production.
+public/downloads
 
 # Local dev artifacts
 .env

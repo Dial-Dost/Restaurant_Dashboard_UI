@@ -8,7 +8,19 @@ const tsconfigRootDir = fileURLToPath(new URL('.', import.meta.url));
 
 const config = [
   {
-    ignores: ['node_modules', 'build', 'coverage', '**/*.tsbuildinfo'],
+    // Flat config matches these as PATHS, not prefixes: a bare 'node_modules'
+    // matches a file of that name, never its contents. Without the /** the
+    // linter walked every dependency and reported ~950k problems, which is why
+    // `npm run lint` has never actually run here despite CI gating on it.
+    ignores: [
+      'node_modules/**',
+      '.next/**',
+      'build/**',
+      'out/**',
+      'coverage/**',
+      'public/**',
+      '**/*.tsbuildinfo',
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.strictTypeChecked,
