@@ -1103,6 +1103,40 @@ jobs:
           # poll WAS replaced, and one that restarted once before settling is not a
           # reason to red-light a deploy. PUBLIC_OK -ne 0 accepts both "probed and
           # answering" and "not probed"; only a probe that RAN and FAILED blocks.
+          # A commit that lands in no image is a legitimate success. Measured on
+          # the backend's first push-triggered run (32650108769): a workflow-only
+          # commit was a full cache hit, nothing was recreated, and the run went
+          # red while the box WAS on the pushed commit and healthy. Every docs/,
+          # deploy/ or .github/ commit would do the same, and a pipeline that
+          # red-lights routine commits teaches people to ignore red.
+          #
+          # Narrow on purpose: the tree must be at github.sha, must have MOVED
+          # there this run, and the service must be positively MEASURED as
+          # not-recreated on both sides. A service that could not be measured
+          # lands in UNMEASURED, never UNCHANGED, so it still exits 72.
+          NOOP_OK=0
+          if [ "$HEALTHY" -eq 1 ] && [ "$REV_OK" -eq 1 ] && [ "$REV_MOVED" -eq 1 ] \
+             && [ "$REPLACED_OK" -eq 0 ] && [ "${#UPDATED[@]}" -gt 0 ] \
+             && [ "${#UNCHANGED[@]}" -eq "${#UPDATED[@]}" ] && [ "$PUBLIC_OK" -ne 0 ]; then
+            NOOP_OK=1
+          fi
+
+          if [ "$NOOP_OK" -eq 1 ]; then
+            summary "### Production deploy (dashboard) — OK, nothing to rebuild"
+            summary ""
+            summary '```'
+            summary "revision   ${BEFORE_REV:0:12} -> ${AFTER_REV:0:12}   (= github.sha)"
+            summary "rebuilt    <none> — the image was a cache hit"
+            summary '```'
+            summary ""
+            summary "The box moved to this commit and the dashboard is healthy, but nothing in"
+            summary "it lands in the image — a \`docs/\`, \`deploy/\`, \`.github/\` or otherwise"
+            summary "\`.dockerignore\`d change. The container's uptime was read on BOTH sides of"
+            summary "the update and had not reset, so this is measured, not assumed."
+            echo "::notice::Deploy OK at $GIT_SHA — nothing to rebuild (cache hit); the dashboard is healthy and the box is on this commit."
+            exit 0
+          fi
+
           if [ "$HEALTHY" -eq 1 ] && [ "$REV_OK" -eq 1 ] && [ "$REPLACED_OK" -eq 1 ] && [ "$PUBLIC_OK" -ne 0 ]; then
             summary "### Production deploy (dashboard) — OK"
             summary ""
