@@ -31,8 +31,14 @@ jobs:
           # DERIVED, never hardcoded. A hardcoded value passes while someone
           # bumps node-version above and forgets it here - which is exactly the
           # drift this guard exists to catch.
-          ci_major=$(grep -oE 'node-version: *.?[0-9]+' "$GITHUB_WORKFLOW_REF_FILE" 2>/dev/null | grep -oE '[0-9]+$' | head -1)
-          [ -n "$ci_major" ] || ci_major=$(grep -oE 'node-version: *.?[0-9]+' .github/workflows/dashboard-ci.yml | grep -oE '[0-9]+$' | head -1)
+          # Read THIS file out of the checkout. It used to read
+          # "$GITHUB_WORKFLOW_REF_FILE", which is not a GitHub variable at all —
+          # the real one is GITHUB_WORKFLOW_REF, and it holds a ref string
+          # (owner/repo/.github/workflows/x.yml@refs/heads/main), not a path. So
+          # under `set -u` the step aborted on this line with "unbound variable"
+          # before the 2>/dev/null or the fallback below could do anything, and
+          # this guard has never once run.
+          ci_major=$(grep -oE 'node-version: *.?[0-9]+' .github/workflows/dashboard-ci.yml | grep -oE '[0-9]+$' | head -1)
           img_majors=$(grep -oE "^FROM node:[0-9]+" Dockerfile | grep -oE "[0-9]+$" | sort -u || true)
           if [ "$(printf "%s" "$img_majors" | wc -l)" -ne 0 ] || [ "$img_majors" != "$ci_major" ]; then
             echo "::error::Node major mismatch. This workflow runs Node $ci_major; Dockerfile FROM lines use: $(echo $img_majors). Tests would no longer be evidence about the shipped image. Make them equal (and update ci_major in this step)."
