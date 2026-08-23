@@ -96,7 +96,12 @@ function PrintPageContents() {
                         // (the form lives inside this app at /feedback; env still overrides).
                         try {
                             const fallbackBase = typeof window !== 'undefined' ? `${window.location.origin}/feedback` : '';
-                            const baseUrl = (process.env.NEXT_PUBLIC_FEEDBACK_FORM_URL ?? fallbackBase).replace(/\/$/, '');
+                            // `||`, not `??`: the Dockerfile declares ARG NEXT_PUBLIC_FEEDBACK_FORM_URL
+            // with no default, so ENV bakes it as "" — and "" is not null, so `??`
+            // never reached the fallback. baseUrl became "", the guard below went
+            // falsy, and the feedback QR was silently dropped from every printed
+            // bill while the line telling the guest to scan it still printed.
+            const baseUrl = (process.env.NEXT_PUBLIC_FEEDBACK_FORM_URL || fallbackBase).replace(/\/$/, '');
                             if (baseUrl && user?.res_id && user?.employeeId && user?.outlet_id) {
                                 const params = new URLSearchParams({ restaurantId: user.res_id, employeeId: user.employeeId, outletId: user.outlet_id });
                                 const feedbackUrl = `${baseUrl}?${params.toString()}`;
@@ -192,11 +197,16 @@ function PrintPageContents() {
                                     };
 
                                     const b64 = toBase64(esc);
-                                    const backend = (process.env.NEXT_PUBLIC_BACKEND_URL ?? `${window.location.protocol}//${window.location.hostname}:3000`).replace(/\/$/, '');
+                                    // No baseUrl: requestBackend is a Server Action (lib/db.ts is
+                                    // "use server"), so this fetch runs in the Next container and
+                                    // resolves the internal backend address itself. The old line
+                                    // read the env var with `??`, which does not fall back on an
+                                    // empty string, so a production build sent the server a bare
+                                    // path — and its window-derived fallback pointed at port 3000,
+                                    // the dashboard's own port rather than the backend's 3001.
 
                                     try {
                                         const resp = await requestBackend({
-                                            baseUrl: backend,
                                             path: '/publish/bill',
                                             method: 'POST',
                                             body: { restaurantId: user?.res_id, outletId: user?.outlet_id, billId: billId || String(Date.now()), escBase64: b64 },
@@ -567,7 +577,9 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
 
         // QR (feedback form lives inside this app at /feedback; env still overrides)
         const fallbackBase = typeof window !== 'undefined' ? `${window.location.origin}/feedback` : '';
-        const baseUrl = (process.env.NEXT_PUBLIC_FEEDBACK_FORM_URL ?? fallbackBase).replace(/\/$/, '');
+        // `||`, not `??` — see the same guard above: the env bakes as "" and `??`
+        // never fires on it, which dropped the feedback QR from the printed bill.
+        const baseUrl = (process.env.NEXT_PUBLIC_FEEDBACK_FORM_URL || fallbackBase).replace(/\/$/, '');
         if (baseUrl && user?.res_id && user?.employeeId && user?.outlet_id) {
             const params = new URLSearchParams({ restaurantId: user.res_id, employeeId: user.employeeId, outletId: user.outlet_id });
             const feedbackUrl = `${baseUrl}?${params.toString()}`;

@@ -13,6 +13,7 @@ import { type MenuItem } from '@/app/dashboard/menu/data';
 import { type Order } from '@/app/dashboard/orders/page';
 import { type Table } from '@/app/dashboard/tables/data';
 import { type AuditLog } from '@/app/dashboard/audit-logs/page';
+import { serverBackendBase, serverBaseUrlFrom } from '@/lib/backend-url';
 import { SELECTED_OUTLET_KEY } from '@/lib/outlet';
 import type { BrandConfig } from '@/lib/brand-fonts';
 
@@ -152,17 +153,23 @@ interface RestaurantRecord {
     data: RestaurantData;
 }
 
-const API_BASE_URL = (
-    process.env.NEXT_PUBLIC_BACKEND_URL ??
-    process.env.NEXT_PUBLIC_RECEPTION_API_URL ??
-    process.env.NEXT_BACKEND_URL ??
-    'http://localhost:3001'
-).replace(/\/$/, '');
+// This module is "use server": every export is a Server Action, so these
+// fetches run INSIDE the Next container, never in the browser — even when a
+// client component calls them. The address must therefore be absolute and
+// should be the internal docker one; `serverBackendBase()` handles both.
+//
+// Resolved per call rather than in a module constant, because the old constant
+// used `??` and an empty NEXT_PUBLIC_BACKEND_URL is not null: it won the
+// fallback chain and every server-side fetch was issued against a bare path.
+const apiBaseUrl = (): string => serverBackendBase();
 
-const RECEPTION_SERVER_BASE_URL = (
-    process.env.NEXT_PUBLIC_RECEPTION_SERVER_URL ??
-    API_BASE_URL
-).replace(/\/$/, '');
+// A separate reception server is opt-in; when unset (or blank) it is the same
+// backend. `.trim()` matters here for the same reason as everywhere else in
+// this change — an empty env var must read as "not configured".
+const receptionServerBaseUrl = (): string => {
+    const configured = process.env.NEXT_PUBLIC_RECEPTION_SERVER_URL?.trim().replace(/\/+$/, '');
+    return configured && configured.length > 0 ? configured : apiBaseUrl();
+};
 
 export interface BackendRequestParams {
     path: string;
@@ -533,7 +540,7 @@ const backendJson = async <T>(
     let status = 0;
     try {
         const hdrs = await headersForRestaurant(path, restaurantId, init?.headers);
-        const response = await fetch(`${API_BASE_URL}${path}`, {
+        const response = await fetch(`${apiBaseUrl()}${path}`, {
             ...init,
             cache: 'no-store',
             headers: hdrs,
@@ -565,7 +572,7 @@ const backendCall = async (
     let response: Response;
     try {
         const hdrs = await headersForRestaurant(path, restaurantId, init?.headers);
-        response = await fetch(`${API_BASE_URL}${path}`, {
+        response = await fetch(`${apiBaseUrl()}${path}`, {
             ...init,
             headers: hdrs,
         });
@@ -602,7 +609,7 @@ export const requestBackend = async <T = unknown>(
         parseJson = true,
     } = params;
 
-    const finalBaseUrl = (baseUrl ?? API_BASE_URL).replace(/\/$/, '');
+    const finalBaseUrl = serverBaseUrlFrom(baseUrl);
     const mergedHeaders = new Headers(headers);
 
     // Identity (tenant/employee/role/actions) is carried by the session bearer
@@ -684,7 +691,7 @@ export const requestReceptionBackend = async <T = unknown>(
 ): Promise<BackendRequestResult<T>> => {
     return requestBackend<T>({
         ...params,
-        baseUrl: RECEPTION_SERVER_BASE_URL,
+        baseUrl: receptionServerBaseUrl(),
     });
 };
 

@@ -2,7 +2,14 @@
 // separate from the tenant `authUser` — it uses its own token under a different
 // localStorage key and never shares the tenant session.
 
-const BASE = (process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001").replace(/\/$/, "");
+import { browserBackendBase } from "./backend-url";
+
+// Resolved per call, NOT once at module load. The old module-level constant used
+// `?? "http://localhost:3001"`, which does not fire on an empty string, so a
+// production build with a blank NEXT_PUBLIC_BACKEND_URL made BASE "" and every
+// platform call hit the dashboard's own origin: POST /platform/auth/login
+// returned Next's 404 HTML, and `JSON.parse` of "<!DOCTYPE ..." produced the
+// "Unexpected token '<'" error on the console with every counter stuck at 0.
 const STORAGE_KEY = "platformAuth";
 
 export interface PlatformAdmin { id: string; email: string; name: string | null }
@@ -30,7 +37,7 @@ async function platformFetch<T = unknown>(path: string, init?: RequestInit): Pro
 	if (auth?.token) {headers.set("Authorization", `Bearer ${auth.token}`);}
 	if (init?.body && !headers.has("Content-Type")) {headers.set("Content-Type", "application/json");}
 
-	const res = await fetch(`${BASE}${path}`, { ...init, headers, cache: "no-store" });
+	const res = await fetch(`${browserBackendBase()}${path}`, { ...init, headers, cache: "no-store" });
 	if (res.status === 401) {
 		setPlatformAuth(null);
 		throw new Error("Unauthorized");

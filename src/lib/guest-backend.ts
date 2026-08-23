@@ -1,3 +1,5 @@
+import { browserBackendBase } from "./backend-url";
+
 // Backend base URL for PUBLIC guest pages (/order, /queue, /reserve, /cfd,
 // /feedback) — pages that are opened on customers' phones, not just the dev PC.
 //
@@ -13,21 +15,17 @@
 // server-side. That works identically for LAN IPs and tunnel URLs, with no
 // extra firewall rule for the backend port.
 //
-// Production URLs (a real https backend host) pass through untouched, as does
-// server-side rendering (no window).
+// Production URLs (a real https backend host) pass through untouched.
+//
+// This is now a thin alias over the shared resolver in lib/backend-url.ts. The
+// logic that used to live here had a hole that took down production: it built
+// `configured` with `??`, so an EMPTY NEXT_PUBLIC_BACKEND_URL became "", and
+// `new URL("")` THROWS — which meant the catch swallowed it and the "/backend-api"
+// escape hatch below was never reached. Guest phones were sent to the dashboard's
+// own origin and got Next's 404 HTML back. The shared resolver treats blank as
+// absent, so that path now lands on "/backend-api" the way it always should have.
 export function guestBackendBase(): string {
-  const configured = (process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001").replace(/\/$/, "");
-  if (typeof window === "undefined") {return configured;}
-  try {
-    const u = new URL(configured);
-    const localhostNames = ["localhost", "127.0.0.1", "[::1]"];
-    if (localhostNames.includes(u.hostname) && !localhostNames.includes(window.location.hostname)) {
-      return "/backend-api";
-    }
-  } catch {
-    // fall through to the configured value on any malformed URL
-  }
-  return configured;
+  return browserBackendBase();
 }
 
 /// Read a guest-facing response WITHOUT assuming it is JSON.

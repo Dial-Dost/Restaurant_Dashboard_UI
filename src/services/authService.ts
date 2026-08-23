@@ -2,6 +2,7 @@
 
 'use server';
 
+import { serverBackendBase } from '@/lib/backend-url';
 import type { User} from '@/lib/db';
 import { findRestaurantByName, findUserInRestaurant, createRestaurant, addEmployee, removeEmployee } from '@/lib/db';
 
@@ -9,11 +10,17 @@ import { findRestaurantByName, findUserInRestaurant, createRestaurant, addEmploy
 // (employee login, restaurant registration, employee management, password reset).
 
 const getRestaurantId = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, "");
-const API_BASE_URL = (
-    process.env.NEXT_PUBLIC_RECEPTION_API_URL ??
-    process.env.NEXT_PUBLIC_BACKEND_URL ??
-    'http://localhost:3000'
-).replace(/\/$/, '');
+
+// This module is 'use server', so every fetch below runs inside the Next
+// container and the base MUST be absolute — a relative "/backend-api" would
+// throw `TypeError: Failed to parse URL`.
+//
+// Two bugs are fixed here at once. The `??` chain did not fall back on an EMPTY
+// NEXT_PUBLIC_BACKEND_URL, so a production build with a blank build-arg made
+// this "" and every login POST went to a bare path. And the literal default was
+// port 3000 — the DASHBOARD's own port, not the backend's 3001 — so the
+// fallback had never pointed at the backend even when it did fire.
+const apiBaseUrl = (): string => serverBackendBase();
 
 const readErrorMessage = async (response: Response): Promise<string> => {
     if (response.status === 403) {
@@ -77,7 +84,7 @@ export const signUpRestaurant = async ({ restaurantName, adminName, adminEmploye
 export const getOutlets = async (restaurant: string): Promise<{ id: string; name: string }[]> => {
     try {
         const response = await fetch(
-            `${API_BASE_URL}/auth/outlets?restaurant=${encodeURIComponent(restaurant)}`,
+            `${apiBaseUrl()}/auth/outlets?restaurant=${encodeURIComponent(restaurant)}`,
             { cache: 'no-store' },
         );
         if (!response.ok) {
@@ -97,7 +104,7 @@ export const getOutlets = async (restaurant: string): Promise<{ id: string; name
 
 // Employee Sign In
 export const signInEmployee = async (restaurantName: string, employeeUsername: string, password: string, outletId?: string) => {
-    const response = await fetch(`${API_BASE_URL}/auth/employee-login`, {
+    const response = await fetch(`${apiBaseUrl()}/auth/employee-login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         cache: 'no-store',
@@ -121,7 +128,7 @@ export const sendPasswordReset = async (restaurantName: string, employeeUsername
     // File a forgot-password request: the restaurant's admin fulfils it from the
     // Employees page. The backend always responds success (no account enumeration).
     try {
-        await fetch(`${API_BASE_URL}/auth/forgot-password`, {
+        await fetch(`${apiBaseUrl()}/auth/forgot-password`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ restaurant: restaurantName, username: employeeUsername }),

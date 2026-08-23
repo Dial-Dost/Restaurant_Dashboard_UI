@@ -101,19 +101,23 @@ function FeedbackPageInner() {
         return;
       }
 
-      const base =
-        process.env.NEXT_PUBLIC_BACKEND_URL ?? (typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:3000` : '');
+      // No baseUrl is computed here on purpose. requestBackend comes from the
+      // "use server" module lib/db.ts, so it is a Server Action: the fetch runs
+      // inside the Next container, not in this browser. Deriving an address from
+      // window.location and shipping it to the server was always wrong, and the
+      // `??` made it worse — an empty NEXT_PUBLIC_BACKEND_URL is not null, so it
+      // won the fallback and the server fetched a bare path. (The fallback it
+      // shadowed was wrong too: port 3000 is the dashboard, the backend is 3001.)
+      // requestBackend now resolves the internal backend address itself.
       try {
         const [itemsRes, summaryRes] = await Promise.all([
           requestBackend<{ items?: FeedbackEntry[] }>({
-            baseUrl: base,
             path: `/feedback?limit=100`,
             restaurantId: user.restaurantUsername,
             employeeId: user.employeeId,
             outletId: user.outlet_id,
           }),
           requestBackend<FeedbackSummary>({
-            baseUrl: base,
             path: `/feedback/summary`,
             restaurantId: user.restaurantUsername,
             employeeId: user.employeeId,
@@ -126,7 +130,6 @@ function FeedbackPageInner() {
         const feedbackRows = itemsRes.ok ? itemsRes.data?.items ?? [] : [];
         const feedbackSummary = summaryRes.ok ? summaryRes.data : null;
         const usersRes = await requestBackend<{ users?: any[] }>({
-          baseUrl: base,
           path: `/restaurant/users`,
           restaurantId: user.restaurantUsername,
           employeeId: user.employeeId,
@@ -160,28 +163,24 @@ function FeedbackPageInner() {
         setEntries(feedbackRows);
         setSummary(feedbackSummary);
         const statsDailyRes = await requestBackend<any>({
-          baseUrl: base,
           path: `/feedback/stats?mode=daily&date=${dailyDate}`,
           restaurantId: user.restaurantUsername,
           employeeId: user.employeeId,
           outletId: user.outlet_id,
         });
         const statsWeeklyRes = await requestBackend<any>({
-          baseUrl: base,
           path: `/feedback/stats?mode=weekly&weekStart=${weeklyStart}`,
           restaurantId: user.restaurantUsername,
           employeeId: user.employeeId,
           outletId: user.outlet_id,
         });
         const statsMonthlyRes = await requestBackend<any>({
-          baseUrl: base,
           path: `/feedback/stats?mode=monthly&start=${monthlyStart}`,
           restaurantId: user.restaurantUsername,
           employeeId: user.employeeId,
           outletId: user.outlet_id,
         });
         const statsYearlyRes = await requestBackend<any>({
-          baseUrl: base,
           path: `/feedback/stats?mode=yearly&year=${yearlyYear}`,
           restaurantId: user.restaurantUsername,
           employeeId: user.employeeId,
@@ -211,18 +210,16 @@ function FeedbackPageInner() {
       // Re-fetch when feedback changes
       (async () => {
         setLoading(true);
-        const base =
-          process.env.NEXT_PUBLIC_BACKEND_URL ?? (typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:3000` : '');
+        // See the note above: requestBackend is a Server Action and resolves the
+        // backend address on the server. Nothing browser-derived belongs here.
         try {
           const itemsRes = await requestBackend<{ items?: FeedbackEntry[] }>({
-            baseUrl: base,
             path: `/feedback?limit=100`,
             restaurantId: user.restaurantUsername,
             employeeId: user.employeeId,
             outletId: user.outlet_id,
           });
           const summaryRes = await requestBackend<FeedbackSummary>({
-            baseUrl: base,
             path: `/feedback/summary`,
             restaurantId: user.restaurantUsername,
             employeeId: user.employeeId,
@@ -232,28 +229,24 @@ function FeedbackPageInner() {
           const feedbackSummary = summaryRes.ok ? summaryRes.data : null;
           // re-fetch stats windows
           const statsDailyRes = await requestBackend<any>({
-            baseUrl: base,
             path: `/feedback/stats?mode=daily&date=${dailyDate}`,
             restaurantId: user.restaurantUsername,
             employeeId: user.employeeId,
             outletId: user.outlet_id,
           });
           const statsWeeklyRes = await requestBackend<any>({
-            baseUrl: base,
             path: `/feedback/stats?mode=weekly&weekStart=${weeklyStart}`,
             restaurantId: user.restaurantUsername,
             employeeId: user.employeeId,
             outletId: user.outlet_id,
           });
           const statsMonthlyRes = await requestBackend<any>({
-            baseUrl: base,
             path: `/feedback/stats?mode=monthly&start=${monthlyStart}`,
             restaurantId: user.restaurantUsername,
             employeeId: user.employeeId,
             outletId: user.outlet_id,
           });
           const statsYearlyRes = await requestBackend<any>({
-            baseUrl: base,
             path: `/feedback/stats?mode=yearly&year=${yearlyYear}`,
             restaurantId: user.restaurantUsername,
             employeeId: user.employeeId,
@@ -269,7 +262,6 @@ function FeedbackPageInner() {
           // refresh employee list
           try {
             const usersRes = await requestBackend<{ users?: any[] }>({
-              baseUrl: base,
               path: `/restaurant/users`,
               restaurantId: user.restaurantUsername,
               employeeId: user.employeeId,

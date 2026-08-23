@@ -46,11 +46,42 @@ RUN npm ci --legacy-peer-deps
 COPY . .
 
 # 1. Accept the build arguments from Railway
-ARG NEXT_PUBLIC_BACKEND_URL
+#
+#    NEXT_PUBLIC_BACKEND_URL carries the default http://localhost:3001 for the
+#    SAME reason BACKEND_INTERNAL_URL does below, and leaving it off cost a
+#    production outage. `ENV X=$ARG` with an unset, default-less ARG yields an
+#    EMPTY STRING, and every call site read it with `?? 'http://localhost:3001'`
+#    — which does not fire on "". So a plain `docker build` with no --build-arg
+#    baked "" into the bundle, every client base URL became "", and the browser
+#    called the DASHBOARD's own origin: the platform console showed
+#      Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+#    with every counter at 0, and guest ordering broke on a host whose table QR
+#    codes were about to be printed. CI passes the public origin explicitly and
+#    rejects a localhost value; this default only keeps a local `docker build`
+#    behaving like local dev.
+ARG NEXT_PUBLIC_BACKEND_URL=http://localhost:3001
 ARG NEXT_PUBLIC_FEEDBACK_FORM_URL
 # 2. Make them available as env vars for Next.js to bake into the client JS
 ENV NEXT_PUBLIC_BACKEND_URL=$NEXT_PUBLIC_BACKEND_URL
 ENV NEXT_PUBLIC_FEEDBACK_FORM_URL=$NEXT_PUBLIC_FEEDBACK_FORM_URL
+
+# Belt and braces: the default above cannot help if someone passes the arg
+# explicitly but empty (--build-arg NEXT_PUBLIC_BACKEND_URL= , or a CI variable
+# that is set to nothing), which is the shape that actually shipped. An empty
+# value is meaningless in EVERY environment — dev, staging and production alike
+# — so refuse to produce the image at all rather than bake it.
+#
+# Deliberately NOT rejected here: a localhost value. That is legitimate for a
+# local `docker build`/`docker compose build`, and .github/workflows/deploy.yml
+# already fails the production build on it.
+RUN if [ -z "$(printf '%s' "$NEXT_PUBLIC_BACKEND_URL" | tr -d '[:space:]')" ]; then \
+      echo "ERROR: NEXT_PUBLIC_BACKEND_URL is empty." >&2; \
+      echo "It is baked into every browser bundle at build time. An empty value makes" >&2; \
+      echo "each client base URL \"\", so the dashboard calls its own origin and parses" >&2; \
+      echo "Next's 404 HTML as JSON, and guest pages reached by table QR codes break." >&2; \
+      echo "Pass the public backend origin, e.g. --build-arg NEXT_PUBLIC_BACKEND_URL=https://api.example.com" >&2; \
+      exit 1; \
+    fi
 
 # 3. BACKEND_INTERNAL_URL is ALSO a build-time value, despite not being
 #    NEXT_PUBLIC_*. next.config.ts uses it as the destination of the
@@ -88,6 +119,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV NODE_ENV=production
 # The standalone server respects PORT (injected by Railway). Default to 3000.
 ENV PORT=3000
+
+# BACKEND_INTERNAL_URL is needed in the RUNTIME stage too, not only the builder.
+# The builder needs it because next.config.ts bakes it into the /backend-api
+# rewrite; the runtime needs it because the "use server" modules (lib/db.ts,
+# services/authService.ts) resolve their fetch target through
+# src/lib/backend-url.ts at request time. Without it those server-side calls
+# fall back to the public origin and hairpin out through the CDN and back
+# instead of crossing the docker network. Compose may still override it.
+#
+# Default EMPTY on purpose. serverBackendBase() ranks this candidate FIRST, so a
+# build that forgets the --build-arg would otherwise bake localhost:3001 as a
+# runtime env — and nothing listens on 3001 inside the dashboard container, so
+# every Server Action (employee login, all of lib/db.ts) would fail hard. Empty
+# falls through to the public origin instead: a slower hairpin through the CDN,
+# but working. Degrade, don't break.
+ARG BACKEND_INTERNAL_URL=
+ENV BACKEND_INTERNAL_URL=$BACKEND_INTERNAL_URL
 ENV HOSTNAME=0.0.0.0
 EXPOSE 3000
 

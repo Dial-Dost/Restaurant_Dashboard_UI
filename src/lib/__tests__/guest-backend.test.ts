@@ -1,4 +1,4 @@
-import { readGuestJson, readGuestBody, GuestRequestError, GUEST_UNREACHABLE } from "../guest-backend";
+import { guestBackendBase, readGuestJson, readGuestBody, GuestRequestError, GUEST_UNREACHABLE } from "../guest-backend";
 
 /// A guest opened /order/<restaurant> at their table while the backend was
 /// unreachable. The Next rewrite in front of /backend-api answered with the
@@ -15,6 +15,59 @@ const resp = (body: string, status = 200, ok = status < 400) =>
     status,
     text: async () => body,
   }) as unknown as Response;
+
+/// The base-URL half of the same story. The error above ("Unexpected token 'I'")
+/// was the backend being down; this is the page never reaching the backend at
+/// all. A production image built with an EMPTY NEXT_PUBLIC_BACKEND_URL made this
+/// function return "", because it composed the value with `??` (which does not
+/// fall back on "") and then relied on `new URL(configured)` to spot a localhost
+/// backend — but `new URL("")` THROWS, so the catch swallowed it and the
+/// "/backend-api" escape hatch was never reached. Guest phones were sent to the
+/// dashboard's own origin and got Next's 404 HTML back.
+///
+/// This matters more than the staff console: table QR codes point at that host.
+describe("guestBackendBase", () => {
+  const REAL_ENV = process.env;
+
+  const openGuestPageOn = (hostname: string, protocol = "https:"): void => {
+    (globalThis as unknown as { window?: unknown }).window = {
+      location: { hostname, protocol, origin: `${protocol}//${hostname}` },
+    };
+  };
+
+  beforeEach(() => {
+    process.env = { ...REAL_ENV };
+    delete process.env.NEXT_PUBLIC_BACKEND_URL;
+    delete process.env.BACKEND_INTERNAL_URL;
+  });
+
+  afterEach(() => {
+    process.env = REAL_ENV;
+    delete (globalThis as unknown as { window?: unknown }).window;
+  });
+
+  it("sends a scanned table QR to the proxy when the backend URL was built empty", () => {
+    process.env.NEXT_PUBLIC_BACKEND_URL = "";
+    openGuestPageOn("experiosolutions.dialdost.com");
+    // Measured against production: /qr/csrorganics/menu -> 404 HTML,
+    // /backend-api/qr/csrorganics/menu -> 200 JSON.
+    expect(`${guestBackendBase()}/qr/csrorganics/menu`).toBe(
+      "/backend-api/qr/csrorganics/menu",
+    );
+  });
+
+  it("keeps using the proxy for a phone on the LAN IP in dev", () => {
+    process.env.NEXT_PUBLIC_BACKEND_URL = "http://localhost:3001";
+    openGuestPageOn("172.20.10.2", "http:");
+    expect(guestBackendBase()).toBe("/backend-api");
+  });
+
+  it("calls a real production backend directly", () => {
+    process.env.NEXT_PUBLIC_BACKEND_URL = "https://api.dialdost.com";
+    openGuestPageOn("experiosolutions.dialdost.com");
+    expect(guestBackendBase()).toBe("https://api.dialdost.com");
+  });
+});
 
 describe("readGuestJson", () => {
   it("returns parsed JSON on success", async () => {
