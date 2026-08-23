@@ -120,17 +120,19 @@ name: Deploy (production)
 #     push:
 #       branches: [main]
 #
-# is added back in a SECOND, trigger-only commit, once one dispatched deploy has
-# been watched end to end BY HAND, outside service hours, and the dashboard came
-# back healthy. The git transport has never been driven from CI; enabling push
-# here would make the merge commit that lands this file the first live exercise of
-# a path nobody has ever run, at whatever time of day the merge happens, against
-# restaurants taking orders.
+# is ON, added in this second, trigger-only commit. The precondition has been
+# met: run 32649773952 was dispatched by hand against live production and
+# observed end to end —
+#
+#     "Deploy succeeded: dashboard rebuilt at 240c99f, container replaced,
+#      healthy; public probe answering."
 #
 # Nothing downstream depends on the event type: `concurrency`, the job graph and
 # every `needs:` behave identically on a dispatched run, and the backend-health
 # precondition below still gates the deploy.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 # Per-repository only. This cannot serialise against a Restaurant_Backend deploy.
