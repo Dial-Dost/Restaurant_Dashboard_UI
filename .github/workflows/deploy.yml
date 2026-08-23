@@ -1,62 +1,114 @@
 # =============================================================================
 # Deploy (production) — Restaurant_Dashboard_UI
 #
-# Push to main -> lint, typecheck, build, tests -> build the production image ->
-# push to GHCR -> move the :prod tag -> ask the VPS wrapper to converge the
-# `dashboard` service -> poll -> restore the tag and roll back if it does not
-# come back.
+# CI (lint, typecheck, build, tests) -> assert the Dockerfile can still produce a
+# working production image -> refuse if the backend is sick -> tell the box to
+# fetch main and rebuild -> PROVE it happened -> poll until healthy -> roll the
+# image back if it does not come back.
 #
-# THE PUSH TRIGGER IS NOT ENABLED IN THIS COMMIT. This file is
-# workflow_dispatch-only until a second, trigger-only commit — see the `on:`
-# block below for why and for what has to happen first.
-#
-# READ THIS BEFORE EDITING — the server side is fixed and this file must match it
+# THE TRANSPORT IS GIT. THERE IS NO REGISTRY IN THIS PIPELINE.
 # -----------------------------------------------------------------------------
-# The CI identity can cause EXACTLY ONE program to run on the box:
-# /usr/local/sbin/rd-deploy. Its ENTIRE vocabulary is:
+# An earlier version of this file built the image on the runner, pushed it to
+# GHCR by digest, and moved a `:prod` tag that the box's compose file followed.
+# That is gone: GHCR needed a long-lived read credential in *root's* docker
+# config on the box and it could not be created without a human at a keyboard.
+# Every trace of it — buildx, `docker login`, digest resolution, tag moves,
+# `pull_policy: always`, `restore_tags`, the `packages: write` permission — has
+# been DELETED rather than left commented out, because a half-present transport
+# is how you get a pipeline that half-ships.
 #
-#     rd-deploy status                 -> docker compose ps
-#     rd-deploy logs [service]         -> docker compose logs --tail 100
-#     rd-deploy check-migrations       -> reports pending migrations, applies none
-#     rd-deploy deploy [service]       -> exit 65 if a migration is pending, else
-#                                         docker compose up -d [service]
-#     rd-deploy rollback [service]     -> docker compose up -d --force-recreate
+# What replaced it:
 #
-# Any other first argument exits 64. `service` must be one of
-# backend | dashboard | python | valkey | (omitted). There are NO digest
-# arguments, NO --git-sha, NO --force-window and NO file paths.
+#     /opt/restaurant-dash/Restaurant_Dashboard_UI  is a real git clone of this
+#     repo, on main, working tree clean, fetched with a per-repo READ-ONLY deploy
+#     key. /opt/restaurant-dash/docker-compose.yml (NOT in git; it exists only on
+#     the box) builds that directory as a LOCAL BUILD CONTEXT.
 #
-# HOW NEW CODE REACHES THE BOX
+# CI holds no image, no digest and no registry credential. The only secret this
+# workflow can see is an SSH key pinned to a forced command.
+#
+# WHAT THAT COSTS, AND IT COSTS MORE HERE THAN IN THE BACKEND
 # -----------------------------------------------------------------------------
-# The wrapper only runs `compose up -d`, so it deploys whatever the compose file
-# already references. The box has no git access, the compose file is not in git,
-# and the wrapper takes no path. The registry is the only transport and the
-# deployment pointer is a TAG:
+#  * `next build` now runs ON THE PRODUCTION BOX. The builder stage installs
+#    build-essential/g++/libvips-dev and compiles the whole app on 2 vCPUs next to
+#    live POS traffic, with real OOM risk, at the exact moment a rollback might
+#    need those resources. Deploy outside service hours. `timeout-minutes: 60`.
+#  * THE BUILD ARGS ARE NO LONGER CI'S. `next.config.ts`'s `/backend-api` rewrite
+#    and every `NEXT_PUBLIC_*` value are baked into the standalone manifest at
+#    BUILD time, and the build now happens on the box — so those values come from
+#    `docker-compose.yml` there, which is not in git and which this workflow
+#    cannot read or set. `vars.NEXT_PUBLIC_BACKEND_URL` / `vars.BACKEND_INTERNAL_URL`
+#    are inert as far as this file is concerned. The old CI-side check that
+#    refused a `localhost` backend URL is therefore gone: it can no longer see the
+#    value it was checking, and a check that cannot fail is worse than none. See
+#    Restaurant_Backend/deploy/vps/README.md, "Build args live on the box now".
+#  * A dashboard deploy still never touches /opt/restaurant-dash/public/downloads.
+#    The APK and zip are bind-mounted read-only from the host and excluded from
+#    the image by .dockerignore, which the preflight job below still asserts.
 #
-#     /opt/restaurant-dash/docker-compose.yml must reference
-#         dashboard:  image: ghcr.io/dial-dost/restaurant_dashboard:prod
-#     and that service must carry  pull_policy: always
+# THE SERVER SIDE IS FIXED. THIS FILE MUST MATCH IT, NEVER THE OTHER WAY ROUND
+# -----------------------------------------------------------------------------
+# The CI identity can cause EXACTLY ONE program to run: /usr/local/sbin/rd-deploy,
+# reached through the SSH forced command /usr/local/sbin/rd-entry:
 #
-# This workflow owns that tag: push an immutable digest, re-point :prod, ask the
-# wrapper to converge. Rollback is real because CI restores the tag FIRST and
-# then asks for the force-recreate.
+#     status                -> "<svc><TAB><status>" lines, NO header row
+#     revision              -> "<repo-dir><TAB><40-char sha>", one line per repo
+#     logs [svc]            -> compose logs --tail 100
+#     check-migrations      -> prints the migrate dry-run verdict; applies nothing
+#     update <svc>          -> git fetch + reset --hard FETCH_HEAD, then the
+#                              migration gate, then tag the outgoing image
+#                              :previous, then compose build + up -d
+#     deploy [svc]          -> migration gate then up -d (NO rebuild)
+#     rollback [svc]        -> retag <img>:previous back to :latest, force-recreate
 #
-#  * This workflow holds NO application secret. Every database URL, Supabase key,
-#    QR signing secret and Razorpay key stays in root-owned env files on the box.
-#    The only secret here is an SSH key pinned to a forced command.
-#  * THE IMAGE IS ENVIRONMENT-SPECIFIC. next.config.ts's /backend-api rewrite and
-#    every NEXT_PUBLIC_* value are baked into the standalone build manifest, so
-#    this image cannot be promoted to another environment unchanged.
-#  * A dashboard deploy never touches /opt/restaurant-dash/public/downloads. The
-#    APK and zip are bind-mounted read-only from the host and excluded from the
-#    image by .dockerignore.
-#  * There is no migration gate here, deliberately: this repo ships no SQL, and
-#    the deploy is gated on the backend being healthy, which implies a schema the
-#    backend accepted.
+# `svc` is backend | dashboard | python. Unknown verb or service => 64. Pending
+# migration => 65, and the wrapper NEVER applies one.
 #
-# Cross-repo contract changes CANNOT be made atomic across the two repos, and
-# there is no combined rollback. Ship API changes expand/contract: add the field
-# in the backend and release, then consume it here and release. See
+# WHY `update` AND NEVER `deploy`
+# -----------------------------------------------------------------------------
+# `deploy` is `up -d` with NO rebuild. Against a local-context compose file it
+# converges on the image already on disk — the SAME image — so the pipeline would
+# go green having shipped nothing. `update` is the verb that fetches and rebuilds.
+#
+# HOW THIS RUN PROVES IT ACTUALLY SHIPPED
+# -----------------------------------------------------------------------------
+# Two independent signals, both required:
+#   1. `revision` — the deployed git SHA must equal github.sha afterwards. Proves
+#      the CODE reached the box. It does NOT prove a rebuild: `update` resets the
+#      tree BEFORE its migration gate, so a run that dies at 65 leaves the tree at
+#      the new commit with the old container still running.
+#   2. RECREATION, derived from CHANGE and never from absolute age. `status` is
+#      snapshotted BEFORE `update dashboard` and read again afterwards; the
+#      container's uptime must have RESET. Proves a NEW IMAGE is running; says
+#      nothing about which commit built it.
+#
+#      A comparison, not a threshold. `next build` runs on the box, on 2 vCPUs,
+#      with `build-essential`/`g++`/`libvips-dev` in the builder stage — which is
+#      why this file allows `timeout-minutes: 60`. Any fixed "the container must
+#      be younger than N minutes" rule measured after that build red-lights
+#      deploys that worked. A reset is a reset however long the build took, and
+#      whatever wording docker picks for the duration (`Up About an hour` is on
+#      the live box right now, and was not in the previous regex).
+#
+# WHAT ROLLBACK CAN AND CANNOT RESTORE
+# -----------------------------------------------------------------------------
+# `rollback dashboard` retags :previous back to :latest and force-recreates, so it
+# DOES revert the running code. But THE GIT WORKING TREE ON THE BOX STAYS AT THE
+# NEW COMMIT — the next `update dashboard` rebuilds the bad commit and ships it
+# again. The only durable fix is to revert the commit on main. And on the FIRST
+# `update` of this service there is no :previous at all: the wrapper warns and
+# force-recreates the same image, which is a restart, not a rollback.
+#
+# There is no Gate A in this file, deliberately: this repo ships no SQL, so there
+# is nothing to diff. But the wrapper gates every `update`, so a migration left
+# unapplied by a BACKEND release refuses a dashboard deploy too (exit 65). This
+# workflow therefore asks `check-migrations` BEFORE it calls `update`, so that
+# refusal lands while this repo's working tree is still untouched — and handles
+# the 65 from `update` as well, for the case where one appears in between.
+#
+# Cross-repo contract changes CANNOT be made atomic across the two repos and there
+# is no combined rollback. Ship API changes expand/contract: add the field in the
+# backend and release, then consume it here and release. See
 # Restaurant_Backend/deploy/vps/README.md, "Cross-repo ordering".
 # =============================================================================
 name: Deploy (production)
@@ -68,19 +120,12 @@ name: Deploy (production)
 #     push:
 #       branches: [main]
 #
-# is added back in a SECOND, trigger-only commit, once BOTH of these are true:
-#
-#   1. the outstanding server-side steps in
-#      Restaurant_Backend/deploy/vps/README.md are finished (forced command
-#      installed, compose following :prod with pull_policy: always, GHCR login)
-#      — install.sh exits 0 on the box; and
-#   2. one dispatched deploy has been watched end to end BY HAND, outside
-#      service hours, and the dashboard came back healthy.
-#
-# Enabling push here would make the merge commit that lands this file the first
-# live exercise of a path nobody has ever run: no dry run, at whatever time of
-# day the merge happens, against restaurants taking orders. Dispatch-only means
-# a human picks the moment.
+# is added back in a SECOND, trigger-only commit, once one dispatched deploy has
+# been watched end to end BY HAND, outside service hours, and the dashboard came
+# back healthy. The git transport has never been driven from CI; enabling push
+# here would make the merge commit that lands this file the first live exercise of
+# a path nobody has ever run, at whatever time of day the merge happens, against
+# restaurants taking orders.
 #
 # Nothing downstream depends on the event type: `concurrency`, the job graph and
 # every `needs:` behave identically on a dispatched run, and the backend-health
@@ -89,21 +134,33 @@ on:
   workflow_dispatch:
 
 # Per-repository only. This cannot serialise against a Restaurant_Backend deploy.
+# Never cancel in flight: a cancelled run can leave the box's working tree reset
+# to the new commit with the old container still running.
 concurrency:
   group: production-deploy-dashboard
   cancel-in-progress: false
 
+# No `packages:` anywhere in this file any more — nothing here talks to a
+# registry.
 permissions:
   contents: read
 
 env:
-  DASHBOARD_REPO: ghcr.io/dial-dost/restaurant_dashboard
-  PROD_TAG: prod
+  # The DIRECTORY BASENAME of this repo's clone on the box
+  # (/opt/restaurant-dash/Restaurant_Dashboard_UI). `rd-deploy revision` keys its
+  # output on exactly this string.
+  REVISION_KEY: Restaurant_Dashboard_UI
+  # Public, through the same ingress a restaurant uses. `/login` is served by the
+  # dashboard itself and needs no session. A `vars.` override wins.
+  PUBLIC_DASHBOARD_URL: ${{ vars.PUBLIC_DASHBOARD_URL || 'https://experiosolutions.dialdost.com/login' }}
 
 jobs:
   # ---------------------------------------------------------------------------
-  # The existing dashboard CI job, unchanged and not forked: lint, typecheck,
-  # next build, jest, on Node 22. Do not weaken it here.
+  # HARD GATE. The existing dashboard CI job, unchanged and not forked: toolchain
+  # parity with the Dockerfile, lint, typecheck, next build, jest, on Node 22.
+  #
+  # Everything below `needs:` this, so a red CI makes the deploy job UNREACHABLE.
+  # Do not weaken it here.
   # ---------------------------------------------------------------------------
   ci:
     name: CI
@@ -112,133 +169,71 @@ jobs:
     uses: ./.github/workflows/dashboard-ci.yml
 
   # ---------------------------------------------------------------------------
-  # Build the production image and push it to GHCR by digest.
+  # Static assertions about the image the BOX is about to build.
   #
-  # Building here rather than on the box matters more for this repo than for the
-  # backend: the builder stage installs build-essential/g++/libvips-dev and runs a
-  # full `next build`. On a 2-vCPU box that is minutes of pegged CPU next to live
-  # POS traffic, with real OOM risk — at the exact moment a rollback would need it.
+  # These two properties are load-bearing and silent when broken. They used to sit
+  # in front of the CI-side image build, which no longer exists — but the box
+  # builds from this same tree, so they matter just as much and are now the LAST
+  # chance to catch either one before a `next build` starts on the production VPS.
+  #
+  # Both are checks on repository CONTENT, which is exactly what this pipeline
+  # still ships. Neither can check the build ARGS any more; those live in the
+  # compose file on the box.
   # ---------------------------------------------------------------------------
-  build_push:
-    name: Build and push image
+  preflight:
+    name: Preflight (image can still be built correctly)
     needs: ci
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 10
     permissions:
       contents: read
-      packages: write
-    outputs:
-      dashboard_digest: ${{ steps.build.outputs.dashboard_digest }}
     steps:
-      # SHA-PINNED. This job builds the bytes that ship to production, so a
-      # third-party action here is arbitrary code inside the image. `v4` is a
-      # LIGHTWEIGHT, force-moved tag: whoever can move it can change what this
-      # job runs. Pin the commit; keep the human-readable version in the
-      # comment. Bump both together, never one.
+      # SHA-PINNED. `v4` is a LIGHTWEIGHT, force-moved tag: whoever can move it
+      # can change what this job runs. Pin the commit; keep the human-readable
+      # version in the comment. Bump both together, never one.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      # These two properties are load-bearing and silent when broken, so assert
-      # them rather than trusting that nobody reverted the Dockerfile.
-      - name: Assert the build can produce a working production image
+      - name: Assert the box can build a working production image
         run: |
           set -euo pipefail
           if ! grep -q '^ARG BACKEND_INTERNAL_URL' Dockerfile; then
-            echo "::error::Dockerfile has no 'ARG BACKEND_INTERNAL_URL'. next.config.ts bakes the /backend-api rewrite into the standalone manifest at BUILD time, so without that ARG this image would ship pointing at localhost and every guest page (/order, /queue, /reserve, /cfd, /feedback) would break in production. Refusing to build."
+            echo "::error::Dockerfile has no 'ARG BACKEND_INTERNAL_URL'. next.config.ts bakes the /backend-api rewrite into the standalone manifest at BUILD time, so without that ARG the image the VPS builds would ship pointing at localhost and every guest page (/order, /queue, /reserve, /cfd, /feedback) would break in production. Refusing to deploy."
             exit 1
           fi
           if ! grep -q '^public/downloads$' .dockerignore; then
-            echo "::error::.dockerignore no longer excludes public/downloads. Those two files (~110 MB) are bind-mounted read-only in production and would be baked into every image and pushed to GHCR on every deploy for nothing. Refusing to build."
+            echo "::error::.dockerignore no longer excludes public/downloads. Those two files (~110 MB) are bind-mounted read-only in production; without this line they would be copied into the build context and baked into the image on every deploy, on a 2-vCPU box, for nothing. Refusing to deploy."
             exit 1
           fi
           echo "Dockerfile and .dockerignore look right."
 
-      - name: Log in to GHCR
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GHCR_USER: ${{ github.actor }}
-        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
-
-      - name: Build and push restaurant_dashboard
-        id: build
-        env:
-          DOCKER_BUILDKIT: '1'
-          SHA: ${{ github.sha }}
-          NEXT_PUBLIC_BACKEND_URL: ${{ vars.NEXT_PUBLIC_BACKEND_URL }}
-          NEXT_PUBLIC_FEEDBACK_FORM_URL: ${{ vars.NEXT_PUBLIC_FEEDBACK_FORM_URL }}
-          BACKEND_INTERNAL_URL: ${{ vars.BACKEND_INTERNAL_URL }}
-        run: |
-          set -euo pipefail
-
-          # None of these is a secret — NEXT_PUBLIC_* ships to every browser by
-          # definition, and BACKEND_INTERNAL_URL is a compose service name. They
-          # are repository VARIABLES; treating them as secrets would buy nothing
-          # except a log full of ***.
-          if [ -z "${NEXT_PUBLIC_BACKEND_URL:-}" ]; then
-            echo "::error::variable NEXT_PUBLIC_BACKEND_URL is not set. It is baked into the client bundle at build time; an empty value ships a dashboard that cannot reach the API."
-            exit 1
-          fi
-          case "$NEXT_PUBLIC_BACKEND_URL" in
-            *localhost*|*127.0.0.1*)
-              echo "::error::NEXT_PUBLIC_BACKEND_URL is '$NEXT_PUBLIC_BACKEND_URL'. That value is baked into every browser bundle, and a guest's phone cannot resolve the server's localhost. Set the public origin."
-              exit 1 ;;
-          esac
-          INTERNAL="${BACKEND_INTERNAL_URL:-http://backend:3001}"
-
-          echo "NEXT_PUBLIC_BACKEND_URL=$NEXT_PUBLIC_BACKEND_URL"
-          echo "NEXT_PUBLIC_FEEDBACK_FORM_URL=${NEXT_PUBLIC_FEEDBACK_FORM_URL:-<unset: feedback defaults to same-origin>}"
-          echo "BACKEND_INTERNAL_URL=$INTERNAL"
-
-          cache=()
-          if docker pull -q "$DASHBOARD_REPO:main" >/dev/null 2>&1; then
-            cache=(--cache-from "$DASHBOARD_REPO:main")
-          fi
-
-          docker build \
-            --file Dockerfile \
-            --build-arg BUILDKIT_INLINE_CACHE=1 \
-            --build-arg "NEXT_PUBLIC_BACKEND_URL=$NEXT_PUBLIC_BACKEND_URL" \
-            --build-arg "NEXT_PUBLIC_FEEDBACK_FORM_URL=${NEXT_PUBLIC_FEEDBACK_FORM_URL:-}" \
-            --build-arg "BACKEND_INTERNAL_URL=$INTERNAL" \
-            "${cache[@]}" \
-            --label "org.opencontainers.image.revision=$SHA" \
-            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
-            --tag "$DASHBOARD_REPO:sha-$SHA" \
-            --tag "$DASHBOARD_REPO:main" \
-            .
-
-          docker push "$DASHBOARD_REPO:sha-$SHA"
-          docker push "$DASHBOARD_REPO:main"
-
-          DIGEST="$(docker image inspect "$DASHBOARD_REPO:sha-$SHA" --format '{{index .RepoDigests 0}}' | cut -d@ -f2)"
-          case "$DIGEST" in
-            sha256:*) ;;
-            *) echo "::error::could not resolve a registry digest (got '$DIGEST')"; exit 1 ;;
-          esac
-
-          echo "dashboard_digest=$DIGEST" >> "$GITHUB_OUTPUT"
-          {
-            echo "### Image built (not yet deployed — :prod still points elsewhere)"
-            echo
-            echo '```'
-            echo "$DASHBOARD_REPO@$DIGEST"
-            echo "NEXT_PUBLIC_BACKEND_URL=$NEXT_PUBLIC_BACKEND_URL"
-            echo "BACKEND_INTERNAL_URL=$INTERNAL"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
   # ---------------------------------------------------------------------------
-  # The only job that can see a secret. `environment: production` is what keeps
-  # the deploy key unreadable from a feature branch or a pull request.
+  # The only job that can see a secret.
+  #
+  # `environment: production` is what keeps the deploy key unreadable from a
+  # feature branch or a pull request, and the environment's deployment branches
+  # are restricted to `main`.
+  #
+  # It uses NO third-party actions: there is nothing to check out and nothing to
+  # log in to, so the supply chain of the job holding the production key is ssh,
+  # curl and the shell.
   # ---------------------------------------------------------------------------
   deploy:
     name: Deploy to production VPS
-    needs: build_push
+    # The `production` environment's deployment-branch rule already restricts
+    # this to `main`, but that rule lives in repository Settings where nobody
+    # reading this file can see it. State it here as well, so the branch
+    # restriction is self-evident in the pipeline itself and survives someone
+    # loosening the environment by accident.
+    if: github.ref == 'refs/heads/main'
+    # `preflight` already needs `ci`; naming both keeps the CI hard-gate visible
+    # in this job even if preflight is ever restructured.
+    needs: [ci, preflight]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # `next build` runs on the box now. 30 was sized for a registry pull.
+    timeout-minutes: 60
     environment: production
     permissions:
       contents: read
-      packages: write
     steps:
       - name: Configure SSH (host key pinned; never StrictHostKeyChecking=no)
         env:
@@ -247,11 +242,11 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${DEPLOY_SSH_KEY:-}" ]; then
-            echo "::error::secret DEPLOY_SSH_KEY is not set on the 'production' environment."
+            echo "::error::secret DEPLOY_SSH_KEY is not set on the 'production' environment. It is an ENVIRONMENT secret, not a repository secret — check Settings > Environments > production > Secrets, not Settings > Secrets."
             exit 1
           fi
           if [ -z "${SSH_KNOWN_HOSTS:-}" ]; then
-            echo "::error::variable SSH_KNOWN_HOSTS is not set. Refusing to connect without a pinned host key — disabling host verification would let anyone on the runner's network path collect the deploy key."
+            echo "::error::variable SSH_KNOWN_HOSTS is not set. Refusing to connect without a pinned host key. The alternative — StrictHostKeyChecking=no — would let anyone on the runner's network path present their own host key, take the session, and collect the deploy key. Set it from 'ssh-keyscan -p <port> <host>'."
             exit 1
           fi
           install -d -m 700 ~/.ssh
@@ -260,37 +255,45 @@ jobs:
           printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Log in to GHCR (needed to read and move the :prod tag)
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GHCR_USER: ${{ github.actor }}
-        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
-
-      - name: Move :prod, converge the dashboard, verify, roll back on failure
+      - name: Update the dashboard from git, prove it, verify, roll back on failure
+        id: deploy
         env:
           DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
           DEPLOY_USER: ${{ vars.DEPLOY_USER }}
           DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
-          PUBLIC_DASHBOARD_URL: ${{ vars.PUBLIC_DASHBOARD_URL }}
-          DASHBOARD_DIGEST: ${{ needs.build_push.outputs.dashboard_digest }}
           GIT_SHA: ${{ github.sha }}
         run: |
           set -uo pipefail
           # GitHub runs `run:` blocks as `bash -e {0}`, so errexit is ON unless it
           # is explicitly turned off — and `set -uo pipefail` does NOT turn it off.
-          # This whole step is built around inspecting exit codes (65 = pending
-          # migration, 64 = bad arguments, 255 = ssh transport). With errexit left
-          # on, the first `rd ...` that returns non-zero would kill the step before
-          # a single line of that handling ran, and every failure would surface as
-          # a bare "Process completed with exit code 65".
+          # This whole step is built around inspecting exit codes (64 grammar, 65
+          # pending migration, 127 forced command missing, 255 ssh transport). With
+          # errexit left on, the first `rd ...` that returns non-zero would kill
+          # the step before a single line of that handling ran, and every failure
+          # would surface as a bare "Process completed with exit code 65".
           set +e
           : "${DEPLOY_HOST:?variable DEPLOY_HOST is not set}"
           : "${DEPLOY_USER:?variable DEPLOY_USER is not set}"
+          : "${GIT_SHA:?github.sha is empty}"
+          : "${REVISION_KEY:?REVISION_KEY is not set (workflow env)}"
           PORT="${DEPLOY_PORT:-22}"
 
-          HEALTH_TIMEOUT=210     # Dockerfile start-period is 20s, plus pull, plus margin
+          HEALTH_TIMEOUT=240     # Dockerfile start-period is 20s, plus margin
           HEALTH_INTERVAL=6
+          PUBLIC_TIMEOUT=120     # the ingress can lag a container swap by seconds
+          PUBLIC_INTERVAL=6
+          SVC=dashboard
 
+          # -------------------------------------------------------------------
+          # The ONLY way this workflow talks to the box. Every call must be a
+          # sentence rd-entry's grammar accepts or it comes back 64. ssh itself
+          # returns 255 on a transport failure; that is not a wrapper exit code and
+          # must never be mistaken for one.
+          #
+          # ServerAlive* is new for the git transport: `update` now runs
+          # `next build` on the far end and can be quiet for minutes. 30s x 20
+          # tolerates ten minutes of silence before the client gives up.
+          # -------------------------------------------------------------------
           rd () {
             ssh -i ~/.ssh/id_deploy \
                 -o IdentitiesOnly=yes \
@@ -298,6 +301,8 @@ jobs:
                 -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
                 -o BatchMode=yes \
                 -o ConnectTimeout=20 \
+                -o ServerAliveInterval=30 \
+                -o ServerAliveCountMax=20 \
                 -p "$PORT" \
                 "$DEPLOY_USER@$DEPLOY_HOST" \
                 "$@"
@@ -311,65 +316,114 @@ jobs:
           # 127 is NOT one of rd-deploy's codes (64 / 65) and NOT ssh's transport
           # code (255). It is a LOGIN SHELL's "command not found": ssh
           # authenticated, got a session, and tried to run a program literally
-          # named `status` / `deploy` / `rollback`. That is what happens while the
-          # SSH forced command is not yet in place — either
-          # /home/deploy/.ssh/authorized_keys is missing its
-          # command="/usr/local/sbin/rd-entry" prefix, or rd-entry itself is
-          # absent or not executable. The wrapper is never reached, so nothing on
-          # the box was inspected and nothing was changed.
+          # named `status` / `revision` / `update`. That happens only when the SSH
+          # forced command is not in place — either
+          # /home/deploy/.ssh/authorized_keys has lost its
+          # command="/usr/local/sbin/rd-entry" prefix, or rd-entry itself is gone
+          # or not executable. The wrapper is never reached, so nothing on the box
+          # was inspected and nothing was changed.
           #
-          # It needs a case of its own EVERYWHERE an rd exit code is read.
-          # Without one it lands in a generic non-zero branch — reported here as
-          # a broken wrapper or, at the deploy call, as a PENDING MIGRATION,
-          # which sends someone hunting a migration that does not exist while the
-          # real fault is that the server side was never finished.
+          # The forced command was PROVEN installed with the real private key, so a
+          # 127 today is not an unfinished install — it is a CHANGE TO THE SECURITY
+          # BOUNDARY. Treat it as one.
+          #
+          # It needs a case of its own EVERYWHERE an rd exit code is read. Without
+          # one it lands in a generic non-zero branch and, at the update call site,
+          # gets printed under a PENDING MIGRATION heading — a flat misdiagnosis
+          # that sends someone hunting a migration that does not exist.
           not_installed () { # "<the rd sentence that came back 127>"
-            summary "## Deploy aborted — the deploy account is not locked down yet (exit 127)"
+            summary "## Deploy aborted — the forced command is not in place (exit 127)"
             summary ""
             summary "\`ssh $DEPLOY_USER@$DEPLOY_HOST $1\` returned **127 = command not found**. That is"
-            summary "the login shell's exit code, not one of \`rd-deploy\`'s: the SSH forced command is"
-            summary "not installed, so sshd ran \`$1\` as a program name and no such program exists."
+            summary "the login shell's exit code, not one of \`rd-deploy\`'s: sshd ran \`$1\` as a"
+            summary "program name because no forced command replaced it, and no such program exists."
             summary ""
-            summary "**Nothing is known about migrations or about the stack from this run** — the"
-            summary "question was never asked. Nothing on the box was changed."
+            summary "**Nothing was inspected and nothing was changed on the box.**"
             summary ""
-            summary "Finish the server side, as root on the VPS (the installer lives in the BACKEND"
-            summary "repo):"
+            summary "This is not an unfinished install. The forced command was proven working from a"
+            summary "workstation with the real private key. Something has since removed or rewritten"
+            summary "it, which means the blast radius of \`DEPLOY_SSH_KEY\` may currently be a shell"
+            summary "account on a box holding live restaurant data. **Check that first, then fix.**"
             summary ""
-            summary '```sh'
-            summary "scp -r Restaurant_Backend/deploy/vps root@<host>:/tmp/rd-vps"
-            summary "ssh root@<host> 'bash /tmp/rd-vps/install.sh /tmp/rd-vps/ci-deploy.pub'"
-            summary '```'
-            summary ""
-            summary "Then prove it from your workstation before re-running this workflow:"
+            summary "On the VPS, as root:"
             summary ""
             summary '```sh'
-            summary "ssh -i ci-deploy $DEPLOY_USER@<host> status     # should print compose ps"
-            summary "ssh -i ci-deploy $DEPLOY_USER@<host>            # MUST be refused (no shell)"
+            summary "grep -n 'rd-entry' /home/deploy/.ssh/authorized_keys   # expect ONE restrict,command= line"
+            summary "stat -c '%U:%G %a' /usr/local/sbin/rd-entry            # expect root:root 755"
+            summary "sudo -u deploy sudo -n /usr/local/sbin/rd-deploy status"
             summary '```'
             summary ""
-            summary "If the forced command IS installed, then \`rd-deploy\` itself hit a missing binary"
-            summary "inside the wrapper — run \`sudo -n /usr/local/sbin/rd-deploy status\` on the box."
+            summary "Then re-prove it from a workstation before re-running this workflow:"
+            summary ""
+            summary '```sh'
+            summary "ssh -i ci-deploy $DEPLOY_USER@$DEPLOY_HOST revision   # should print one line per repo"
+            summary "ssh -i ci-deploy $DEPLOY_USER@$DEPLOY_HOST            # MUST be refused (no shell)"
+            summary '```'
             summary ""
             summary "See \`Restaurant_Backend/deploy/vps/README.md\`, *The exact authorized_keys line*."
           }
 
-          tag_digest () {
-            local d
-            d="$(docker buildx imagetools inspect "$1:$PROD_TAG" --format '{{.Manifest.Digest}}' 2>/dev/null || true)"
-            case "$d" in
-              sha256:*) printf '%s' "$d" ;;
-              *) printf '' ;;
-            esac
-          }
-          point_tag () {
-            echo "  $1:$PROD_TAG -> $2"
-            docker buildx imagetools create --tag "$1:$PROD_TAG" "$1@$2"
+          # ---- exit 64 --------------------------------------------------------
+          # EX_USAGE, from EITHER rd-entry or rd-deploy: this workflow sent a
+          # sentence the grammar does not accept. That is A BUG IN THIS FILE, not a
+          # fault on the box, and nothing there was changed. Re-running cannot fix
+          # it.
+          grammar_bug () { # "<sentence sent>" <capture-file>
+            summary "## Deploy aborted — the wrapper rejected the command (exit 64)"
+            summary ""
+            summary "This workflow sent \`$1\`, and the grammar refused it. Exit 64 is EX_USAGE and it"
+            summary "is **a pipeline bug, not an application failure**. Nothing on the box changed."
+            summary ""
+            summary "What came back:"
+            block "$2"
+            summary "The accepted grammar, as installed:"
+            summary ""
+            summary '```'
+            summary "rd-deploy   status | revision | check-migrations        (no service argument)"
+            summary "            logs [backend|dashboard|python]"
+            summary "            update|deploy|rollback <backend|dashboard|python>"
+            summary ""
+            summary "rd-entry    the same, MINUS valkey anywhere and MINUS a bare"
+            summary "            update/deploy/rollback. It is never wider than the wrapper."
+            summary '```'
+            summary ""
+            summary "See \`Restaurant_Backend/deploy/vps/WRAPPER_CONTRACT.md\` and \`.../rd-entry\`."
+            fail 64 "EXIT 64 = BAD ARGUMENTS. This workflow sent '$1', which neither rd-entry nor rd-deploy accepts. It is a bug in .github/workflows/deploy.yml — re-running will not help. Nothing on the box was changed. The accepted grammar is in the job summary."
           }
 
+          # =====================================================================
+          # PARSERS. Kept byte-identical to the backend repo's deploy.yml, where
+          # deploy/vps/tests/test_status_parser.sh extracts and tests them against
+          # captured fixtures, and where ci.yml runs that script. If you change one,
+          # change both — nothing in THIS repository tests these.
+          # =====================================================================
           svc_line () { grep -E "(^|[[:space:]])$1([[:space:]]|\$)" "$2" | head -n1 || true; }
 
+          # `rd-deploy revision` prints one "<repo-dir><TAB><40-char sha>" line per
+          # repo. Default awk field splitting handles both the tab the wrapper
+          # emits today and any future column padding. Prints NOTHING when the key
+          # is absent — callers must treat that as "no answer", never as "no
+          # change".
+          rev_of () { # <repo-dir-name> <file>
+            awk -v k="$1" '$1 == k { print $2; exit }' "$2"
+          }
+
           # 0 healthy | 1 still starting | 2 definitely broken | 3 absent
+          #
+          # `Created` is 2. It used to fall through to the catch-all and be read as
+          # "still starting", which is wrong in both directions: a created
+          # container has never been started, so no amount of waiting turns it
+          # healthy, and `wait_healthy` spent its whole HEALTH_TIMEOUT on it before
+          # giving up. `up -d` starts what it creates, so a service still sitting
+          # in `Created` after `update` returned 0 is a service that could not be
+          # started.
+          #
+          # THE THREE NO-DURATION STATES — Restarting, Exited, Created — ARE
+          # RECOGNISED, NOT UNREADABLE, and that distinction is load-bearing in
+          # `assert_recreated`. "It has no uptime because it is not up" is an
+          # observation. "I do not understand this line" is not. Reporting the
+          # first as the second is how a crash-looping deploy came to be announced
+          # as a deploy that never happened.
           svc_verdict () {
             local line
             line="$(svc_line "$1" "$2")"
@@ -378,37 +432,117 @@ jobs:
               *"(unhealthy)"*)                return 2 ;;
               *Restarting*|*restarting*)      return 2 ;;
               *Exit*|*exited*|*Dead*|*dead*)  return 2 ;;
+              *Created*|*created*)            return 2 ;;
               *"(healthy)"*)                  return 0 ;;
               *"health: starting"*)           return 1 ;;
-              *Up*|*running*)                 return 0 ;;
+              *Up*|*running*)                 return 0 ;;   # no HEALTHCHECK declared
               *)                              return 1 ;;
             esac
           }
 
+          # Docker's HumanDuration vocabulary, IN FULL, converted to seconds.
+          # Prints nothing and returns 1 when the line carries no duration this
+          # understands; callers must treat that as "no answer" and fail closed.
+          #
+          #     Less than a second | 1 second | N seconds | About a minute |
+          #     N minutes | About an hour | N hours | N days | N weeks |
+          #     N months | N years
+          #
+          # Completeness is the point. `Up About an hour` — docker's wording for a
+          # container between 60 and 90 minutes old — was NOT in the previous
+          # regex, and `rd-deploy status` on the live box prints it today:
+          #
+          #     backend<TAB>Up 32 hours (healthy)
+          #     dashboard<TAB>Up About an hour (healthy)
+          #     python<TAB>Up 46 hours (healthy)
+          #     valkey<TAB>Up 46 hours (healthy)
+          #
+          # `N years` was missing too. Every unlisted wording used to land in a
+          # branch that switched the recreation proof off and returned success.
+          uptime_secs () { # <a line from `rd-deploy status`>
+            local l="${1:-}" n u
+            case "$l" in
+              *"Up Less than a second"*) printf '%s\n' 0    ; return 0 ;;
+              *"Up About a minute"*)     printf '%s\n' 60   ; return 0 ;;
+              *"Up About an hour"*)      printf '%s\n' 3600 ; return 0 ;;
+            esac
+            n="$(printf '%s' "$l" | sed -nE 's/.*Up ([0-9]+) (second|minute|hour|day|week|month|year)s?.*/\1/p')"
+            u="$(printf '%s' "$l" | sed -nE 's/.*Up [0-9]+ (second|minute|hour|day|week|month|year)s?.*/\1/p')"
+            [ -n "$n" ] && [ -n "$u" ] || return 1
+            case "$u" in
+              second) printf '%s\n' "$n" ;;
+              minute) printf '%s\n' "$(( n * 60 ))" ;;
+              hour)   printf '%s\n' "$(( n * 3600 ))" ;;
+              day)    printf '%s\n' "$(( n * 86400 ))" ;;
+              week)   printf '%s\n' "$(( n * 604800 ))" ;;
+              month)  printf '%s\n' "$(( n * 2592000 ))" ;;
+              year)   printf '%s\n' "$(( n * 31536000 ))" ;;
+              *)      return 1 ;;
+            esac
+          }
+
+          # The wrapper's TWO rollback outcomes, matched on the sentences it
+          # actually prints (deploy/vps/WRAPPER_CONTRACT.md, `rollback`):
+          #
+          #   restored restaurant-dash-<svc>:previous
+          #   WARNING: no previous image for '<svc>' — recreating the CURRENT image, code is NOT reverted
+          #
+          # The detector these replace was `grep -i warn` AND `grep -iE
+          # 'previous|not revert'`. BOTH halves are satisfied by a rollback that
+          # WORKED: docker compose v2 prints `WARN[0000] ...` on essentially every
+          # invocation, and the success sentence contains the word "previous". So a
+          # rollback that had genuinely restored the previous image and brought
+          # production back was reported as exit 74, "the code was NOT reverted".
+          #
+          # THAT FALSE POSITIVE IS THE LIKELY DIRECTION, not the false negative:
+          # every service that has ever been through `update` on this box HAS a
+          # :previous image, so the successful rollback is the common case and the
+          # old detector fired on all of them. The false negative — a genuinely
+          # absent :previous going unnoticed — needs someone to reword the wrapper
+          # first, and the captured output is in the summary either way.
+          #
+          # Deliberately case-SENSITIVE so `WARN[0000]` cannot match, and matched on
+          # ASCII-only fragments so the em dash in the wrapper's sentence cannot
+          # break this on a differently-encoded capture.
+          noprev_warned () { # <capture-file>
+            grep -qE 'no previous image for|code is NOT reverted' "$1"
+          }
+          restored_previous () { # <capture-file> <svc>
+            grep -qF "restored restaurant-dash-$2:previous" "$1"
+          }
+
           wait_healthy () {
             local deadline=$(( SECONDS + HEALTH_TIMEOUT )) svc rc all_ok src
+            # Whether the LAST `rd status` this function ran produced a REAL
+            # snapshot. status.txt is read as evidence after this returns, and a
+            # FAILED capture holds ssh's error text rather than the wrapper's
+            # output — parsing that as a status listing gives every service
+            # verdict 3 and lets a summary describe services nobody looked at.
+            # Global on purpose: the callers need it.
+            HEALTH_LAST_OK=0
             while [ "$SECONDS" -lt "$deadline" ]; do
               rd status > status.txt 2>&1; src=$?
               if [ "$src" -ne 0 ]; then
                 # 127 is the login shell, not the wrapper. Retrying for
-                # HEALTH_TIMEOUT seconds cannot make an uninstalled forced
-                # command appear, and burning the whole budget on it hides the
-                # cause behind a "did not become healthy" timeout.
+                # HEALTH_TIMEOUT seconds cannot make an absent forced command
+                # appear, and burning the whole budget on it hides the cause
+                # behind a "did not become healthy" timeout.
                 if [ "$src" -eq 127 ]; then
-                  echo "  'status' came back 127 (command not found): the SSH forced command is not installed, so polling can never succeed. Not retrying."
+                  echo "  'status' came back 127 (command not found): the forced command is not in place, so polling can never succeed. Not retrying."
                   sed -n '1,40p' status.txt
                   return 1
                 fi
                 echo "  (status call failed with $src; retrying)"
                 sleep "$HEALTH_INTERVAL"; continue
               fi
+              HEALTH_LAST_OK=1
               all_ok=1
               for svc in "$@"; do
                 svc_verdict "$svc" status.txt; rc=$?
                 case "$rc" in
                   0) ;;
                   2) echo "  service '$svc' is broken:"; sed -n '1,40p' status.txt; return 1 ;;
-                  3) echo "  service '$svc' is not in 'compose ps' at all:"; sed -n '1,40p' status.txt; return 1 ;;
+                  3) echo "  service '$svc' is not in 'status' at all:"; sed -n '1,40p' status.txt; return 1 ;;
                   *) all_ok=0 ;;
                 esac
               done
@@ -420,238 +554,1061 @@ jobs:
             return 1
           }
 
-          assert_recreated () {
-            local line n unit
-            line="$(svc_line "$1" "$2")"
-            if ! printf '%s' "$line" | grep -qE 'Up (Less than a second|About a minute|[0-9]+ (second|minute|hour|day|week|month)s?)'; then
-              echo "::warning::could not parse an uptime for '$1' out of 'compose ps'; skipping the recreation assertion."
+          # THE RECREATION PROOF, derived from CHANGE and never from absolute age.
+          #
+          # It takes TWO snapshots: `rd-deploy status` from before the first
+          # `update`, and `rd-deploy status` from after the last one. A container
+          # that was not replaced can only get OLDER between them; one that WAS
+          # replaced starts again from zero. The signal is the RESET, which is
+          # immune both to a slow build and to whatever wording docker picks.
+          #
+          # What it replaces: "the container must report an uptime of five minutes
+          # or less". That is an absolute age, and it was measured AFTER
+          # `update backend` returned — while `update` runs `tsc` and a docker
+          # build on 2 vCPUs next to live traffic, which is exactly why this file
+          # sets `timeout-minutes: 60`. A build that took six minutes red-lighted a
+          # deploy that had worked.
+          #
+          # FOUR ANSWERS. The previous version had two, and folding the third into
+          # "not recreated" shipped a worse bug than the one that fold fixed: a
+          # container CRASH-LOOPING on the new image scored "not recreated", hit
+          # the exit-72 gate ahead of the health and rollback section, and produced
+          # a run with rollback_calls=0, no logs collected, and a summary stating
+          # that no new image had reached production — while production was
+          # crash-looping on the commit just shipped.
+          #
+          #   0  RECREATED. The uptime reset — or the service was not up before and
+          #      is up now, which is a start rather than a survivor.
+          #   1  MEASURED NOT RECREATED. Both readings parsed and the uptime did
+          #      not reset. THE ONLY ANSWER that entitles a caller to say the image
+          #      was not replaced.
+          #   2  REPLACED AND BROKEN. The after line is a RECOGNISED not-running
+          #      state — Restarting, Exited, Created, Dead. It carries no duration
+          #      because it is not up. The caller must route this into the
+          #      health-failure path: collect logs, roll the image back, verify.
+          #   3  CANNOT BE TOLD. The service is absent from the after snapshot, or
+          #      its line is in a format neither uptime_secs nor svc_verdict
+          #      recognises. Fails closed, and the caller must say "I could not
+          #      measure" — never "nothing changed".
+          #
+          # An assertion that opts itself out when it cannot see is not an
+          # assertion. An assertion that files a recognised failure under "cannot
+          # read" is worse, because it sounds like nothing happened.
+          assert_recreated () { # <svc> <status-BEFORE-file> <status-AFTER-file>
+            local svc="$1" b a bs as vrc
+            b="$(svc_line "$svc" "$2")"
+            a="$(svc_line "$svc" "$3")"
+            if [ -z "$a" ]; then
+              echo "::error::service '$svc' does not appear in 'rd-deploy status' after the update at all, so nothing about it can be proven — neither that it was recreated nor that it was left alone."
+              return 3
+            fi
+            as="$(uptime_secs "$a")" || as=""
+            if [ -z "$as" ]; then
+              svc_verdict "$svc" "$3"; vrc=$?
+              if [ "$vrc" -eq 2 ]; then
+                # RECOGNISED, NOT UNREADABLE. Restarting / Exited / Created / Dead
+                # carry no duration for the same reason they are broken: nothing is
+                # up to have been up for a while.
+                echo "::error::service '$svc' is '$a' after the update — a RECOGNISED not-running state. It carries no uptime because it is not running, which is an observation and not a parse failure. Treated as REPLACED AND BROKEN: logs get collected and the image gets rolled back."
+                return 2
+              fi
+              # FAIL CLOSED, and only here. The branch this replaces printed a
+              # ::warning:: and `return 0` — one unrecognised duration silently
+              # switched half the proof off and the run went green. `Up About an
+              # hour` is on the box right now, so that was live, not theoretical.
+              echo "::error::could not read an uptime for '$svc' out of 'rd-deploy status' (line: '$a'), and svc_verdict does not recognise the state either. The recreation proof cannot run, so it fails closed — this run does NOT know whether '$svc' was replaced. Fix uptime_secs()/svc_verdict() and re-capture deploy/vps/tests/fixtures/."
+              return 3
+            fi
+            bs="$(uptime_secs "$b")" || bs=""
+            if [ -z "$bs" ]; then
+              # The AFTER line parsed, so the vocabulary is understood and this is
+              # not a format change: the BEFORE line simply was not an "Up ..."
+              # line — the service was absent, Restarting, Exited or Created. It
+              # was not running before and is running now, which is a start, not a
+              # survivor. Refusing here would red-light the deploy that FIXES a
+              # crash-looping service, which is the deploy that matters most.
               return 0
             fi
-            if printf '%s' "$line" | grep -qE 'Up (Less than a second|[0-9]+ seconds?|About a minute)'; then
-              return 0
-            fi
-            n="$(printf '%s' "$line" | sed -nE 's/.*Up ([0-9]+) (second|minute|hour|day|week|month)s?.*/\1/p')"
-            unit="$(printf '%s' "$line" | sed -nE 's/.*Up [0-9]+ (second|minute|hour|day|week|month)s?.*/\1/p')"
-            if [ "$unit" = minute ] && [ -n "$n" ] && [ "$n" -le 5 ]; then return 0; fi
-            echo "::error::service '$1' reports '$(printf '%s' "$line" | grep -oE 'Up [^(]*')' — it was NOT recreated by this deploy."
-            echo "::error::Almost certainly /opt/restaurant-dash/docker-compose.yml is missing 'pull_policy: always' on the dashboard service, so 'docker compose up -d' reused the image already on disk and your new code did not ship. See Restaurant_Backend/deploy/vps/README.md, 'Switch compose to follow the :prod tag'."
+            if [ "$as" -lt "$bs" ]; then return 0; fi
+            echo "::error::service '$svc' was NOT recreated by this deploy: its uptime did not reset (before '$b' = ${bs}s, after '$a' = ${as}s). A container that is not replaced can only get older."
             return 1
           }
 
-          # ====================================================================
-          # 1. Precondition: never deploy the dashboard onto a sick backend.
+          # Public probe through the real ingress. Retried, because one curl from a
+          # GitHub runner is not evidence of an outage.
+          wait_public () { # <url>
+            local deadline=$(( SECONDS + PUBLIC_TIMEOUT )) code
+            while [ "$SECONDS" -lt "$deadline" ]; do
+              code="$(curl -sS -o public-body.txt -w '%{http_code}' --max-time 15 "$1" 2>public-err.txt)"
+              case "${code:-000}" in
+                2*) echo "  $1 -> $code"; return 0 ;;
+              esac
+              echo "  $1 -> ${code:-no response} (retrying)"
+              [ -s public-err.txt ] && sed -n '1,2p' public-err.txt
+              sleep "$PUBLIC_INTERVAL"
+            done
+            return 1
+          }
+
+          # =====================================================================
+          # 0. BASELINE. Read the deployed revision BEFORE anything moves. It is
+          #    half of the proof at the end, and the only way to tell "the box was
+          #    already on this commit" from "the update did nothing".
+          # =====================================================================
+          echo "== rd-deploy revision (before)"
+          rd revision > rev-before.txt 2>&1
+          rrc=$?
+          cat rev-before.txt
+          case "$rrc" in
+            0) ;;
+            255)
+              summary "### SSH transport failure"; block rev-before.txt
+              fail 1 "could not reach $DEPLOY_USER@$DEPLOY_HOST:$PORT (ssh exit 255 — a transport failure, NOT a wrapper code). Nothing was deployed and the box was not modified."
+              ;;
+            127)
+              not_installed "revision"
+              summary "What came back instead:"; block rev-before.txt
+              fail 127 "EXIT 127 = COMMAND NOT FOUND — not a wrapper code and NOT a pending migration. The SSH forced command (/usr/local/sbin/rd-entry) did not run, so 'revision' was executed as a shell command. The wrapper was never reached and nothing was changed. This is a change to the security boundary, not an unfinished install — see the job summary."
+              ;;
+            64)
+              grammar_bug "revision" rev-before.txt
+              ;;
+            *)
+              summary "### 'rd-deploy revision' exited $rrc"; block rev-before.txt
+              fail "$rrc" "'rd-deploy revision' exited $rrc before anything was deployed. Nothing was changed on the box. Its output is in the job summary."
+              ;;
+          esac
+
+          BEFORE_REV="$(rev_of "$REVISION_KEY" rev-before.txt)"
+          if ! printf '%s' "$BEFORE_REV" | grep -qE '^[0-9a-f]{40}$'; then
+            # Fail CLOSED. Half of the "did this actually ship" proof is missing,
+            # and a deploy that cannot be proven is exactly what this design
+            # refuses to report as success.
+            summary "## Refusing to deploy — cannot read the deployed revision"
+            summary ""
+            summary "\`rd-deploy revision\` returned 0 but no 40-character SHA could be read for"
+            summary "\`$REVISION_KEY\`. This workflow proves a deploy happened by comparing that value"
+            summary "to \`github.sha\`; without it a green run would mean nothing."
+            summary ""
+            summary "Expected one line per repo, \`<repo-dir><TAB><40-char sha>\`. What came back:"
+            block rev-before.txt
+            summary "Either the wrapper's output format changed, or the clone directory is no longer"
+            summary "named \`$REVISION_KEY\` (workflow env \`REVISION_KEY\`, this file). Nothing was"
+            summary "deployed and the box was not modified."
+            fail 72 "Could not read the deployed revision for '$REVISION_KEY' — refusing to deploy blind. Nothing was changed on the box. Either 'rd-deploy revision' changed format or REVISION_KEY no longer matches the clone directory. See the job summary."
+          fi
+          echo "deployed revision before this run: $BEFORE_REV"
+          echo "this run is deploying:            $GIT_SHA"
+
+          # =====================================================================
+          # 1. PRECONDITION: never deploy the dashboard onto a sick backend —
+          #    and, since this is the only `status` read taken before anything
+          #    moves, THE BASELINE SNAPSHOT FOR THE RECREATION PROOF.
           #
-          # The dashboard proxies /backend-api to it, so deploying onto a broken
-          # backend makes your own regression indistinguishable from a
-          # pre-existing outage. This is also the ONLY cross-repo interlock that
-          # exists: it catches a backend that is currently down or mid-restart.
-          # It does NOT catch a backend deploy that is healthy right now and about
-          # to swap. See the README for that residual risk.
-          # ====================================================================
+          #    `pre.txt` is load-bearing twice over now. Step 4 decides that the
+          #    container was replaced by comparing its uptime here with its uptime
+          #    after `update`, and looking for the reset. Every failure path below
+          #    already refuses the deploy outright, which is the right behaviour
+          #    for both jobs: without this file the deploy could not be proven,
+          #    and refusing here leaves the box completely untouched.
+          #
+          #    The dashboard proxies /backend-api to it, so deploying onto a broken
+          #    backend makes your own regression indistinguishable from a
+          #    pre-existing outage — and would send this run down the rollback path
+          #    for something a dashboard rollback cannot fix.
+          #
+          #    This is the ONLY cross-repo interlock that exists. It catches a
+          #    backend that is down, restarting or mid-swap. It does NOT catch a
+          #    backend that is healthy right now and swaps a second later. See the
+          #    README, "Cross-repo ordering", for that residual risk.
+          # =====================================================================
           echo "== rd-deploy status (precondition)"
           rd status > pre.txt 2>&1
           src=$?
           cat pre.txt
-          if [ "$src" -eq 255 ]; then
-            summary "### SSH transport failure"; block pre.txt
-            fail 1 "could not reach $DEPLOY_USER@$DEPLOY_HOST:$PORT. Nothing was deployed."
-          fi
-          if [ "$src" -eq 127 ]; then
-            # MUST stay above the generic branch below: "'rd-deploy status'
-            # exited 127" reads as a broken wrapper, when in fact the wrapper was
-            # never reached. :prod has not moved yet, so there is nothing to
-            # restore here.
-            not_installed "status"
-            summary "What came back instead:"
-            block pre.txt
-            fail 127 "EXIT 127 = COMMAND NOT FOUND. The SSH forced command (/usr/local/sbin/rd-entry) is not installed on $DEPLOY_HOST, so 'status' was run as a shell command and no such program exists. The wrapper was never reached. Nothing was deployed and :prod was not moved. See the job summary."
-          fi
-          if [ "$src" -ne 0 ]; then
-            summary "### Precondition failed — 'rd-deploy status' exited $src"; block pre.txt
-            fail "$src" "'rd-deploy status' exited $src. Nothing was deployed."
-          fi
-          svc_verdict backend pre.txt; brc=$?
-          if [ "$brc" -ne 0 ]; then
-            summary "### Precondition failed — the backend is not healthy"; block pre.txt
-            fail 69 "The backend service is not healthy right now, so this deploy was refused. The dashboard proxies /backend-api to it; deploying onto a sick backend would make a regression here indistinguishable from a pre-existing outage. Fix or roll back the backend first. Nothing was deployed and :prod was not moved."
-          fi
-
-          # ====================================================================
-          # 2. Move the deployment pointer.
-          # ====================================================================
-          PREV_DASHBOARD="$(tag_digest "$DASHBOARD_REPO")"
-          FIRST_RUN=0
-          if [ -z "$PREV_DASHBOARD" ]; then FIRST_RUN=1; fi
-          echo "previous :prod  dashboard=${PREV_DASHBOARD:-<none>}"
-          echo "new             dashboard=$DASHBOARD_DIGEST"
-
-          restore_tags () {
-            if [ "$FIRST_RUN" -eq 1 ]; then
-              echo "No previous :prod digest existed — nothing to restore."
-              return 0
-            fi
-            echo "Restoring :prod to the previous digest."
-            point_tag "$DASHBOARD_REPO" "$PREV_DASHBOARD" || return 1
-          }
-
-          echo "== moving the :prod tag"
-          if ! point_tag "$DASHBOARD_REPO" "$DASHBOARD_DIGEST"; then
-            fail 1 "could not move $DASHBOARD_REPO:$PROD_TAG. Nothing was deployed."
-          fi
-
-          # ====================================================================
-          # 3. Converge only the dashboard service. Never a bare `deploy`, which
-          #    would be `compose up -d` across the whole stack, backend included.
-          # ====================================================================
-          echo "== rd-deploy deploy dashboard"
-          rd deploy dashboard > deploy-dashboard.txt 2>&1
-          prc=$?
-          cat deploy-dashboard.txt
-
-          case "$prc" in
+          case "$src" in
             0) ;;
-            127)
-              # ABOVE 65 ON PURPOSE. An uninstalled forced command is not a
-              # migration, and 127 must never be rendered as one. Normally the
-              # precondition status call above catches this first; this case
-              # exists so that EVERY site reading an rd exit code names 127.
-              restore_tags || true
-              not_installed "deploy dashboard"
-              summary "What came back instead:"
-              block deploy-dashboard.txt
-              fail 127 "EXIT 127 = COMMAND NOT FOUND — NOT a pending migration and NOT a wrapper refusal. The SSH forced command (/usr/local/sbin/rd-entry) is not installed on $DEPLOY_HOST. :prod restored; nothing was deployed. See the job summary."
+            255)
+              summary "### SSH transport failure"; block pre.txt
+              fail 1 "could not reach $DEPLOY_USER@$DEPLOY_HOST:$PORT (ssh exit 255). Nothing was deployed."
               ;;
-            65)
-              # This repo ships no SQL, so a 65 here means the DATABASE has a
-              # migration pending from the backend repo that nobody applied. The
-              # wrapper gates every deploy, not only backend ones.
-              #
-              # Unlike the backend workflow, restoring first is harmless here:
-              # the tag this restores is the DASHBOARD image, and
-              # `check-migrations` inspects the backend image, which this
-              # workflow never re-points. Order is kept anyway so both files
-              # read the same way.
-              summary "## Deploy refused by the server — pending migration"
-              summary ""
-              summary "\`rd-deploy deploy dashboard\` exited 65. This repo ships no SQL, so the pending"
-              summary "migration came from **Restaurant_Backend** and has not been applied. The wrapper"
-              summary "gates every deploy, not only backend ones."
-              rd check-migrations > migrations.txt 2>&1
-              m2rc=$?
-              summary ""
-              summary "\`rd-deploy check-migrations\`:"; block migrations.txt
-              if [ "$m2rc" -eq 127 ]; then not_installed "check-migrations"; fi
-              restore_tags || true
-              summary "Nothing was deployed; \`:prod\` restored. Apply the migration as root on the VPS"
-              summary "(see \`Restaurant_Backend/deploy/vps/README.md\`, *Applying a migration*), then"
-              summary "re-run this workflow from the Actions tab."
-              fail 65 "PENDING MIGRATION (server gate, exit 65) — nothing deployed, :prod restored. The migration is from the BACKEND repo; its name and the command to apply it are in the job summary."
+            127)
+              not_installed "status"
+              summary "What came back instead:"; block pre.txt
+              fail 127 "EXIT 127 = COMMAND NOT FOUND. The forced command did not run, so 'status' was executed as a shell command. The wrapper was never reached and nothing was deployed. See the job summary."
               ;;
             64)
-              restore_tags || true
-              fail 64 "The wrapper rejected the command (exit 64 = bad arguments). This is a pipeline bug, not an app failure: this workflow sent a sentence the grammar does not accept. rd-deploy accepts status | logs [svc] | check-migrations | deploy [svc] | rollback [svc] with svc in backend|dashboard|python|valkey, and the rd-entry forced command in front of it is deliberately NARROWER: no valkey, and deploy/rollback must name a service. See Restaurant_Backend/deploy/vps/rd-entry and .../WRAPPER_CONTRACT.md."
-              ;;
-            255)
-              restore_tags || true
-              fail 1 "SSH transport failure during the deploy call. The dashboard may or may not have converged — run 'rd-deploy status' on the box before re-running."
+              grammar_bug "status" pre.txt
               ;;
             *)
-              restore_tags || true
-              summary "### Deploy call failed — exit $prc"; block deploy-dashboard.txt
-              fail "$prc" "'rd-deploy deploy dashboard' exited $prc. :prod restored. See the job summary."
+              # 72, AND THE SAME SUMMARY THE BACKEND WORKFLOW GIVES. This used to
+              # `fail "$src"` — the RAW wrapper code — so a `status` that came back
+              # 3 exited the whole job 3, a number that means nothing in this
+              # pipeline's vocabulary and collides with nothing documented. Worse,
+              # the one-line summary said only "Precondition failed", which hides
+              # the more important half: pre.txt is ALSO the baseline snapshot of
+              # the recreation proof, so losing it means the deploy could not have
+              # been proven even if it had run.
+              summary "## Refusing to deploy — the baseline status snapshot could not be taken"
+              summary ""
+              summary "\`rd-deploy status\` exited $src **before anything was touched**. That snapshot"
+              summary "does two jobs here and both are lost: it is the precondition check that the"
+              summary "backend is healthy before the dashboard is deployed onto it, and it is half of"
+              summary "the recreation proof — this run decides that the container was replaced by"
+              summary "comparing its uptime before the update with its uptime after, and looking for"
+              summary "the reset. With no *before*, there is nothing to compare, and a deploy that"
+              summary "cannot be proven is precisely what this pipeline refuses to report as success."
+              summary ""
+              summary "What came back:"
+              block pre.txt
+              summary "Nothing was deployed. The working tree, the container and the database are all"
+              summary "exactly as they were."
+              fail 72 "Could not take the baseline 'rd-deploy status' snapshot (exit $src) — refusing to deploy blind. That snapshot is both the backend-health precondition and half of the recreation proof. Nothing was changed on the box."
               ;;
           esac
 
-          # ====================================================================
-          # 4. Verify.
-          # ====================================================================
-          echo "== verifying"
-          rd status > status0.txt 2>&1 || true
-          cat status0.txt
-
-          HEALTHY=0
-          if assert_recreated dashboard status0.txt && wait_healthy dashboard; then
-            HEALTHY=1
+          svc_verdict backend pre.txt; brc=$?
+          if [ "$brc" -ne 0 ]; then
+            summary "### Precondition failed — the backend is not healthy"
+            summary ""
+            summary "\`rd-deploy status\`:"; block pre.txt
+            summary "The dashboard proxies \`/backend-api\` to the backend service. Deploying onto a"
+            summary "sick backend would make a regression in this release indistinguishable from a"
+            summary "pre-existing outage, and would push this run into a rollback that could not have"
+            summary "fixed it anyway. Fix or roll back the **backend** first."
+            summary ""
+            summary "Nothing was deployed; the working tree on the box is untouched at"
+            summary "\`$BEFORE_REV\`."
+            fail 69 "PRECONDITION FAILED: the backend service is not healthy right now, so this dashboard deploy was refused. Nothing was deployed and the box's working tree was not moved. Fix or roll back the backend first, then re-run."
           fi
 
-          if [ "$HEALTHY" -eq 1 ] && [ -n "${PUBLIC_DASHBOARD_URL:-}" ]; then
-            if code="$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 20 "$PUBLIC_DASHBOARD_URL" 2>/dev/null)"; then
-              echo "public probe $PUBLIC_DASHBOARD_URL -> $code"
+          # =====================================================================
+          # 2. Ask about migrations BEFORE the working tree moves.
+          #
+          #    This repo ships no SQL, but the wrapper gates EVERY `update`, so a
+          #    migration left unapplied by a BACKEND release refuses this deploy
+          #    too. Asking here means that refusal lands while this repo's working
+          #    tree is still untouched, instead of after `update` has already
+          #    reset it. `check-migrations` applies nothing.
+          # =====================================================================
+          echo "== rd-deploy check-migrations"
+          rd check-migrations > migrations-pre.txt 2>&1
+          mrc=$?
+          cat migrations-pre.txt
+          case "$mrc" in
+            0) ;;
+            255)
+              summary "### SSH transport failure"; block migrations-pre.txt
+              fail 1 "could not reach $DEPLOY_USER@$DEPLOY_HOST:$PORT (ssh exit 255). Nothing was deployed and the box was not modified."
+              ;;
+            127)
+              # MUST stay above the generic branch below, which announces a
+              # PENDING MIGRATION. 127 means the question was never asked.
+              not_installed "check-migrations"
+              summary "What came back instead:"; block migrations-pre.txt
+              fail 127 "EXIT 127 = COMMAND NOT FOUND — NOT a pending migration. The forced command did not run. Nothing is known about migrations from this run and nothing was changed. See the job summary."
+              ;;
+            64)
+              grammar_bug "check-migrations" migrations-pre.txt
+              ;;
+            *)
+              summary "## Deploy refused — the database has pending migration(s)"
+              summary ""
+              summary "\`rd-deploy check-migrations\` exited $mrc **before anything was touched**. This"
+              summary "repo ships no SQL, so the pending migration is from **Restaurant_Backend** and"
+              summary "has not been applied. Its output:"
+              block migrations-pre.txt
+              summary "Nothing was deployed. This repo's working tree on the box is untouched at"
+              summary "\`$BEFORE_REV\`."
+              summary ""
+              summary "Apply it as root on the VPS — see \`Restaurant_Backend/deploy/vps/README.md\`,"
+              summary "*Applying a migration* — confirm \`check-migrations\` comes back clean, then"
+              summary "re-run this workflow from the Actions tab."
+              fail "$mrc" "PENDING MIGRATION (check-migrations exited $mrc before the tree was touched). It is from the BACKEND repo. Nothing was deployed and nothing on the box changed. Apply it as root on the VPS, then re-run this workflow."
+              ;;
+          esac
+
+          # =====================================================================
+          # 3. UPDATE. One service, one repo.
+          #
+          #    `update dashboard` fetches THIS repo into
+          #    /opt/restaurant-dash/Restaurant_Dashboard_UI, resets it to
+          #    FETCH_HEAD, runs the wrapper's migration gate, tags the outgoing
+          #    image :previous, and then rebuilds and swaps the container.
+          #
+          #    Never a bare `update`: rd-entry refuses it (64), and it would mean
+          #    the whole stack.
+          # =====================================================================
+          UPDATED=()
+          echo "== rd-deploy update $SVC"
+          rd update "$SVC" > "update-$SVC.txt" 2>&1
+          urc=$?
+          cat "update-$SVC.txt"
+          case "$urc" in
+            0)
+              UPDATED+=("$SVC")
+              ;;
+            127)
+              # ABOVE 65 ON PURPOSE. An absent forced command is not a migration.
+              # Normally the precondition above catches this first; this case
+              # exists so that EVERY site reading an rd exit code names 127.
+              not_installed "update $SVC"
+              summary "What came back instead:"; block "update-$SVC.txt"
+              fail 127 "EXIT 127 = COMMAND NOT FOUND — NOT a pending migration and NOT a wrapper refusal. The SSH forced command did not run. See the job summary."
+              ;;
+            64)
+              grammar_bug "update $SVC" "update-$SVC.txt"
+              ;;
+            65)
+              # This repo ships no SQL, so a 65 here means the DATABASE has a
+              # migration pending from Restaurant_Backend that nobody applied. The
+              # wrapper gates every update, not only backend ones.
+              #
+              # The gate fires INSIDE `update`, i.e. after this repo's working tree
+              # has already been reset to this commit. Say so: "nothing was
+              # deployed" is true of the container and false of the box.
+              summary "## Deploy refused by the server — pending migration (exit 65)"
+              summary ""
+              summary "\`rd-deploy update $SVC\` fetched this commit, reset"
+              summary "\`/opt/restaurant-dash/$REVISION_KEY\` to it, and then refused to build."
+              summary ""
+              summary "**This repo ships no SQL**, so the pending migration came from"
+              summary "**Restaurant_Backend** and has not been applied. The wrapper gates every"
+              summary "\`update\`, not only backend ones."
+              summary ""
+              summary "\`rd-deploy update $SVC\` said:"
+              block "update-$SVC.txt"
+              rd check-migrations > migrations.txt 2>&1
+              m2rc=$?
+              summary "\`rd-deploy check-migrations\`:"; block migrations.txt
+              if [ "$m2rc" -eq 127 ]; then not_installed "check-migrations"; fi
+              summary "### The state of the box right now"
+              summary ""
+              summary "| | |"
+              summary "|---|---|"
+              summary "| this repo's working tree | **moved** to \`$GIT_SHA\` |"
+              summary "| the dashboard container | **unchanged** — still the previous build |"
+              summary "| \`:previous\` image tag | untouched (\`update\` writes it only after the gate passes) |"
+              summary "| database | **untouched**. This pipeline has no database credential |"
+              summary ""
+              summary "Apply the migration as root on the VPS — see"
+              summary "\`Restaurant_Backend/deploy/vps/README.md\`, *Applying a migration* — confirm"
+              summary "\`check-migrations\` comes back clean, then re-run this workflow from the"
+              summary "Actions tab."
+              fail 65 "PENDING MIGRATION (server gate, exit 65). Nothing was rebuilt and the dashboard container was not replaced — but this repo's working tree on the box HAS moved to $GIT_SHA. The migration is from the BACKEND repo; its name is in the job summary. Apply it as root on the VPS, then re-run this workflow."
+              ;;
+            255)
+              summary "### SSH transport failure during \`update $SVC\`"
+              block "update-$SVC.txt"
+              fail 1 "SSH transport failure (255) during 'update $SVC'. THE STATE IS UNKNOWN: the update may have completed on the box after the connection dropped, because the build keeps running. Do not re-run blind — check 'sudo rd-deploy revision' and 'sudo rd-deploy status' on the box first."
+              ;;
+            *)
+              summary "### \`rd-deploy update $SVC\` failed — exit $urc"
+              block "update-$SVC.txt"
+              summary "The most likely cause is the build itself: the box compiles its own deploys"
+              summary "now, so a typecheck error, a missing build dependency, or an out-of-memory"
+              summary "kill during \`next build\` on 2 vCPUs all land here. The build output is above."
+              fail "$urc" "'rd-deploy update $SVC' exited $urc — most likely 'next build' failed on the box. The captured build output is in the job summary."
+              ;;
+          esac
+
+          # =====================================================================
+          # 4. PROVE IT. Two independent signals; a green run needs both.
+          # =====================================================================
+          echo "== rd-deploy revision (after)"
+          rd revision > rev-after.txt 2>&1
+          rrc=$?
+          cat rev-after.txt
+
+          # THIS CALL GETS THE SAME EXIT-CODE CASES AS EVERY OTHER ONE. It had
+          # none: any non-zero simply left AFTER_REV empty, REV_OK went to 0, and
+          # the summary then announced "the deployed revision is not this commit —
+          # either something pushed to `main` while this run was in flight, or
+          # `update` did not reset the working tree". A 127 says neither of those
+          # things. It says the forced command is gone and the question was never
+          # answered.
+          #
+          # Unlike the BASELINE revision call, a failure here does NOT abort.
+          # `update` has already rebuilt and swapped a live container by this
+          # point, so the health poll and the rollback path are the parts that
+          # matter; dying here to report a bookkeeping failure would skip both. The
+          # code is recorded, REV_READ stays 0, and every summary that mentions the
+          # revision says it could not be read rather than inventing a reason.
+          AFTER_REV=""
+          REV_READ=0
+          REV_RC="$rrc"
+          case "$rrc" in
+            0)
+              AFTER_REV="$(rev_of "$REVISION_KEY" rev-after.txt)"
+              if [ -n "$AFTER_REV" ]; then
+                REV_READ=1
+              else
+                echo "::error::'rd-deploy revision' returned 0 after the update but carried no line for '$REVISION_KEY', so the deployed revision is unknown."
+              fi
+              ;;
+            127)
+              echo "::error::'rd-deploy revision' came back 127 AFTER the update: the SSH forced command is not in place, so the deployed revision was never read. Treat it as a security event, not a deploy failure."
+              not_installed "revision"
+              summary "What came back instead:"; block rev-after.txt
+              ;;
+            64)
+              echo "::error::'rd-deploy revision' came back 64 after the update — the grammar refused a sentence this workflow sent. That is a pipeline bug, and the deployed revision was never read."
+              ;;
+            255)
+              echo "::error::'rd-deploy revision' came back 255 after the update — an ssh TRANSPORT failure, not a wrapper code. The deployed revision was never read."
+              ;;
+            *)
+              echo "::error::'rd-deploy revision' exited $rrc after the update, so the deployed revision was never read."
+              ;;
+          esac
+          REV_OK=0
+          if [ "$REV_READ" -eq 1 ] && [ "$AFTER_REV" = "$GIT_SHA" ]; then REV_OK=1; fi
+
+          # Did the revision MOVE? Nothing used to ask. A re-dispatch of a commit
+          # the box is already on prints "aaaa -> aaaa (= github.sha)" and reports
+          # success on a run that changed nothing at all. REV_OK says the deployed
+          # code IS this commit; REV_MOVED says this run is what put it there. Both
+          # are false when the revision could not be read: "not observed" is never
+          # "no".
+          REV_MOVED=0
+          if [ "$REV_READ" -eq 1 ] && [ "$AFTER_REV" != "$BEFORE_REV" ]; then REV_MOVED=1; fi
+
+          echo "== rd-deploy status (after)"
+          rd status > status0.txt 2>&1
+          src=$?
+          cat status0.txt
+          STATUS_AFTER_OK=0
+          STATUS_AFTER_RC="$src"
+          if [ "$src" -eq 0 ]; then STATUS_AFTER_OK=1; fi
+
+          # RECREATION, by comparing pre.txt (taken before `update`) with
+          # status0.txt: the container's uptime must have reset.
+          #
+          # FOUR BUCKETS, kept parallel with the backend workflow. Every collapse
+          # of two of them has shipped a bug:
+          #
+          #   RECREATED   the uptime reset. A new container is running.
+          #   UNCHANGED   MEASURED not recreated: both readings parsed, no reset.
+          #               The ONLY bucket that entitles a summary to say the image
+          #               was not replaced.
+          #   BROKEN      the after snapshot shows Restarting / Exited / Created —
+          #               a recognised NOT-RUNNING state. Replaced and broken. Goes
+          #               down the health-failure path (logs, rollback, re-verify)
+          #               and NEVER into the exit-72 gate. Putting it there is what
+          #               made a crash-looping deploy exit 72 with rollback_calls=0,
+          #               no logs, and a summary insisting no new image had reached
+          #               production.
+          #   UNMEASURED  could not be told: the `status` call itself failed, the
+          #               service is absent from the output, or its line is in a
+          #               format nothing here recognises. "I could not measure" is
+          #               not "I measured no change", and they get different
+          #               summaries and different ::error:: lines.
+          RECREATED=()
+          UNCHANGED=()
+          BROKEN=()
+          UNMEASURED=()
+          if [ "$STATUS_AFTER_OK" -eq 0 ]; then
+            echo "::error::'rd-deploy status' exited $src after the update, so the recreation proof could not run. That is not the same as measuring that nothing was recreated, and no summary from this run may say it is."
+            UNMEASURED=("${UPDATED[@]}")
+          else
+            for s in "${UPDATED[@]}"; do
+              assert_recreated "$s" pre.txt status0.txt; arc=$?
+              case "$arc" in
+                0) RECREATED+=("$s") ;;
+                1) UNCHANGED+=("$s") ;;
+                2) BROKEN+=("$s") ;;
+                *) UNMEASURED+=("$s") ;;
+              esac
+            done
+          fi
+          RECREATED_OK=0
+          if [ "${#RECREATED[@]}" -gt 0 ]; then RECREATED_OK=1; fi
+
+          HEALTHY=0
+          if wait_healthy "$SVC"; then HEALTHY=1; fi
+
+          # THE SECOND DOOR INTO THE SAME TRAP. When the post-update `status` call
+          # fails, the service lands in UNMEASURED — and a crash-looping container
+          # would then reach the exit-72 gate with no logs and no rollback, which is
+          # exactly what the BROKEN bucket exists to prevent. `wait_healthy` takes
+          # its own snapshots; if its LAST one was a real capture and it shows the
+          # service in a recognised broken state, that is an observation and it
+          # counts.
+          #
+          # ONLY UNMEASURED services are reclassified. A service MEASURED as not
+          # recreated and then seen unhealthy is the OLD container going sick, and
+          # rolling that back would move production backwards over a deploy that
+          # never happened.
+          BROKEN_LATE=()
+          if [ "${#UNMEASURED[@]}" -gt 0 ] && [ "${HEALTH_LAST_OK:-0}" -eq 1 ]; then
+            for s in "${UNMEASURED[@]}"; do
+              # assert_recreated, NOT svc_verdict. svc_verdict answers "is this
+              # line broken?" and says yes to any (unhealthy), whatever its
+              # uptime — so a service that was ALREADY sick before this run, seen
+              # through one flaky status call, would be force-recreated by a run
+              # that shipped nothing. assert_recreated only returns 2 when the
+              # uptime ALSO reset, i.e. this run really did put that image there.
+              assert_recreated "$s" pre.txt status.txt; vrc=$?
+              if [ "$vrc" -eq 2 ]; then
+                BROKEN_LATE+=("$s")
+                echo "::error::the recreation proof could not run for '$s', but the health poll DID observe it broken: '$(svc_line "$s" status.txt)'. Logs will be collected and the image rolled back."
+              fi
+            done
+          fi
+
+          # POSITIVE EVIDENCE that a new image reached production: the uptime reset,
+          # or the container is sitting in a not-running state. Without it
+          # `rollback` must not run — it would swap the running image for the build
+          # BEFORE the one running now.
+          REPLACED_OK=0
+          if [ "${#RECREATED[@]}" -gt 0 ] || [ "${#BROKEN[@]}" -gt 0 ] || [ "${#BROKEN_LATE[@]}" -gt 0 ]; then REPLACED_OK=1; fi
+
+          # PUBLIC_OK IS THREE-VALUED, because "not probed" is not "answering". It
+          # defaulted to 1 while the probe itself is gated on HEALTHY=1, so every
+          # run that never got healthy printed `probe answering` in its summary
+          # with ZERO curl calls made — a reported observation that was never made.
+          #
+          #   1 = probed, answered 2xx     0 = probed, never answered
+          #   2 = NOT probed, and PUBLIC_WHY says why
+          PUBLIC_OK=2
+          PUBLIC_WHY="no PUBLIC_DASHBOARD_URL is configured for this workflow, so nothing was probed"
+          if [ -n "${PUBLIC_DASHBOARD_URL:-}" ]; then
+            if [ "$HEALTHY" -eq 1 ]; then
+              PUBLIC_OK=1
+              echo "== public probe $PUBLIC_DASHBOARD_URL"
+              wait_public "$PUBLIC_DASHBOARD_URL" || PUBLIC_OK=0
             else
-              echo "::warning::could not reach $PUBLIC_DASHBOARD_URL from the runner. The container is healthy on the box, so this is most likely cloudflared rather than this deploy. NOT rolling back — an image rollback cannot fix a broken tunnel. Check: journalctl -u cloudflared."
+              PUBLIC_WHY="the container never came back healthy on the box, so there was nothing to probe"
             fi
           fi
 
-          if [ "$HEALTHY" -eq 1 ]; then
+          # ONE place turns the tri-state into words, so no summary can invent a
+          # fourth meaning for it.
+          public_word () {
+            case "$PUBLIC_OK" in
+              1) printf '%s\n' "answering" ;;
+              0) printf '%s\n' "NOT answering" ;;
+              *) printf '%s\n' "not probed — $PUBLIC_WHY" ;;
+            esac
+          }
+
+          echo "proof: revision_read=$REV_READ revision_ok=$REV_OK revision_moved=$REV_MOVED recreated_ok=$RECREATED_OK replaced_ok=$REPLACED_OK healthy=$HEALTHY public_ok=$PUBLIC_OK"
+          echo "       recreated=[${RECREATED[*]:-<none>}] measured-not-recreated=[${UNCHANGED[*]:-<none>}] replaced-and-broken=[${BROKEN[*]:-<none>}] broken-per-health-poll=[${BROKEN_LATE[*]:-<none>}] could-not-measure=[${UNMEASURED[*]:-<none>}]"
+
+          # ---- success --------------------------------------------------------
+          # REPLACED_OK, not RECREATED_OK: a container that was Restarting in the
+          # snapshot taken straight after the update and healthy by the end of the
+          # poll WAS replaced, and one that restarted once before settling is not a
+          # reason to red-light a deploy. PUBLIC_OK -ne 0 accepts both "probed and
+          # answering" and "not probed"; only a probe that RAN and FAILED blocks.
+          if [ "$HEALTHY" -eq 1 ] && [ "$REV_OK" -eq 1 ] && [ "$REPLACED_OK" -eq 1 ] && [ "$PUBLIC_OK" -ne 0 ]; then
             summary "### Production deploy (dashboard) — OK"
             summary ""
             summary '```'
-            summary "dashboard  $DASHBOARD_REPO@$DASHBOARD_DIGEST"
-            summary "git        $GIT_SHA"
-            summary "rollback target (previous :prod): ${PREV_DASHBOARD:-<none — this was the first run>}"
+            if [ "$REV_MOVED" -eq 1 ]; then
+              summary "revision   ${BEFORE_REV:0:12} -> ${AFTER_REV:0:12}   (= github.sha)"
+            else
+              summary "revision   ${AFTER_REV:0:12}   UNCHANGED — the box was already on this commit"
+            fi
+            if [ "${#RECREATED[@]}" -gt 0 ]; then
+              summary "recreated  $SVC   (uptime reset — a new image is running)"
+            else
+              summary "restarted  $SVC   (not running just after the update; healthy by the end of the poll)"
+            fi
+            summary "probe      $(public_word)${PUBLIC_DASHBOARD_URL:+   $PUBLIC_DASHBOARD_URL}"
             summary '```'
             summary ""
-            summary "\`compose ps\` after the swap:"; block status0.txt
-            echo "::notice::Deploy succeeded; the dashboard is healthy."
+            if [ "${#BROKEN[@]}" -gt 0 ] || [ "${#BROKEN_LATE[@]}" -gt 0 ]; then
+              summary "\`$SVC\` was **not running** in the snapshot taken straight after the update — a"
+              summary "new container that had not come up yet — and was healthy by the end of the"
+              summary "health poll. It shipped and it recovered on its own. If that keeps happening,"
+              summary "the container is slower to boot than its HEALTHCHECK start-period allows."
+              summary ""
+            fi
+            if [ "$REV_MOVED" -eq 0 ]; then
+              summary "The deployed revision did **not** move: \`/opt/restaurant-dash/$REVISION_KEY\` was"
+              summary "already at \`$GIT_SHA\` when this run started. That is the normal shape of a"
+              summary "re-run after a backend migration was applied by hand — the earlier run reset"
+              summary "the tree and then refused to build. What this run changed is the running"
+              summary "image."
+              summary ""
+            fi
+            if [ "$PUBLIC_OK" -eq 2 ]; then
+              summary "**No public probe was made** — $PUBLIC_WHY. Nothing in this run observed the"
+              summary "dashboard from outside the box."
+              summary ""
+            fi
+            summary "\`rd-deploy status\` after the swap:"
+            block status0.txt
+            summary "**If this release turns out to be bad:** \`sudo /usr/local/sbin/rd-deploy rollback"
+            summary "dashboard\` puts the PREVIOUS IMAGE back — but the working tree on the box stays"
+            summary "at \`$GIT_SHA\`, so the next \`update dashboard\` rebuilds this commit and ships it"
+            summary "again. **Revert the commit on \`main\` as well.**"
+            echo "::notice::Deploy succeeded: dashboard rebuilt at $GIT_SHA, container replaced, healthy; public probe $(public_word)."
             exit 0
           fi
 
-          # ====================================================================
-          # 5. It did not come back.
-          # ====================================================================
-          echo "== HEALTH CHECK FAILED — collecting logs"
-          rd logs dashboard > logs-dashboard.txt 2>&1 || true
-          tail -n 60 logs-dashboard.txt || true
-          summary "### Production deploy (dashboard) — FAILED"
-          summary ""
-          summary "\`compose ps\`:"; block status0.txt
-          summary "\`rd-deploy logs dashboard\` (last 100 lines):"; block logs-dashboard.txt
-
-          if [ "$FIRST_RUN" -eq 1 ]; then
-            # FIRST-RUN SAFETY. :prod did not exist before this run, so there is
-            # no previous digest and `rd-deploy rollback` would only force-recreate
-            # the same bad image. Do NOT run it: the container is at least up.
-            summary "> **No rollback was attempted.** \`:prod\` did not exist before this run, so there"
-            summary "> is no previous digest to go back to. The stack was left as it is rather than"
-            summary "> force-recreating the same failing image."
+          # ---- shipped and healthy on the box, but not reachable --------------
+          # ABOVE the exit-72 gate, because that gate now takes every remaining
+          # HEALTHY=1 run. Guarded on PUBLIC_OK -eq 0 — a probe that RAN and never
+          # answered — so it can no longer be reached by a run that made no probe
+          # at all, and on REV_OK/REPLACED_OK so its opening sentence about what
+          # shipped is something this run actually established.
+          if [ "$HEALTHY" -eq 1 ] && [ "$PUBLIC_OK" -eq 0 ] && [ "$REV_OK" -eq 1 ] && [ "$REPLACED_OK" -eq 1 ]; then
+            summary "### Production deploy (dashboard) — shipped, but NOT reachable from the internet"
             summary ""
-            summary "Recover by hand:"
+            summary "The container was replaced at \`$GIT_SHA\` and reports healthy on the box, but"
+            summary "\`$PUBLIC_DASHBOARD_URL\` never answered 2xx in ${PUBLIC_TIMEOUT}s. From a"
+            summary "restaurant's point of view the dashboard is down, so this run is red."
+            summary ""
+            summary "**Nothing was rolled back, deliberately.** The application is healthy on the"
+            summary "box; what is broken is the path between the internet and it, and swapping the"
+            summary "image cannot fix that. Rolling back here would add an outage to an outage."
+            summary ""
+            summary "Check, in this order: the ingress/tunnel service on the box"
+            summary "(\`journalctl -u cloudflared\`), then DNS, then TLS. Last curl:"
+            block public-err.txt
+            summary "\`rd-deploy status\`:"; block status0.txt
+            fail 73 "SHIPPED BUT UNREACHABLE. The dashboard was replaced at $GIT_SHA and is healthy on the box, but $PUBLIC_DASHBOARD_URL never answered 2xx in ${PUBLIC_TIMEOUT}s. NOT rolled back — the container is fine and an image swap cannot fix ingress. Check the tunnel/ingress first."
+          fi
+
+          # ---- could not be proven -------------------------------------------
+          # Deliberately ABOVE the rollback section, and deliberately NOT reached
+          # when production is broken AND something was observed to have replaced
+          # it. The rule it protects is: never roll back what was never rolled
+          # forward — `rollback` swaps the running image for `:previous`, so if
+          # this run did not replace the image, the thing running IS `:previous`
+          # and rolling back moves production to the build before that.
+          #
+          # THE GATE IS `HEALTHY -eq 1 || REPLACED_OK -eq 0`, and the second half
+          # is the fix. It used to be `REV_OK -eq 0 || RECREATED_OK -eq 0`, which
+          # swallowed the crash-loop: a container Restarting on the new image
+          # scored "not recreated", landed here, and exited 72 with no logs, no
+          # rollback, and a summary saying no new image had reached production.
+          # Everything that passes this gate now is either healthy (so there is
+          # nothing to roll back) or unreplaced (so there is nothing to roll back
+          # TO).
+          if [ "$HEALTHY" -eq 1 ] || [ "$REPLACED_OK" -eq 0 ]; then
+
+            # ---- the genuine no-op re-dispatch, given its own outcome ---------
+            # The revision is right, it did not move because the box was already
+            # there, and the container was MEASURED as not recreated. "The deploy
+            # could not be proven" sends the operator hunting a fault; the honest
+            # answer is that this run had nothing to do. Still RED, because the one
+            # promise this pipeline makes is that a GREEN run means code shipped.
+            #
+            # `${#UNCHANGED[@]} -eq ${#UPDATED[@]}` is the load-bearing condition,
+            # and it is new. The four buckets partition UPDATED, so requiring
+            # UNCHANGED to hold all of them is exactly "the service was measured,
+            # and the measurement said no change". Without it, a run whose
+            # post-update `status` call merely TIMED OUT landed here — and this
+            # branch states as fact that the rebuild was a cache hit and that the
+            # uptime did not reset, neither of which had been observed.
+            if [ "$REV_OK" -eq 1 ] && [ "$REV_MOVED" -eq 0 ] && [ "$RECREATED_OK" -eq 0 ] && [ "${#UNCHANGED[@]}" -eq "${#UPDATED[@]}" ]; then
+              summary "### Production deploy (dashboard) — NOTHING CHANGED"
+              summary ""
+              summary '```'
+              summary "revision   ${AFTER_REV:0:12}   ALREADY this commit before the run started"
+              summary "recreated  no — the container's uptime was read on both sides and did not reset"
+              summary "healthy    $([ "$HEALTHY" -eq 1 ] && echo yes || echo NO)"
+              summary "probe      $(public_word)"
+              summary '```'
+              summary ""
+              summary "**Nothing moved and nothing shipped.** \`/opt/restaurant-dash/$REVISION_KEY\` was"
+              summary "already at \`$GIT_SHA\` when this run started, so \`update\` had nothing to fetch,"
+              summary "and the container's uptime was READ before the update and again after and had"
+              summary "not reset — so \`up -d\` replaced nothing."
+              summary ""
+              summary "> That is a measurement, not an assumption. If the uptime could not be read,"
+              summary "> this run would have said so under a different heading."
+              summary ""
+              summary "This is **not** evidence that something is wrong. It is evidence that this"
+              summary "dispatch had nothing to do. It is red anyway, and deliberately: a run that"
+              summary "ships nothing must not look the same as one that ships."
+              summary ""
+              if [ "$HEALTHY" -eq 1 ]; then
+                summary "Production is already running \`$GIT_SHA\` and is healthy. If you meant to"
+                summary "redeploy an unchanged commit, there is nothing further to do."
+              else
+                summary "Production is already running \`$GIT_SHA\` and is **NOT healthy** — but this run"
+                summary "did not cause that and did not change anything. Investigate the running"
+                summary "container; another dispatch will also do nothing."
+              fi
+              summary ""
+              summary "If you expected this dispatch to change something, then the commit you"
+              summary "dispatched is not the commit you think it is: check that \`main\` carries your"
+              summary "change and that \`$GIT_SHA\` is it. Note also that on this box a rebuild with no"
+              summary "source change normally DOES recreate the container — buildx stamps a new image"
+              summary "id into every build — so the container not moving is itself worth a look."
+              summary ""
+              summary "**No rollback was attempted.** The container was measured as not replaced, so"
+              summary "there is nothing to roll back to but the build before what is running."
+              summary ""
+              summary "\`rd-deploy status\`:"; block status0.txt
+              fail 72 "NOTHING CHANGED — this dispatch was a no-op. The box was ALREADY at $GIT_SHA before the run started, the revision did not move, and the container's uptime was read on both sides of the update and had not reset. Nothing shipped, so the run is red: on this pipeline a green run means code shipped. Production is unchanged and nothing was rolled back."
+            fi
+
+            # ---- could not MEASURE, which is not the same as measured no ------
+            # A separate outcome on purpose. "Measured not recreated" and "could
+            # not measure" used to share the NOTHING CHANGED summary, which states
+            # as fact that the rebuild was a cache hit and that the uptime did not
+            # reset. In the run that exposed it, `update` returned 0 and DID
+            # recreate the container; only the follow-up `status` timed out. Every
+            # sentence below is something this run actually observed.
+            if [ "${#UNMEASURED[@]}" -gt 0 ]; then
+              summary "### Production deploy (dashboard) — COULD NOT BE MEASURED"
+              summary ""
+              summary '```'
+              summary "expected (github.sha)      $GIT_SHA"
+              summary "revision after this run    ${AFTER_REV:-<could not be read>}"
+              summary "revision moved this run    $([ "$REV_READ" -eq 1 ] && { [ "$REV_MOVED" -eq 1 ] && echo yes || echo no; } || echo "unknown — revision could not be read")"
+              summary "recreated                  ${RECREATED[*]:-<none>}"
+              summary "COULD NOT MEASURE          ${UNMEASURED[*]}"
+              summary "container healthy          $([ "$HEALTHY" -eq 1 ] && echo yes || echo NO)"
+              summary "probe                      $(public_word)"
+              summary '```'
+              summary ""
+              summary "**This run does not know whether a new image reached production.** That is not"
+              summary "a claim that nothing shipped — it is the absence of the measurement that would"
+              summary "decide it."
+              summary ""
+              if [ "$STATUS_AFTER_OK" -eq 0 ]; then
+                summary "Why: the post-update \`rd-deploy status\` call itself exited"
+                summary "\`$STATUS_AFTER_RC\`, so there is no *after* snapshot to compare the baseline"
+                summary "against. \`update $SVC\` returned **0** before that, which means the wrapper"
+                summary "fetched, built and ran \`up -d\` — the part that is unknown is only whether"
+                summary "the container was swapped."
+                summary ""
+                summary "What came back instead of a status listing:"
+                block status0.txt
+              else
+                summary "Why: \`rd-deploy status\` was read, but the line for \`$SVC\` could not be turned"
+                summary "into an uptime and is not a state \`svc_verdict\` recognises. That is a WRAPPER"
+                summary "FORMAT CHANGE until proven otherwise — fix \`uptime_secs()\`/\`svc_verdict()\` in"
+                summary "**both** workflows and re-capture"
+                summary "\`Restaurant_Backend/deploy/vps/tests/fixtures/\`."
+                summary ""
+                summary "\`rd-deploy status\` after the update:"
+                block status0.txt
+              fi
+              if [ "$HEALTHY" -eq 1 ]; then
+                summary "**The container IS healthy**, which the health poll did observe. So the"
+                summary "dashboard is up; what is missing is the evidence that this run is what put"
+                summary "the current image there."
+              else
+                summary "**The container is NOT healthy** either, which the health poll did observe."
+                summary "Check it by hand before dispatching anything else."
+              fi
+              summary ""
+              summary "Establish the truth on the box, then decide:"
+              summary ""
+              summary '```sh'
+              summary "sudo /usr/local/sbin/rd-deploy status        # uptime in seconds = swapped"
+              summary "sudo /usr/local/sbin/rd-deploy revision      # should read $GIT_SHA"
+              summary "sudo /usr/local/sbin/rd-deploy logs $SVC"
+              summary '```'
+              summary ""
+              summary "**No rollback was attempted**, because nothing here observed a new image"
+              summary "reaching production. Rolling back on a guess would move production to the"
+              summary "build before whatever is running now."
+              fail 72 "DEPLOY COULD NOT BE MEASURED — this is NOT a measurement that nothing shipped. $([ "$STATUS_AFTER_OK" -eq 0 ] && echo "The post-update 'rd-deploy status' call exited $STATUS_AFTER_RC, so there is no after-snapshot to compare against; 'update $SVC' had already returned 0." || echo "'rd-deploy status' was read but the line for $SVC is in a format this workflow does not recognise — treat it as a wrapper format change.") Container healthy: $([ "$HEALTHY" -eq 1 ] && echo yes || echo NO). No rollback was attempted. Check 'sudo rd-deploy status' and 'sudo rd-deploy revision' on the box — the summary has the commands."
+            fi
+
+            summary "### Production deploy (dashboard) — CANNOT BE PROVEN"
+            summary ""
+            summary '```'
+            summary "expected (github.sha)      $GIT_SHA"
+            summary "revision before this run   ${BEFORE_REV:-<unreadable>}"
+            summary "revision after  this run   ${AFTER_REV:-<could not be read>}"
+            summary "revision moved this run    $([ "$REV_READ" -eq 1 ] && { [ "$REV_MOVED" -eq 1 ] && echo yes || echo no; } || echo "unknown")"
+            summary "container healthy          $([ "$HEALTHY" -eq 1 ] && echo yes || echo NO)"
+            summary "container recreated        $([ "$RECREATED_OK" -eq 1 ] && echo yes || echo NO)"
+            summary "probe                      $(public_word)"
+            summary '```'
+            summary ""
+            if [ "$REV_READ" -eq 0 ]; then
+              # SAY WHICH. Without this branch a 127 on the revision-after call was
+              # reported as "something pushed to main while this run was in
+              # flight" — a sentence about an observation that was never made.
+              summary "**The deployed revision could not be read at all.** \`rd-deploy revision\`"
+              summary "exited \`$REV_RC\` after the update, so this run does not know what commit the"
+              summary "box is on. It is not evidence that the revision is wrong; it is the absence of"
+              summary "the evidence that would say either way."
+              summary ""
+              case "$REV_RC" in
+                127) summary "\`127\` is the login shell's *command not found*: the SSH forced command did" ; summary "not run. See the security-boundary section above — check that first." ; summary "" ;;
+                64)  summary "\`64\` is EX_USAGE from the wrapper or \`rd-entry\` — a bug in this workflow," ; summary "not a fault on the box." ; summary "" ;;
+                255) summary "\`255\` is ssh's transport failure, not a wrapper code. The box was not asked." ; summary "" ;;
+              esac
+            elif [ "$REV_OK" -eq 0 ]; then
+              summary "**The deployed revision is not this commit.** It reads \`${AFTER_REV:0:12}\`, not"
+              summary "\`${GIT_SHA:0:12}\`. Either something pushed to \`main\` while this run was in"
+              summary "flight, or \`update\` did not reset the working tree at all. Check"
+              summary "\`sudo rd-deploy revision\` on the box before doing anything else — another"
+              summary "deploy may be in flight."
+              summary ""
+            fi
+            if [ "$RECREATED_OK" -eq 0 ] && [ "${#UNCHANGED[@]}" -eq "${#UPDATED[@]}" ]; then
+              summary "**The container was not recreated**, and that is a measurement: its uptime was"
+              summary "read before \`update dashboard\` and again after, and it did not reset. No new"
+              summary "image reached production. In likelihood order:"
+              summary ""
+              summary "1. the update did not actually rebuild or replace it — read the \`update\`"
+              summary "   output above;"
+              summary "2. this commit changes nothing that lands in the image (docs, \`.github/\`,"
+              summary "   anything in \`.dockerignore\`). Note that on this box that is NOT normally"
+              summary "   enough to prevent a swap: buildx stamps a provenance attestation into every"
+              summary "   build, so even an unchanged rebuild produces a new image id and \`up -d\`"
+              summary "   recreates. Treat \"nothing needed to ship\" as the less likely explanation"
+              summary "   here, not the default one;"
+              if [ "$BEFORE_REV" = "$GIT_SHA" ]; then
+                summary "3. **the box was ALREADY on this commit when the run started**. If you are"
+                summary "   re-running a deploy that already succeeded, production is already on this"
+                summary "   commit. But if you are re-running after applying a migration that blocked"
+                summary "   an earlier run, that earlier run never built anything — so this one"
+                summary "   SHOULD have recreated the container. Treat it as cause 1 and check"
+                summary "   \`rd-deploy logs dashboard\`."
+              else
+                summary "3. the box was already on this commit — **ruled out**: it moved from"
+                summary "   \`${BEFORE_REV:0:12}\` to \`${AFTER_REV:0:12}\` during this run."
+              fi
+              summary ""
+            fi
+            if [ "$HEALTHY" -eq 0 ]; then
+              summary "**The container is not healthy** — and this run did not replace it, so it did"
+              summary "not cause that. That is why nothing is rolled back below: the image running"
+              summary "now was not put there by this run."
+              summary ""
+            fi
+            # Reachable BOTH when nothing was replaced and when the replacement
+            # could not be measured (a transient failure of the revision-after
+            # call, with the container demonstrably recreated). Asserting "nothing
+            # observed a new image reaching production" in the second case
+            # contradicts the recreated= list printed above it.
+            summary "**No rollback was attempted, on purpose.** \`rollback\` swaps the running image"
+            summary "for \`:previous\`."
+            if [ "${#RECREATED[@]}" -gt 0 ]; then
+              summary ""
+              summary "Note that \`${RECREATED[*]}\` WAS observed recreated by this run — so a new image"
+              summary "did reach production. What could not be established is which commit it was"
+              summary "built from, and the container is healthy. Rolling back on that basis would"
+              summary "discard a deploy that may well be correct. Settle it by hand with"
+              summary "\`rd-deploy revision\` before deciding."
+            else
+              summary "Nothing in this run observed a new image reaching production,"
+              summary "so rolling back would move production to the build before whatever is running"
+              summary "now — backwards, over a deploy this run cannot show happened."
+            fi
+            summary ""
+            summary "\`rd-deploy status\`:"; block status0.txt
+            if [ "${#RECREATED[@]}" -gt 0 ]; then
+              why_no_rb="No rollback was attempted — [${RECREATED[*]}] WAS recreated and is healthy, but this run could not establish which commit it was built from; discarding it on that evidence would be worse than leaving it. Run 'rd-deploy revision' to settle it."
+            else
+              why_no_rb="No rollback was attempted — nothing here observed a new image reaching production, and rolling back one that was never replaced moves production backwards."
+            fi
+            fail 72 "DEPLOY COULD NOT BE PROVEN (revision_read=$REV_READ revision_ok=$REV_OK revision_moved=$REV_MOVED recreated_ok=$RECREATED_OK replaced_ok=$REPLACED_OK healthy=$HEALTHY; recreated=[${RECREATED[*]:-<none>}]). $why_no_rb The evidence and the possible causes are in the job summary."
+          fi
+
+          # =====================================================================
+          # 5. It did not come back. Collect evidence, then roll the IMAGE back.
+          # =====================================================================
+          echo "== HEALTH CHECK FAILED — collecting logs"
+          rd logs "$SVC" > "logs-$SVC.txt" 2>&1 || true
+          tail -n 60 "logs-$SVC.txt" || true
+          summary "### Production deploy (dashboard) — FAILED ITS HEALTH CHECK"
+          summary ""
+          # SAY ONLY WHAT WAS MEASURED. This used to open with "The container was
+          # recreated at <sha> — the code shipped", which asserts two things this
+          # branch does not always know: that an uptime reset was seen, and that
+          # the deployed revision is this commit.
+          if [ "${#RECREATED[@]}" -gt 0 ]; then
+            summary "\`$SVC\` **was recreated** by this run: its uptime reset between the snapshot"
+            summary "taken before \`update dashboard\` and the one taken after."
+            summary ""
+          fi
+          if [ "${#BROKEN[@]}" -gt 0 ]; then
+            summary "\`$SVC\` is **not running**. The snapshot taken straight after the update shows"
+            summary "it in a recognised failed state — no uptime, because it is not up:"
+            summary ""
+            summary '```'
+            summary "$(svc_line "$SVC" status0.txt)"
+            summary '```'
+            summary ""
+            summary "\`update $SVC\` returned **0**, so the wrapper built the image and ran \`up -d\`."
+            summary "Read this as **a new image that does not stay up** until the logs below say"
+            summary "otherwise. The rollback further down is the response to exactly this."
+            summary ""
+          fi
+          if [ "${#BROKEN_LATE[@]}" -gt 0 ]; then
+            summary "The recreation proof could not run for \`$SVC\` — the post-update \`status\` call"
+            summary "exited \`$STATUS_AFTER_RC\` — but the health poll observed it in a recognised"
+            summary "failed state, which is why it is being rolled back:"
+            summary ""
+            summary '```'
+            summary "$(svc_line "$SVC" status.txt)"
+            summary '```'
+            summary ""
+          fi
+          if [ "$REV_OK" -eq 1 ]; then
+            summary "The deployed revision reads \`$GIT_SHA\`, so the code on the box is this commit."
+          elif [ "$REV_READ" -eq 0 ]; then
+            summary "The deployed revision **could not be read** (\`rd-deploy revision\` exited"
+            summary "\`$REV_RC\`), so this run cannot say which commit the box is on."
+          else
+            summary "The deployed revision reads \`${AFTER_REV:0:12}\`, **not** \`${GIT_SHA:0:12}\` —"
+            summary "check whether another deploy is in flight before acting on the rollback below."
+          fi
+          summary ""
+          summary "The container did not come back healthy within ${HEALTH_TIMEOUT}s. The backend was"
+          summary "healthy when this run started (the precondition above passed), so this is most"
+          summary "likely a regression in this release."
+          summary ""
+          # LABEL THE CAPTURE FOR WHAT IT IS. When the post-update `status` call
+          # failed, status0.txt holds ssh's error text — printing that under a
+          # bare "`rd-deploy status`:" heading presents an error as a reading.
+          if [ "$STATUS_AFTER_OK" -eq 1 ]; then
+            summary "\`rd-deploy status\`, straight after the update:"; block status0.txt
+          else
+            summary "The post-update \`rd-deploy status\` call FAILED (exit \`$STATUS_AFTER_RC\`). This"
+            summary "is what came back instead of a status listing:"
+            block status0.txt
+            if [ "${HEALTH_LAST_OK:-0}" -eq 1 ] && [ -s status.txt ]; then
+              summary "\`rd-deploy status\`, last poll of the health check:"; block status.txt
+            fi
+          fi
+          summary "\`rd-deploy logs $SVC\` (last 100 lines):"; block "logs-$SVC.txt"
+
+          echo "== rd-deploy rollback $SVC"
+          rd rollback "$SVC" > "rollback-$SVC.txt" 2>&1
+          rbrc=$?
+          cat "rollback-$SVC.txt"
+          summary "\`rd-deploy rollback $SVC\`:"; block "rollback-$SVC.txt"
+          if [ "$rbrc" -eq 127 ]; then not_installed "rollback $SVC"; fi
+
+          # `noprev_warned` matches the wrapper's actual sentence. The detector it
+          # replaces matched any line containing "warn" AND any line containing
+          # "previous" — and BOTH are true of a rollback that WORKED: docker
+          # compose v2 prints `WARN[0000] ...` on essentially every invocation,
+          # and the wrapper's success line is `restored restaurant-dash-<svc>:previous`.
+          # So a rollback that had genuinely put the previous image back was
+          # reported as exit 74, "the code was NOT reverted". That FALSE POSITIVE
+          # is the likely direction, because every service that has been through
+          # `update` on this box HAS a :previous image. It still reads wording, so
+          # if the wrapper is reworded the detection goes quiet: read the captured
+          # output above rather than trusting this line alone.
+          NOPREV=0
+          if noprev_warned "rollback-$SVC.txt"; then
+            NOPREV=1
+          elif restored_previous "rollback-$SVC.txt" "$SVC"; then
+            echo "  the wrapper confirmed: restored restaurant-dash-$SVC:previous"
+          fi
+
+          # VERIFY HEALTH FIRST. This ordering is the fix, and it is the reverse of
+          # what it was.
+          #
+          # The no-`:previous` branch used to sit ABOVE this check, so any run that
+          # tripped the detector never ran the post-rollback health verification at
+          # all — it went straight to exit 74. Combined with a detector that fired
+          # on a SUCCESSFUL rollback, that meant a rollback which had restored the
+          # previous image and brought the dashboard back was reported as no
+          # rollback at all, with no evidence collected about whether production
+          # had recovered.
+          #
+          # So: find out whether it came back, and only then say what kind of
+          # recovery it was.
+          if [ "$rbrc" -eq 0 ] && wait_healthy "$SVC"; then
+            rd status > status1.txt 2>&1 || true
+            rd revision > rev-rollback.txt 2>&1 || true
+            summary "\`rd-deploy status\` after the rollback:"; block status1.txt
+
+            if [ "$NOPREV" -eq 1 ]; then
+              # Healthy again, but NOT reverted. Still a 74: what is running is
+              # the commit that just failed, it merely survived the restart.
+              summary ""
+              summary "### Healthy again — but the code was NOT reverted"
+              summary ""
+              summary "\`rollback $SVC\` printed the wrapper's *no rollback target* warning: there was"
+              summary "no \`:previous\` image — the first \`update dashboard\` on this box — so it"
+              summary "force-recreated the CURRENT image. The dashboard did come back healthy, but it"
+              summary "came back on \`$GIT_SHA\`, **the commit that just failed its health check**. A"
+              summary "restart is not a rollback."
+              summary ""
+              summary "Treat this as production running code that has already failed once and then"
+              summary "passed. The only real revert is in git:"
+              summary ""
+              summary '```sh'
+              summary "git revert $GIT_SHA && git push        # then dispatch this workflow again"
+              summary '```'
+              fail 74 "THERE WAS NO ROLLBACK TARGET. No ':previous' image existed (first update of this service on the box), so the container was force-recreated on the SAME image and the code was NOT reverted. It DID come back healthy this time, but production is running $GIT_SHA — the commit that just failed its health check. Revert on main and dispatch again."
+            fi
+
+            summary ""
+            summary "### Production is running the PREVIOUS IMAGE — but the box is still on this commit"
+            summary ""
+            summary "\`rollback\` retagged \`:previous\` back to \`:latest\` and force-recreated, so the"
+            summary "running code is the build from before this run. It did **not** touch the git"
+            summary "working tree:"
+            summary ""
+            block rev-rollback.txt
+            summary "That still reads \`$GIT_SHA\`, and it will keep reading it. **The next"
+            summary "\`update dashboard\` — a re-run of this workflow, or someone shipping an unrelated"
+            summary "fix — will rebuild this commit and put it straight back into production.** The"
+            summary "image rollback is a stopgap; the fix is:"
             summary ""
             summary '```sh'
-            summary "# on your workstation, logged in to ghcr.io"
-            summary "docker buildx imagetools create --tag $DASHBOARD_REPO:prod $DASHBOARD_REPO:sha-<older-commit>"
-            summary "# then, on the VPS"
-            summary "sudo /usr/local/sbin/rd-deploy rollback dashboard"
+            summary "git revert $GIT_SHA && git push       # then dispatch this workflow"
             summary '```'
-            fail 1 "FIRST DEPLOY FAILED ITS HEALTH CHECK AND THERE IS NO ROLLBACK TARGET. :prod had no previous value. The container was NOT force-recreated. See the job summary for how to point :prod at a known-good digest by hand."
-          fi
-
-          echo "== rolling back: restore :prod, then rd-deploy rollback dashboard"
-          if ! restore_tags; then
-            fail 1 "ROLLBACK FAILED at the registry step — could not restore :prod. Production is running the new, unhealthy image. SSH in and run 'sudo rd-deploy status'."
-          fi
-
-          rd rollback dashboard > rollback.txt 2>&1
-          rbrc=$?
-          cat rollback.txt
-          summary "\`rd-deploy rollback dashboard\`:"; block rollback.txt
-          # Unreachable in practice (a 127 would have stopped this run at the
-          # precondition), but every site that reads an rd exit code names 127
-          # explicitly rather than folding it into "rollback also failed".
-          if [ "$rbrc" -eq 127 ]; then not_installed "rollback dashboard"; fi
-
-          if [ "$rbrc" -eq 0 ] && wait_healthy dashboard; then
-            rd status > status1.txt 2>&1 || true
-            summary "Rolled back. \`compose ps\` now:"; block status1.txt
             summary ""
-            summary "Production is running the PREVIOUS image: \`$DASHBOARD_REPO@$PREV_DASHBOARD\`"
-            fail 70 "Deploy failed its health checks and was ROLLED BACK. Production is running the previous image. This build is red on purpose — fix forward, do not re-run."
+            summary "Do not re-run this run. It would rebuild exactly what was just rolled back."
+            fail 70 "Deploy failed its health checks and the IMAGE was ROLLED BACK — production is running the previous build. The git working tree on the box is STILL at $GIT_SHA, so the next 'update dashboard' will redeploy this commit unless it is reverted on main. Do not re-run this workflow; revert the commit. Details in the job summary."
           fi
 
+          # Still not healthy. Say WHICH of the three things went wrong, instead of
+          # "ROLLBACK ALSO FAILED (rollback exit 0)" — which is what this printed
+          # whenever the rollback call had in fact succeeded and it was the SERVICE
+          # that did not come back.
           rd status > status1.txt 2>&1 || true
-          summary "\`compose ps\` after the failed rollback:"; block status1.txt
-          fail 71 "ROLLBACK ALSO FAILED. PRODUCTION MAY BE DOWN. Do not re-run this workflow — further automated churn destroys the evidence. SSH in: 'sudo rd-deploy status', 'sudo rd-deploy logs dashboard', 'journalctl -u cloudflared'."
+          summary "\`rd-deploy status\` after the rollback attempt:"; block status1.txt
+          summary ""
 
+          if [ "$NOPREV" -eq 1 ]; then
+            summary "### There was no rollback target, and the dashboard is still unhealthy"
+            summary ""
+            summary "\`rollback $SVC\` printed the wrapper's *no rollback target* warning: no"
+            summary "\`:previous\` image existed — the first \`update dashboard\` on this box — so it"
+            summary "could only force-recreate what was already there. **The code was not reverted.**"
+            summary "Production is running \`$GIT_SHA\`, the commit that just failed, and it is still"
+            summary "unhealthy."
+            summary ""
+            summary "Recover by hand. The only real revert is in git:"
+            summary ""
+            summary '```sh'
+            summary "# on your workstation"
+            summary "git revert $GIT_SHA && git push        # then dispatch this workflow again"
+            summary ""
+            summary "# or, on the VPS, to see why it is unhealthy first:"
+            summary "sudo /usr/local/sbin/rd-deploy logs dashboard"
+            summary "sudo /usr/local/sbin/rd-deploy status"
+            summary '```'
+            fail 74 "UNHEALTHY AND THERE WAS NO ROLLBACK TARGET. No ':previous' image existed (first update of this service on the box), so the container was force-recreated on the SAME image and the code was NOT reverted. Production is running $GIT_SHA, unhealthy. Revert the commit on main and dispatch again — see the job summary."
+          fi
+
+          if [ "$rbrc" -eq 0 ]; then
+            summary "**The \`rollback\` call itself SUCCEEDED (exit 0).** The wrapper retagged"
+            summary "\`:previous\` back to \`:latest\` and force-recreated, so the PREVIOUS build is what"
+            summary "is running — and the dashboard still did not come back healthy within"
+            summary "${HEALTH_TIMEOUT}s. **It may be down, and the known-good build is not fixing"
+            summary "it**, which points somewhere outside this image: the backend it proxies to, the"
+            summary "host itself, or the ingress."
+            fail 71 "ROLLBACK RAN, THE DASHBOARD DID NOT COME BACK. The 'rollback' call SUCCEEDED (exit 0) and the previous image is running, but the dashboard is still unhealthy after ${HEALTH_TIMEOUT}s — so the fault is probably not in this image (the backend it proxies to, the host, or the ingress). THE DASHBOARD MAY BE DOWN. Do not re-run this workflow — further automated churn destroys the evidence. SSH in as a human: 'sudo rd-deploy status', 'sudo rd-deploy logs dashboard', 'sudo rd-deploy revision', and check the ingress with 'journalctl -u cloudflared'."
+          fi
+
+          summary "**The \`rollback\` call itself FAILED**, exit $rbrc. The previous image may not"
+          summary "even have been restored. **The dashboard may be down.**"
+          fail 71 "THE ROLLBACK CALL FAILED (exit $rbrc) — the previous image may not have been restored at all. THE DASHBOARD MAY BE DOWN. Do not re-run this workflow — further automated churn destroys the evidence. SSH in as a human: 'sudo rd-deploy status', 'sudo rd-deploy logs dashboard', 'sudo rd-deploy revision', and check the ingress with 'journalctl -u cloudflared'."
+
+      # The key is the one credential this job holds. Wipe it whether the deploy
+      # succeeded, failed, was cancelled, or the step above exited early.
       - name: Wipe the deploy key from the runner
         if: always()
         run: shred -u ~/.ssh/id_deploy 2>/dev/null || rm -f ~/.ssh/id_deploy
