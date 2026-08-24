@@ -1,0 +1,248 @@
+/*
+ * Experio landing-page styles, ported from the standalone experio app
+ * (Tailwind v4 globals.css) into this Tailwind v3 project as plain CSS.
+ *
+ * SCOPING: every rule is either
+ *   - nested under `.exp-root` (the landing page's root element), or
+ *   - gated by a class only the landing adds at runtime (`html.exp-cursor`,
+ *     `.lenis*` from the Lenis instance, `html:has(.exp-root)`),
+ * so nothing here can restyle /login or /dashboard/* even after a
+ * client-side navigation keeps this stylesheet in memory.
+ *
+ * Color utilities (text-ink, bg-gold, ...) come from tailwind.config.ts;
+ * the CSS variables below exist for inline `var(--gold)` references.
+ */
+
+.exp-root {
+  --white: #ffffff;
+  --white-soft: #fafafa;
+  --ink: #111111;
+  --ink-2: #666666;
+  --ink-3: #74746d;
+  --gold: #d4af37;
+  --gold-2: #e8c75d;
+  --gold-deep: #a8862a;
+  --azure: #3e7bfa;
+  --emerald: #0fa678;
+  --violet: #7c5cfc;
+
+  background: var(--white);
+  color: var(--ink);
+  font-family: "Satoshi", var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* While the landing is mounted, the document itself is white and does not
+   rubber-band vertically (the film owns the scroll). */
+html:has(.exp-root) {
+  background: #ffffff;
+}
+html:has(.exp-root) body {
+  overscroll-behavior-y: none;
+}
+
+.exp-root ::selection {
+  background: rgba(212, 175, 55, 0.28);
+  color: var(--ink);
+}
+
+/* The soft glowing cursor replaces the native one on precision pointers.
+   `exp-cursor` is added/removed on <html> by the Cursor component. */
+@media (pointer: fine) {
+  html.exp-cursor,
+  html.exp-cursor a,
+  html.exp-cursor button,
+  html.exp-cursor [role="button"] {
+    cursor: none;
+  }
+}
+
+/* Lenis adds these classes to <html> only while the landing runs. */
+.lenis.lenis-smooth {
+  scroll-behavior: auto !important;
+}
+.lenis.lenis-stopped {
+  overflow: hidden;
+}
+
+/* Premium acrylic glass. Reads on white through rim light and depth, not darkness. */
+.exp-root .glass {
+  background: rgba(255, 255, 255, 0.7);
+  -webkit-backdrop-filter: blur(18px) saturate(1.35);
+  backdrop-filter: blur(18px) saturate(1.35);
+  border: 1px solid rgba(17, 17, 17, 0.07);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.35),
+    0 1px 2px rgba(17, 17, 17, 0.04),
+    0 24px 70px -32px rgba(17, 17, 17, 0.25);
+}
+
+/* Gold rim light that breathes in on hover.
+   NOTE: hosts must be positioned (relative/absolute) themselves — setting
+   position here would override Tailwind's layered `absolute` utility. */
+.exp-root .glass-rim::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(
+    135deg,
+    rgba(212, 175, 55, 0.55),
+    rgba(212, 175, 55, 0) 34%,
+    rgba(212, 175, 55, 0) 66%,
+    rgba(232, 199, 93, 0.4)
+  );
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  opacity: 0.35;
+  transition: opacity 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+  pointer-events: none;
+}
+.exp-root .glass-rim:hover::after {
+  opacity: 1;
+}
+
+/* Light sweeping across brushed metal — used on gold CTAs. */
+.exp-root .gold-sweep {
+  position: relative;
+  overflow: hidden;
+}
+.exp-root .gold-sweep::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    115deg,
+    transparent 30%,
+    rgba(255, 255, 255, 0.55) 48%,
+    rgba(255, 255, 255, 0.15) 52%,
+    transparent 70%
+  );
+  transform: translateX(-130%);
+  transition: transform 0.9s cubic-bezier(0.22, 1, 0.36, 1);
+  pointer-events: none;
+}
+.exp-root .gold-sweep:hover::before {
+  transform: translateX(130%);
+}
+
+/* Shine that follows the cursor across tilted glass (driven by --mx / --my). */
+.exp-root .glass-shine {
+  position: relative;
+}
+.exp-root .glass-shine::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(
+    360px circle at var(--mx, 50%) var(--my, 50%),
+    rgba(255, 255, 255, 0.65),
+    rgba(232, 199, 93, 0.08) 40%,
+    transparent 65%
+  );
+  opacity: 0;
+  transition: opacity 0.5s ease;
+  pointer-events: none;
+}
+.exp-root .glass-shine:hover::before {
+  opacity: 1;
+}
+
+/* Containers GSAP reveals — hidden before hydration so nothing flashes. */
+.exp-root .pre-hide {
+  opacity: 0;
+  visibility: hidden;
+}
+
+/* The headline is invisible until the intro raises its lines from the masks.
+   (Opacity, not transform — a CSS transform here would get baked into GSAP's
+   parsed x/y and poison the scrubbed exit animation.) */
+.exp-root .exp-hero-h1 {
+  opacity: 0;
+  visibility: hidden;
+}
+
+/* SVG marks that GSAP scales need a local transform box. */
+.exp-root .exp-chart-bar {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+}
+.exp-root .exp-mark-tile {
+  transform-box: fill-box;
+}
+
+/* The gold droplet inside the scroll cue. */
+@keyframes exp-cue-drop {
+  0% {
+    transform: translateY(-14px);
+    opacity: 0;
+  }
+  25% {
+    opacity: 1;
+  }
+  75% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(44px);
+    opacity: 0;
+  }
+}
+.exp-root .exp-cue-drop {
+  animation: exp-cue-drop 2s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+/* The live-sync heartbeat in the dashboard topbar. */
+@keyframes exp-sync {
+  0%,
+  100% {
+    opacity: 0.35;
+    box-shadow: 0 0 0 0 rgba(212, 175, 55, 0.4);
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 6px 1px rgba(212, 175, 55, 0.35);
+  }
+}
+.exp-root .exp-sync-dot {
+  animation: exp-sync 4s ease-in-out infinite;
+}
+
+/* Cards breathe — an almost imperceptible elevation cycle. */
+@keyframes exp-breathe {
+  0%,
+  100% {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      0 10px 30px -18px rgba(17, 17, 17, 0.2);
+  }
+  50% {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      0 16px 38px -18px rgba(17, 17, 17, 0.26);
+  }
+}
+.exp-root .exp-widget {
+  animation: exp-breathe 7s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .exp-root .exp-cue-drop,
+  .exp-root .exp-sync-dot,
+  .exp-root .exp-widget {
+    animation: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .exp-root .gold-sweep::before,
+  .exp-root .glass-rim::after,
+  .exp-root .glass-shine::before {
+    transition: none;
+  }
+}

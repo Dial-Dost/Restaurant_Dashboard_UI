@@ -1,4 +1,5 @@
 import type {Config} from 'tailwindcss';
+import colors from 'tailwindcss/colors';
 
 export default {
   darkMode: ['class'],
@@ -23,6 +24,14 @@ export default {
         code: ['monospace'],
       },
       colors: {
+        // Experio landing palette (src/components/experio/*). Purely additive:
+        // `emerald`/`violet` spread the default scales first so existing
+        // numbered utilities (e.g. emerald-600) keep working.
+        ink: { DEFAULT: '#111111', '2': '#666666', '3': '#74746d' },
+        gold: { DEFAULT: '#d4af37', '2': '#e8c75d', deep: '#a8862a' },
+        azure: '#3e7bfa',
+        emerald: { ...colors.emerald, DEFAULT: '#0fa678' },
+        violet: { ...colors.violet, DEFAULT: '#7c5cfc' },
         background: 'hsl(var(--background))',
         foreground: 'hsl(var(--foreground))',
         card: {

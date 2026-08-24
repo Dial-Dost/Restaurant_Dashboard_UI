@@ -48,7 +48,7 @@ import { useTranslation } from '@/context/LanguageContext';
 import { useAuth } from '@/context/AuthContext';
 import { RealtimeProvider } from '@/context/RealtimeContext';
 import { TimezoneProvider } from '@/lib/use-timezone';
-import Dock from '@/components/ui/Dock';
+import Dock, { type DockSectionData } from '@/components/ui/Dock';
 import '@/components/ui/Dock.css';
 
 const inter = Inter({ subsets: ['latin'] });
@@ -93,36 +93,93 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
     return hasKeywordAction(actionNames, keywords);
   };
 
-  const fullNavItems = [
-    { href: '/dashboard', label: t('dashboard'), icon: <Home className="h-6 w-6" />, exact: true, actionKeywords: [] as string[] },
-    { href: '/dashboard/bookings', label: t('bookings'), icon: <ShoppingCart className="h-6 w-6" />, actionKeywords: ['booking'] },
-    { href: '/dashboard/orders', label: t('orders'), icon: <ListOrdered className="h-6 w-6" />, actionKeywords: ['order', 'bill', 'payment'] },
-    { href: '/dashboard/menu', label: 'Menu', icon: <BookOpen className="h-6 w-6" />, actionKeywords: ['menu'] },
-    { href: '/dashboard/tables', label: t('tables'), icon: <Package className="h-6 w-6" />, actionKeywords: ['table'] },
-    { href: '/dashboard/waitlist', label: 'Waitlist', icon: <Hourglass className="h-6 w-6" />, actionKeywords: ['table', 'order', 'waitlist'] },
-    { href: '/dashboard/inventory', label: t('inventory'), icon: <ClipboardList className="h-6 w-6" />, actionKeywords: ['inventory', 'stock'] },
-    { href: '/dashboard/purchase-orders', label: 'Purchase orders', icon: <Truck className="h-6 w-6" />, actionKeywords: ['inventory', 'stock', 'purchase', 'vendor'] },
-    { href: '/dashboard/customers', label: t('customers'), icon: <Users className="h-6 w-6" />, actionKeywords: ['customer'] },
-    { href: '/dashboard/attendance', label: 'Attendance', icon: <Clock className="h-6 w-6" />, actionKeywords: [] as string[] },
-    { href: '/dashboard/feedback', label: 'Feedback', icon: <FileText className="h-6 w-6" />, actionKeywords: ['feedback'] },
-    { href: '/dashboard/analytics', label: t('analytics'), icon: <LineChart className="h-6 w-6" />, actionKeywords: ['analytics', 'apc', 'report'] },
-    // Simulation is analytics-derived (same backend action gate), so it sits
-    // beside Analytics and opens for exactly the same roles.
-    { href: '/dashboard/simulation', label: 'Simulation', icon: <SlidersHorizontal className="h-6 w-6" />, actionKeywords: ['analytics', 'apc', 'report'] },
-    { href: '/dashboard/history', label: 'History', icon: <History className="h-6 w-6" />, actionKeywords: ['analytics', 'report'] },
-    { href: '/dashboard/accounting', label: 'Accounting', icon: <FileText className="h-6 w-6" />, actionKeywords: ['report', 'accounting', 'finance'] },
-    { href: '/dashboard/cash', label: 'Cash register', icon: <Wallet className="h-6 w-6" />, actionKeywords: ['report', 'accounting', 'finance', 'cash'] },
-    { href: '/dashboard/outlets', label: 'Outlets', icon: <Globe className="h-6 w-6" />, actionKeywords: ['outlet', 'branch', 'setting', 'profile'] },
-    ...(hasRole('admin')
-      ? [{ href: '/dashboard/valet', label: 'Valet Dashboard', icon: <Activity className="h-6 w-6" />, actionKeywords: ['valet', 'parking'] }]
-      : []),
-    ...(hasRole('admin')
-      ? [{ href: '/dashboard/coupons', label: 'Coupons', icon: <Ticket className="h-6 w-6" />, actionKeywords: [] as string[] }]
-      : []),
-    ...(hasRole('admin')
-      ? [{ href: '/dashboard/billing', label: 'Billing & plan', icon: <CreditCard className="h-6 w-6" />, actionKeywords: [] as string[] }]
-      : []),
-  ].filter((item) => canAccessByAction(item.actionKeywords));
+  type NavItem = {
+    href: string;
+    label: string;
+    icon: React.ReactNode;
+    exact?: boolean;
+    actionKeywords: string[];
+  };
+  type NavSection = { title: string; items: NavItem[] };
+
+  // The nav, grouped by area of work. Every item keeps its exact href, icon
+  // and action-keyword gate from the old flat list; per-section filtering
+  // happens below, and a section whose every item is filtered out (role or
+  // action permissions) disappears entirely — never an orphan header.
+  //
+  // Settings is NOT here: it lives in the avatar menu (admin-only), mirroring
+  // the backend enforceAdmin gate — see the dropdown below.
+  const navSections: NavSection[] = [
+    {
+      title: 'Operations',
+      items: [
+        { href: '/dashboard', label: t('dashboard'), icon: <Home className="h-6 w-6" />, exact: true, actionKeywords: [] },
+        { href: '/dashboard/orders', label: t('orders'), icon: <ListOrdered className="h-6 w-6" />, actionKeywords: ['order', 'bill', 'payment'] },
+        { href: '/dashboard/tables', label: t('tables'), icon: <Package className="h-6 w-6" />, actionKeywords: ['table'] },
+        { href: '/dashboard/waitlist', label: 'Waitlist', icon: <Hourglass className="h-6 w-6" />, actionKeywords: ['table', 'order', 'waitlist'] },
+        { href: '/dashboard/bookings', label: t('bookings'), icon: <ShoppingCart className="h-6 w-6" />, actionKeywords: ['booking'] },
+        { href: '/dashboard/menu', label: 'Menu', icon: <BookOpen className="h-6 w-6" />, actionKeywords: ['menu'] },
+      ],
+    },
+    {
+      title: 'Inventory',
+      items: [
+        { href: '/dashboard/inventory', label: t('inventory'), icon: <ClipboardList className="h-6 w-6" />, actionKeywords: ['inventory', 'stock'] },
+        { href: '/dashboard/purchase-orders', label: 'Purchase orders', icon: <Truck className="h-6 w-6" />, actionKeywords: ['inventory', 'stock', 'purchase', 'vendor'] },
+      ],
+    },
+    {
+      title: 'Guests',
+      items: [
+        { href: '/dashboard/customers', label: t('customers'), icon: <Users className="h-6 w-6" />, actionKeywords: ['customer'] },
+        { href: '/dashboard/feedback', label: 'Feedback', icon: <FileText className="h-6 w-6" />, actionKeywords: ['feedback'] },
+        ...(hasRole('admin')
+          ? [{ href: '/dashboard/coupons', label: 'Coupons', icon: <Ticket className="h-6 w-6" />, actionKeywords: [] as string[] }]
+          : []),
+      ],
+    },
+    {
+      title: 'Team',
+      items: [
+        { href: '/dashboard/attendance', label: 'Attendance', icon: <Clock className="h-6 w-6" />, actionKeywords: [] },
+        ...(hasRole('admin')
+          ? [{ href: '/dashboard/valet', label: 'Valet Dashboard', icon: <Activity className="h-6 w-6" />, actionKeywords: ['valet', 'parking'] }]
+          : []),
+      ],
+    },
+    {
+      title: 'Insights',
+      items: [
+        { href: '/dashboard/analytics', label: t('analytics'), icon: <LineChart className="h-6 w-6" />, actionKeywords: ['analytics', 'apc', 'report'] },
+        // Simulation is analytics-derived (same backend action gate), so it sits
+        // beside Analytics and opens for exactly the same roles.
+        { href: '/dashboard/simulation', label: 'Simulation', icon: <SlidersHorizontal className="h-6 w-6" />, actionKeywords: ['analytics', 'apc', 'report'] },
+        { href: '/dashboard/history', label: 'History', icon: <History className="h-6 w-6" />, actionKeywords: ['analytics', 'report'] },
+      ],
+    },
+    {
+      title: 'Money',
+      items: [
+        { href: '/dashboard/accounting', label: 'Accounting', icon: <FileText className="h-6 w-6" />, actionKeywords: ['report', 'accounting', 'finance'] },
+        { href: '/dashboard/cash', label: 'Cash register', icon: <Wallet className="h-6 w-6" />, actionKeywords: ['report', 'accounting', 'finance', 'cash'] },
+        ...(hasRole('admin')
+          ? [{ href: '/dashboard/billing', label: 'Billing & plan', icon: <CreditCard className="h-6 w-6" />, actionKeywords: [] as string[] }]
+          : []),
+      ],
+    },
+    {
+      title: 'Setup',
+      items: [
+        { href: '/dashboard/outlets', label: 'Outlets', icon: <Globe className="h-6 w-6" />, actionKeywords: ['outlet', 'branch', 'setting', 'profile'] },
+      ],
+    },
+  ]
+    .map((section) => ({ ...section, items: section.items.filter((item) => canAccessByAction(item.actionKeywords)) }))
+    .filter((section) => section.items.length > 0);
+
+  // The flat list every existing consumer (route allow-list, valet/waiter
+  // fallbacks) keeps reading — identical items, now in section order.
+  const fullNavItems: NavItem[] = navSections.flatMap((section) => section.items);
 
   const navItems = useMemo(() => {
     if (isValet) {return [{ href: '/dashboard/valet', label: 'Valet Dashboard', icon: <Activity className="h-6 w-6" />, exact: true }];}
@@ -170,12 +227,19 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
     }
   }, [user, isValet, isWaiterOnly, canAccessValet, pathname, navItems, router]);
 
-  const dockItems = navItems.map(item => ({
+  const toDockItem = (item: { href: string; label: string; icon: React.ReactNode; exact?: boolean }) => ({
     icon: item.icon,
     label: item.label,
     onClick: () => { router.push(item.href); },
     className: (item.exact ? pathname === item.href : pathname.startsWith(item.href)) ? 'active-dock-item' : ''
-  }));
+  });
+
+  // Valet / waiter-only sessions have a single pinned destination, so their
+  // dock stays a plain untitled group; everyone else gets the titled sections.
+  const dockSections: DockSectionData[] = isValet || isWaiterOnly
+    ? [{ items: navItems.map(toDockItem) }]
+    : navSections.map((section) => ({ title: section.title, items: section.items.map(toDockItem) }));
+  const dockHasTitles = dockSections.some((section) => Boolean(section.title));
 
   const languages: { code: 'en' | 'hi' | 'kn' | 'te' | 'ta' | 'ml'; name: string }[] = [
     { code: 'en', name: 'English' },
@@ -292,9 +356,12 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
           {children}
         </main>
         <div className="fixed bottom-0 left-0 right-0 flex justify-center z-50">
-           <Dock 
-              items={dockItems}
-              panelHeight={68}
+           <Dock
+              sections={dockSections}
+              // Titled sections stack a small caption above each icon group,
+              // so the panel needs the extra rows' height; the untitled
+              // valet/waiter dock keeps its original height.
+              panelHeight={dockHasTitles ? 84 : 68}
               baseItemSize={50}
             />
         </div>

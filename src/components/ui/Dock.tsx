@@ -1,7 +1,7 @@
 
 'use client';
 
-import React, { useState } from 'react';
+import React from 'react';
 
 export interface DockItemData {
   icon: React.ReactNode;
@@ -10,8 +10,17 @@ export interface DockItemData {
   className?: string;
 }
 
-export interface DockProps {
+export interface DockSectionData {
+  /** Small muted uppercase caption above the group; omit for an untitled group. */
+  title?: string;
   items: DockItemData[];
+}
+
+export interface DockProps {
+  /** Flat list — rendered as a single untitled section. */
+  items?: DockItemData[];
+  /** Grouped nav: captioned icon groups separated by thin dividers. */
+  sections?: DockSectionData[];
   className?: string;
   panelHeight?: number;
   baseItemSize?: number;
@@ -58,10 +67,15 @@ function DockIcon({ children }: { children: React.ReactNode }) {
 
 export default function Dock({
   items,
+  sections,
   className = '',
   panelHeight = 68,
   baseItemSize = 50,
 }: DockProps) {
+  // The dock is always icon-only, so a section "header" is a tiny caption
+  // above its group plus a hairline divider before the next group — the
+  // graceful-collapse form of a sidebar section title.
+  const resolvedSections: DockSectionData[] = sections ?? (items ? [{ items }] : []);
 
   return (
     <div className="dock-outer">
@@ -71,16 +85,26 @@ export default function Dock({
         role="toolbar"
         aria-label="Application dock"
       >
-        {items.map((item, index) => (
-          <DockItem
-            key={index}
-            onClick={item.onClick}
-            className={item.className}
-            baseItemSize={baseItemSize}
-          >
-            <DockIcon>{item.icon}</DockIcon>
-            <DockLabel>{item.label}</DockLabel>
-          </DockItem>
+        {resolvedSections.map((section, sectionIndex) => (
+          <React.Fragment key={section.title ?? `section-${sectionIndex}`}>
+            {sectionIndex > 0 && <div className="dock-divider" aria-hidden="true" />}
+            <div className="dock-section" role="group" aria-label={section.title}>
+              {section.title && <div className="dock-section-title">{section.title}</div>}
+              <div className="dock-section-items">
+                {section.items.map((item, index) => (
+                  <DockItem
+                    key={index}
+                    onClick={item.onClick}
+                    className={item.className}
+                    baseItemSize={baseItemSize}
+                  >
+                    <DockIcon>{item.icon}</DockIcon>
+                    <DockLabel>{item.label}</DockLabel>
+                  </DockItem>
+                ))}
+              </div>
+            </div>
+          </React.Fragment>
         ))}
       </div>
     </div>

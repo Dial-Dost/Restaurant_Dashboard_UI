@@ -13,7 +13,10 @@
   display: flex;
   align-items: flex-end;
   width: fit-content;
-  gap: 1rem;
+  /* Panel children are now sections (and hairline dividers), not single
+     items, so the between-child gap is tighter; within-section spacing
+     lives on .dock-section-items. */
+  gap: 0.625rem;
   border-radius: 1rem;
   background-color: hsl(var(--card));
   border: 1px solid hsl(var(--border));
@@ -77,4 +80,44 @@
 .dock-item:hover .dock-label {
     opacity: 1;
     top: -3rem;
+}
+
+/* ---- grouped sections -------------------------------------------------- */
+/* Each section stacks a small muted uppercase caption above its icons; a
+   hairline divider separates sections — the icon-only dock's stand-in for a
+   sidebar section header. Untitled sections (valet / waiter-only docks)
+   render exactly like the old flat panel. */
+
+.dock-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  align-self: stretch;
+  gap: 0.3rem;
+}
+
+.dock-section-title {
+  font-size: 0.5625rem;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  line-height: 1;
+  white-space: nowrap;
+  color: hsl(var(--muted-foreground));
+  user-select: none;
+  pointer-events: none;
+}
+
+.dock-section-items {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+}
+
+.dock-divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 0.25rem 0;
+  background-color: hsl(var(--border));
 }
