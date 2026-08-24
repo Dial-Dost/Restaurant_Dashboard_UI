@@ -3159,6 +3159,91 @@ export const getOperationsAnalytics = async (
     return data ?? null;
 };
 
+// --- What-if simulation -----------------------------------------------------
+// GET /simulation/baseline + POST /simulation/run. All ₹ figures are PRE-TAX
+// (bill-subtotal basis — the same basis as APC), per day, over a 30-day window.
+// The backend guarantees every number is finite: an empty tenant gets zeros
+// with sources.<field> === 'default' so the UI can tag them "estimated".
+export type SimulationSource = 'measured' | 'default';
+export interface SimulationBaseline {
+    window_days: number;
+    covers_per_day: number;
+    apc: number;
+    revenue_per_day: number;
+    food_cost_pct: number;
+    labour_cost_per_day: number;
+    staff_count: number;
+    avg_tat_min: number;
+    table_count: number;
+    fixed_costs_per_day: number;
+    net_profit_per_day: number;
+    sources: Record<string, SimulationSource>;
+}
+
+// Slider payload for POST /simulation/run. Every field is optional — a missing
+// slider means "unchanged from the baseline" — and out-of-range values are
+// clamped into their legal ranges server-side, never rejected.
+export interface SimulationRunParams {
+    price_adjust_pct?: number;
+    elasticity?: number;
+    staff_count?: number;
+    avg_wage_per_shift?: number;
+    tat_target_min?: number;
+    extra_expediters?: number;
+    marketing_spend?: number;
+    food_cost_pct?: number;
+}
+
+// One column of the results table. current/simulated/delta share this shape;
+// delta = simulated − current, computed server-side AFTER rounding so the
+// rendered CURRENT + DELTA always equals SIMULATED.
+export interface SimulationLine {
+    covers: number;
+    apc: number;
+    revenue: number;
+    labour_cost: number;
+    food_cost: number;
+    marketing_per_day: number;
+    net_profit: number;
+    tat_min: number;
+}
+export interface SimulationResult {
+    current: SimulationLine;
+    simulated: SimulationLine;
+    delta: SimulationLine;
+    notes: string[];
+    // Days for the one-time marketing spend to pay back out of the daily
+    // profit uplift; null when there is no uplift (or no spend).
+    breakeven_days: number | null;
+}
+
+export const getSimulationBaseline = async (
+    restaurantId: string,
+): Promise<SimulationBaseline | null> => {
+    const data = await backendJson<SimulationBaseline>(
+        `/simulation/baseline?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+    return data ?? null;
+};
+
+export const runWhatIfSimulation = async (
+    restaurantId: string,
+    params: SimulationRunParams,
+): Promise<SimulationResult | null> => {
+    const data = await backendJson<SimulationResult>(
+        `/simulation/run?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(params),
+        },
+    );
+    return data ?? null;
+};
+
 // --- Kitchen analytics ------------------------------------------------------
 // Per-dish prep time, per-kitchen-section (station) averages, and an order-level
 // prep summary — all derived server-side from Orders.timing (pause-excluded).
