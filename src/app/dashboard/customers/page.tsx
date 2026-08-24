@@ -54,13 +54,17 @@ export interface Customer {
   pincode?: string;
 }
 
+// No bill/spend field here on purpose: POST /add-customer never accepted one,
+// so the old "Bill Amount" input was collected and silently dropped — and the
+// matching table column rendered a bill_amount the backend never returns, i.e.
+// a lifetime ₹0.00 for every guest. Money comes read-time from the CRM
+// insights (Total Spend); bookings come read-time from booking_count.
 const customerSchema = z.object({
     name: z.string().min(1, "Name is required."),
     email: z.string().email("Invalid email address."),
     // Exactly 10 digits — POST /add-customer rejects anything else with the same
     // message, so a too-short OR too-long number can never reach the API.
     phone: z.string().refine(isMobile10, MOBILE_10_ERROR),
-    billAmount: z.coerce.number().positive("Bill amount must be positive."),
     gender: z.string().optional(),
     ageGroup: z.string().optional(),
     pincode: z.string().max(10).optional(),
@@ -110,7 +114,10 @@ export default function CustomersPage() {
       // Store the bare 10 digits so "+91 98765 43210" and "9876543210" are the
       // same customer (matching the backend's own normalization).
       phone: normalizeMobile10(data.phone) ?? data.phone,
-      totalBookings: 1,
+      // Honest zeroes: creating a guest records no booking and no bill. The
+      // real figures are derived server-side and arrive on the next refresh.
+      totalBookings: 0,
+      billAmount: 0,
       status: 'In-house',
     };
     await addCustomer(user.restaurantUsername, newCustomer);
@@ -184,7 +191,11 @@ export default function CustomersPage() {
                 <TableHead className="hidden md:table-cell text-right">Total Spend</TableHead>
                 <TableHead className="hidden lg:table-cell text-center">Last Visit</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead className="text-right">Bill Amount</TableHead>
+                {/* Replaces the old "Bill Amount" column, which read a field the
+                    backend never returns and therefore showed ₹0.00 for every
+                    guest forever. booking_count is joined from Bookings on every
+                    /get-customers read, so a booking made moments ago counts. */}
+                <TableHead className="text-right">Bookings</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -224,7 +235,7 @@ export default function CustomersPage() {
                           {customer.status}
                         </Badge>
                       </TableCell>
-                      <TableCell className="text-right">{currencySymbol}{customer.billAmount.toFixed(2)}</TableCell>
+                      <TableCell className="text-right">{customer.totalBookings}</TableCell>
                     </TableRow>
                     {expanded && (
                       <TableRow className="bg-muted/30 hover:bg-muted/30">
@@ -318,13 +329,6 @@ function CustomerForm({ onSubmit, afterSubmit }: { onSubmit: (data: CustomerForm
                 placeholder="10-digit mobile"
               />
               {errors.phone && <p className="text-sm text-destructive mt-1">{errors.phone.message}</p>}
-            </div>
-          </div>
-          <div className="grid grid-cols-4 items-center gap-4">
-            <Label htmlFor="billAmount" className="text-right">Bill Amount</Label>
-            <div className="col-span-3">
-              <Input id="billAmount" type="number" step="0.01" {...register("billAmount")} placeholder="e.g., 75.50" />
-              {errors.billAmount && <p className="text-sm text-destructive mt-1">{errors.billAmount.message}</p>}
             </div>
           </div>
           <p className="text-xs text-muted-foreground">Optional — used only for aggregated analytics (demographics), never shown per guest.</p>

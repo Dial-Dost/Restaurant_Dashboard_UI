@@ -3802,6 +3802,9 @@ export interface WaitlistEntry {
     position: number;
     minutes_waiting: number;
     pre_order: { id: string; name: string; price: number; quantity: number; note?: string }[];
+    /** Confirmation state of the held pre_order — 'pending' means someone still
+     *  has to send it to (or keep it from) the kitchen. */
+    pre_order_status?: 'none' | 'pending' | 'confirmed' | 'declined' | 'claimed';
     party_members?: { name: string; phone: string; joined_at: string }[];
     table_name: string | null;
     created_at: string;
@@ -3819,9 +3822,49 @@ export const callWaitlistEntry = async (restaurantId: string, id: string) => {
     return res.json();
 };
 
-export const seatWaitlistEntry = async (restaurantId: string, id: string, tableName: string) => {
+// Seating HOLDS the party's pre-order instead of placing it (backend contract:
+// SeatWaitlistEntry marks it 'pending'). The seat response carries the held
+// items as `pending_preorder`; confirmWaitlistPreorder / declineWaitlistPreorder
+// below are how it reaches (or deliberately skips) the kitchen.
+export interface PendingPreorder {
+    items: { id: string; name: string; price: number; quantity: number; note?: string }[];
+    subtotal: number;
+    count: number;
+}
+
+export interface SeatWaitlistResult {
+    success: boolean;
+    placed_order_id: string | null;
+    table_name: string;
+    waitlist_id: string;
+    pre_order_status: 'none' | 'pending' | 'confirmed' | 'declined' | 'claimed';
+    pending_preorder: PendingPreorder | null;
+}
+
+export const seatWaitlistEntry = async (restaurantId: string, id: string, tableName: string): Promise<SeatWaitlistResult> => {
     const res = await backendCall(`/waitlist/${encodeURIComponent(id)}/seat`, restaurantId, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ table_name: tableName }) });
     if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to seat this party');}
+    return res.json() as Promise<SeatWaitlistResult>;
+};
+
+/** Seated parties whose held pre-order is still waiting on confirm/decline —
+ *  the durable "confirm the pre-order for T4" queue behind the seat pop-up. */
+export interface PendingPreorderEntry extends WaitlistEntry { minutes_since_seated: number }
+
+export const getPendingPreorders = async (restaurantId: string): Promise<PendingPreorderEntry[]> => {
+    const d = await backendJson<{ entries: PendingPreorderEntry[] }>(`/waitlist/pending-preorders?restaurantId=${encodeURIComponent(restaurantId)}`, restaurantId, { method: 'GET' });
+    return Array.isArray(d?.entries) ? d.entries : [];
+};
+
+export const confirmWaitlistPreorder = async (restaurantId: string, id: string): Promise<{ success: boolean; placed_order_id: string | null; table_name: string; already: boolean }> => {
+    const res = await backendCall(`/waitlist/${encodeURIComponent(id)}/preorder/confirm`, restaurantId, { method: 'POST' });
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to confirm the pre-order');}
+    return res.json();
+};
+
+export const declineWaitlistPreorder = async (restaurantId: string, id: string): Promise<{ success: boolean }> => {
+    const res = await backendCall(`/waitlist/${encodeURIComponent(id)}/preorder/decline`, restaurantId, { method: 'POST' });
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to update the pre-order');}
     return res.json();
 };
 

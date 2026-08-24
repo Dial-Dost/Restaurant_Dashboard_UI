@@ -31,6 +31,9 @@ interface Entry {
   position: number;
   party_size: number;
   pre_order: PreItem[];
+  /** Held pre-order's confirmation state — 'pending' means the kitchen has NOT
+   *  been told yet and this page must ask before redirecting to the table. */
+  pre_order_status?: "none" | "pending" | "confirmed" | "declined" | "claimed";
   table_name: string | null;
   qr_token?: string | null;
 }
@@ -97,20 +100,26 @@ const STRINGS: Record<Lang, Record<string, string>> = {
     shareSub: "Scan to follow this spot in line together.",
     shareSubMenu: "Scan to follow this spot in line together and add to the order.",
     preTitle: "Get a head start",
-    preSub: "Pick what you'd like — it goes to the kitchen automatically when you're seated.",
+    preSub: "Pick what you'd like — we'll confirm with you once you're seated, then it goes to the kitchen.",
     add: "Add",
     menuEmptyTitle: "Menu unavailable right now",
     menuEmptyBody: "You're still in the queue — we'll call you the moment a table frees up.",
     savePicks: "Save my picks",
     saved: "Saved",
     confirmTitle: "Confirm your pre-order",
-    confirmBody: "Once you're seated, this goes straight to the kitchen as your order. Nothing is charged now — you can still change it while you wait.",
+    confirmBody: "Once you're seated, we'll ask you to confirm before this goes to the kitchen as your order. Nothing is charged now — you can still change it while you wait.",
     confirmYes: "Confirm pre-order",
     confirmNo: "Cancel",
     item: "item",
     items: "items",
     popupBody: "Please head over to the host now to be seated.",
     popupBodySaved: "Please head over to the host now — your picks are saved.",
+    decideTitle: "Send your picks to the kitchen?",
+    decideBody: "You're seated — the items you saved while waiting haven't been ordered yet. Send them to the kitchen now, or order at the table (your picks will be waiting in your cart).",
+    decideYes: "Send to kitchen",
+    decideNo: "I'll order at the table",
+    decideBusy: "Sending…",
+    decideFailed: "Could not update your order — please try again",
     gotIt: "Got it",
     notifTitle: "your table is ready!",
     notifBody: "Please head to the host.",
@@ -168,20 +177,26 @@ const STRINGS: Record<Lang, Record<string, string>> = {
     shareSub: "स्कैन करें और साथ मिलकर अपनी बारी देखें।",
     shareSubMenu: "स्कैन करें, साथ मिलकर बारी देखें और ऑर्डर में जोड़ें।",
     preTitle: "पहले से ऑर्डर चुनें",
-    preSub: "जो पसंद हो चुन लें — बैठते ही यह अपने आप किचन को चला जाएगा।",
+    preSub: "जो पसंद हो चुन लें — बैठने पर आपसे पुष्टि करके ही यह किचन भेजा जाएगा।",
     add: "जोड़ें",
     menuEmptyTitle: "मेनू अभी उपलब्ध नहीं है",
     menuEmptyBody: "आप कतार में बने हुए हैं — टेबल खाली होते ही हम बुला लेंगे।",
     savePicks: "मेरी पसंद सेव करें",
     saved: "सेव हो गया",
     confirmTitle: "अपना प्री-ऑर्डर पक्का करें",
-    confirmBody: "बैठते ही यह सीधे किचन को आपके ऑर्डर के रूप में चला जाएगा। अभी कोई पैसा नहीं लिया जा रहा — इंतज़ार के दौरान आप इसे बदल भी सकते हैं।",
+    confirmBody: "बैठने के बाद आपकी पुष्टि पर ही यह किचन को आपके ऑर्डर के रूप में जाएगा। अभी कोई पैसा नहीं लिया जा रहा — इंतज़ार के दौरान आप इसे बदल भी सकते हैं।",
     confirmYes: "प्री-ऑर्डर पक्का करें",
     confirmNo: "रहने दें",
     item: "आइटम",
     items: "आइटम",
     popupBody: "कृपया अभी होस्ट के पास पहुँचें, वे आपको बैठा देंगे।",
     popupBodySaved: "कृपया अभी होस्ट के पास पहुँचें — आपकी पसंद सेव है।",
+    decideTitle: "क्या आपकी पसंद किचन भेज दें?",
+    decideBody: "आप बैठ चुके हैं — इंतज़ार में चुने व्यंजन अभी ऑर्डर नहीं हुए हैं। अभी किचन भेजें, या टेबल पर ऑर्डर करें (आपकी पसंद कार्ट में मिलेगी)।",
+    decideYes: "किचन भेजें",
+    decideNo: "टेबल पर ऑर्डर करेंगे",
+    decideBusy: "भेजा जा रहा है…",
+    decideFailed: "ऑर्डर अपडेट नहीं हो सका — कृपया फिर कोशिश करें",
     gotIt: "समझ गया",
     notifTitle: "आपकी टेबल तैयार है!",
     notifBody: "कृपया होस्ट के पास पहुँचें।",
@@ -487,12 +502,20 @@ function QueueInner() {
     // (joined here, or arrived via a share link). A seated token merely resumed
     // from localStorage is stale and must never bounce a fresh visitor to a
     // table's order+OTP page — the poll effect above clears it instead.
-    if (entry?.status === "seated" && entry.qr_token && activeThisSession && typeof window !== "undefined") {
+    //
+    // A held pre-order that is still PENDING keeps the party here for the
+    // send-to-kitchen decision below: redirecting first would strand the picks
+    // as "pending" forever (the "pre-order never reached the kitchen" bug).
+    const pendingDecision = entry?.pre_order_status === "pending" && (entry?.pre_order?.length ?? 0) > 0;
+    if (entry?.status === "seated" && entry.qr_token && activeThisSession && !pendingDecision && typeof window !== "undefined") {
       const url = `/order/${encodeURIComponent(restaurant)}?t=${encodeURIComponent(entry.qr_token)}`
-        + (outlet ? `&outlet=${encodeURIComponent(outlet)}` : "");
+        + (outlet ? `&outlet=${encodeURIComponent(outlet)}` : "")
+        // A DECLINED pre-order seeds the table cart: hand /order the queue token
+        // so it can claim the saved items (guarded, best-effort, over there).
+        + (entry.pre_order_status === "declined" && entry.pre_order.length > 0 ? `&wl=${encodeURIComponent(entry.token)}` : "");
       window.location.replace(url);
     }
-  }, [entry?.status, entry?.qr_token, restaurant, outlet, activeThisSession]);
+  }, [entry?.status, entry?.qr_token, entry?.pre_order_status, entry?.pre_order?.length, entry?.pre_order, entry?.token, restaurant, outlet, activeThisSession]);
 
   // A shareable QR of THIS party's queue link so others in the group can scan,
   // watch the same spot in line, and add to the pre-order together.
@@ -558,6 +581,43 @@ function QueueInner() {
       if (r.ok) {setSavedAt(Date.now());}
     } catch {}
     finally { setBusy(false); }
+  };
+
+  // Seated + pre-order still 'pending': the guest resolves it here. Confirm
+  // places it as a real order (same as staff confirming); decline keeps the
+  // items on the entry so the table cart can be seeded from them. Either way
+  // the entry state flips locally so the seated→table redirect proceeds.
+  const [decideBusy, setDecideBusy] = useState(false);
+  const [decideError, setDecideError] = useState<string | null>(null);
+
+  const confirmPreorder = async () => {
+    if (!token || decideBusy) {return;}
+    setDecideBusy(true); setDecideError(null);
+    try {
+      const r = await fetch(`${BASE}/qr/${encodeURIComponent(restaurant)}/waitlist/${token}/preorder/confirm`, { method: "POST" });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({} as { error?: string }));
+        setDecideError((d as { error?: string })?.error ?? t("decideFailed"));
+        return;
+      }
+      setEntry((e) => (e ? { ...e, pre_order_status: "confirmed" } : e));
+    } catch { setDecideError(t("networkError")); }
+    finally { setDecideBusy(false); }
+  };
+
+  const declinePreorder = async () => {
+    if (!token || decideBusy) {return;}
+    setDecideBusy(true); setDecideError(null);
+    try {
+      const r = await fetch(`${BASE}/qr/${encodeURIComponent(restaurant)}/waitlist/${token}/preorder/decline`, { method: "POST" });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({} as { error?: string }));
+        setDecideError((d as { error?: string })?.error ?? t("decideFailed"));
+        return;
+      }
+      setEntry((e) => (e ? { ...e, pre_order_status: "declined" } : e));
+    } catch { setDecideError(t("networkError")); }
+    finally { setDecideBusy(false); }
   };
 
   // Party guest introduces themselves → appended to the host's party_members.
@@ -794,6 +854,51 @@ function QueueInner() {
                 </div>
               </div>
             </section>
+          ) : entry && entry.status === "seated" && entry.pre_order_status === "pending" && entry.pre_order.length > 0 ? (
+            // Seated with a HELD pre-order: nothing has gone to the kitchen yet.
+            // This decision blocks the table redirect so the picks can't be
+            // silently stranded in 'pending'.
+            <section className="rf-rise px-6 pb-6 pt-7" style={PANEL}>
+              <div className="text-center">
+                <Chip tone="acc" icon="event_seat" label={entry.table_name ? `${t("seatedAt")} ${entry.table_name}` : t("seatedTitle")} />
+                <h2 className="rf-serif mt-4 text-[25px] leading-tight" style={{ color: "var(--ink)" }}>{t("decideTitle")}</h2>
+                <p className="mx-auto mt-2 max-w-[19rem] text-[13px] leading-snug" style={muted(0.6)}>{t("decideBody")}</p>
+              </div>
+              <div className="mt-4 max-h-52 overflow-y-auto rounded-xl" style={{ background: "rgba(var(--bgRGB),0.5)" }}>
+                {entry.pre_order.map((it) => (
+                  <div key={it.id} className="flex items-baseline justify-between gap-3 px-3.5 py-2 text-[13px]">
+                    <span style={{ color: "var(--accHi)" }} className="rf-num flex-shrink-0">{it.quantity}&times;</span>
+                    <span className="flex-1 truncate" style={{ color: "var(--ink)" }}>{it.name}</span>
+                    <span className="rf-num flex-shrink-0" style={muted()}>{money(it.price * it.quantity)}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-3 flex items-baseline justify-between px-1">
+                <span className="text-[12px] font-bold uppercase tracking-wide" style={muted()}>
+                  {entry.pre_order.reduce((sum, it) => sum + it.quantity, 0)} {entry.pre_order.reduce((sum, it) => sum + it.quantity, 0) === 1 ? t("item") : t("items")}
+                </span>
+                <span className="rf-num text-[19px]" style={{ color: "var(--ink)" }}>{money(entry.pre_order.reduce((sum, it) => sum + it.price * it.quantity, 0))}</span>
+              </div>
+              {decideError ? <div className="mt-3"><Banner tone="err" icon="error" title={decideError} /></div> : null}
+              <div className="mt-5 flex gap-2.5">
+                <button
+                  onClick={() => { void declinePreorder(); }}
+                  disabled={decideBusy}
+                  className="rf-press flex-1 rounded-full py-3 text-[13px] font-bold disabled:opacity-50"
+                  style={{ background: "rgba(var(--inkRGB),0.10)", color: "var(--ink)" }}
+                >
+                  {t("decideNo")}
+                </button>
+                <button
+                  onClick={() => { void confirmPreorder(); }}
+                  disabled={decideBusy}
+                  className="rf-press flex-1 rounded-full py-3 text-[13px] font-bold disabled:opacity-50"
+                  style={PRIMARY_BTN}
+                >
+                  {decideBusy ? t("decideBusy") : t("decideYes")}
+                </button>
+              </div>
+            </section>
           ) : entry && entry.status === "seated" ? (
             <section className="rf-rise px-6 py-9 text-center" style={PANEL}>
               <div className="relative mx-auto flex h-20 w-20 items-center justify-center">
@@ -806,7 +911,7 @@ function QueueInner() {
                 {entry.table_name ? `${t("seatedAt")} ${entry.table_name}` : t("seatedTitle")}
               </h2>
               <p className="mx-auto mt-2 max-w-[16rem] text-[13px] leading-snug" style={muted(0.6)}>
-                {entry.pre_order.length ? t("seatedPre") : t("seatedPlain")}
+                {entry.pre_order.length && entry.pre_order_status === "confirmed" ? t("seatedPre") : t("seatedPlain")}
               </p>
               <button onClick={leave} className="rf-press mt-6 px-5 py-2.5 text-[12.5px] font-bold" style={{ borderRadius: "var(--rCtrl)", background: "rgba(var(--inkRGB),0.06)", border: "1px solid rgba(var(--inkRGB),0.12)", color: "rgba(var(--inkRGB),0.72)" }}>
                 {t("done")}

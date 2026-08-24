@@ -4,12 +4,12 @@ import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import QRCode from "qrcode"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Bell, Check, RefreshCw, UserX, X, Clock, Users, QrCode, Printer, Download, ChevronDown, ChevronUp } from "lucide-react"
+import { Bell, Check, RefreshCw, Send, UserX, X, Clock, Users, QrCode, Printer, Download, ChevronDown, ChevronUp } from "lucide-react"
 import { useAuth } from "@/context/AuthContext"
 import { useCurrency } from "@/hooks/use-currency"
 import { useToast } from "@/hooks/use-toast"
 import { useHighlightRow } from "@/hooks/use-highlight-row"
-import { getWaitlist, callWaitlistEntry, seatWaitlistEntry, cancelWaitlistEntry, getTables, type WaitlistEntry } from "@/lib/db"
+import { getWaitlist, callWaitlistEntry, seatWaitlistEntry, cancelWaitlistEntry, confirmWaitlistPreorder, declineWaitlistPreorder, getPendingPreorders, getTables, type PendingPreorder, type PendingPreorderEntry, type WaitlistEntry } from "@/lib/db"
 import { getSelectedOutletId } from "@/lib/outlet"
 import { type Table } from "@/app/dashboard/tables/data"
 
@@ -24,6 +24,11 @@ function WaitlistPageInner() {
   const [tables, setTables] = useState<Table[]>([])
   const [busyId, setBusyId] = useState<string | null>(null)
   const [seatPick, setSeatPick] = useState<Record<string, string>>({})
+  // Seated parties whose held pre-order still needs a yes/no (durable across
+  // refreshes and devices - the seat pop-up alone would be lost on reload).
+  const [pending, setPending] = useState<PendingPreorderEntry[]>([])
+  // The pop-up right after seating a party that picked items while waiting.
+  const [seatDialog, setSeatDialog] = useState<{ id: string; name: string; table: string; pre: PendingPreorder } | null>(null)
   // Which queued rows have their pre-order / party-member detail expanded.
   // Kept at page level so the 8s poll re-render doesn't collapse open rows.
   const [openRows, setOpenRows] = useState<Record<string, boolean>>({})
@@ -37,9 +42,14 @@ function WaitlistPageInner() {
   const load = useCallback(async () => {
     if (!rid) {return}
     try {
-      const [w, t] = await Promise.all([getWaitlist(rid), getTables(rid).catch(() => [] as Table[])])
+      const [w, t, p] = await Promise.all([
+        getWaitlist(rid),
+        getTables(rid).catch(() => [] as Table[]),
+        getPendingPreorders(rid).catch(() => [] as PendingPreorderEntry[]),
+      ])
       setEntries(w)
       setTables(t)
+      setPending(p)
     } finally {
       setLoading(false)
     }
@@ -106,8 +116,31 @@ function WaitlistPageInner() {
     const table = seatPick[entry.id] || freeTables[0]
     if (!table) { toast({ title: "No free table", description: "Free a table first, then seat the party.", variant: "destructive" }); return }
     void act(entry.id, async () => {
-      const r: any = await seatWaitlistEntry(rid, entry.id, table)
-      toast({ title: `Seated at ${table}`, description: r?.placed_order_id ? "Their pre-order was sent to the kitchen." : undefined })
+      // Seating HOLDS the pre-order (never places it): the response's
+      // pending_preorder is the cue to ask, right now, whether it should fire.
+      const r = await seatWaitlistEntry(rid, entry.id, table)
+      if (r?.pending_preorder && r.pending_preorder.items.length > 0) {
+        setSeatDialog({ id: entry.id, name: entry.name, table, pre: r.pending_preorder })
+        toast({ title: `Seated at ${table}`, description: "They picked items while waiting - confirm to send them to the kitchen." })
+      } else {
+        toast({ title: `Seated at ${table}` })
+      }
+    })
+  }
+
+  const confirmPre = (id: string, name: string) => {
+    void act(id, async () => {
+      const r = await confirmWaitlistPreorder(rid, id)
+      toast({ title: r.already ? "Pre-order was already sent" : "Pre-order sent to the kitchen", description: r.table_name ? `${name} at ${r.table_name}` : name })
+      setSeatDialog((d) => (d && d.id === id ? null : d))
+    })
+  }
+
+  const declinePre = (id: string, name: string) => {
+    void act(id, async () => {
+      await declineWaitlistPreorder(rid, id)
+      toast({ title: "Pre-order set aside", description: `${name} will order at the table - their saved picks can still seed their cart.` })
+      setSeatDialog((d) => (d && d.id === id ? null : d))
     })
   }
 
@@ -223,12 +256,46 @@ function WaitlistPageInner() {
       <div className="flex items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Waitlist</h1>
-          <p className="text-sm text-muted-foreground">Walk-in parties waiting for a table. Call them when ready, then seat them — their pre-order is sent to the kitchen automatically.</p>
+          <p className="text-sm text-muted-foreground">Walk-in parties waiting for a table. Call them when ready, then seat them — anything they pre-ordered is held until you or they confirm it below.</p>
         </div>
         <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
           <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} /> Refresh
         </Button>
       </div>
+
+      {pending.length > 0 && (
+        <Card className="border-amber-400/60">
+          <CardHeader>
+            <CardTitle className="text-base">Seated — pre-order awaiting confirmation ({pending.length})</CardTitle>
+            <CardDescription>These parties picked dishes while they waited. Nothing reaches the kitchen until someone confirms — here, or the guest from their phone.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {pending.map((e) => {
+              const total = (e.pre_order ?? []).reduce((sum, it) => sum + Number(it.price || 0) * Number(it.quantity || 0), 0)
+              return (
+                <div key={e.id} className="rounded-lg border p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="font-medium">{e.name}{e.table_name ? <span className="font-normal text-muted-foreground"> · {e.table_name}</span> : null}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {(e.pre_order ?? []).map((it) => `${it.quantity}× ${it.name}`).join(", ")} — {money(total)} · seated {e.minutes_since_seated}m ago
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button size="sm" disabled={busyId === e.id} onClick={() => { confirmPre(e.id, e.name) }}>
+                        <Send className="mr-1 h-4 w-4" /> Send to kitchen
+                      </Button>
+                      <Button size="sm" variant="outline" disabled={busyId === e.id} onClick={() => { declinePre(e.id, e.name) }}>
+                        Will order at table
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </CardContent>
+        </Card>
+      )}
 
       {called.length > 0 && (
         <Card>
@@ -245,6 +312,33 @@ function WaitlistPageInner() {
             : waiting.map((e) => <Row key={e.id} e={e} />)}
         </CardContent>
       </Card>
+
+      {seatDialog ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => { setSeatDialog(null) }}>
+          <div className="w-full max-w-md rounded-lg border bg-background p-5 shadow-lg" onClick={(ev) => { ev.stopPropagation() }}>
+            <h2 className="text-lg font-semibold">Send {seatDialog.name}’s pre-order to the kitchen?</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Seated at {seatDialog.table}. They picked these while waiting — nothing is ordered until it’s confirmed. “Later” keeps it in the pending list.
+            </p>
+            <ul className="mt-3 space-y-1 rounded-md border p-3">
+              {seatDialog.pre.items.map((it) => (
+                <li key={it.id} className="flex justify-between gap-2 text-sm">
+                  <span>{it.name} <span className="text-muted-foreground">×{it.quantity}</span></span>
+                  <span className="whitespace-nowrap tabular-nums text-muted-foreground">{money(Number(it.price || 0) * Number(it.quantity || 0))}</span>
+                </li>
+              ))}
+              <li className="flex justify-between border-t pt-1 text-sm font-medium"><span>Subtotal</span><span className="tabular-nums">{money(seatDialog.pre.subtotal)}</span></li>
+            </ul>
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              <Button variant="ghost" size="sm" onClick={() => { setSeatDialog(null) }}>Later</Button>
+              <Button variant="outline" size="sm" disabled={busyId === seatDialog.id} onClick={() => { declinePre(seatDialog.id, seatDialog.name) }}>Will order at table</Button>
+              <Button size="sm" disabled={busyId === seatDialog.id} onClick={() => { confirmPre(seatDialog.id, seatDialog.name) }}>
+                <Send className="mr-1 h-4 w-4" /> Send to kitchen
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <Card>
         <CardHeader>

@@ -58,6 +58,7 @@ const LANG_KEY = "qr_menu_lang";
 const STRINGS: Record<Lang, Record<string, string>> = {
   en: {
     loadingMenu: "Loading menu…",
+    preorderSeeded: "Your saved picks from the queue are in your cart.",
     scanPrompt: "Scan the QR code at your table to start ordering.",
     thanks: "Thanks for dining with us!",
     settledMsg: "Your bill is settled. To place a new order, please scan the QR code at your table again.",
@@ -138,6 +139,7 @@ const STRINGS: Record<Lang, Record<string, string>> = {
   },
   hi: {
     loadingMenu: "मेनू लोड हो रहा है…",
+    preorderSeeded: "क़तार में चुने आपके व्यंजन कार्ट में आ गए हैं।",
     scanPrompt: "ऑर्डर शुरू करने के लिए अपनी टेबल का QR कोड स्कैन करें।",
     thanks: "हमारे यहाँ भोजन करने के लिए धन्यवाद!",
     settledMsg: "आपका बिल चुका दिया गया है। नया ऑर्डर देने के लिए कृपया टेबल का QR कोड दोबारा स्कैन करें।",
@@ -410,6 +412,51 @@ function OrderInner() {
     const t = setTimeout(() => { setToast(null); }, 3500);
     return () => { clearTimeout(t); };
   }, [toast]);
+
+  // --- Waitlist pre-order hand-off ------------------------------------------
+  // A party seated from the queue who chose "I'll order at the table" arrives
+  // with ?wl=<queue token>. Claim their saved picks ONCE (the backend flips the
+  // entry to 'claimed', so a refresh can't add them twice) and seed the cart so
+  // they don't retype what they picked at the door. Strictly best-effort: any
+  // failure, foreign token, or already-claimed state leaves this page exactly
+  // as it is — this path must never break /order.
+  const wlToken = search?.get("wl") ?? "";
+  const wlClaimed = useRef(false);
+  useEffect(() => {
+    if (!wlToken || !restaurant || wlClaimed.current || items.length === 0) {return;}
+    wlClaimed.current = true;
+    (async () => {
+      try {
+        const res = await fetch(
+          `${BASE}/qr/${encodeURIComponent(restaurant)}/waitlist/${encodeURIComponent(wlToken)}/preorder/claim`,
+          { method: "POST" },
+        );
+        if (!res.ok) {return;}
+        const d: any = await res.json().catch(() => null);
+        const claimed: { id?: unknown; quantity?: unknown }[] = Array.isArray(d?.items) ? d.items : [];
+        if (d?.status !== "claimed" || claimed.length === 0) {return;}
+        let seeded = false;
+        setCart((c) => {
+          const next = { ...c };
+          for (const it of claimed) {
+            const id = String(it.id ?? "");
+            const menuItem = itemsById[id];
+            // Seed only items still on the menu, at the MENU price — the claim
+            // payload is a convenience, never a pricing authority.
+            if (!menuItem) {continue;}
+            const qty = Math.max(1, Math.round(Number(it.quantity ?? 1) || 1));
+            const ex = next[id];
+            next[id] = ex
+              ? { ...ex, quantity: ex.quantity + qty }
+              : { key: id, itemId: id, name: menuItem.name, unitPrice: menuItem.price, quantity: qty };
+            seeded = true;
+          }
+          return next;
+        });
+        if (seeded) {setToast(t("preorderSeeded"));}
+      } catch { /* best-effort — ordering continues normally */ }
+    })();
+  }, [wlToken, restaurant, items.length, itemsById, t]);
 
   // Load the tenant's chosen Google Font (once) so the page renders in it.
   useEffect(() => { if (brandConfig?.font) {loadBrandFont(brandConfig.font);} }, [brandConfig?.font]);
