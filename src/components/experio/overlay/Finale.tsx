@@ -15,7 +15,7 @@ export default function Finale() {
   };
 
   return (
-    <div className="exp-finale pre-hide absolute inset-0 z-10">
+    <div className="exp-finale pre-hide absolute inset-0 z-10 flex flex-col items-center">
       {/* The logomark — four checker tiles, pixel-glued to the 3D object via CSS vars. */}
       <svg
         className="exp-logomark absolute opacity-0"
@@ -35,7 +35,15 @@ export default function Finale() {
         <path className="exp-mark-tile" d="M92 20 h38 l-8 17 h-38 Z" />
       </svg>
 
-      <div className="absolute left-1/2 top-[57%] z-10 flex -translate-x-1/2 flex-col items-center">
+      {/* IN FLOW, not absolutely anchored. This column used to hang from
+          top-[57%] while the footnote below was pinned to bottom-6 — two fixed
+          anchors that collided on short viewports: the replay/login row grew
+          straight down into the copyright line. The spacers reproduce the 57/43
+          optical balance on tall screens, and on short ones the layout
+          compresses instead of overlapping — the footnote is after this column
+          in normal flow, so the two can never occupy the same pixels. */}
+      <div aria-hidden className="min-h-6 flex-[57_57_0%]" />
+      <div className="z-10 flex flex-col items-center">
         <div className="flex text-[clamp(34px,4.6vw,56px)] font-black tracking-[0.02em] text-ink">
           {"EXPERIO".split("").map((ch, i) => (
             <span key={i} className="exp-wm-letter inline-block">
@@ -93,7 +101,8 @@ export default function Finale() {
         </div>
       </div>
 
-      <p className="exp-footnote absolute bottom-6 left-1/2 z-10 -translate-x-1/2 text-[12px] text-ink-3">
+      <div aria-hidden className="min-h-5 flex-[43_43_0%]" />
+      <p className="exp-footnote z-10 mb-6 text-[12px] text-ink-3">
         Wherever work happens. · © 2026 Experio Solutions
       </p>
     </div>
