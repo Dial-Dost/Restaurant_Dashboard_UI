@@ -4082,6 +4082,78 @@ export const setRequireTableOtp = async (restaurantId: string, enabled: boolean)
     try { const j = await res.json(); return j?.require_table_otp === true; } catch { return enabled; }
 };
 
+// --- Printed-bill identity + the sentence above the bill QR ------------------
+// The registered entity and GST number printed under the restaurant name, and
+// the tenant's own line above the feedback/valet QR. All three live on
+// "Restaurant" and travel in the same /restaurant/settings document as the OTP
+// toggle above.
+//
+// READABLE BY ANY SIGNED-IN STAFF, deliberately: these are the fields the PRINT
+// PAGE needs, and the cashier who prints a bill is usually not an admin. They
+// are not in SETTINGS_PRIVILEGED_FIELDS on the backend, so the redacted
+// (non-admin) settings document still carries them. WRITING them still requires
+// the settings permission — the POST is admin-gated server-side.
+export interface BillPrintSettings {
+    // '' means "not set" for all three, and an unset field prints NOTHING on the
+    // bill rather than an empty label. Never coerce these to a placeholder.
+    legalName: string;
+    gstin: string;
+    qrNote: string;
+    // What the printer falls back to when qrNote is '' — supplied by the backend
+    // so neither the editor nor the print page hardcodes the valet sentence.
+    qrNoteDefault: string;
+    qrNoteMax: number;
+}
+
+const BILL_QR_NOTE_MAX_FALLBACK = 120;
+
+export const getBillPrintSettings = async (restaurantId: string): Promise<BillPrintSettings> => {
+    const empty: BillPrintSettings = { legalName: '', gstin: '', qrNote: '', qrNoteDefault: '', qrNoteMax: BILL_QR_NOTE_MAX_FALLBACK };
+    const res = await backendCall('/restaurant/settings', restaurantId, { method: 'GET' });
+    if (!res?.ok) {return empty;}
+    try {
+        const j = await res.json();
+        return {
+            legalName: typeof j?.bill_legal_name === 'string' ? j.bill_legal_name : '',
+            gstin: typeof j?.bill_gstin === 'string' ? j.bill_gstin : '',
+            qrNote: typeof j?.bill_qr_note === 'string' ? j.bill_qr_note : '',
+            qrNoteDefault: typeof j?.bill_qr_note_default === 'string' ? j.bill_qr_note_default : '',
+            qrNoteMax: typeof j?.bill_qr_note_max === 'number' ? j.bill_qr_note_max : BILL_QR_NOTE_MAX_FALLBACK,
+        };
+    } catch { return empty; }
+};
+
+// Sends only the keys the caller actually passed. Sending '' is how an owner
+// CLEARS a field (and clearing the note restores the built-in valet line), so an
+// empty string must reach the backend — presence, not truthiness, decides.
+export const setBillPrintSettings = async (
+    restaurantId: string,
+    patch: { legalName?: string; gstin?: string; qrNote?: string },
+): Promise<BillPrintSettings> => {
+    const body: Record<string, string> = {};
+    if (patch.legalName !== undefined) {body.bill_legal_name = patch.legalName;}
+    if (patch.gstin !== undefined) {body.bill_gstin = patch.gstin;}
+    if (patch.qrNote !== undefined) {body.bill_qr_note = patch.qrNote;}
+    const res = await backendCall('/restaurant/settings', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    });
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to save the bill printing settings');}
+    try {
+        const j = await res.json();
+        return {
+            legalName: typeof j?.bill_legal_name === 'string' ? j.bill_legal_name : '',
+            gstin: typeof j?.bill_gstin === 'string' ? j.bill_gstin : '',
+            qrNote: typeof j?.bill_qr_note === 'string' ? j.bill_qr_note : '',
+            qrNoteDefault: typeof j?.bill_qr_note_default === 'string' ? j.bill_qr_note_default : '',
+            qrNoteMax: typeof j?.bill_qr_note_max === 'number' ? j.bill_qr_note_max : BILL_QR_NOTE_MAX_FALLBACK,
+        };
+    } catch {
+        return { legalName: patch.legalName ?? '', gstin: patch.gstin ?? '', qrNote: patch.qrNote ?? '', qrNoteDefault: '', qrNoteMax: BILL_QR_NOTE_MAX_FALLBACK };
+    }
+};
+
 // --- Restaurant timezone (IANA id in /restaurant/settings) ------------------
 // The zone every timestamp in the dashboard is rendered in, and the zone a
 // "day" means for tally. Read with the rest of the settings document; the

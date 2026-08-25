@@ -4,8 +4,8 @@ import { useEffect, Suspense, useState } from 'react';
 import QRCode from 'qrcode';
 import { useSearchParams } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
-import type { RestaurantProfile} from '@/lib/db';
-import { getRestaurantProfile, getRestaurantLogo, getBillByOrder, getBillForTable, requestBackend } from '@/lib/db';
+import type { BillPrintSettings, RestaurantProfile} from '@/lib/db';
+import { getBillPrintSettings, getRestaurantProfile, getRestaurantLogo, getBillByOrder, getBillForTable, requestBackend } from '@/lib/db';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import Image from 'next/image';
@@ -43,6 +43,70 @@ interface Order {
   currencySymbol: string;
 }
 
+// --- Printed-bill header identity -------------------------------------------
+// ONE resolver, used by both the on-screen bill and the ESC/POS encoder below,
+// so the paper and the preview cannot drift apart.
+//
+// The rule every field obeys: it prints ONLY when the tenant actually has one.
+// A restaurant with no GSTIN gets a clean receipt, never a stray "GSTN :" with
+// nothing after it, and never a blank line standing in for a field it lacks.
+// This mirrors escpos.ts (the backend renderer that drives the thermal agent) —
+// the two must agree, because the same bill can be printed through either.
+const clean = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+
+// A stored address is one text field owners fill in with real line breaks.
+// Honour those as hard breaks and drop blank ones, so a trailing newline never
+// prints as a gap.
+function addressLines(address: unknown): string[] {
+    return clean(address).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+}
+
+// The header lines under the restaurant name, in reference-receipt order:
+// legal entity, address, GST registration. Absent fields contribute nothing.
+function billHeaderLines(profile: RestaurantProfile | null, billPrint: BillPrintSettings | null): string[] {
+    const lines: string[] = [];
+    const legalName = clean(billPrint?.legalName);
+    if (legalName) {lines.push(legalName);}
+    lines.push(...addressLines(profile?.outlet_add));
+    const gstin = clean(billPrint?.gstin);
+    if (gstin) {lines.push(`GSTN : ${gstin}`);}
+    return lines;
+}
+
+// --- What the guest was actually charged --------------------------------------
+// The settled bill's OWN grand total wins over anything computed here.
+//
+// This page used to derive `Math.round(rawTotal) - rawTotal` and print the
+// whole-rupee result, because `order.roundOff` is declared but never populated.
+// A bill settled at ₹797.55 therefore printed ₹798.00 — while the backend
+// renderer (escpos.ts, which drives the thermal agent) prints `grand_total`
+// verbatim. Two print paths disagreeing about real money is worse than either
+// rounding rule; the settle layer is the single source of truth, so the round
+// off line is now the DIFFERENCE the tenant's own settle applied, not a
+// rounding this renderer invented.
+function resolveTotals(order: Order, bill: any | null): { rawTotal: number; roundOffVal: number; finalGrandTotal: number } {
+    const rawTotal = Number(order.total) || 0;
+    const settled = Number(bill?.grand_total);
+    if (Number.isFinite(settled) && settled > 0) {
+        return { rawTotal, roundOffVal: settled - rawTotal, finalGrandTotal: settled };
+    }
+    // No settled bill row yet (printing a running bill before payment): fall
+    // back to the page's original behaviour rather than inventing a total.
+    const calculatedRoundOff = Math.round(rawTotal) - rawTotal;
+    const roundOffVal = order.roundOff !== undefined ? Number(order.roundOff) : calculatedRoundOff;
+    return { rawTotal, roundOffVal, finalGrandTotal: rawTotal + roundOffVal };
+}
+
+// The sentence above the feedback/valet QR: the tenant's own when they have set
+// one, otherwise the built-in line the backend hands us. `qrNoteDefault` is
+// deliberately not hardcoded here — the backend owns that string (escpos.ts
+// DEFAULT_BILL_QR_NOTE) and is the single place it is written down.
+function billQrNote(billPrint: BillPrintSettings | null): string {
+    const own = clean(billPrint?.qrNote);
+    if (own) {return billPrint?.qrNoteMax ? own.slice(0, billPrint.qrNoteMax) : own;}
+    return clean(billPrint?.qrNoteDefault);
+}
+
 function PrintPageContents() {
     // A bill handed to a guest must carry the restaurant's clock, not the
     // clock of whatever machine happens to be driving the printer.
@@ -54,6 +118,7 @@ function PrintPageContents() {
     const [logoBase64, setLogoBase64] = useState<string | null>(null);
     const [bill, setBill] = useState<any | null>(null);
     const [profile, setProfile] = useState<RestaurantProfile | null>(null);
+    const [billPrint, setBillPrint] = useState<BillPrintSettings | null>(null);
     const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
     const [previewText, setPreviewText] = useState<string | null>(null);
     const [order, setOrder] = useState<Order | null>(null);
@@ -89,6 +154,12 @@ function PrintPageContents() {
                         setProfile(prof ?? null);
                         const logo = await getRestaurantLogo(restaurantId).catch(() => null);
                         setLogoBase64(logo ?? null);
+                        // Legal entity / GSTIN / the tenant's QR sentence. A
+                        // failure here must not stop the bill printing — the
+                        // header simply falls back to name + address, which is
+                        // what every bill carried before these fields existed.
+                        const printSettings = await getBillPrintSettings(restaurantId).catch(() => null);
+                        setBillPrint(printSettings ?? null);
                         const billResp = await getBillByOrder(restaurantId, parsed.id).catch(() => null);
                         setBill(billResp ?? null);
 
@@ -141,11 +212,8 @@ function PrintPageContents() {
     const billNo = bill?.bill_no ?? '';
     const totalQty = order.items.reduce((s, it) => s + (Number(it.quantity) || 0), 0);
     
-    // Exact mathematical logic for round-off and grand total
-    const rawTotal = Number(order.total);
-    const calculatedRoundOff = Math.round(rawTotal) - rawTotal;
-    const roundOffVal = order.roundOff !== undefined ? Number(order.roundOff) : calculatedRoundOff;
-    const finalGrandTotal = rawTotal + roundOffVal;
+    // The settled bill's own total wins — see resolveTotals.
+    const { rawTotal, roundOffVal, finalGrandTotal } = resolveTotals(order, bill);
 
     return (
         <div className="p-4 bg-white text-black">
@@ -177,7 +245,7 @@ function PrintPageContents() {
                         <button
                                 onClick={async () => {
                                     // Passed logoBase64 to the encoder
-                                    const esc = await generateEscPos(user, profile, cashierName, bill, order, logoBase64, timezone);
+                                    const esc = await generateEscPos(user, profile, cashierName, bill, order, logoBase64, timezone, billPrint);
                                     if (!esc) {return;}
 
                                     // Convert ESC/POS > readable text preview
@@ -236,7 +304,14 @@ function PrintPageContents() {
                         <p> Loading Logo ... </p>
                     )}
                     <CardTitle className="text-2xl font-bold">{profile?.outlet_name ?? 'Not found'}</CardTitle>
-                    <CardDescription className="text-sm">{profile?.outlet_add ?? 'Address not configured'}</CardDescription>
+                    {/* Legal entity, address lines, GSTIN — each rendered only
+                        when the tenant has one, so a restaurant without them
+                        gets a clean receipt instead of empty labels. */}
+                    <CardDescription className="text-sm">
+                        {billHeaderLines(profile, billPrint).map((l, i) => (
+                            <span key={i} className="block">{l}</span>
+                        ))}
+                    </CardDescription>
                 </CardHeader>
                 <CardContent className="p-6">
                     <div className="mb-4 text-sm" > 
@@ -315,7 +390,11 @@ function PrintPageContents() {
                     </div>
 
                     <div className="text-center mt-4 text-xs text-gray-600">
-                        <p>For calling Valet kindly scan the below QR code</p>
+                        {/* The tenant's own sentence when they have set one;
+                            otherwise the built-in line the backend supplies.
+                            Omitted rather than rendered blank if neither is
+                            available (i.e. the settings fetch failed). */}
+                        {billQrNote(billPrint) ? <p>{billQrNote(billPrint)}</p> : null}
                                                 {qrDataUrl ? (
                                                     <Image src={qrDataUrl} alt="valet-qr" className="mx-auto mt-2 w-[150px] h-[150px]" width={150} height={150} />
                                                 ) : (
@@ -342,7 +421,7 @@ export default function PrintPage() {
     );
 }
 
-export async function generateEscPos(user: any, profile: any, cashierName: string, bill: any, orderArg?: any, logoBase64?: string | null, timeZone: string = DEFAULT_TIMEZONE): Promise<Uint8Array | null> {
+export async function generateEscPos(user: any, profile: any, cashierName: string, bill: any, orderArg?: any, logoBase64?: string | null, timeZone: string = DEFAULT_TIMEZONE, billPrint: BillPrintSettings | null = null): Promise<Uint8Array | null> {
     try {
         let order = orderArg ?? null;
 
@@ -476,12 +555,20 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
             }
         }
 
-        // Header Text
+        // Header Text — name, then legal entity / address lines / GSTIN.
+        // Each of those prints ONLY when the tenant has one (billHeaderLines
+        // drops the rest), so a restaurant with no GSTIN or no registered
+        // entity gets a clean receipt rather than orphan labels.
         encoder
             .bold(true)
             .line(profile?.outlet_name ?? 'CSR Organics Main Outlet')
-            .bold(false)
-            .line(profile?.outlet_add ?? '12 Example Street, Bengaluru')
+            .bold(false);
+
+        for (const headerLine of billHeaderLines(profile, billPrint)) {
+            encoder.line(headerLine);
+        }
+
+        encoder
             .newline()
             .line(lineSeparator)
             .align('left');
@@ -548,10 +635,7 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
         }
 
         // Exact mathematical logic for round-off and grand total
-        const rawTotal = Number(order.total);
-        const calculatedRoundOff = Math.round(rawTotal) - rawTotal;
-        const roundOffVal = order.roundOff !== undefined ? Number(order.roundOff) : calculatedRoundOff;
-        const finalGrandTotal = rawTotal + roundOffVal;
+        const { rawTotal, roundOffVal, finalGrandTotal } = resolveTotals(order, bill);
 
         // Round off FIRST
         const roundOffDisplay = (roundOffVal > 0 ? '+' : '') + roundOffVal.toFixed(2);
@@ -571,9 +655,22 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
         encoder
             .align('center')
             .line('Thanks')
-            .line(lineSeparator)
-            .line('For calling Valet kindly scan the below QR code')
-            .newline();
+            .line(lineSeparator);
+
+        // The tenant's own sentence above the QR when they have set one,
+        // otherwise the built-in valet line. Wrapped to the paper width so a
+        // long message stays inside the column instead of being clipped.
+        //
+        // Guarded on non-empty: wrapText('') yields [''], which would feed the
+        // encoder a blank line where the sentence should be. That only happens
+        // if the settings fetch failed AND the tenant set no note of their own.
+        const qrNoteText = billQrNote(billPrint);
+        if (qrNoteText) {
+            for (const noteLine of wrapText(qrNoteText, MAX_CHARS)) {
+                encoder.line(noteLine);
+            }
+        }
+        encoder.newline();
 
         // QR (feedback form lives inside this app at /feedback; env still overrides)
         const fallbackBase = typeof window !== 'undefined' ? `${window.location.origin}/feedback` : '';

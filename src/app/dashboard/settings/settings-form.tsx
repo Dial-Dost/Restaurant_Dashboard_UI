@@ -34,6 +34,7 @@ import { useAuth } from "@/context/AuthContext"
 import { useCurrency } from "@/hooks/use-currency"
 import type { RestaurantProfile} from "@/lib/db";
 import { getRestaurantProfile, updateRestaurantProfile, getRequireTableOtp, setRequireTableOtp } from "@/lib/db"
+import { BillPrintSettingsCard } from "./bill-print-settings"
 import { BrandingCustomizer } from "./branding-customizer"
 import { TimezoneSelector } from "./timezone-selector"
 
@@ -414,6 +415,10 @@ export function SettingsForm() {
             </div>
           </CardContent>
         </Card>
+
+        {user?.restaurantUsername ? (
+          <BillPrintSettingsCard restaurantId={user.restaurantUsername} isAdmin={hasRole("admin")} />
+        ) : null}
 
         {hasRole("admin") && user?.restaurantUsername ? (
           <BrandingCustomizer
