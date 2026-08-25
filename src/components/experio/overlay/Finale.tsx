@@ -42,7 +42,21 @@ export default function Finale() {
           optical balance on tall screens, and on short ones the layout
           compresses instead of overlapping — the footnote is after this column
           in normal flow, so the two can never occupy the same pixels. */}
-      <div aria-hidden className="min-h-6 flex-[57_57_0%]" />
+      {/* The floor is derived from the SAME variable the logomark is glued to,
+          not a hardcoded percentage: the mark parks at --obj-y (≈44% of the
+          viewport, but the 3D scene owns the value), so the wordmark column
+          must start below it WHEREVER it lands. Without this floor the flex
+          spacer alone let the column start around 31% on common window heights
+          and SOLUTIONS rendered straight through the checker tiles. +9% clears
+          the mark and the gold dust ring with roughly the composition gap the
+          old top-[57%] layout had, while the flex share still pushes content
+          lower on tall screens. On very short windows the footnote clips below
+          the fold — text over text never happens. */}
+      <div
+        aria-hidden
+        className="flex-[57_57_0%]"
+        style={{ minHeight: "calc(var(--obj-y, 44%) + 9%)" }}
+      />
       <div className="z-10 flex flex-col items-center">
         <div className="flex text-[clamp(34px,4.6vw,56px)] font-black tracking-[0.02em] text-ink">
           {"EXPERIO".split("").map((ch, i) => (
