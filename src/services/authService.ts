@@ -102,25 +102,42 @@ export const getOutlets = async (restaurant: string): Promise<{ id: string; name
     }
 }
 
-// Employee Sign In
-export const signInEmployee = async (restaurantName: string, employeeUsername: string, password: string, outletId?: string) => {
-    const response = await fetch(`${apiBaseUrl()}/auth/employee-login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        cache: 'no-store',
-        body: JSON.stringify({
-            restaurantName,
-            employeeUsername,
-            password,
-            ...(outletId ? { outletId } : {}),
-        }),
-    });
+// Employee Sign In.
+//
+// RETURNS the failure, never throws it. This is a 'use server' module, and an
+// Error thrown across the server-action boundary has its message REDACTED by
+// Next in production ("The specific message is omitted in production builds…")
+// — so a wrong password showed that dialog instead of "Invalid employee ID or
+// password." A returned {ok:false} carries the backend's sentence verbatim.
+export type SignInResult =
+    | { ok: true; user: Record<string, unknown> }
+    | { ok: false; error: string };
 
-    if (!response.ok) {
-        throw new Error(await readErrorMessage(response));
+export const signInEmployee = async (restaurantName: string, employeeUsername: string, password: string, outletId?: string): Promise<SignInResult> => {
+    let response: Response;
+    try {
+        response = await fetch(`${apiBaseUrl()}/auth/employee-login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            cache: 'no-store',
+            body: JSON.stringify({
+                restaurantName,
+                employeeUsername,
+                password,
+                ...(outletId ? { outletId } : {}),
+            }),
+        });
+    } catch {
+        // The backend itself was unreachable — a transport failure, not a
+        // credential one; say so rather than blaming the password.
+        return { ok: false, error: 'Could not reach the server. Please try again in a moment.' };
     }
 
-    return await response.json();
+    if (!response.ok) {
+        return { ok: false, error: await readErrorMessage(response) };
+    }
+
+    return { ok: true, user: await response.json() as Record<string, unknown> };
 }
 
 // Password reset: files a forgot-password request with the backend.

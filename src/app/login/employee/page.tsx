@@ -119,7 +119,20 @@ function EmployeeLoginContent() {
           // Ignore persistence failures; login still proceeds.
         }
       }
-      const user = await signInEmployee(restaurantName, data.employeeUsername, data.password, outletId);
+      // The action RETURNS failure rather than throwing: a thrown Error's
+      // message is redacted at the server-action boundary in production, which
+      // used to turn "Invalid employee ID or password." into the opaque
+      // "Server Components render" dialog.
+      const result = await signInEmployee(restaurantName, data.employeeUsername, data.password, outletId);
+      if (!result.ok) {
+        toast({
+          title: "Login Failed",
+          description: result.error,
+          variant: "destructive",
+        });
+        return;
+      }
+      const user = result.user as any;
       // normalize backend response to AuthUser shape
       const authUser = {
         uid: (user.uid ?? user.employeeId) as string,
