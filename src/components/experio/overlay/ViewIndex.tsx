@@ -7,7 +7,7 @@ export default function ViewIndex() {
   return (
     <div className="exp-view-index pre-hide absolute left-[7vw] top-[54%] z-10 hidden lg:block">
       <p className="mb-5 text-[11px] font-medium uppercase tracking-[0.18em] text-ink-3">
-        One frame. Every view.
+        One login. Every module.
       </p>
       <ul className="flex flex-col gap-3">
         {VIEWS.map((v, i) => (

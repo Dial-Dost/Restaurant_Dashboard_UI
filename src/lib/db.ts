@@ -4276,24 +4276,58 @@ export interface BrandFieldOptions {
     header_style?: string[];
     button_shape?: string[];
     surface_style?: string[];
+    scheme?: string[];
+    font_scale?: string[];
+    card_shape?: string[];
+}
+// One preset scheme as the backend advertises it: id/label/hint plus the shell
+// swatches (background/surface/text + semantic states) the picker previews.
+export interface BrandSchemeMeta {
+    id: string;
+    label: string;
+    hint?: string;
+    preview: Record<string, string>;
+}
+// A WCAG clamp the server applied to keep guest text readable — surfaced so the
+// editor can tell the owner why the served colour differs from the picked one.
+export interface BrandContrastNote {
+    role: string;
+    requested: string;
+    applied: string;
+    against: string;
+    ratio: number;
+    minimum: number;
 }
 // brand_config as the editor writes it — `surface_style` (panel material) is the
 // newer live key; the guest pages read the same shape via GuestBrandConfig.
 // The revived palette roles the guest surfaces now consume. BrandConfig (shared
 // with the guest theme helper) predates them, so they are declared here until it
 // catches up — every one is optional and blank means "derive from the accent".
-export type BrandConfigPatch = BrandConfig & {
+// Colour roles are nullable on WRITE: null clears the stored override so
+// "Auto" genuinely resets a role (merge-on-omit keeps whatever is stored).
+export type BrandConfigPatch = Omit<BrandConfig, "color_secondary" | "color_bg" | "color_card" | "color_text"> & {
     surface_style?: string;
-    color_accent?: string;
-    color_success?: string;
-    color_warning?: string;
-    color_error?: string;
+    color_secondary?: string | null;
+    color_bg?: string | null;
+    color_card?: string | null;
+    color_text?: string | null;
+    color_accent?: string | null;
+    color_success?: string | null;
+    color_warning?: string | null;
+    color_error?: string | null;
+    // Preset scheme + the two geometry/scale knobs. null on write = clear the
+    // stored key (back to default); the colour roles clear the same way.
+    scheme?: string | null;
+    font_scale?: string | null;
+    card_shape?: string | null;
 };
 export interface BrandConfigSettings {
     brand_config: BrandConfigPatch;
     brand_fonts: string[];
     brand_fields?: BrandFieldSplit;
     brand_field_options?: BrandFieldOptions;
+    brand_schemes?: BrandSchemeMeta[];
+    brand_contrast?: BrandContrastNote[];
 }
 export const getBrandConfig = async (restaurantId: string): Promise<BrandConfigSettings> => {
     const fallback: BrandConfigSettings = {
@@ -4315,6 +4349,9 @@ export const getBrandConfig = async (restaurantId: string): Promise<BrandConfigS
                 header_style: strings(j.brand_field_options.header_style),
                 button_shape: strings(j.brand_field_options.button_shape),
                 surface_style: strings(j.brand_field_options.surface_style),
+                scheme: strings(j.brand_field_options.scheme),
+                font_scale: strings(j.brand_field_options.font_scale),
+                card_shape: strings(j.brand_field_options.card_shape),
             }
             : undefined;
         return {
@@ -4322,19 +4359,32 @@ export const getBrandConfig = async (restaurantId: string): Promise<BrandConfigS
             brand_fonts: strings(j?.brand_fonts) ?? [],
             ...(split ? { brand_fields: split } : {}),
             ...(opts ? { brand_field_options: opts } : {}),
+            ...(Array.isArray(j?.brand_schemes) ? { brand_schemes: j.brand_schemes as BrandSchemeMeta[] } : {}),
+            ...(Array.isArray(j?.brand_contrast) ? { brand_contrast: j.brand_contrast as BrandContrastNote[] } : {}),
         };
     } catch {
         return fallback;
     }
 };
-export const saveBrandConfig = async (restaurantId: string, brandConfig: BrandConfigPatch): Promise<BrandConfigPatch> => {
+export const saveBrandConfig = async (
+    restaurantId: string,
+    brandConfig: BrandConfigPatch,
+): Promise<{ brand_config: BrandConfigPatch; brand_contrast: BrandContrastNote[] }> => {
     const res = await backendCall('/restaurant/branding', restaurantId, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ brand_config: brandConfig }),
     });
     if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to save customer-page branding');}
-    try { const j = await res.json(); return (j?.brand_config && typeof j.brand_config === 'object') ? (j.brand_config as BrandConfigPatch) : brandConfig; } catch { return brandConfig; }
+    try {
+        const j = await res.json();
+        return {
+            brand_config: (j?.brand_config && typeof j.brand_config === 'object') ? (j.brand_config as BrandConfigPatch) : brandConfig,
+            // The server's WCAG clamp note (empty when the palette is readable
+            // as-is) — the editor repeats it to the owner.
+            brand_contrast: Array.isArray(j?.brand_contrast) ? (j.brand_contrast as BrandContrastNote[]) : [],
+        };
+    } catch { return { brand_config: brandConfig, brand_contrast: [] }; }
 };
 
 // --- Inventory categories (managed list in /restaurant/settings) ------------

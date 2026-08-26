@@ -247,10 +247,10 @@ function Chip({ tone, icon, label }: { tone: Tone; icon: string; label: string }
   const v = TONE_VAR[tone];
   return (
     <span
-      className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.9px]"
+      className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[length:calc(11px*var(--fs,1))] font-bold uppercase tracking-[0.9px]"
       style={{ background: `rgba(${v.rgb},0.14)`, border: `1px solid rgba(${v.rgb},0.34)`, color: v.flat }}
     >
-      <Icon name={icon} style={{ fontSize: 14 }} />
+      <Icon name={icon} style={{ fontSize: "calc(14px*var(--fs,1))" }} />
       {label}
     </span>
   );
@@ -264,10 +264,10 @@ function Banner({ tone, icon, title, body, action }: { tone: Tone; icon: string;
       className="rf-rise flex items-start gap-3 px-4 py-3.5"
       style={{ borderRadius: "var(--rCard)", background: `rgba(${v.rgb},0.10)`, border: `1px solid rgba(${v.rgb},0.30)` }}
     >
-      <Icon name={icon} style={{ fontSize: 20, color: v.flat, marginTop: 1 }} />
+      <Icon name={icon} style={{ fontSize: "calc(20px*var(--fs,1))", color: v.flat, marginTop: 1 }} />
       <div className="min-w-0 flex-1">
-        <p className="text-[13.5px] font-semibold" style={{ color: v.flat }}>{title}</p>
-        {body ? <p className="mt-0.5 text-[12px]" style={muted(0.62)}>{body}</p> : null}
+        <p className="text-[length:calc(13.5px*var(--fs,1))] font-semibold" style={{ color: v.flat }}>{title}</p>
+        {body ? <p className="mt-0.5 text-[length:calc(12px*var(--fs,1))]" style={muted(0.62)}>{body}</p> : null}
         {action}
       </div>
     </div>
@@ -668,7 +668,7 @@ function QueueInner() {
 
   // Theme: the accent ramp from the tenant's PRIMARY brand colour + the panel
   // material / control shape / hero wash from brand_config, plus the nine roles.
-  const theme = useMemo(() => resolveGuestTheme(palette.primary, brandConfig), [palette.primary, brandConfig]);
+  const theme = useMemo(() => resolveGuestTheme(palette.primary, brandConfig, palette), [palette, brandConfig]);
   const rootVars = useMemo(() => ({ ...guestThemeVars(theme), ...paletteVars(palette) }), [theme, palette]);
   const bodyFont = brandConfig?.font ? fontStack(brandConfig.font) : "Roboto, system-ui, sans-serif";
 
@@ -694,25 +694,25 @@ function QueueInner() {
           {m.image_url
             // eslint-disable-next-line @next/next/no-img-element
             ? <img src={m.image_url} alt="" className="absolute inset-0 h-full w-full object-cover" />
-            : <span className="rf-serif text-[26px] leading-none" style={{ color: "var(--accHi)" }}>{monogram}</span>}
+            : <span className="rf-serif text-[length:calc(26px*var(--fs,1))] leading-none" style={{ color: "var(--accHi)" }}>{monogram}</span>}
         </div>
         <div className="min-w-0 flex-1">
-          <p className="truncate text-[14px] font-semibold" style={{ color: "var(--ink)" }}>{m.name}</p>
-          <p className="rf-num mt-0.5 text-[17px]" style={{ color: "rgba(var(--inkRGB),0.8)" }}>{money(m.price)}</p>
+          <p className="truncate text-[length:calc(14px*var(--fs,1))] font-semibold" style={{ color: "var(--ink)" }}>{m.name}</p>
+          <p className="rf-num mt-0.5 text-[length:calc(17px*var(--fs,1))]" style={{ color: "rgba(var(--inkRGB),0.8)" }}>{money(m.price)}</p>
         </div>
         {qty ? (
           <div className="flex flex-shrink-0 items-center gap-2 p-1.5" style={{ borderRadius: "var(--rCtrl)", background: "rgba(var(--accRGB),0.15)", border: "1px solid rgba(var(--accRGB),0.28)" }}>
             <button aria-label="Remove one" onClick={() => { setQty(m.id, -1); }} className="rf-press flex h-7 w-7 items-center justify-center rounded-full" style={{ background: "rgba(var(--bgRGB),0.6)" }}>
-              <Icon name="remove" style={{ fontSize: 17, color: "var(--accHi)" }} />
+              <Icon name="remove" style={{ fontSize: "calc(17px*var(--fs,1))", color: "var(--accHi)" }} />
             </button>
-            <span className="rf-num min-w-[16px] text-center text-[16px] font-medium" style={{ color: "var(--ink)" }}>{qty}</span>
+            <span className="rf-num min-w-[16px] text-center text-[length:calc(16px*var(--fs,1))] font-medium" style={{ color: "var(--ink)" }}>{qty}</span>
             <button aria-label="Add one" onClick={() => { setQty(m.id, 1); }} className="rf-press flex h-7 w-7 items-center justify-center rounded-full" style={{ background: "linear-gradient(180deg, var(--accHi), var(--accMid))" }}>
-              <Icon name="add" style={{ fontSize: 17, color: "var(--onAcc)" }} />
+              <Icon name="add" style={{ fontSize: "calc(17px*var(--fs,1))", color: "var(--onAcc)" }} />
             </button>
           </div>
         ) : (
-          <button onClick={() => { setQty(m.id, 1); }} className="rf-press flex flex-shrink-0 items-center gap-1 px-3.5 py-2 text-[12.5px] font-bold" style={{ borderRadius: "var(--rCtrl)", background: "rgba(var(--accRGB),0.16)", border: "1px solid rgba(var(--accRGB),0.32)", color: "var(--accHi)" }}>
-            <Icon name="add" style={{ fontSize: 16 }} />{t("add")}
+          <button onClick={() => { setQty(m.id, 1); }} className="rf-press flex flex-shrink-0 items-center gap-1 px-3.5 py-2 text-[length:calc(12.5px*var(--fs,1))] font-bold" style={{ borderRadius: "var(--rCtrl)", background: "rgba(var(--accRGB),0.16)", border: "1px solid rgba(var(--accRGB),0.32)", color: "var(--accHi)" }}>
+            <Icon name="add" style={{ fontSize: "calc(16px*var(--fs,1))" }} />{t("add")}
           </button>
         )}
       </div>
@@ -748,10 +748,10 @@ function QueueInner() {
                 <img src={brand.logo} alt="" className="h-11 w-11 rounded-[14px] object-cover" style={{ border: "1px solid rgba(var(--inkRGB),0.18)", boxShadow: "0 8px 22px rgba(0,0,0,0.45)" }} />
               ) : (
                 <div className="flex h-11 w-11 items-center justify-center rounded-[14px]" style={{ background: "linear-gradient(145deg, var(--accHi), var(--accDeep))", boxShadow: "0 8px 22px rgba(var(--accShadowRGB),0.5)" }}>
-                  <Icon name="restaurant" style={{ fontSize: 22, color: "var(--onAcc)" }} />
+                  <Icon name="restaurant" style={{ fontSize: "calc(22px*var(--fs,1))", color: "var(--onAcc)" }} />
                 </div>
               )}
-              <div className="flex overflow-hidden text-[11px] font-bold" style={{ borderRadius: "var(--rCtrl)", border: "1px solid rgba(var(--inkRGB),0.14)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}>
+              <div className="flex overflow-hidden text-[length:calc(11px*var(--fs,1))] font-bold" style={{ borderRadius: "var(--rCtrl)", border: "1px solid rgba(var(--inkRGB),0.14)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}>
                 {(["en", "hi"] as const).map((l) => (
                   <button
                     key={l}
@@ -768,8 +768,8 @@ function QueueInner() {
               </div>
             </div>
             <div>
-              <div className="mb-1 text-[10px] font-bold uppercase tracking-[2px]" style={{ color: "var(--accHi)", textShadow: "0 1px 8px rgba(0,0,0,0.6)" }}>{t("eyebrow")}</div>
-              <h1 className="rf-serif text-[34px] leading-none" style={{ color: "var(--ink)", textShadow: "0 2px 16px rgba(0,0,0,0.55)" }}>{brand.name}</h1>
+              <div className="mb-1 text-[length:calc(10px*var(--fs,1))] font-bold uppercase tracking-[2px]" style={{ color: "var(--accHi)", textShadow: "0 1px 8px rgba(0,0,0,0.6)" }}>{t("eyebrow")}</div>
+              <h1 className="rf-serif text-[length:calc(34px*var(--fs,1))] leading-none" style={{ color: "var(--ink)", textShadow: "0 2px 16px rgba(0,0,0,0.55)" }}>{brand.name}</h1>
             </div>
           </div>
         </header>
@@ -782,8 +782,8 @@ function QueueInner() {
               title={t("offlineTitle")}
               body={t("offlineBody")}
               action={(
-                <button onClick={() => { void loadBrand(); }} className="rf-press mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-bold" style={{ borderRadius: "var(--rCtrl)", background: "rgba(var(--errRGB),0.16)", border: "1px solid rgba(var(--errRGB),0.34)", color: "var(--err)" }}>
-                  <Icon name="refresh" style={{ fontSize: 15 }} />{t("retry")}
+                <button onClick={() => { void loadBrand(); }} className="rf-press mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 text-[length:calc(12px*var(--fs,1))] font-bold" style={{ borderRadius: "var(--rCtrl)", background: "rgba(var(--errRGB),0.16)", border: "1px solid rgba(var(--errRGB),0.34)", color: "var(--err)" }}>
+                  <Icon name="refresh" style={{ fontSize: "calc(15px*var(--fs,1))" }} />{t("retry")}
                 </button>
               )}
             />
@@ -795,22 +795,22 @@ function QueueInner() {
               <div className="px-5 pb-5 pt-5">
                 <div className="flex items-center gap-3">
                   <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-[14px]" style={{ background: "linear-gradient(145deg, var(--accHi), var(--accDeep))", boxShadow: "0 10px 24px rgba(var(--accShadowRGB),0.45)" }}>
-                    <Icon name="event_seat" style={{ fontSize: 22, color: "var(--onAcc)" }} />
+                    <Icon name="event_seat" style={{ fontSize: "calc(22px*var(--fs,1))", color: "var(--onAcc)" }} />
                   </div>
                   <div className="min-w-0">
-                    <h2 className="rf-serif text-[24px] leading-none" style={{ color: "var(--ink)" }}>{t("joinTitle")}</h2>
-                    <p className="mt-1.5 text-[12.5px] leading-snug" style={muted(0.6)}>{t("joinSub")}</p>
+                    <h2 className="rf-serif text-[length:calc(24px*var(--fs,1))] leading-none" style={{ color: "var(--ink)" }}>{t("joinTitle")}</h2>
+                    <p className="mt-1.5 text-[length:calc(12.5px*var(--fs,1))] leading-snug" style={muted(0.6)}>{t("joinSub")}</p>
                   </div>
                 </div>
 
                 <div className="mt-5 space-y-4">
                   <div>
-                    <label htmlFor="q-name" className="mb-1.5 block text-[11px] font-bold uppercase" style={LABEL}>{t("fieldName")}</label>
+                    <label htmlFor="q-name" className="mb-1.5 block text-[length:calc(11px*var(--fs,1))] font-bold uppercase" style={LABEL}>{t("fieldName")}</label>
                     <input id="q-name" className="rf-field" value={name} onChange={(e) => { setName(e.target.value); }} placeholder={t("namePlaceholder")} autoComplete="name" />
                   </div>
 
                   <div>
-                    <label htmlFor="q-phone" className="mb-1.5 block text-[11px] font-bold uppercase" style={LABEL}>{t("fieldPhone")}</label>
+                    <label htmlFor="q-phone" className="mb-1.5 block text-[length:calc(11px*var(--fs,1))] font-bold uppercase" style={LABEL}>{t("fieldPhone")}</label>
                     <input
                       id="q-phone"
                       className="rf-field"
@@ -822,24 +822,24 @@ function QueueInner() {
                       aria-invalid={phoneBad}
                       placeholder={t("phonePlaceholder")}
                     />
-                    <p className="mt-1.5 flex items-center gap-1 text-[11.5px]" style={phoneBad ? { color: "var(--err)" } : muted(0.5)}>
-                      <Icon name={phoneBad ? "error" : "call"} style={{ fontSize: 14 }} />
+                    <p className="mt-1.5 flex items-center gap-1 text-[length:calc(11.5px*var(--fs,1))]" style={phoneBad ? { color: "var(--err)" } : muted(0.5)}>
+                      <Icon name={phoneBad ? "error" : "call"} style={{ fontSize: "calc(14px*var(--fs,1))" }} />
                       {phoneBad ? t("phoneTenDigits") : t("phoneHint")}
                     </p>
                   </div>
 
                   <div>
-                    <label className="mb-1.5 block text-[11px] font-bold uppercase" style={LABEL}>{t("partySize")}</label>
+                    <label className="mb-1.5 block text-[length:calc(11px*var(--fs,1))] font-bold uppercase" style={LABEL}>{t("partySize")}</label>
                     <div className="flex items-center gap-3 p-1.5" style={{ borderRadius: "var(--rCtrl)", background: "rgba(var(--bgRGB),0.55)", border: "1.5px solid rgba(var(--inkRGB),0.10)" }}>
                       <button aria-label="Fewer guests" onClick={() => { setParty((p) => Math.max(1, p - 1)); }} className="rf-press flex h-10 w-10 items-center justify-center rounded-full" style={{ background: "rgba(var(--inkRGB),0.06)", border: "1px solid rgba(var(--inkRGB),0.1)" }}>
-                        <Icon name="remove" style={{ fontSize: 20, color: "var(--ink)" }} />
+                        <Icon name="remove" style={{ fontSize: "calc(20px*var(--fs,1))", color: "var(--ink)" }} />
                       </button>
                       <div className="flex flex-1 items-baseline justify-center gap-1.5">
-                        <span className="rf-num text-[30px] leading-none" style={{ color: "var(--ink)" }}>{party}</span>
-                        <span className="text-[12px] font-medium" style={muted(0.5)}>{party > 1 ? t("guests") : t("guest")}</span>
+                        <span className="rf-num text-[length:calc(30px*var(--fs,1))] leading-none" style={{ color: "var(--ink)" }}>{party}</span>
+                        <span className="text-[length:calc(12px*var(--fs,1))] font-medium" style={muted(0.5)}>{party > 1 ? t("guests") : t("guest")}</span>
                       </div>
                       <button aria-label="More guests" onClick={() => { setParty((p) => Math.min(50, p + 1)); }} className="rf-press flex h-10 w-10 items-center justify-center rounded-full" style={{ background: "linear-gradient(180deg, var(--accHi), var(--accMid))", boxShadow: "0 8px 18px rgba(var(--accShadowRGB),0.45)" }}>
-                        <Icon name="add" style={{ fontSize: 20, color: "var(--onAcc)" }} />
+                        <Icon name="add" style={{ fontSize: "calc(20px*var(--fs,1))", color: "var(--onAcc)" }} />
                       </button>
                     </div>
                   </div>
@@ -847,8 +847,8 @@ function QueueInner() {
                   {error ? <Banner tone="err" icon="error" title={error} /> : null}
 
                   {/* Submit stays blocked while a typed number is not 10 digits. */}
-                  <button onClick={join} disabled={busy || !name.trim() || !isOptionalMobile10(phone)} className="rf-press flex w-full items-center justify-center gap-2 py-4 text-[15px] font-bold disabled:opacity-45" style={PRIMARY_BTN}>
-                    {busy ? <Icon name="progress_activity" style={{ fontSize: 19, animation: "rfSpin 1s linear infinite" }} /> : <Icon name="how_to_reg" style={{ fontSize: 19 }} />}
+                  <button onClick={join} disabled={busy || !name.trim() || !isOptionalMobile10(phone)} className="rf-press flex w-full items-center justify-center gap-2 py-4 text-[length:calc(15px*var(--fs,1))] font-bold disabled:opacity-45" style={PRIMARY_BTN}>
+                    {busy ? <Icon name="progress_activity" style={{ fontSize: "calc(19px*var(--fs,1))", animation: "rfSpin 1s linear infinite" }} /> : <Icon name="how_to_reg" style={{ fontSize: "calc(19px*var(--fs,1))" }} />}
                     {busy ? t("joining") : t("joinCta")}
                   </button>
                 </div>
@@ -861,12 +861,12 @@ function QueueInner() {
             <section className="rf-rise px-6 pb-6 pt-7" style={PANEL}>
               <div className="text-center">
                 <Chip tone="acc" icon="event_seat" label={entry.table_name ? `${t("seatedAt")} ${entry.table_name}` : t("seatedTitle")} />
-                <h2 className="rf-serif mt-4 text-[25px] leading-tight" style={{ color: "var(--ink)" }}>{t("decideTitle")}</h2>
-                <p className="mx-auto mt-2 max-w-[19rem] text-[13px] leading-snug" style={muted(0.6)}>{t("decideBody")}</p>
+                <h2 className="rf-serif mt-4 text-[length:calc(25px*var(--fs,1))] leading-tight" style={{ color: "var(--ink)" }}>{t("decideTitle")}</h2>
+                <p className="mx-auto mt-2 max-w-[19rem] text-[length:calc(13px*var(--fs,1))] leading-snug" style={muted(0.6)}>{t("decideBody")}</p>
               </div>
               <div className="mt-4 max-h-52 overflow-y-auto rounded-xl" style={{ background: "rgba(var(--bgRGB),0.5)" }}>
                 {entry.pre_order.map((it) => (
-                  <div key={it.id} className="flex items-baseline justify-between gap-3 px-3.5 py-2 text-[13px]">
+                  <div key={it.id} className="flex items-baseline justify-between gap-3 px-3.5 py-2 text-[length:calc(13px*var(--fs,1))]">
                     <span style={{ color: "var(--accHi)" }} className="rf-num flex-shrink-0">{it.quantity}&times;</span>
                     <span className="flex-1 truncate" style={{ color: "var(--ink)" }}>{it.name}</span>
                     <span className="rf-num flex-shrink-0" style={muted()}>{money(it.price * it.quantity)}</span>
@@ -874,17 +874,17 @@ function QueueInner() {
                 ))}
               </div>
               <div className="mt-3 flex items-baseline justify-between px-1">
-                <span className="text-[12px] font-bold uppercase tracking-wide" style={muted()}>
+                <span className="text-[length:calc(12px*var(--fs,1))] font-bold uppercase tracking-wide" style={muted()}>
                   {entry.pre_order.reduce((sum, it) => sum + it.quantity, 0)} {entry.pre_order.reduce((sum, it) => sum + it.quantity, 0) === 1 ? t("item") : t("items")}
                 </span>
-                <span className="rf-num text-[19px]" style={{ color: "var(--ink)" }}>{money(entry.pre_order.reduce((sum, it) => sum + it.price * it.quantity, 0))}</span>
+                <span className="rf-num text-[length:calc(19px*var(--fs,1))]" style={{ color: "var(--ink)" }}>{money(entry.pre_order.reduce((sum, it) => sum + it.price * it.quantity, 0))}</span>
               </div>
               {decideError ? <div className="mt-3"><Banner tone="err" icon="error" title={decideError} /></div> : null}
               <div className="mt-5 flex gap-2.5">
                 <button
                   onClick={() => { void declinePreorder(); }}
                   disabled={decideBusy}
-                  className="rf-press flex-1 rounded-full py-3 text-[13px] font-bold disabled:opacity-50"
+                  className="rf-press flex-1 rounded-full py-3 text-[length:calc(13px*var(--fs,1))] font-bold disabled:opacity-50"
                   style={{ background: "rgba(var(--inkRGB),0.10)", color: "var(--ink)" }}
                 >
                   {t("decideNo")}
@@ -892,7 +892,7 @@ function QueueInner() {
                 <button
                   onClick={() => { void confirmPreorder(); }}
                   disabled={decideBusy}
-                  className="rf-press flex-1 rounded-full py-3 text-[13px] font-bold disabled:opacity-50"
+                  className="rf-press flex-1 rounded-full py-3 text-[length:calc(13px*var(--fs,1))] font-bold disabled:opacity-50"
                   style={PRIMARY_BTN}
                 >
                   {decideBusy ? t("decideBusy") : t("decideYes")}
@@ -904,16 +904,16 @@ function QueueInner() {
               <div className="relative mx-auto flex h-20 w-20 items-center justify-center">
                 <span className="absolute inset-0 rounded-full" style={{ background: "rgba(var(--okRGB),0.35)", animation: "rfHalo 2.4s ease-out infinite" }} />
                 <span className="relative flex h-20 w-20 items-center justify-center rounded-full" style={{ background: "linear-gradient(150deg, rgba(var(--okRGB),0.9), rgba(var(--okRGB),0.45))", boxShadow: "0 14px 30px rgba(var(--okRGB),0.3)" }}>
-                  <Icon name="celebration" style={{ fontSize: 36, color: "var(--bg)" }} />
+                  <Icon name="celebration" style={{ fontSize: "calc(36px*var(--fs,1))", color: "var(--bg)" }} />
                 </span>
               </div>
-              <h2 className="rf-serif mt-5 text-[27px] leading-tight" style={{ color: "var(--ink)" }}>
+              <h2 className="rf-serif mt-5 text-[length:calc(27px*var(--fs,1))] leading-tight" style={{ color: "var(--ink)" }}>
                 {entry.table_name ? `${t("seatedAt")} ${entry.table_name}` : t("seatedTitle")}
               </h2>
-              <p className="mx-auto mt-2 max-w-[16rem] text-[13px] leading-snug" style={muted(0.6)}>
+              <p className="mx-auto mt-2 max-w-[16rem] text-[length:calc(13px*var(--fs,1))] leading-snug" style={muted(0.6)}>
                 {entry.pre_order.length && entry.pre_order_status === "confirmed" ? t("seatedPre") : t("seatedPlain")}
               </p>
-              <button onClick={leave} className="rf-press mt-6 px-5 py-2.5 text-[12.5px] font-bold" style={{ borderRadius: "var(--rCtrl)", background: "rgba(var(--inkRGB),0.06)", border: "1px solid rgba(var(--inkRGB),0.12)", color: "rgba(var(--inkRGB),0.72)" }}>
+              <button onClick={leave} className="rf-press mt-6 px-5 py-2.5 text-[length:calc(12.5px*var(--fs,1))] font-bold" style={{ borderRadius: "var(--rCtrl)", background: "rgba(var(--inkRGB),0.06)", border: "1px solid rgba(var(--inkRGB),0.12)", color: "rgba(var(--inkRGB),0.72)" }}>
                 {t("done")}
               </button>
             </section>
@@ -929,11 +929,11 @@ function QueueInner() {
                         <span className="absolute inset-0 rounded-full" style={{ background: "rgba(var(--accRGB),0.4)", animation: "rfHalo 2.2s ease-out infinite" }} />
                         <span className="absolute inset-0 rounded-full" style={{ background: "rgba(var(--accRGB),0.28)", animation: "rfHalo 2.2s ease-out .7s infinite" }} />
                         <span className="relative flex h-[112px] w-[112px] items-center justify-center rounded-full" style={{ background: "linear-gradient(150deg, var(--accHi), var(--accDeep))", boxShadow: "0 18px 40px rgba(var(--accShadowRGB),0.55)" }}>
-                          <Icon name="notifications_active" style={{ fontSize: 50, color: "var(--onAcc)", animation: "rfBellSwing 2.6s ease-in-out infinite", transformOrigin: "50% 20%" }} />
+                          <Icon name="notifications_active" style={{ fontSize: "calc(50px*var(--fs,1))", color: "var(--onAcc)", animation: "rfBellSwing 2.6s ease-in-out infinite", transformOrigin: "50% 20%" }} />
                         </span>
                       </div>
-                      <h2 className="rf-serif mt-6 text-[29px] leading-tight" style={{ color: "var(--accHi)" }}>{t("tableReady")}</h2>
-                      <p className="mx-auto mt-2 max-w-[17rem] text-[13px] leading-snug" style={muted(0.6)}>{t("headToHost")}</p>
+                      <h2 className="rf-serif mt-6 text-[length:calc(29px*var(--fs,1))] leading-tight" style={{ color: "var(--accHi)" }}>{t("tableReady")}</h2>
+                      <p className="mx-auto mt-2 max-w-[17rem] text-[length:calc(13px*var(--fs,1))] leading-snug" style={muted(0.6)}>{t("headToHost")}</p>
                     </>
                   ) : (
                     <>
@@ -945,28 +945,28 @@ function QueueInner() {
                         <span className="absolute inset-0 rounded-full" style={{ background: "conic-gradient(from 200deg, rgba(var(--accHiRGB),0.95), rgba(var(--accDeepRGB),0.18) 52%, rgba(var(--brand2RGB),0.75) 78%, rgba(var(--accHiRGB),0.95))" }} />
                         <span className="absolute rounded-full" style={{ inset: 5, background: "linear-gradient(160deg, rgba(var(--surfaceRGB),0.97), rgba(var(--bgRGB),0.99))", border: "1px solid rgba(var(--inkRGB),0.07)" }} />
                         <span className="relative flex flex-col items-center">
-                          <span className="text-[9.5px] font-bold uppercase tracking-[2px]" style={muted(0.45)}>{t("position")}</span>
-                          <span className="rf-num mt-0.5 text-[58px] leading-none" style={{ color: "var(--ink)" }}>{entry.position}</span>
+                          <span className="text-[length:calc(9.5px*var(--fs,1))] font-bold uppercase tracking-[2px]" style={muted(0.45)}>{t("position")}</span>
+                          <span className="rf-num mt-0.5 text-[length:calc(58px*var(--fs,1))] leading-none" style={{ color: "var(--ink)" }}>{entry.position}</span>
                         </span>
                       </div>
-                      <p className="mt-6 text-[15.5px] font-semibold" style={{ color: entry.position <= 1 ? "var(--accHi)" : "var(--ink)" }}>
+                      <p className="mt-6 text-[length:calc(15.5px*var(--fs,1))] font-semibold" style={{ color: entry.position <= 1 ? "var(--accHi)" : "var(--ink)" }}>
                         {entry.position <= 1 ? t("youreNext") : `${entry.position - 1} ${entry.position - 1 === 1 ? t("aheadOne") : t("aheadMany")}`}
                       </p>
-                      <p className="mx-auto mt-2 max-w-[17rem] text-[12.5px] leading-snug" style={muted(0.55)}>{t("weWillAlert")}</p>
+                      <p className="mx-auto mt-2 max-w-[17rem] text-[length:calc(12.5px*var(--fs,1))] leading-snug" style={muted(0.55)}>{t("weWillAlert")}</p>
                     </>
                   )}
 
                   <div className="mt-6 flex items-center justify-between gap-2 pt-4" style={{ borderTop: "1px solid rgba(var(--inkRGB),0.09)" }}>
                     <div className="flex min-w-0 items-center gap-2">
-                      <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-[13px] font-bold" style={{ background: "rgba(var(--accRGB),0.16)", color: "var(--accHi)" }}>
+                      <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-[length:calc(13px*var(--fs,1))] font-bold" style={{ background: "rgba(var(--accRGB),0.16)", color: "var(--accHi)" }}>
                         {(entry.name.trim()[0] ?? "?").toUpperCase()}
                       </span>
                       <div className="min-w-0 text-left">
-                        <p className="truncate text-[13px] font-semibold" style={{ color: "var(--ink)" }}>{entry.name}</p>
-                        <p className="text-[11px]" style={muted(0.5)}>{t("partyOf")} {entry.party_size}</p>
+                        <p className="truncate text-[length:calc(13px*var(--fs,1))] font-semibold" style={{ color: "var(--ink)" }}>{entry.name}</p>
+                        <p className="text-[length:calc(11px*var(--fs,1))]" style={muted(0.5)}>{t("partyOf")} {entry.party_size}</p>
                       </div>
                     </div>
-                    <button onClick={leave} disabled={busy} className="rf-press flex-shrink-0 px-3 py-2 text-[11.5px] font-semibold disabled:opacity-50" style={{ borderRadius: "var(--rCtrl)", background: "rgba(var(--errRGB),0.10)", border: "1px solid rgba(var(--errRGB),0.26)", color: "var(--err)" }}>
+                    <button onClick={leave} disabled={busy} className="rf-press flex-shrink-0 px-3 py-2 text-[length:calc(11.5px*var(--fs,1))] font-semibold disabled:opacity-50" style={{ borderRadius: "var(--rCtrl)", background: "rgba(var(--errRGB),0.10)", border: "1px solid rgba(var(--errRGB),0.26)", color: "var(--err)" }}>
                       {t("leave")}
                     </button>
                   </div>
@@ -978,20 +978,20 @@ function QueueInner() {
                 <section className="rf-rise px-5 pb-5 pt-5" style={PANEL}>
                   <div className="flex items-center gap-3">
                     <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-[13px]" style={{ background: "rgba(var(--brand2RGB),0.18)", border: "1px solid rgba(var(--brand2RGB),0.3)" }}>
-                      <Icon name="group_add" style={{ fontSize: 20, color: "var(--brand2)" }} />
+                      <Icon name="group_add" style={{ fontSize: "calc(20px*var(--fs,1))", color: "var(--brand2)" }} />
                     </div>
                     <div className="min-w-0">
-                      <h3 className="text-[15px] font-bold" style={{ color: "var(--ink)" }}>{t("groupTitle")} · {entry.name}</h3>
-                      <p className="mt-0.5 text-[12px] leading-snug" style={muted(0.58)}>{brand.showMenu ? t("groupSubMenu") : t("groupSub")}</p>
+                      <h3 className="text-[length:calc(15px*var(--fs,1))] font-bold" style={{ color: "var(--ink)" }}>{t("groupTitle")} · {entry.name}</h3>
+                      <p className="mt-0.5 text-[length:calc(12px*var(--fs,1))] leading-snug" style={muted(0.58)}>{brand.showMenu ? t("groupSubMenu") : t("groupSub")}</p>
                     </div>
                   </div>
                   <div className="mt-4 space-y-3.5">
                     <div>
-                      <label htmlFor="q-mname" className="mb-1.5 block text-[11px] font-bold uppercase" style={LABEL}>{t("fieldName")}</label>
+                      <label htmlFor="q-mname" className="mb-1.5 block text-[length:calc(11px*var(--fs,1))] font-bold uppercase" style={LABEL}>{t("fieldName")}</label>
                       <input id="q-mname" className="rf-field" value={memberName} onChange={(e) => { setMemberName(e.target.value); }} placeholder={t("namePlaceholder")} autoComplete="name" />
                     </div>
                     <div>
-                      <label htmlFor="q-mphone" className="mb-1.5 block text-[11px] font-bold uppercase" style={LABEL}>{t("groupPhone")}</label>
+                      <label htmlFor="q-mphone" className="mb-1.5 block text-[length:calc(11px*var(--fs,1))] font-bold uppercase" style={LABEL}>{t("groupPhone")}</label>
                       <input
                         id="q-mphone"
                         className="rf-field"
@@ -1003,21 +1003,21 @@ function QueueInner() {
                         aria-invalid={memberPhoneBad}
                         placeholder={t("phonePlaceholder")}
                       />
-                      <p className="mt-1.5 text-[11.5px]" style={memberPhoneBad ? { color: "var(--err)" } : muted(0.5)}>
+                      <p className="mt-1.5 text-[length:calc(11.5px*var(--fs,1))]" style={memberPhoneBad ? { color: "var(--err)" } : muted(0.5)}>
                         {memberPhoneBad ? t("phoneTenDigits") : t("groupHint")}
                       </p>
                     </div>
                     {memberError ? <Banner tone="err" icon="error" title={memberError} /> : null}
                     {/* Required here: 10 digits or the button stays disabled. */}
-                    <button onClick={submitMember} disabled={memberBusy || !memberName.trim() || !isMobile10(memberPhone)} className="rf-press flex w-full items-center justify-center gap-2 py-3.5 text-[14px] font-bold disabled:opacity-45" style={PRIMARY_BTN}>
-                      {memberBusy ? <Icon name="progress_activity" style={{ fontSize: 18, animation: "rfSpin 1s linear infinite" }} /> : <Icon name="person_add" style={{ fontSize: 18 }} />}
+                    <button onClick={submitMember} disabled={memberBusy || !memberName.trim() || !isMobile10(memberPhone)} className="rf-press flex w-full items-center justify-center gap-2 py-3.5 text-[length:calc(14px*var(--fs,1))] font-bold disabled:opacity-45" style={PRIMARY_BTN}>
+                      {memberBusy ? <Icon name="progress_activity" style={{ fontSize: "calc(18px*var(--fs,1))", animation: "rfSpin 1s linear infinite" }} /> : <Icon name="person_add" style={{ fontSize: "calc(18px*var(--fs,1))" }} />}
                       {memberBusy ? t("groupAdding") : t("groupCta")}
                     </button>
                   </div>
                 </section>
               ) : isPartyGuest && memberDone ? (
-                <div className="rf-rise flex items-center justify-center gap-2 px-4 py-3.5 text-[13px] font-semibold" style={{ borderRadius: "var(--rCard)", background: "rgba(var(--okRGB),0.12)", border: "1px solid rgba(var(--okRGB),0.3)", color: "var(--ok)" }}>
-                  <Icon name="check_circle" style={{ fontSize: 18 }} />
+                <div className="rf-rise flex items-center justify-center gap-2 px-4 py-3.5 text-[length:calc(13px*var(--fs,1))] font-semibold" style={{ borderRadius: "var(--rCard)", background: "rgba(var(--okRGB),0.12)", border: "1px solid rgba(var(--okRGB),0.3)", color: "var(--ok)" }}>
+                  <Icon name="check_circle" style={{ fontSize: "calc(18px*var(--fs,1))" }} />
                   <span>{t("groupDone")} · {entry.name}</span>
                 </div>
               ) : null}
@@ -1025,10 +1025,10 @@ function QueueInner() {
               {shareQr ? (
                 <section className="rf-rise px-5 pb-5 pt-5 text-center" style={PANEL}>
                   <div className="flex items-center justify-center gap-2">
-                    <Icon name="qr_code_2" style={{ fontSize: 18, color: "var(--accHi)" }} />
-                    <h3 className="text-[15px] font-bold" style={{ color: "var(--ink)" }}>{t("shareTitle")}</h3>
+                    <Icon name="qr_code_2" style={{ fontSize: "calc(18px*var(--fs,1))", color: "var(--accHi)" }} />
+                    <h3 className="text-[length:calc(15px*var(--fs,1))] font-bold" style={{ color: "var(--ink)" }}>{t("shareTitle")}</h3>
                   </div>
-                  <p className="mx-auto mt-1 max-w-[17rem] text-[12px] leading-snug" style={muted(0.58)}>{brand.showMenu ? t("shareSubMenu") : t("shareSub")}</p>
+                  <p className="mx-auto mt-1 max-w-[17rem] text-[length:calc(12px*var(--fs,1))] leading-snug" style={muted(0.58)}>{brand.showMenu ? t("shareSubMenu") : t("shareSub")}</p>
                   {/* The QR plate stays a light square on purpose — scanners need
                       the contrast; it sits inside an accent-lit frame. */}
                   <div className="mx-auto mt-4 inline-block rounded-[20px] p-2.5" style={{ background: "linear-gradient(150deg, rgba(var(--accHiRGB),0.55), rgba(var(--brand2RGB),0.35))", boxShadow: "0 14px 34px rgba(var(--accShadowRGB),0.4)" }}>
@@ -1043,11 +1043,11 @@ function QueueInner() {
                 <section className="rf-rise pt-1">
                   <div className="flex items-center gap-2.5 px-1">
                     <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-[12px]" style={{ background: "rgba(var(--accRGB),0.14)", border: "1px solid rgba(var(--accRGB),0.28)" }}>
-                      <Icon name="restaurant_menu" style={{ fontSize: 19, color: "var(--accHi)" }} />
+                      <Icon name="restaurant_menu" style={{ fontSize: "calc(19px*var(--fs,1))", color: "var(--accHi)" }} />
                     </div>
                     <div className="min-w-0">
-                      <h3 className="text-[15.5px] font-bold" style={{ color: "var(--ink)" }}>{t("preTitle")}</h3>
-                      <p className="mt-0.5 text-[11.5px] leading-snug" style={muted(0.55)}>{t("preSub")}</p>
+                      <h3 className="text-[length:calc(15.5px*var(--fs,1))] font-bold" style={{ color: "var(--ink)" }}>{t("preTitle")}</h3>
+                      <p className="mt-0.5 text-[length:calc(11.5px*var(--fs,1))] leading-snug" style={muted(0.55)}>{t("preSub")}</p>
                     </div>
                   </div>
 
@@ -1066,7 +1066,7 @@ function QueueInner() {
                           <button
                             key={cat}
                             onClick={() => { if (!drag.current.moved) {setActiveCat(cat);} }}
-                            className="rf-press whitespace-nowrap rounded-full px-4 py-2 text-[12.5px] font-semibold"
+                            className="rf-press whitespace-nowrap rounded-full px-4 py-2 text-[length:calc(12.5px*var(--fs,1))] font-semibold"
                             style={on
                               ? { background: "var(--accHi)", color: "var(--onAcc)", border: "1px solid transparent", boxShadow: "0 8px 20px rgba(var(--accShadowRGB),0.4)" }
                               : { background: "rgba(var(--inkRGB),0.05)", color: "rgba(var(--inkRGB),0.6)", border: "1px solid rgba(var(--inkRGB),0.1)" }}
@@ -1087,10 +1087,10 @@ function QueueInner() {
               {brand.showMenu && availableMenu.length === 0 && menu.length === 0 ? (
                 <section className="rf-rise px-6 py-8 text-center" style={PANEL}>
                   <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full" style={{ background: "rgba(var(--inkRGB),0.05)", border: "1px solid rgba(var(--inkRGB),0.1)" }}>
-                    <Icon name="no_meals" style={{ fontSize: 26, color: "rgba(var(--inkRGB),0.45)" }} />
+                    <Icon name="no_meals" style={{ fontSize: "calc(26px*var(--fs,1))", color: "rgba(var(--inkRGB),0.45)" }} />
                   </div>
-                  <p className="mt-3.5 text-[14px] font-semibold" style={{ color: "var(--ink)" }}>{t("menuEmptyTitle")}</p>
-                  <p className="mx-auto mt-1 max-w-[17rem] text-[12px] leading-snug" style={muted(0.55)}>{t("menuEmptyBody")}</p>
+                  <p className="mt-3.5 text-[length:calc(14px*var(--fs,1))] font-semibold" style={{ color: "var(--ink)" }}>{t("menuEmptyTitle")}</p>
+                  <p className="mx-auto mt-1 max-w-[17rem] text-[length:calc(12px*var(--fs,1))] leading-snug" style={muted(0.55)}>{t("menuEmptyBody")}</p>
                 </section>
               ) : null}
             </>
@@ -1106,22 +1106,22 @@ function QueueInner() {
             style={{ pointerEvents: "auto", borderRadius: "var(--rCard)", background: "rgba(var(--surfaceRGB),0.78)", backdropFilter: "blur(26px) saturate(150%)", WebkitBackdropFilter: "blur(26px) saturate(150%)", border: "1px solid rgba(var(--inkRGB),0.13)", boxShadow: "0 20px 50px rgba(0,0,0,0.6), inset 0 1px 0 rgba(var(--inkRGB),0.08)" }}
           >
             <div className="relative flex h-11 w-11 flex-shrink-0 items-center justify-center" style={{ borderRadius: 14, background: "linear-gradient(145deg, var(--accHi), var(--accMid))", boxShadow: "0 8px 20px rgba(var(--accShadowRGB),0.5)" }}>
-              <Icon name="shopping_bag" style={{ fontSize: 21, color: "var(--onAcc)" }} />
-              <span className="absolute -right-1.5 -top-1.5 flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[11px] font-bold" style={{ background: "var(--brand2)", color: "var(--bg)", border: "2px solid rgba(var(--surfaceRGB),1)" }}>{cartCount}</span>
+              <Icon name="shopping_bag" style={{ fontSize: "calc(21px*var(--fs,1))", color: "var(--onAcc)" }} />
+              <span className="absolute -right-1.5 -top-1.5 flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[length:calc(11px*var(--fs,1))] font-bold" style={{ background: "var(--brand2)", color: "var(--bg)", border: "2px solid rgba(var(--surfaceRGB),1)" }}>{cartCount}</span>
             </div>
             <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-1.5 text-[10.5px] font-bold uppercase tracking-wide" style={muted(0.55)}>
+              <div className="flex items-center gap-1.5 text-[length:calc(10.5px*var(--fs,1))] font-bold uppercase tracking-wide" style={muted(0.55)}>
                 <span>{cartCount} {cartCount === 1 ? t("item") : t("items")}</span>
                 {savedAt ? (
                   <span className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5" style={{ background: "rgba(var(--okRGB),0.16)", color: "var(--ok)" }}>
-                    <Icon name="check" style={{ fontSize: 12 }} />{t("saved")}
+                    <Icon name="check" style={{ fontSize: "calc(12px*var(--fs,1))" }} />{t("saved")}
                   </span>
                 ) : null}
               </div>
-              <div className="rf-num text-[23px] leading-tight" style={{ color: "var(--ink)" }}>{money(cartTotal)}</div>
+              <div className="rf-num text-[length:calc(23px*var(--fs,1))] leading-tight" style={{ color: "var(--ink)" }}>{money(cartTotal)}</div>
             </div>
-            <button onClick={() => setConfirming(true)} disabled={busy || cartItems().length === 0} className="rf-press flex flex-shrink-0 items-center gap-1.5 px-4 py-3 text-[13px] font-bold disabled:opacity-50" style={PRIMARY_BTN}>
-              <Icon name="bookmark_added" style={{ fontSize: 17 }} />{t("savePicks")}
+            <button onClick={() => setConfirming(true)} disabled={busy || cartItems().length === 0} className="rf-press flex flex-shrink-0 items-center gap-1.5 px-4 py-3 text-[length:calc(13px*var(--fs,1))] font-bold disabled:opacity-50" style={PRIMARY_BTN}>
+              <Icon name="bookmark_added" style={{ fontSize: "calc(17px*var(--fs,1))" }} />{t("savePicks")}
             </button>
           </div>
         </div>
@@ -1143,17 +1143,17 @@ function QueueInner() {
           >
             <div className="flex items-center gap-2.5">
               <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full" style={{ background: "rgba(var(--accRGB),0.16)" }}>
-                <Icon name="bookmark_added" style={{ fontSize: 19, color: "var(--accHi)" }} />
+                <Icon name="bookmark_added" style={{ fontSize: "calc(19px*var(--fs,1))", color: "var(--accHi)" }} />
               </span>
-              <h2 className="rf-serif text-[21px] leading-tight" style={{ color: "var(--ink)" }}>{t("confirmTitle")}</h2>
+              <h2 className="rf-serif text-[length:calc(21px*var(--fs,1))] leading-tight" style={{ color: "var(--ink)" }}>{t("confirmTitle")}</h2>
             </div>
 
-            <p className="mt-3 text-[13px] leading-relaxed" style={muted()}>{t("confirmBody")}</p>
+            <p className="mt-3 text-[length:calc(13px*var(--fs,1))] leading-relaxed" style={muted()}>{t("confirmBody")}</p>
 
             {/* What they are agreeing to, itemised — a total alone is not consent. */}
             <div className="mt-4 max-h-52 overflow-y-auto rounded-xl" style={{ background: "rgba(var(--bgRGB),0.5)" }}>
               {cartItems().map((it) => (
-                <div key={it.id} className="flex items-baseline justify-between gap-3 px-3.5 py-2 text-[13px]">
+                <div key={it.id} className="flex items-baseline justify-between gap-3 px-3.5 py-2 text-[length:calc(13px*var(--fs,1))]">
                   <span style={{ color: "var(--accHi)" }} className="rf-num flex-shrink-0">{it.quantity}&times;</span>
                   <span className="flex-1 truncate" style={{ color: "var(--ink)" }}>{it.name}</span>
                   <span className="rf-num flex-shrink-0" style={muted()}>{money(it.price * it.quantity)}</span>
@@ -1162,16 +1162,16 @@ function QueueInner() {
             </div>
 
             <div className="mt-3 flex items-baseline justify-between px-1">
-              <span className="text-[12px] font-bold uppercase tracking-wide" style={muted()}>
+              <span className="text-[length:calc(12px*var(--fs,1))] font-bold uppercase tracking-wide" style={muted()}>
                 {cartCount} {cartCount === 1 ? t("item") : t("items")}
               </span>
-              <span className="rf-num text-[19px]" style={{ color: "var(--ink)" }}>{money(cartTotal)}</span>
+              <span className="rf-num text-[length:calc(19px*var(--fs,1))]" style={{ color: "var(--ink)" }}>{money(cartTotal)}</span>
             </div>
 
             <div className="mt-5 flex gap-2.5">
               <button
                 onClick={() => { setConfirming(false); }}
-                className="rf-press flex-1 rounded-full py-3 text-[13px] font-bold"
+                className="rf-press flex-1 rounded-full py-3 text-[length:calc(13px*var(--fs,1))] font-bold"
                 style={{ background: "rgba(var(--inkRGB),0.10)", color: "var(--ink)" }}
               >
                 {t("confirmNo")}
@@ -1179,7 +1179,7 @@ function QueueInner() {
               <button
                 onClick={savePreorder}
                 disabled={busy}
-                className="rf-press flex-1 rounded-full py-3 text-[13px] font-bold disabled:opacity-50"
+                className="rf-press flex-1 rounded-full py-3 text-[length:calc(13px*var(--fs,1))] font-bold disabled:opacity-50"
                 style={PRIMARY_BTN}
               >
                 {t("confirmYes")}
@@ -1200,14 +1200,14 @@ function QueueInner() {
             <div className="relative mx-auto flex h-[92px] w-[92px] items-center justify-center">
               <span className="absolute inset-0 rounded-full" style={{ background: "rgba(var(--accRGB),0.4)", animation: "rfHalo 2s ease-out infinite" }} />
               <span className="relative flex h-[92px] w-[92px] items-center justify-center rounded-full" style={{ background: "linear-gradient(150deg, var(--accHi), var(--accDeep))", boxShadow: "0 16px 36px rgba(var(--accShadowRGB),0.55)" }}>
-                <Icon name="notifications_active" style={{ fontSize: 42, color: "var(--onAcc)", animation: "rfBellSwing 2.6s ease-in-out infinite", transformOrigin: "50% 20%" }} />
+                <Icon name="notifications_active" style={{ fontSize: "calc(42px*var(--fs,1))", color: "var(--onAcc)", animation: "rfBellSwing 2.6s ease-in-out infinite", transformOrigin: "50% 20%" }} />
               </span>
             </div>
-            <h2 className="rf-serif mt-5 text-[28px] leading-tight" style={{ color: "var(--accHi)" }}>{t("tableReady")}</h2>
-            <p className="mx-auto mt-2 max-w-[17rem] text-[13px] leading-snug" style={muted(0.62)}>
+            <h2 className="rf-serif mt-5 text-[length:calc(28px*var(--fs,1))] leading-tight" style={{ color: "var(--accHi)" }}>{t("tableReady")}</h2>
+            <p className="mx-auto mt-2 max-w-[17rem] text-[length:calc(13px*var(--fs,1))] leading-snug" style={muted(0.62)}>
               {entry?.pre_order.length ? t("popupBodySaved") : t("popupBody")}
             </p>
-            <button onClick={() => { setShowCalled(false); }} className="rf-press mt-6 w-full py-3.5 text-[14px] font-bold" style={PRIMARY_BTN}>{t("gotIt")}</button>
+            <button onClick={() => { setShowCalled(false); }} className="rf-press mt-6 w-full py-3.5 text-[length:calc(14px*var(--fs,1))] font-bold" style={PRIMARY_BTN}>{t("gotIt")}</button>
           </div>
         </div>
       ) : null}
@@ -1246,8 +1246,8 @@ function QueueSkeleton({ vars, font, label }: { vars: CSSProperties; font: strin
             <div className="rf-skel mt-3.5 h-14 w-full" />
             <div className="rf-skel mt-5 h-12 w-full" />
           </div>
-          <p className="mt-5 flex items-center justify-center gap-2 text-[12.5px]" style={{ color: "rgba(var(--inkRGB),0.5)" }}>
-            <span className="ms" style={{ fontSize: 16, animation: "rfSpin 1s linear infinite" }}>progress_activity</span>
+          <p className="mt-5 flex items-center justify-center gap-2 text-[length:calc(12.5px*var(--fs,1))]" style={{ color: "rgba(var(--inkRGB),0.5)" }}>
+            <span className="ms" style={{ fontSize: "calc(16px*var(--fs,1))", animation: "rfSpin 1s linear infinite" }}>progress_activity</span>
             {label}
           </p>
         </div>

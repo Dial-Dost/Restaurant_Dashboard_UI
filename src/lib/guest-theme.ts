@@ -18,9 +18,15 @@ export const HEX_RE = /^#[0-9a-fA-F]{6}$/;
 // brand_config as the guest pages consume it. `surface_style` is the newer key
 // (panel material) the backend added when the legacy colour keys were retired;
 // declared here as an optional extension so the guest pages don't depend on the
-// editor-side type being updated in lockstep.
+// editor-side type being updated in lockstep. scheme/font_scale/card_shape are
+// the preset-scheme generation of knobs (scheme itself is resolved server-side
+// into brand_palette; the client only needs the two geometry/scale keys plus
+// the id for editor state).
 export interface GuestBrandConfig extends BrandConfig {
   surface_style?: "frosted" | "solid" | "tinted";
+  scheme?: string;
+  font_scale?: "small" | "medium" | "large";
+  card_shape?: "rounded" | "sharp";
 }
 
 // Only #rrggbb is accepted; anything else (null, "", a name, a short hex) is
@@ -93,39 +99,77 @@ export function hexToHS(hex: string): { h: number; s: number } {
 }
 
 // Panel material (brand_config.surface_style). "frosted" is the shipped look, so
-// an untouched tenant is pixel-identical to before this key existed.
+// an untouched tenant is pixel-identical to before this key existed. When the
+// tenant's palette carries a non-default card surface (an explicit color_card or
+// a preset scheme), the frosted/solid materials are rebuilt from that surface so
+// e.g. a light scheme gets light glass, not the shipped dark slab. For the
+// default surface #1A1A1F the derivations reproduce the shipped rgba strings
+// EXACTLY (26,26,31 IS #1A1A1F), so untouched tenants render byte-identically.
 interface Surface { panelBg: string; blur: string; pbA: string }
-const SURFACES: Record<string, Surface> = {
-  frosted: { panelBg: "rgba(26,26,31,0.55)", blur: "22px", pbA: "0.12" },
-  solid: { panelBg: "rgba(18,18,21,0.94)", blur: "0px", pbA: "0.10" },
-  tinted: { panelBg: "rgba(var(--accShadowRGB),0.42)", blur: "22px", pbA: "0.18" },
-};
+function surfaceMaterial(style: string, palette?: GuestPalette | null): Surface {
+  const surface = palette?.surface ?? PALETTE_DEFAULTS.surface;
+  const defaultSurface = surface.toUpperCase() === PALETTE_DEFAULTS.surface.toUpperCase();
+  switch (style) {
+    case "solid":
+      // The shipped solid slab is a hair darker than the surface role; derive
+      // the same relationship (surface pulled 30% toward the page) off-default.
+      return {
+        panelBg: defaultSurface
+          ? "rgba(18,18,21,0.94)"
+          : `rgba(${mixRgb(surface, palette?.background ?? PALETTE_DEFAULTS.background, 0.7).join(",")},0.94)`,
+        blur: "0px",
+        pbA: "0.10",
+      };
+    case "tinted":
+      // Accent-tinted glass follows the accent ramp, which already tracks the
+      // tenant's brand on every scheme — nothing to derive.
+      return { panelBg: "rgba(var(--accShadowRGB),0.42)", blur: "22px", pbA: "0.18" };
+    default:
+      return { panelBg: `rgba(${rgbOf(surface)},0.55)`, blur: "22px", pbA: "0.12" };
+  }
+}
 
 // Control radius (brand_config.button_shape). "rounded" (13px) is the shipped
-// value; the card radius stays a design constant at 22px.
+// value. The card radius is driven by card_shape: "rounded" keeps the design's
+// 22px, "sharp" squares the panels off at 6px.
 const CTRL_RADII: Record<string, string> = { rounded: "13px", pill: "9999px", square: "4px" };
-const CARD_RADIUS = "22px";
+const CARD_RADII: Record<string, string> = { rounded: "22px", sharp: "6px" };
+
+// Guest text scale (brand_config.font_scale). Every guest font-size is written
+// as calc(<px> * var(--fs, 1)), so "medium" (1) is bit-identical to the sizes
+// that shipped and the two other stops scale text (and icon glyphs) together.
+const FONT_SCALES: Record<string, string> = { small: "0.92", medium: "1", large: "1.1" };
 
 export interface GuestTheme extends Ramp {
   panelBg: string; blur: string; pbA: string;
   rCard: string; rCtrl: string;
   heroWash: string;
+  fs: string;
 }
 
 // The full surface theme for a guest page: the accent ramp derived from the
-// tenant's accent, plus the three brand_config knobs that are real
+// tenant's accent, plus the brand_config knobs that are real
 // (surface_style → panel material, button_shape → control radius,
-// header_style → hero wash).
-export function resolveGuestTheme(accent: string, cfg: GuestBrandConfig | null | undefined): GuestTheme {
+// card_shape → card radius, font_scale → text scale, header_style → hero wash).
+// `palette` (the server-resolved brand_palette) is optional so existing callers
+// keep compiling; without it the materials assume the shipped dark shell.
+export function resolveGuestTheme(accent: string, cfg: GuestBrandConfig | null | undefined, palette?: GuestPalette | null): GuestTheme {
   const { h, s } = hexToHS(accent);
-  const surface = SURFACES[cfg?.surface_style ?? "frosted"] ?? SURFACES.frosted;
+  const surface = surfaceMaterial(cfg?.surface_style ?? "frosted", palette);
   const rCtrl = CTRL_RADII[cfg?.button_shape ?? "rounded"] ?? CTRL_RADII.rounded;
+  const rCard = CARD_RADII[cfg?.card_shape ?? "rounded"] ?? CARD_RADII.rounded;
+  const fs = FONT_SCALES[cfg?.font_scale ?? "medium"] ?? FONT_SCALES.medium;
   // "solid" paints a flat accent block; "gradient" (default) is the shipped
   // accent→near-black wash. Both sit under the same dark scrim in the markup.
+  // The gradient's tail lands on the page background so a light scheme's hero
+  // fades into its own paper, not into someone else's near-black (#0B0B0D is
+  // kept verbatim for the default shell).
+  const bg = palette?.background ?? PALETTE_DEFAULTS.background;
+  const tail = bg.toUpperCase() === PALETTE_DEFAULTS.background.toUpperCase() ? "#0B0B0D" : bg;
   const heroWash = cfg?.header_style === "solid"
     ? "var(--accDeep)"
-    : "linear-gradient(150deg, var(--accDeep), #0B0B0D 78%)";
-  return { ...rampHS(h, s), ...surface, rCard: CARD_RADIUS, rCtrl, heroWash };
+    : `linear-gradient(150deg, var(--accDeep), ${tail} 78%)`;
+  return { ...rampHS(h, s), ...surface, rCard, rCtrl, heroWash, fs };
 }
 
 // The CSS custom properties every guest surface is styled from. Set on the page
@@ -137,7 +181,7 @@ export function guestThemeVars(theme: GuestTheme): CSSProperties {
     "--accRGB": theme.accRGB, "--accHiRGB": theme.accHiRGB, "--accDeepRGB": theme.accDeepRGB,
     "--accShadowRGB": theme.accShadowRGB, "--panelBg": theme.panelBg, "--blur": theme.blur,
     "--pbA": theme.pbA, "--rCard": theme.rCard, "--rCtrl": theme.rCtrl,
-    "--heroWash": theme.heroWash,
+    "--heroWash": theme.heroWash, "--fs": theme.fs,
   } as CSSProperties;
 }
 
@@ -208,6 +252,31 @@ export function rgbOf(hex: string): string {
   return `${(n >> 16) & 0xff},${(n >> 8) & 0xff},${n & 0xff}`;
 }
 
+// Weighted mix of two hexes: wA of `a` + (1-wA) of `b`, as [r,g,b]. Used to
+// derive the in-between chrome tones (muted ink, panel chrome, placeholders)
+// from the tenant's own palette instead of shipping them as fixed greys.
+export function mixRgb(a: string, b: string, wA: number): [number, number, number] {
+  const parse = (hex: string): [number, number, number] => {
+    const m = /^#?([0-9a-fA-F]{6})$/.exec((hex ?? "").trim());
+    const n = m ? parseInt(m[1], 16) : 0;
+    return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
+  };
+  const [ar, ag, ab] = parse(a);
+  const [br, bg, bb] = parse(b);
+  const w = Math.max(0, Math.min(1, wA));
+  return [
+    Math.round(ar * w + br * (1 - w)),
+    Math.round(ag * w + bg * (1 - w)),
+    Math.round(ab * w + bb * (1 - w)),
+  ];
+}
+
+// WCAG-ish luminance, just enough to answer "is this colour light or dark".
+function isLight(hex: string): boolean {
+  const [r, g, b] = mixRgb(hex, hex, 1);
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 > 0.5;
+}
+
 // Validate a raw `brand_palette` payload into a complete palette. Anything the
 // tenant hasn't set (or that arrives malformed) falls back to a value DERIVED
 // from the tenant's own primary where a derivation exists (secondary/accent),
@@ -247,6 +316,71 @@ export function paletteVars(p: GuestPalette): CSSProperties {
     "--ok": p.success, "--okRGB": rgbOf(p.success),
     "--warn": p.warning, "--warnRGB": rgbOf(p.warning),
     "--err": p.error, "--errRGB": rgbOf(p.error),
+    ...shellToneVars(p),
+  } as CSSProperties;
+}
+
+// ---------------------------------------------------------------------------
+// Derived shell tones. The order/feedback pages were designed around a handful
+// of fixed chrome colours (strong/muted/dim ink, translucent panel bases, white
+// hairlines). To let a preset scheme or custom palette re-shell those pages,
+// every one of those literals becomes a CSS variable derived from the tenant's
+// palette — and for the SHIPPED palette each derivation short-circuits to the
+// exact original literal, so an untouched tenant's pages are byte-identical.
+// ---------------------------------------------------------------------------
+export interface ShellTones {
+  /** Headline/emphasis ink (was the literal #F7F5F2 / #F3F1EE). */
+  inkStrong: string;
+  /** Secondary ink (was #9A978F). */
+  inkMuted: string;
+  /** Tertiary/disabled ink (was #615E57). */
+  inkDim: string;
+  /** Chrome panel base, "r,g,b" (was rgba(14,14,16,α)). */
+  panelRGB: string;
+  /** Chip/pill base, "r,g,b" (was rgba(10,10,12,α)). */
+  chipRGB: string;
+  /** Floating bar base, "r,g,b" (was rgba(24,24,28,α)). */
+  floatRGB: string;
+  /** Hairline borders, "r,g,b" (was rgba(255,255,255,α)); flips dark on light shells. */
+  edgeRGB: string;
+  /** Dish-image placeholder gradient stops (were #26262B → #111113). */
+  phTop: string;
+  phBot: string;
+  /** Bottom-sheet gradient stops (were #141416 → #0D0D0F). */
+  sheetTop: string;
+  sheetBot: string;
+  /** Long-copy ink on sheets, brighter than muted (was #C9C6BF). */
+  inkSoft: string;
+}
+
+export function shellTones(p: GuestPalette): ShellTones {
+  const defaultInk = p.text.toUpperCase() === PALETTE_DEFAULTS.text.toUpperCase();
+  const defaultGround = p.background.toUpperCase() === PALETTE_DEFAULTS.background.toUpperCase()
+    && p.surface.toUpperCase() === PALETTE_DEFAULTS.surface.toUpperCase();
+  const inkExtreme = isLight(p.text) ? "#FFFFFF" : "#000000";
+  return {
+    inkStrong: defaultInk ? "#F7F5F2" : hexOf(mixRgb(p.text, inkExtreme, 0.55)),
+    inkMuted: defaultInk && defaultGround ? "#9A978F" : hexOf(mixRgb(p.text, p.background, 0.62)),
+    inkDim: defaultInk && defaultGround ? "#615E57" : hexOf(mixRgb(p.text, p.background, 0.38)),
+    panelRGB: defaultGround ? "14,14,16" : mixRgb(p.surface, p.background, 0.5).join(","),
+    chipRGB: defaultGround ? "10,10,12" : mixRgb(p.background, p.surface, 0.75).join(","),
+    floatRGB: defaultGround ? "24,24,28" : mixRgb(p.surface, p.background, 0.85).join(","),
+    edgeRGB: defaultInk ? "255,255,255" : rgbOf(p.text),
+    phTop: defaultGround ? "#26262B" : hexOf(mixRgb(p.surface, isLight(p.surface) ? "#000000" : "#FFFFFF", 0.94)),
+    phBot: defaultGround ? "#111113" : hexOf(mixRgb(p.surface, p.background, 0.4)),
+    sheetTop: defaultGround ? "#141416" : hexOf(mixRgb(p.surface, p.background, 0.65)),
+    sheetBot: defaultGround ? "#0D0D0F" : hexOf(mixRgb(p.surface, p.background, 0.3)),
+    inkSoft: defaultInk && defaultGround ? "#C9C6BF" : hexOf(mixRgb(p.text, p.background, 0.8)),
+  };
+}
+
+function shellToneVars(p: GuestPalette): CSSProperties {
+  const t = shellTones(p);
+  return {
+    "--inkStrong": t.inkStrong, "--inkMuted": t.inkMuted, "--inkDim": t.inkDim,
+    "--panelRGB": t.panelRGB, "--chipRGB": t.chipRGB, "--floatRGB": t.floatRGB,
+    "--edgeRGB": t.edgeRGB, "--phTop": t.phTop, "--phBot": t.phBot,
+    "--sheetTop": t.sheetTop, "--sheetBot": t.sheetBot, "--inkSoft": t.inkSoft,
   } as CSSProperties;
 }
 
@@ -263,7 +397,7 @@ export const GUEST_FX_CSS = `
 .rf-skel{background:linear-gradient(90deg,rgba(var(--inkRGB),0.05) 25%,rgba(var(--inkRGB),0.12) 45%,rgba(var(--inkRGB),0.05) 65%);background-size:220% 100%;animation:rfShimmer 1.5s linear infinite;border-radius:10px;}
 .rf-press{transition:transform .16s cubic-bezier(.22,.9,.28,1),box-shadow .2s ease,background-color .2s ease,border-color .2s ease,opacity .2s ease;}
 .rf-press:active{transform:scale(.97);}
-.rf-field{width:100%;font-size:16px;line-height:1.35;color:var(--ink);background:rgba(var(--bgRGB),0.55);border:1.5px solid rgba(var(--inkRGB),0.10);border-radius:var(--rCtrl);padding:12px 14px;outline:none;caret-color:var(--accHi);transition:border-color .2s ease,box-shadow .2s ease,background-color .2s ease;-webkit-appearance:none;appearance:none;}
+.rf-field{width:100%;font-size:calc(16px*var(--fs,1));line-height:1.35;color:var(--ink);background:rgba(var(--bgRGB),0.55);border:1.5px solid rgba(var(--inkRGB),0.10);border-radius:var(--rCtrl);padding:12px 14px;outline:none;caret-color:var(--accHi);transition:border-color .2s ease,box-shadow .2s ease,background-color .2s ease;-webkit-appearance:none;appearance:none;}
 .rf-field::placeholder{color:rgba(var(--inkRGB),0.32);}
 .rf-field:focus{border-color:rgba(var(--accRGB),0.8);background:rgba(var(--bgRGB),0.72);box-shadow:0 0 0 4px rgba(var(--accRGB),0.15);}
 .rf-field[aria-invalid="true"]{border-color:rgba(var(--errRGB),0.75);}

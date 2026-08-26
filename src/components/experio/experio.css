@@ -26,6 +26,18 @@
   --emerald: #0fa678;
   --violet: #7c5cfc;
 
+  /* CuisineFlow's Rustic Fork palette, lifted verbatim from the product's
+     design system (restaurant_owner_app/lib/ui/theme/app_colors.dart) so the
+     mock dashboard in Act 2/3 is the REAL dark-copper product UI. */
+  --copper-hi: #e3b89b;
+  --copper: #c9997a;
+  --copper-mid: #a9795c;
+  --copper-deep: #7d5b47;
+  --rf-success: #8fb27c;
+  --rf-warning: #d9a962;
+  --rf-danger: #c97b6e;
+  --rf-info: #8fa3b8;
+
   background: var(--white);
   color: var(--ink);
   font-family: "Satoshi", var(--font-inter), ui-sans-serif, system-ui, sans-serif;
@@ -244,5 +256,86 @@ html:has(.exp-root) body {
   .exp-root .glass-rim::after,
   .exp-root .glass-shine::before {
     transition: none;
+  }
+}
+
+/* ── The product frame wears the product's skin ─────────────────────────────
+   Acts 2/3 construct the actual CuisineFlow dashboard, which is the Rustic
+   Fork system: near-black warm surfaces, warm-grey ink, one copper accent.
+   The film canvas around it stays white Experio — the contrast is the point.
+   These overrides are scoped to `.exp-dash` so the light glass language of
+   the hero, module tiles and finale is untouched. */
+.exp-root .exp-dash.glass {
+  background: rgba(21, 18, 17, 0.97); /* AppColors.surface */
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 24px 70px -32px rgba(17, 17, 17, 0.55);
+}
+/* Tailwind's ink utilities are hex-valued (not var-driven), so the dark frame
+   re-inks them here instead of renaming dozens of classes in the shared chart
+   components. Values are AppColors.textPrimary/Secondary/Tertiary. */
+.exp-root .exp-dash .text-ink {
+  color: #eceae6;
+}
+.exp-root .exp-dash .text-ink-2 {
+  color: #9a978f;
+}
+.exp-root .exp-dash .text-ink-3 {
+  color: #757168;
+}
+.exp-root .exp-dash {
+  /* accentColor("neutral") resolves var(--ink-3): warm it up on dark. */
+  --ink-3: #8b877e;
+}
+/* The cursor shine reads far too bright on near-black cards — same gesture,
+   copper and dim. */
+.exp-root .exp-dash .glass-shine::before {
+  background: radial-gradient(
+    360px circle at var(--mx, 50%) var(--my, 50%),
+    rgba(227, 184, 155, 0.12),
+    rgba(227, 184, 155, 0.05) 40%,
+    transparent 65%
+  );
+}
+/* Breathe + sync heartbeat, restated for dark: the light versions animate
+   white inset highlights and gold glows that glare on these surfaces. */
+@keyframes exp-breathe-dark {
+  0%,
+  100% {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.05),
+      0 10px 30px -18px rgba(0, 0, 0, 0.6);
+  }
+  50% {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.05),
+      0 16px 38px -18px rgba(0, 0, 0, 0.7);
+  }
+}
+.exp-root .exp-dash .exp-widget {
+  animation-name: exp-breathe-dark;
+}
+@keyframes exp-sync-copper {
+  0%,
+  100% {
+    opacity: 0.35;
+    box-shadow: 0 0 0 0 rgba(227, 184, 155, 0.4);
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 6px 1px rgba(227, 184, 155, 0.35);
+  }
+}
+.exp-root .exp-dash .exp-sync-dot {
+  animation-name: exp-sync-copper;
+}
+@media (prefers-reduced-motion: reduce) {
+  /* These scoped rules out-specify the generic `.exp-root .exp-widget`
+     reduced-motion reset above, so they need their own. */
+  .exp-root .exp-dash .exp-widget,
+  .exp-root .exp-dash .exp-sync-dot {
+    animation: none;
   }
 }

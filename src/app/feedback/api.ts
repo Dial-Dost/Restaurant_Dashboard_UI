@@ -193,6 +193,9 @@ export interface RestaurantBranding {
   // the guest ordering page reads from /qr/:slug/menu, so all three customer
   // surfaces theme themselves identically. Absent on very old backends.
   brand_config?: GuestBrandConfig | null;
+  // The RESOLVED palette (role -> #rrggbb, never null): page shell, panel, ink
+  // and semantic states, scheme + WCAG clamp already applied server-side.
+  brand_palette?: unknown;
 }
 
 // Public, no-auth: the restaurant's branding + feedback form configuration, so

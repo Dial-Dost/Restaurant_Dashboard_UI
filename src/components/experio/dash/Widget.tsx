@@ -8,6 +8,15 @@ const ACCENT: Record<string, string> = {
   emerald: "var(--emerald)",
   violet: "var(--violet)",
   neutral: "var(--ink-3)",
+  // The mock dashboard wears the real product's Rustic Fork palette: one
+  // copper accent ramp plus labeled status tints — never multi-hue
+  // categorical color (that is the product's own charting rule).
+  copper: "var(--copper-hi)",
+  copperMid: "var(--copper-mid)",
+  success: "var(--rf-success)",
+  warning: "var(--rf-warning)",
+  danger: "var(--rf-danger)",
+  info: "var(--rf-info)",
 };
 
 export function accentColor(name?: string) {

@@ -8,8 +8,11 @@ import {
   DEFAULT_ACCENT,
   GUEST_CSS,
   type GuestBrandConfig,
+  type GuestPalette,
   guestThemeVars,
+  paletteVars,
   pickHex,
+  resolveGuestPalette,
   resolveGuestTheme,
 } from "@/lib/guest-theme";
 import { isMobile10, normalizeMobile10, sanitizePhoneInput } from "@/lib/phone";
@@ -273,6 +276,10 @@ function OrderInner() {
   // the menu loads (or when the tenant never customised) — every use falls back
   // to today's hardcoded look so existing tenants are visually unchanged.
   const [brandConfig, setBrandConfig] = useState<GuestBrandConfig | null>(null);
+  // The server-resolved brand_palette (scheme + explicit roles + defaults, with
+  // the WCAG text clamp already applied). Starts as the shipped dark shell so a
+  // failed fetch still paints the classic design, never a grey page.
+  const [palette, setPalette] = useState<GuestPalette>(() => resolveGuestPalette(null));
   const [currency, setCurrency] = useState("₹");
   const [payMethods, setPayMethods] = useState<PayMethod[]>(DEFAULT_METHODS);
   const [items, setItems] = useState<MenuItem[]>([]);
@@ -391,6 +398,9 @@ function OrderInner() {
         setBrandConfig(bcfg);
         const themePref = pickHex(bcfg?.color_primary, data.theme_primary, data.theme_color);
         if (themePref) {setAccent(themePref);}
+        // Adopt the resolved palette (page shell, panels, ink, states). Absent
+        // or partial payloads fall back role-by-role to the shipped design.
+        setPalette(resolveGuestPalette(data.brand_palette, themePref));
         if (typeof data.currency === "string" && data.currency.trim()) {setCurrency(data.currency.trim());}
         if (Array.isArray(data.payment_methods) && data.payment_methods.length > 0) {setPayMethods(data.payment_methods);}
         setRequireOtp(data.require_table_otp === true);
@@ -467,8 +477,10 @@ function OrderInner() {
   // Resolve the accent RAMP from the restaurant's brand accent (copper is the
   // ultimate fallback), combined with the tenant's panel material (surface_style),
   // control shape (button_shape) and hero wash (header_style) → CSS vars.
-  const theme = useMemo(() => resolveGuestTheme(accent, brandConfig), [accent, brandConfig]);
-  const themeVars = guestThemeVars(theme);
+  const theme = useMemo(() => resolveGuestTheme(accent, brandConfig, palette), [accent, brandConfig, palette]);
+  // One CSS custom-property bag: the accent ramp/material vars plus the palette
+  // role + derived shell-tone vars every replaced literal now reads from.
+  const themeVars = useMemo(() => ({ ...guestThemeVars(theme), ...paletteVars(palette) }), [theme, palette]);
   // Body font: the tenant's brand font still applies to body text; the serif
   // display + thin numerals are design constants layered on top.
   const bodyFont = brandConfig?.font ? fontStack(brandConfig.font) : "Roboto, system-ui, sans-serif";
@@ -582,26 +594,26 @@ function OrderInner() {
   };
 
   if (!token) {
-    return <Centered>{t("scanPrompt")}</Centered>;
+    return <Centered vars={themeVars}>{t("scanPrompt")}</Centered>;
   }
-  if (loading) {return <Centered>{t("loadingMenu")}</Centered>;}
+  if (loading) {return <Centered vars={themeVars}>{t("loadingMenu")}</Centered>;}
 
   // Once the bill is settled, ordering is locked — the guest must re-scan the QR
   // (which starts a fresh table session) to order again.
   if (settled || bill?.payment_status === "approved") {
     return (
-      <Centered>
+      <Centered vars={themeVars}>
         <div className="text-center">
           <div className="mb-3 text-5xl">🙏</div>
-          <p className="mb-1 rf-serif text-3xl leading-tight text-[#ECEAE6]">{t("thanks")}</p>
-          <p className="text-sm text-[#9A978F]">{t("settledMsg")}</p>
+          <p className="mb-1 rf-serif text-3xl leading-tight text-[color:var(--ink)]">{t("thanks")}</p>
+          <p className="text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] text-[color:var(--inkMuted)]">{t("settledMsg")}</p>
           {bill && (bill.items?.length ?? 0) > 0 && (
             <button
               onClick={() => { try { window.print(); } catch { /* ignore */ } }}
-              className="mt-5 inline-flex items-center gap-2 rounded-xl border px-5 py-3 text-sm font-semibold transition active:scale-[0.98]"
+              className="mt-5 inline-flex items-center gap-2 rounded-xl border px-5 py-3 text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] font-semibold transition active:scale-[0.98]"
               style={{ borderColor: `rgba(${theme.accRGB},0.5)`, color: theme.accHi, backgroundColor: `rgba(${theme.accRGB},0.1)` }}
             >
-              <Icon name="download" style={{ fontSize: 18 }} />
+              <Icon name="download" style={{ fontSize: "calc(18px*var(--fs,1))" }} />
               {t("downloadBill")}
             </button>
           )}
@@ -636,14 +648,14 @@ function OrderInner() {
 
   return (
     <div
-      className="relative mx-auto min-h-screen max-w-md overflow-x-hidden pb-40 text-[#ECEAE6]"
-      style={{ ...themeVars, backgroundColor: "#08080A", fontFamily: bodyFont }}
+      className="relative mx-auto min-h-screen max-w-md overflow-x-hidden pb-40 text-[color:var(--ink)]"
+      style={{ ...themeVars, backgroundColor: "var(--bg)", fontFamily: bodyFont }}
     >
       <style>{GLOBAL_CSS}</style>
       <GuestBillReceipt bill={bill} restaurantName={restaurantName || restaurant} logoUrl={logoUrl} tableLabel={tableLabel} currency={currency} />
 
       {/* Near-black base + two floating accent orbs behind everything. */}
-      <div className="pointer-events-none fixed inset-0 z-0" style={{ backgroundColor: "#08080A" }} />
+      <div className="pointer-events-none fixed inset-0 z-0" style={{ backgroundColor: "var(--bg)" }} />
       <div className="pointer-events-none fixed z-0" style={{ top: -120, left: -80, width: 360, height: 360, borderRadius: "50%", background: "radial-gradient(circle, rgba(var(--accRGB),0.20), transparent 65%)", filter: "blur(30px)", animation: "rfFloatOrb 16s ease-in-out infinite" }} />
       <div className="pointer-events-none fixed z-0" style={{ bottom: -140, right: -60, width: 340, height: 340, borderRadius: "50%", background: "radial-gradient(circle, rgba(var(--accDeepRGB),0.22), transparent 65%)", filter: "blur(30px)", animation: "rfFloatOrb 20s ease-in-out infinite reverse" }} />
 
@@ -656,18 +668,18 @@ function OrderInner() {
             // eslint-disable-next-line @next/next/no-img-element
             <img src={heroImage} alt="" className="absolute inset-0 h-full w-full object-cover opacity-55" />
           )}
-          <div className="absolute inset-0" style={{ background: "linear-gradient(180deg, rgba(6,6,7,0.15), rgba(6,6,7,0.4) 45%, rgba(8,8,10,0.96))" }} />
+          <div className="absolute inset-0" style={{ background: "linear-gradient(180deg, rgba(6,6,7,0.15), rgba(6,6,7,0.4) 45%, rgba(var(--bgRGB),0.96))" }} />
           <div className="pointer-events-none absolute" style={{ top: -70, right: -40, width: 200, height: 200, borderRadius: "50%", background: "radial-gradient(circle, rgba(var(--accHiRGB),0.3), transparent 62%)", filter: "blur(12px)" }} />
           <div className="relative flex h-full flex-col justify-between px-5 pb-4 pt-9">
             <div className="flex items-start justify-between">
-              <div className="flex items-center gap-1.5 rounded-full border px-3 py-1.5" style={{ backgroundColor: "rgba(10,10,12,0.5)", borderColor: "rgba(255,255,255,0.14)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}>
-                <Icon name="table_restaurant" style={{ fontSize: 13, color: "var(--accHi)" }} />
-                <span className="text-[10.5px] font-bold tracking-wide text-[#F3F1EE]">{tableLabel ? `${t("table")} ${tableLabel} · ${t("dineIn")}` : t("yourTable")}</span>
+              <div className="flex items-center gap-1.5 rounded-full border px-3 py-1.5" style={{ backgroundColor: "rgba(var(--chipRGB),0.5)", borderColor: "rgba(var(--edgeRGB),0.14)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}>
+                <Icon name="table_restaurant" style={{ fontSize: "calc(13px*var(--fs,1))", color: "var(--accHi)" }} />
+                <span className="text-[length:calc(10.5px*var(--fs,1))] font-bold tracking-wide text-[color:var(--inkStrong)]">{tableLabel ? `${t("table")} ${tableLabel} · ${t("dineIn")}` : t("yourTable")}</span>
               </div>
             </div>
             <div>
-              <div className="mb-1 text-[10px] font-bold uppercase tracking-[2px]" style={{ color: "var(--accHi)", textShadow: "0 1px 8px rgba(0,0,0,0.6)" }}>{t("eyebrow")}</div>
-              <h1 className="rf-serif text-[34px] leading-none text-[#F7F5F2]" style={{ textShadow: "0 2px 16px rgba(0,0,0,0.55)" }}>{restaurantName || restaurant}</h1>
+              <div className="mb-1 text-[length:calc(10px*var(--fs,1))] font-bold uppercase tracking-[2px]" style={{ color: "var(--accHi)", textShadow: "0 1px 8px rgba(0,0,0,0.6)" }}>{t("eyebrow")}</div>
+              <h1 className="rf-serif text-[length:calc(34px*var(--fs,1))] leading-none text-[color:var(--inkStrong)]" style={{ textShadow: "0 2px 16px rgba(0,0,0,0.55)" }}>{restaurantName || restaurant}</h1>
             </div>
           </div>
         </header>
@@ -677,27 +689,27 @@ function OrderInner() {
           <button
             onClick={() => { void loadBill(); setShowBill(true); }}
             className="flex items-center gap-2 border px-3.5 py-2.5 transition active:scale-95"
-            style={{ backgroundColor: "rgba(14,14,16,0.7)", borderColor: "rgba(255,255,255,0.08)", borderRadius: "var(--rCtrl)" }}
+            style={{ backgroundColor: "rgba(var(--panelRGB),0.7)", borderColor: "rgba(var(--edgeRGB),0.08)", borderRadius: "var(--rCtrl)" }}
           >
-            <Icon name="receipt_long" style={{ fontSize: 17, color: "var(--accHi)" }} />
-            <span className="text-[10px] font-bold uppercase tracking-wide text-[#9A978F]">{t("bill")}</span>
-            <span className="rf-num text-[17px] text-[#ECEAE6]">{currency}{billTotal.toFixed(0)}</span>
+            <Icon name="receipt_long" style={{ fontSize: "calc(17px*var(--fs,1))", color: "var(--accHi)" }} />
+            <span className="text-[length:calc(10px*var(--fs,1))] font-bold uppercase tracking-wide text-[color:var(--inkMuted)]">{t("bill")}</span>
+            <span className="rf-num text-[length:calc(17px*var(--fs,1))] text-[color:var(--ink)]">{currency}{billTotal.toFixed(0)}</span>
           </button>
           <div className="flex-1" />
           {requireOtp && otpVerified && verifiedOtp && (
-            <div className="flex items-center gap-1.5 border px-2.5 py-2" title={t("shareCodeHint")} style={{ backgroundColor: "rgba(14,14,16,0.7)", borderColor: "rgba(255,255,255,0.08)", borderRadius: "var(--rCtrl)" }}>
-              <span className="text-[9px] font-bold uppercase tracking-wide text-[#615E57]">{t("tableCode")}</span>
-              <span className="text-sm font-bold tracking-[0.2em]" style={{ color: "var(--accHi)" }}>{verifiedOtp}</span>
+            <div className="flex items-center gap-1.5 border px-2.5 py-2" title={t("shareCodeHint")} style={{ backgroundColor: "rgba(var(--panelRGB),0.7)", borderColor: "rgba(var(--edgeRGB),0.08)", borderRadius: "var(--rCtrl)" }}>
+              <span className="text-[length:calc(9px*var(--fs,1))] font-bold uppercase tracking-wide text-[color:var(--inkDim)]">{t("tableCode")}</span>
+              <span className="text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] font-bold tracking-[0.2em]" style={{ color: "var(--accHi)" }}>{verifiedOtp}</span>
             </div>
           )}
-          <div className="flex overflow-hidden border text-[11px] font-semibold" style={{ borderColor: "rgba(255,255,255,0.08)", borderRadius: "var(--rCtrl)" }}>
+          <div className="flex overflow-hidden border text-[length:calc(11px*var(--fs,1))] font-semibold" style={{ borderColor: "rgba(var(--edgeRGB),0.08)", borderRadius: "var(--rCtrl)" }}>
             {(["en", "hi"] as const).map((l) => (
               <button
                 key={l}
                 onClick={() => { switchLang(l); }}
                 aria-pressed={lang === l}
                 className="px-2.5 py-2 transition"
-                style={lang === l ? { backgroundColor: "var(--accHi)", color: "var(--onAcc)" } : { backgroundColor: "rgba(14,14,16,0.7)", color: "#9A978F" }}
+                style={lang === l ? { backgroundColor: "var(--accHi)", color: "var(--onAcc)" } : { backgroundColor: "rgba(var(--panelRGB),0.7)", color: "var(--inkMuted)" }}
               >
                 {l === "en" ? "EN" : "हिं"}
               </button>
@@ -707,18 +719,18 @@ function OrderInner() {
 
         {/* SEARCH */}
         <div className="px-4 pt-2.5">
-          <div className="flex items-center gap-2 border px-3.5 py-2.5" style={{ backgroundColor: "rgba(14,14,16,0.7)", borderColor: "rgba(255,255,255,0.08)", borderRadius: "var(--rCtrl)" }}>
-            <Icon name="search" style={{ fontSize: 19, color: "#615E57" }} />
+          <div className="flex items-center gap-2 border px-3.5 py-2.5" style={{ backgroundColor: "rgba(var(--panelRGB),0.7)", borderColor: "rgba(var(--edgeRGB),0.08)", borderRadius: "var(--rCtrl)" }}>
+            <Icon name="search" style={{ fontSize: "calc(19px*var(--fs,1))", color: "var(--inkDim)" }} />
             <input
               value={query}
               onChange={(e) => { setQuery(e.target.value); }}
               placeholder={t("searchPlaceholder")}
-              className="min-w-0 flex-1 bg-transparent text-sm text-[#ECEAE6] outline-none placeholder:text-[#615E57]"
+              className="min-w-0 flex-1 bg-transparent text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] text-[color:var(--ink)] outline-none placeholder:text-[color:var(--inkDim)]"
               style={{ caretColor: "var(--accHi)" }}
             />
             {query && (
               <button onClick={() => { setQuery(""); }} aria-label={t("close")} className="transition active:scale-90">
-                <Icon name="close" style={{ fontSize: 18, color: "#9A978F" }} />
+                <Icon name="close" style={{ fontSize: "calc(18px*var(--fs,1))", color: "var(--inkMuted)" }} />
               </button>
             )}
           </div>
@@ -740,10 +752,10 @@ function OrderInner() {
                 <button
                   key={cat}
                   onClick={() => { if (!drag.current.moved) {setActiveCat(cat);} }}
-                  className="whitespace-nowrap rounded-full px-4 py-2 text-[12.5px] font-semibold transition"
+                  className="whitespace-nowrap rounded-full px-4 py-2 text-[length:calc(12.5px*var(--fs,1))] font-semibold transition"
                   style={on
                     ? { background: "var(--accHi)", color: "var(--onAcc)", border: "1px solid transparent" }
-                    : { backgroundColor: "rgba(255,255,255,0.04)", color: "#9A978F", border: "1px solid rgba(255,255,255,0.08)" }}
+                    : { backgroundColor: "rgba(var(--edgeRGB),0.04)", color: "var(--inkMuted)", border: "1px solid rgba(var(--edgeRGB),0.08)" }}
                 >
                   {cat}
                 </button>
@@ -753,13 +765,13 @@ function OrderInner() {
         )}
 
         {error && (
-          <div className="mx-4 mt-2 rounded-xl border px-4 py-3 text-sm" style={{ backgroundColor: "rgba(201,123,110,0.12)", borderColor: "rgba(201,123,110,0.3)", color: "#E0A79B" }}>{error}</div>
+          <div className="mx-4 mt-2 rounded-xl border px-4 py-3 text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))]" style={{ backgroundColor: "rgba(201,123,110,0.12)", borderColor: "rgba(201,123,110,0.3)", color: "var(--err)" }}>{error}</div>
         )}
 
         {/* MENU GRID (2 columns) */}
         <main className="px-4 pb-4 pt-2.5">
           {!searching && active && (
-            <div className="mb-3 mt-1 px-1 text-[11px] font-bold uppercase tracking-[1.3px] text-[#615E57]">{t("fullMenu")} · {active}</div>
+            <div className="mb-3 mt-1 px-1 text-[length:calc(11px*var(--fs,1))] font-bold uppercase tracking-[1.3px] text-[color:var(--inkDim)]">{t("fullMenu")} · {active}</div>
           )}
           <div className="grid grid-cols-2 gap-3">
             {shown.map((it) => {
@@ -776,7 +788,7 @@ function OrderInner() {
                 <div
                   key={it.id}
                   className="relative overflow-hidden"
-                  style={{ borderRadius: "var(--rCard)", background: "var(--panelBg)", backdropFilter: "blur(var(--blur))", WebkitBackdropFilter: "blur(var(--blur))", border: "1.5px solid rgba(255,255,255,var(--pbA))", boxShadow: "0 14px 34px rgba(0,0,0,0.45)", opacity: soldOut ? 0.6 : 1 }}
+                  style={{ borderRadius: "var(--rCard)", background: "var(--panelBg)", backdropFilter: "blur(var(--blur))", WebkitBackdropFilter: "blur(var(--blur))", border: "1.5px solid rgba(var(--edgeRGB),var(--pbA))", boxShadow: "0 14px 34px rgba(0,0,0,0.45)", opacity: soldOut ? 0.6 : 1 }}
                 >
                   <div
                     role={openable ? "button" : undefined}
@@ -785,7 +797,7 @@ function OrderInner() {
                     onKeyDown={(e) => { if (openable && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openSheet(); } }}
                     aria-label={openable ? `${it.name} — ${t("details")}` : undefined}
                     className="relative flex items-center justify-center"
-                    style={{ height: 96, background: "linear-gradient(140deg,#26262B,#111113)", borderBottom: "1px solid rgba(255,255,255,0.05)", cursor: openable ? "pointer" : "default" }}
+                    style={{ height: 96, background: "linear-gradient(140deg,var(--phTop),var(--phBot))", borderBottom: "1px solid rgba(var(--edgeRGB),0.05)", cursor: openable ? "pointer" : "default" }}
                   >
                     {it.image_url ? (
                       // eslint-disable-next-line @next/next/no-img-element
@@ -793,11 +805,11 @@ function OrderInner() {
                     ) : (
                       <>
                         <div className="pointer-events-none absolute" style={{ width: 74, height: 74, borderRadius: "50%", background: "radial-gradient(circle, rgba(var(--accDeepRGB),0.55), transparent 70%)" }} />
-                        <span className="rf-serif relative text-[36px] leading-none" style={{ color: "var(--accHi)" }}>{monogram}</span>
+                        <span className="rf-serif relative text-[length:calc(36px*var(--fs,1))] leading-none" style={{ color: "var(--accHi)" }}>{monogram}</span>
                       </>
                     )}
                     {soldOut && (
-                      <div className="absolute right-2 top-2 rounded-[10px] border px-2 py-1 text-[10px] font-bold tracking-wide" style={{ backgroundColor: "rgba(201,123,110,0.16)", borderColor: "rgba(201,123,110,0.35)", color: "#E0A79B" }}>{t("soldOut")}</div>
+                      <div className="absolute right-2 top-2 rounded-[10px] border px-2 py-1 text-[length:calc(10px*var(--fs,1))] font-bold tracking-wide" style={{ backgroundColor: "rgba(201,123,110,0.16)", borderColor: "rgba(201,123,110,0.35)", color: "var(--err)" }}>{t("soldOut")}</div>
                     )}
                   </div>
                   <div className="px-3 pb-3 pt-2.5">
@@ -806,18 +818,18 @@ function OrderInner() {
                       tabIndex={openable ? 0 : undefined}
                       onClick={openSheet}
                       onKeyDown={(e) => { if (openable && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openSheet(); } }}
-                      className="text-[13.5px] font-semibold leading-tight text-[#ECEAE6]"
+                      className="text-[length:calc(13.5px*var(--fs,1))] font-semibold leading-tight text-[color:var(--ink)]"
                       style={{ minHeight: 34, cursor: openable ? "pointer" : "default" }}
                     >
                       {it.name}
                     </div>
-                    {searching && <div className="mt-0.5 text-[11px] text-[#615E57]">{it.category}</div>}
+                    {searching && <div className="mt-0.5 text-[length:calc(11px*var(--fs,1))] text-[color:var(--inkDim)]">{it.category}</div>}
                     {/* Two-line teaser of the dish description; the full text is in
                         the item sheet (tap the photo, the name or this line). */}
                     {blurb ? (
                       <div
                         onClick={openSheet}
-                        className="mt-1 text-[11px] leading-snug text-[#9A978F]"
+                        className="mt-1 text-[length:calc(11px*var(--fs,1))] leading-snug text-[color:var(--inkMuted)]"
                         style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", cursor: "pointer" }}
                       >
                         {blurb}
@@ -826,26 +838,26 @@ function OrderInner() {
                     {(it.allergens ?? []).length > 0 && (
                       <div className="mt-1.5 flex flex-wrap gap-1">
                         {(it.allergens ?? []).map((a) => (
-                          <span key={a} className="rounded-full border px-1.5 py-0.5 text-[9px] capitalize leading-none text-[#9A978F]" style={{ borderColor: "rgba(255,255,255,0.1)", backgroundColor: "rgba(255,255,255,0.04)" }}>{a}</span>
+                          <span key={a} className="rounded-full border px-1.5 py-0.5 text-[length:calc(9px*var(--fs,1))] capitalize leading-none text-[color:var(--inkMuted)]" style={{ borderColor: "rgba(var(--edgeRGB),0.1)", backgroundColor: "rgba(var(--edgeRGB),0.04)" }}>{a}</span>
                         ))}
                       </div>
                     )}
                     <div className="mt-2 flex items-end justify-between gap-2">
-                      <div className="rf-num text-[22px] text-[#ECEAE6]">{currency}{Number(it.price).toFixed(0)}</div>
+                      <div className="rf-num text-[length:calc(22px*var(--fs,1))] text-[color:var(--ink)]">{currency}{Number(it.price).toFixed(0)}</div>
                       {soldOut ? null : (it.modifiers && it.modifiers.length > 0) ? (
                         <button onClick={() => { addItem(it); }} className="flex items-center gap-1 px-2.5 py-2 transition active:scale-95" style={{ borderRadius: "var(--rCtrl)", background: "rgba(var(--accRGB),0.16)", border: "1px solid rgba(var(--accRGB),0.3)" }}>
-                          <Icon name="tune" style={{ fontSize: 16, color: "var(--accHi)" }} />
-                          <span className="text-[11px] font-semibold" style={{ color: "var(--accHi)" }}>{t("customize")}</span>
+                          <Icon name="tune" style={{ fontSize: "calc(16px*var(--fs,1))", color: "var(--accHi)" }} />
+                          <span className="text-[length:calc(11px*var(--fs,1))] font-semibold" style={{ color: "var(--accHi)" }}>{t("customize")}</span>
                         </button>
                       ) : line ? (
                         <div className="flex items-center gap-2 p-1" style={{ borderRadius: "var(--rCtrl)", background: "rgba(var(--accRGB),0.14)" }}>
-                          <button onClick={() => { setLineQty(it.id, -1); }} aria-label="remove" className="transition active:scale-90"><Icon name="remove" style={{ fontSize: 20, color: "var(--acc)" }} /></button>
-                          <span className="min-w-[14px] text-center text-[14px] font-bold text-[#ECEAE6]">{line.quantity}</span>
-                          <button onClick={() => { setLineQty(it.id, 1); }} aria-label="add" className="transition active:scale-90"><Icon name="add" style={{ fontSize: 20, color: "var(--accHi)" }} /></button>
+                          <button onClick={() => { setLineQty(it.id, -1); }} aria-label="remove" className="transition active:scale-90"><Icon name="remove" style={{ fontSize: "calc(20px*var(--fs,1))", color: "var(--acc)" }} /></button>
+                          <span className="min-w-[14px] text-center text-[length:calc(14px*var(--fs,1))] font-bold text-[color:var(--ink)]">{line.quantity}</span>
+                          <button onClick={() => { setLineQty(it.id, 1); }} aria-label="add" className="transition active:scale-90"><Icon name="add" style={{ fontSize: "calc(20px*var(--fs,1))", color: "var(--accHi)" }} /></button>
                         </div>
                       ) : (
                         <button onClick={() => { addItem(it); }} aria-label={t("add")} className="flex h-[34px] w-[34px] items-center justify-center transition active:scale-95" style={{ borderRadius: "var(--rCtrl)", background: "rgba(var(--accRGB),0.16)", border: "1px solid rgba(var(--accRGB),0.3)" }}>
-                          <Icon name="add" style={{ fontSize: 20, color: "var(--accHi)" }} />
+                          <Icon name="add" style={{ fontSize: "calc(20px*var(--fs,1))", color: "var(--accHi)" }} />
                         </button>
                       )}
                     </div>
@@ -854,7 +866,7 @@ function OrderInner() {
               );
             })}
           </div>
-          {shown.length === 0 && <p className="mt-14 text-center text-sm text-[#615E57]">{t("noItems")}</p>}
+          {shown.length === 0 && <p className="mt-14 text-center text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] text-[color:var(--inkDim)]">{t("noItems")}</p>}
         </main>
       </div>
 
@@ -864,27 +876,27 @@ function OrderInner() {
           <div
             onClick={() => { if (cartCount > 0) {setShowCart(true);} }}
             className="flex items-center gap-3 px-4 py-3.5"
-            style={{ pointerEvents: "auto", borderRadius: "var(--rCard)", background: "rgba(24,24,28,0.72)", backdropFilter: "blur(26px) saturate(150%)", WebkitBackdropFilter: "blur(26px) saturate(150%)", border: "1px solid rgba(255,255,255,0.12)", boxShadow: "0 20px 50px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.08)", cursor: cartCount > 0 ? "pointer" : "default" }}
+            style={{ pointerEvents: "auto", borderRadius: "var(--rCard)", background: "rgba(var(--floatRGB),0.72)", backdropFilter: "blur(26px) saturate(150%)", WebkitBackdropFilter: "blur(26px) saturate(150%)", border: "1px solid rgba(var(--edgeRGB),0.12)", boxShadow: "0 20px 50px rgba(0,0,0,0.6), inset 0 1px 0 rgba(var(--edgeRGB),0.08)", cursor: cartCount > 0 ? "pointer" : "default" }}
           >
             <div className="relative flex h-11 w-11 flex-shrink-0 items-center justify-center" style={{ borderRadius: 13, background: "linear-gradient(145deg, var(--accHi), var(--accMid))", boxShadow: "0 8px 20px rgba(var(--accShadowRGB),0.55)" }}>
-              <Icon name="shopping_bag" style={{ fontSize: 22, color: "var(--onAcc)" }} />
+              <Icon name="shopping_bag" style={{ fontSize: "calc(22px*var(--fs,1))", color: "var(--onAcc)" }} />
               {cartCount > 0 && (
-                <div className="absolute -right-1.5 -top-1.5 flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[11px] font-bold text-white" style={{ backgroundColor: "#C97B6E", border: "2px solid #16161A" }}>{cartCount}</div>
+                <div className="absolute -right-1.5 -top-1.5 flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[length:calc(11px*var(--fs,1))] font-bold text-white" style={{ backgroundColor: "#C97B6E", border: "2px solid #16161A" }}>{cartCount}</div>
               )}
             </div>
             <div className="min-w-0 flex-1">
               {cartCount > 0 ? (
                 <>
-                  <div className="text-[11px] font-semibold uppercase tracking-wide text-[#9A978F]">{countLabel} · {t("tapToReview")}</div>
-                  <div className="rf-num text-[26px] leading-tight text-[#ECEAE6]">{currency}{cartTotal.toFixed(2)}</div>
+                  <div className="text-[length:calc(11px*var(--fs,1))] font-semibold uppercase tracking-wide text-[color:var(--inkMuted)]">{countLabel} · {t("tapToReview")}</div>
+                  <div className="rf-num text-[length:calc(26px*var(--fs,1))] leading-tight text-[color:var(--ink)]">{currency}{cartTotal.toFixed(2)}</div>
                 </>
               ) : (
-                <div className="text-[13px] text-[#9A978F]">{t("orderEmpty")}</div>
+                <div className="text-[length:calc(13px*var(--fs,1))] text-[color:var(--inkMuted)]">{t("orderEmpty")}</div>
               )}
             </div>
             {cartCount > 0 && (
-              <button onClick={(e) => { e.stopPropagation(); setShowCart(true); }} className="flex items-center gap-1 px-4 py-3 text-sm font-bold transition active:scale-95" style={{ borderRadius: 14, background: "linear-gradient(180deg, var(--accHi), var(--accMid))", color: "var(--onAcc)", boxShadow: "0 10px 24px rgba(var(--accShadowRGB),0.5)" }}>
-                {t("review")}<Icon name="expand_less" style={{ fontSize: 19 }} />
+              <button onClick={(e) => { e.stopPropagation(); setShowCart(true); }} className="flex items-center gap-1 px-4 py-3 text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] font-bold transition active:scale-95" style={{ borderRadius: 14, background: "linear-gradient(180deg, var(--accHi), var(--accMid))", color: "var(--onAcc)", boxShadow: "0 10px 24px rgba(var(--accShadowRGB),0.5)" }}>
+                {t("review")}<Icon name="expand_less" style={{ fontSize: "calc(19px*var(--fs,1))" }} />
               </button>
             )}
           </div>
@@ -925,7 +937,7 @@ function OrderInner() {
 
       {toast && (
         <div className="fixed inset-x-0 bottom-28 z-40 mx-auto max-w-md px-4">
-          <div className="rounded-xl px-4 py-3 text-center text-sm font-semibold shadow-lg" style={{ background: "linear-gradient(180deg, var(--accHi), var(--accMid))", color: "var(--onAcc)" }}>{toast}</div>
+          <div className="rounded-xl px-4 py-3 text-center text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] font-semibold shadow-lg" style={{ background: "linear-gradient(180deg, var(--accHi), var(--accMid))", color: "var(--onAcc)" }}>{toast}</div>
         </div>
       )}
 
@@ -1035,32 +1047,32 @@ function ModifierSheet(props: {
       <div
         className="rf-sc mx-auto flex max-h-[92dvh] w-full max-w-md flex-col p-5"
         onClick={(e) => { e.stopPropagation(); }}
-        style={{ borderRadius: "26px 26px 0 0", background: "linear-gradient(180deg,#141416,#0D0D0F)", borderTop: "1px solid rgba(255,255,255,0.1)", boxShadow: "0 -30px 60px rgba(0,0,0,0.6)", animation: "rfSheetUp .32s cubic-bezier(0.22,1,0.36,1)" }}
+        style={{ borderRadius: "26px 26px 0 0", background: "linear-gradient(180deg,var(--sheetTop),var(--sheetBot))", borderTop: "1px solid rgba(var(--edgeRGB),0.1)", boxShadow: "0 -30px 60px rgba(0,0,0,0.6)", animation: "rfSheetUp .32s cubic-bezier(0.22,1,0.36,1)" }}
       >
         <div className="shrink-0">
-          <div className="mx-auto mb-3 h-1.5 w-10 rounded-full" style={{ background: "rgba(255,255,255,0.15)" }} />
-          <h2 className="rf-serif text-[24px] leading-none text-[#ECEAE6]">{item.name}</h2>
-          <p className="mb-4 mt-1 text-sm text-[#9A978F]">{currency}{item.price.toFixed(2)} {t("base")}</p>
+          <div className="mx-auto mb-3 h-1.5 w-10 rounded-full" style={{ background: "rgba(var(--edgeRGB),0.15)" }} />
+          <h2 className="rf-serif text-[length:calc(24px*var(--fs,1))] leading-none text-[color:var(--ink)]">{item.name}</h2>
+          <p className="mb-4 mt-1 text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] text-[color:var(--inkMuted)]">{currency}{item.price.toFixed(2)} {t("base")}</p>
         </div>
 
         <div className="rf-sc min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch]">
           {/* The kitchen's own words about the dish (brand_config-independent —
               it comes from the menu item). Newlines are preserved. */}
           {blurb ? (
-            <div className="p-3.5" style={{ borderRadius: "var(--rCtrl)", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.07)" }}>
-              <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[1.3px]" style={{ color: "var(--accHi)" }}>
-                <Icon name="restaurant_menu" style={{ fontSize: 13 }} />
+            <div className="p-3.5" style={{ borderRadius: "var(--rCtrl)", background: "rgba(var(--edgeRGB),0.04)", border: "1px solid rgba(var(--edgeRGB),0.07)" }}>
+              <p className="mb-1.5 flex items-center gap-1.5 text-[length:calc(10px*var(--fs,1))] font-bold uppercase tracking-[1.3px]" style={{ color: "var(--accHi)" }}>
+                <Icon name="restaurant_menu" style={{ fontSize: "calc(13px*var(--fs,1))" }} />
                 {t("aboutDish")}
               </p>
-              <p className="text-[13px] leading-relaxed text-[#C9C6BF]" style={{ whiteSpace: "pre-line" }}>{blurb}</p>
+              <p className="text-[length:calc(13px*var(--fs,1))] leading-relaxed text-[color:var(--inkSoft)]" style={{ whiteSpace: "pre-line" }}>{blurb}</p>
             </div>
           ) : null}
           {groups.map((g, gi) => (
             <div key={gi}>
-              <p className="mb-2 text-sm font-semibold text-[#ECEAE6]">
+              <p className="mb-2 text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] font-semibold text-[color:var(--ink)]">
                 {g.name}
-                {g.required && <span className="ml-1" style={{ color: "#E0A79B" }}>*</span>}
-                <span className="ml-2 text-xs font-normal text-[#615E57]">{g.multi ? t("chooseAny") : t("chooseOne")}</span>
+                {g.required && <span className="ml-1" style={{ color: "var(--err)" }}>*</span>}
+                <span className="ml-2 text-[length:calc(12px*var(--fs,1))] leading-[calc(16px*var(--fs,1))] font-normal text-[color:var(--inkDim)]">{g.multi ? t("chooseAny") : t("chooseOne")}</span>
               </p>
               <div className="space-y-1.5">
                 {g.options.map((o) => {
@@ -1069,19 +1081,19 @@ function ModifierSheet(props: {
                     <button
                       key={o.name}
                       onClick={() => { toggle(gi, o.name, g.multi); }}
-                      className="flex w-full items-center justify-between border px-4 py-3 text-sm text-[#ECEAE6]"
-                      style={on ? { borderColor: "rgba(var(--accRGB),0.5)", backgroundColor: "rgba(var(--accRGB),0.14)", borderRadius: "var(--rCtrl)" } : { borderColor: "rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.03)", borderRadius: "var(--rCtrl)" }}
+                      className="flex w-full items-center justify-between border px-4 py-3 text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] text-[color:var(--ink)]"
+                      style={on ? { borderColor: "rgba(var(--accRGB),0.5)", backgroundColor: "rgba(var(--accRGB),0.14)", borderRadius: "var(--rCtrl)" } : { borderColor: "rgba(var(--edgeRGB),0.1)", background: "rgba(var(--edgeRGB),0.03)", borderRadius: "var(--rCtrl)" }}
                     >
                       <span className="flex items-center gap-2">
                         <span
                           className={`flex h-4 w-4 items-center justify-center ${g.multi ? "rounded" : "rounded-full"} border`}
-                          style={{ borderColor: on ? "var(--accHi)" : "rgba(255,255,255,0.25)", backgroundColor: on ? "var(--accHi)" : "transparent" }}
+                          style={{ borderColor: on ? "var(--accHi)" : "rgba(var(--edgeRGB),0.25)", backgroundColor: on ? "var(--accHi)" : "transparent" }}
                         >
-                          {on && <Icon name="check" style={{ fontSize: 12, color: "var(--onAcc)" }} />}
+                          {on && <Icon name="check" style={{ fontSize: "calc(12px*var(--fs,1))", color: "var(--onAcc)" }} />}
                         </span>
                         {o.name}
                       </span>
-                      {o.price > 0 && <span className="text-[#9A978F]">+{currency}{o.price.toFixed(0)}</span>}
+                      {o.price > 0 && <span className="text-[color:var(--inkMuted)]">+{currency}{o.price.toFixed(0)}</span>}
                     </button>
                   );
                 })}
@@ -1090,7 +1102,7 @@ function ModifierSheet(props: {
           ))}
         </div>
 
-        {err && <p className="mt-3 text-sm" style={{ color: "#E0A79B" }}>{err}</p>}
+        {err && <p className="mt-3 text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))]" style={{ color: "var(--err)" }}>{err}</p>}
 
         <button
           onClick={confirm}
@@ -1098,9 +1110,9 @@ function ModifierSheet(props: {
           style={{ borderRadius: "var(--rCtrl)", background: "linear-gradient(180deg, var(--accHi), var(--accMid))", color: "var(--onAcc)", boxShadow: "0 10px 24px rgba(var(--accShadowRGB),0.5)" }}
         >
           <span>{t("addToOrder")}</span>
-          <span className="rf-num text-[20px]" style={{ color: "var(--onAcc)" }}>{currency}{unitPrice.toFixed(2)}</span>
+          <span className="rf-num text-[length:calc(20px*var(--fs,1))]" style={{ color: "var(--onAcc)" }}>{currency}{unitPrice.toFixed(2)}</span>
         </button>
-        <button onClick={onClose} className="mt-2 w-full py-2 text-sm text-[#9A978F]">{t("cancel")}</button>
+        <button onClick={onClose} className="mt-2 w-full py-2 text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] text-[color:var(--inkMuted)]">{t("cancel")}</button>
       </div>
     </div>
   );
@@ -1132,18 +1144,18 @@ function CartSheet(props: {
   // Only nag about the phone once something has been typed, so the field doesn't
   // look broken before the guest has started.
   const phoneTouched = guestPhone.trim().length > 0;
-  const inputStyle: React.CSSProperties = { background: "rgba(14,14,16,0.7)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "var(--rCtrl)", color: "#ECEAE6" };
+  const inputStyle: React.CSSProperties = { background: "rgba(var(--panelRGB),0.7)", border: "1px solid rgba(var(--edgeRGB),0.1)", borderRadius: "var(--rCtrl)", color: "var(--ink)" };
   return (
     <div className="fixed inset-0 z-40 flex items-end justify-center" onClick={onClose} style={{ background: "rgba(4,4,6,0.55)", backdropFilter: "blur(2px)", WebkitBackdropFilter: "blur(2px)", animation: "rfFadeIn .2s ease" }}>
       <div
         className="mx-auto flex max-h-[92dvh] w-full max-w-md flex-col"
         onClick={(e) => { e.stopPropagation(); }}
-        style={{ borderRadius: "26px 26px 0 0", background: "linear-gradient(180deg,#141416,#0D0D0F)", borderTop: "1px solid rgba(255,255,255,0.1)", boxShadow: "0 -30px 60px rgba(0,0,0,0.6)", animation: "rfSheetUp .32s cubic-bezier(0.22,1,0.36,1)" }}
+        style={{ borderRadius: "26px 26px 0 0", background: "linear-gradient(180deg,var(--sheetTop),var(--sheetBot))", borderTop: "1px solid rgba(var(--edgeRGB),0.1)", boxShadow: "0 -30px 60px rgba(0,0,0,0.6)", animation: "rfSheetUp .32s cubic-bezier(0.22,1,0.36,1)" }}
       >
         <div className="shrink-0 px-5 pt-5">
-          <div className="mx-auto mb-3 h-1.5 w-10 rounded-full" style={{ background: "rgba(255,255,255,0.15)" }} />
-          <h2 className="rf-serif text-[24px] leading-none text-[#ECEAE6]">{t("yourOrder")}</h2>
-          <p className="mb-4 mt-1 text-sm text-[#9A978F]">{t("reviewSubtitle")}</p>
+          <div className="mx-auto mb-3 h-1.5 w-10 rounded-full" style={{ background: "rgba(var(--edgeRGB),0.15)" }} />
+          <h2 className="rf-serif text-[length:calc(24px*var(--fs,1))] leading-none text-[color:var(--ink)]">{t("yourOrder")}</h2>
+          <p className="mb-4 mt-1 text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] text-[color:var(--inkMuted)]">{t("reviewSubtitle")}</p>
         </div>
 
         {/* The sheet is capped to the viewport and everything above the pinned
@@ -1151,21 +1163,21 @@ function CartSheet(props: {
             instead of overflowing off the top of the screen. */}
         <div className="rf-sc min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 [-webkit-overflow-scrolling:touch]">
         {lines.length === 0 ? (
-          <p className="py-8 text-center text-[#615E57]">{t("emptyCart")}</p>
+          <p className="py-8 text-center text-[color:var(--inkDim)]">{t("emptyCart")}</p>
         ) : (
           <div className="space-y-2">
             {lines.map((l) => (
-              <div key={l.key} className="flex items-center gap-3 p-3" style={{ borderRadius: "var(--rCtrl)", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.06)" }}>
+              <div key={l.key} className="flex items-center gap-3 p-3" style={{ borderRadius: "var(--rCtrl)", background: "rgba(var(--edgeRGB),0.04)", border: "1px solid rgba(var(--edgeRGB),0.06)" }}>
                 <div className="min-w-0 flex-1">
-                  <p className="font-medium text-[#ECEAE6]">{l.name}</p>
-                  <p className="text-sm text-[#9A978F]">{currency}{l.unitPrice.toFixed(2)}</p>
+                  <p className="font-medium text-[color:var(--ink)]">{l.name}</p>
+                  <p className="text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] text-[color:var(--inkMuted)]">{currency}{l.unitPrice.toFixed(2)}</p>
                 </div>
                 <div className="flex items-center gap-2 p-1" style={{ borderRadius: "var(--rCtrl)", background: "rgba(var(--accRGB),0.14)" }}>
-                  <button onClick={() => { onQty(l.key, -1); }} aria-label="remove" className="transition active:scale-90"><Icon name="remove" style={{ fontSize: 20, color: "var(--acc)" }} /></button>
-                  <span className="min-w-[14px] text-center text-[14px] font-bold text-[#ECEAE6]">{l.quantity}</span>
-                  <button onClick={() => { onQty(l.key, 1); }} aria-label="add" className="transition active:scale-90"><Icon name="add" style={{ fontSize: 20, color: "var(--accHi)" }} /></button>
+                  <button onClick={() => { onQty(l.key, -1); }} aria-label="remove" className="transition active:scale-90"><Icon name="remove" style={{ fontSize: "calc(20px*var(--fs,1))", color: "var(--acc)" }} /></button>
+                  <span className="min-w-[14px] text-center text-[length:calc(14px*var(--fs,1))] font-bold text-[color:var(--ink)]">{l.quantity}</span>
+                  <button onClick={() => { onQty(l.key, 1); }} aria-label="add" className="transition active:scale-90"><Icon name="add" style={{ fontSize: "calc(20px*var(--fs,1))", color: "var(--accHi)" }} /></button>
                 </div>
-                <span className="rf-num w-16 text-right text-[16px] text-[#ECEAE6]">{currency}{(l.unitPrice * l.quantity).toFixed(0)}</span>
+                <span className="rf-num w-16 text-right text-[length:calc(16px*var(--fs,1))] text-[color:var(--ink)]">{currency}{(l.unitPrice * l.quantity).toFixed(0)}</span>
               </div>
             ))}
           </div>
@@ -1179,7 +1191,7 @@ function CartSheet(props: {
                 onChange={(e) => { onGuestName(e.target.value); }}
                 maxLength={60}
                 placeholder={t("guestName")}
-                className="w-full p-3 text-sm outline-none placeholder:text-[#615E57]"
+                className="w-full p-3 text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] outline-none placeholder:text-[color:var(--inkDim)]"
                 style={inputStyle}
               />
               <input
@@ -1189,16 +1201,16 @@ function CartSheet(props: {
                 autoComplete="tel"
                 maxLength={13}
                 placeholder={t("guestPhone")}
-                className="w-full p-3 text-sm outline-none placeholder:text-[#615E57]"
+                className="w-full p-3 text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] outline-none placeholder:text-[color:var(--inkDim)]"
                 style={{ ...inputStyle, ...(phoneTouched && !phoneOk ? { border: "1px solid rgba(239,68,68,0.6)" } : {}) }}
               />
             </div>
             {/* Live, specific message once they've started typing; the generic
                 "name & phone required" hint otherwise. */}
             {phoneTouched && !phoneOk ? (
-              <p className="mt-1 text-xs text-[#F0A6A0]">{t("phoneTenDigits")}</p>
+              <p className="mt-1 text-[length:calc(12px*var(--fs,1))] leading-[calc(16px*var(--fs,1))] text-[#F0A6A0]">{t("phoneTenDigits")}</p>
             ) : !contactOk ? (
-              <p className="mt-1 text-xs text-[#9A978F]">{t("contactHint")}</p>
+              <p className="mt-1 text-[length:calc(12px*var(--fs,1))] leading-[calc(16px*var(--fs,1))] text-[color:var(--inkMuted)]">{t("contactHint")}</p>
             ) : null}
             <textarea
               value={note}
@@ -1206,7 +1218,7 @@ function CartSheet(props: {
               maxLength={500}
               rows={2}
               placeholder={t("notePlaceholder")}
-              className="mt-2 w-full resize-none p-3 text-sm outline-none placeholder:text-[#615E57]"
+              className="mt-2 w-full resize-none p-3 text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] outline-none placeholder:text-[color:var(--inkDim)]"
               style={inputStyle}
             />
           </>
@@ -1215,14 +1227,14 @@ function CartSheet(props: {
 
         {/* Pinned footer: the total and the send button stay visible no matter
             how many items are in the cart. */}
-        <div className="shrink-0 px-5 pb-5 pt-3" style={{ borderTop: "1px solid rgba(255,255,255,0.08)" }}>
+        <div className="shrink-0 px-5 pb-5 pt-3" style={{ borderTop: "1px solid rgba(var(--edgeRGB),0.08)" }}>
           <div className="flex items-center justify-between">
-            <span className="text-sm text-[#9A978F]">{t("total")}</span>
-            <span className="rf-num text-[26px] text-[#ECEAE6]">{currency}{total.toFixed(2)}</span>
+            <span className="text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] text-[color:var(--inkMuted)]">{t("total")}</span>
+            <span className="rf-num text-[length:calc(26px*var(--fs,1))] text-[color:var(--ink)]">{currency}{total.toFixed(2)}</span>
           </div>
 
           {error && (
-            <div className="mt-4 rounded-xl border px-4 py-3 text-sm font-medium" style={{ background: "rgba(201,123,110,0.12)", borderColor: "rgba(201,123,110,0.3)", color: "#E0A79B" }}>{error}</div>
+            <div className="mt-4 rounded-xl border px-4 py-3 text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] font-medium" style={{ background: "rgba(201,123,110,0.12)", borderColor: "rgba(201,123,110,0.3)", color: "var(--err)" }}>{error}</div>
           )}
 
           <button
@@ -1233,7 +1245,7 @@ function CartSheet(props: {
           >
             {placing ? t("sending") : t("sendOrder")}
           </button>
-          <button onClick={onClose} className="mt-2 w-full py-2 text-sm text-[#9A978F]">{t("addMore")}</button>
+          <button onClick={onClose} className="mt-2 w-full py-2 text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] text-[color:var(--inkMuted)]">{t("addMore")}</button>
         </div>
       </div>
     </div>
@@ -1291,27 +1303,27 @@ function BillSheet(props: {
       <div
         className="rf-sc mx-auto flex max-h-[92dvh] w-full max-w-md flex-col overflow-y-auto overscroll-contain p-5"
         onClick={(e) => { e.stopPropagation(); }}
-        style={{ borderRadius: "26px 26px 0 0", background: "linear-gradient(180deg,#141416,#0D0D0F)", borderTop: "1px solid rgba(255,255,255,0.1)", boxShadow: "0 -30px 60px rgba(0,0,0,0.6)", animation: "rfSheetUp .32s cubic-bezier(0.22,1,0.36,1)" }}
+        style={{ borderRadius: "26px 26px 0 0", background: "linear-gradient(180deg,var(--sheetTop),var(--sheetBot))", borderTop: "1px solid rgba(var(--edgeRGB),0.1)", boxShadow: "0 -30px 60px rgba(0,0,0,0.6)", animation: "rfSheetUp .32s cubic-bezier(0.22,1,0.36,1)" }}
       >
         <div className="shrink-0">
-          <div className="mx-auto mb-3 h-1.5 w-10 rounded-full" style={{ background: "rgba(255,255,255,0.15)" }} />
-          <h2 className="rf-serif text-[24px] leading-none text-[#ECEAE6]">{t("yourBill")}</h2>
-          <p className="mb-4 mt-1 text-sm text-[#9A978F]">{t("billSubtitle")}</p>
+          <div className="mx-auto mb-3 h-1.5 w-10 rounded-full" style={{ background: "rgba(var(--edgeRGB),0.15)" }} />
+          <h2 className="rf-serif text-[length:calc(24px*var(--fs,1))] leading-none text-[color:var(--ink)]">{t("yourBill")}</h2>
+          <p className="mb-4 mt-1 text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] text-[color:var(--inkMuted)]">{t("billSubtitle")}</p>
         </div>
 
         {!hasItems ? (
-          <p className="py-8 text-center text-[#615E57]">{t("emptyBill")}</p>
+          <p className="py-8 text-center text-[color:var(--inkDim)]">{t("emptyBill")}</p>
         ) : (
           <>
             <div className="space-y-2">
               {items.map((it, i) => (
-                <div key={`${it.name}-${i}`} className="flex items-center gap-3 p-3" style={{ borderRadius: "var(--rCtrl)", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.06)" }}>
-                  <span className="flex h-7 min-w-7 items-center justify-center rounded-full px-1.5 text-xs font-bold" style={{ background: "rgba(var(--accRGB),0.16)", color: "var(--accHi)" }}>{it.quantity}</span>
+                <div key={`${it.name}-${i}`} className="flex items-center gap-3 p-3" style={{ borderRadius: "var(--rCtrl)", background: "rgba(var(--edgeRGB),0.04)", border: "1px solid rgba(var(--edgeRGB),0.06)" }}>
+                  <span className="flex h-7 min-w-7 items-center justify-center rounded-full px-1.5 text-[length:calc(12px*var(--fs,1))] leading-[calc(16px*var(--fs,1))] font-bold" style={{ background: "rgba(var(--accRGB),0.16)", color: "var(--accHi)" }}>{it.quantity}</span>
                   <div className="min-w-0 flex-1">
-                    <p className="truncate font-medium text-[#ECEAE6]">{it.name}</p>
-                    <p className="text-xs text-[#615E57]">{currency}{Number(it.price).toFixed(2)} {t("each")}</p>
+                    <p className="truncate font-medium text-[color:var(--ink)]">{it.name}</p>
+                    <p className="text-[length:calc(12px*var(--fs,1))] leading-[calc(16px*var(--fs,1))] text-[color:var(--inkDim)]">{currency}{Number(it.price).toFixed(2)} {t("each")}</p>
                   </div>
-                  <span className="rf-num w-16 text-right text-[16px] text-[#ECEAE6]">{currency}{(Number(it.price) * Number(it.quantity)).toFixed(0)}</span>
+                  <span className="rf-num w-16 text-right text-[length:calc(16px*var(--fs,1))] text-[color:var(--ink)]">{currency}{(Number(it.price) * Number(it.quantity)).toFixed(0)}</span>
                 </div>
               ))}
             </div>
@@ -1324,55 +1336,55 @@ function BillSheet(props: {
                     value={coupon}
                     onChange={(e) => { setCoupon(e.target.value.toUpperCase()); }}
                     placeholder={t("couponPlaceholder")}
-                    className="min-w-0 flex-1 px-4 py-2.5 text-sm font-medium tracking-wide outline-none placeholder:text-[#615E57]"
-                    style={{ caretColor: "var(--accHi)", background: "rgba(14,14,16,0.7)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "var(--rCtrl)", color: "#ECEAE6" }}
+                    className="min-w-0 flex-1 px-4 py-2.5 text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] font-medium tracking-wide outline-none placeholder:text-[color:var(--inkDim)]"
+                    style={{ caretColor: "var(--accHi)", background: "rgba(var(--panelRGB),0.7)", border: "1px solid rgba(var(--edgeRGB),0.1)", borderRadius: "var(--rCtrl)", color: "var(--ink)" }}
                   />
                   <button
                     onClick={applyCoupon}
                     disabled={applying || !coupon.trim()}
-                    className="shrink-0 px-4 py-2.5 text-sm font-bold disabled:opacity-50"
+                    className="shrink-0 px-4 py-2.5 text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] font-bold disabled:opacity-50"
                     style={{ borderRadius: "var(--rCtrl)", background: "linear-gradient(180deg, var(--accHi), var(--accMid))", color: "var(--onAcc)" }}
                   >
                     {applying ? "…" : t("apply")}
                   </button>
                 </div>
                 {couponMsg && (
-                  <p className="mt-1.5 text-xs font-medium" style={{ color: couponMsg.ok ? "#8FB27C" : "#E0A79B" }}>{couponMsg.text}</p>
+                  <p className="mt-1.5 text-[length:calc(12px*var(--fs,1))] leading-[calc(16px*var(--fs,1))] font-medium" style={{ color: couponMsg.ok ? "var(--ok)" : "var(--err)" }}>{couponMsg.text}</p>
                 )}
               </div>
             )}
 
-            <div className="mt-4 space-y-1.5 pt-3 text-sm" style={{ borderTop: "1px solid rgba(255,255,255,0.08)" }}>
-              <div className="flex items-center justify-between text-[#9A978F]">
+            <div className="mt-4 space-y-1.5 pt-3 text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))]" style={{ borderTop: "1px solid rgba(var(--edgeRGB),0.08)" }}>
+              <div className="flex items-center justify-between text-[color:var(--inkMuted)]">
                 <span>{t("subtotal")}</span>
                 <span>{currency}{Number(bill?.subtotal ?? 0).toFixed(2)}</span>
               </div>
               {Number(bill?.discount ?? 0) > 0 && (
-                <div className="flex items-center justify-between font-medium" style={{ color: "#8FB27C" }}>
+                <div className="flex items-center justify-between font-medium" style={{ color: "var(--ok)" }}>
                   <span>{bill?.coupon_code ? `${t("coupon")} ${bill.coupon_code}` : t("discount")}</span>
                   <span>− {currency}{Number(bill?.discount).toFixed(2)}</span>
                 </div>
               )}
               {Number(bill?.service_charge ?? 0) > 0 && (
-                <div className="flex items-center justify-between text-[#9A978F]">
+                <div className="flex items-center justify-between text-[color:var(--inkMuted)]">
                   <span>{t("serviceCharge")} ({bill?.service_charge_percent}%)</span>
                   <span>{currency}{Number(bill?.service_charge).toFixed(2)}</span>
                 </div>
               )}
               {(bill?.taxes ?? []).map((t) => (
-                <div key={t.name} className="flex items-center justify-between text-[#9A978F]">
+                <div key={t.name} className="flex items-center justify-between text-[color:var(--inkMuted)]">
                   <span>{t.name} ({t.percentage}%)</span>
                   <span>{currency}{Number(t.amount).toFixed(2)}</span>
                 </div>
               ))}
-              <div className="flex items-center justify-between pt-2 text-[#ECEAE6]" style={{ borderTop: "1px solid rgba(255,255,255,0.08)" }}>
+              <div className="flex items-center justify-between pt-2 text-[color:var(--ink)]" style={{ borderTop: "1px solid rgba(var(--edgeRGB),0.08)" }}>
                 <span className="font-semibold">{t("total")}</span>
-                <span className="rf-num text-[24px]">{currency}{Number(bill?.grand_total ?? 0).toFixed(2)}</span>
+                <span className="rf-num text-[length:calc(24px*var(--fs,1))]">{currency}{Number(bill?.grand_total ?? 0).toFixed(2)}</span>
               </div>
             </div>
 
             {alreadyPaying ? (
-              <p className="mt-4 rounded-xl border px-4 py-3 text-center text-sm" style={{ background: "rgba(217,169,98,0.1)", borderColor: "rgba(217,169,98,0.3)", color: "#E4C48C" }}>
+              <p className="mt-4 rounded-xl border px-4 py-3 text-center text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))]" style={{ background: "rgba(217,169,98,0.1)", borderColor: "rgba(217,169,98,0.3)", color: "var(--warn)" }}>
                 Payment {bill?.payment_status === "approved" ? "approved" : "submitted"} — staff will take it from here.
               </p>
             ) : (
@@ -1382,7 +1394,7 @@ function BillSheet(props: {
                 style={{ borderRadius: "var(--rCtrl)", background: "linear-gradient(180deg, var(--accHi), var(--accMid))", color: "var(--onAcc)", boxShadow: "0 10px 24px rgba(var(--accShadowRGB),0.5)" }}
               >
                 <span>{t("payNow")}</span>
-                <span className="rf-num text-[20px]" style={{ color: "var(--onAcc)" }}>{currency}{Number(bill?.grand_total ?? 0).toFixed(2)}</span>
+                <span className="rf-num text-[length:calc(20px*var(--fs,1))]" style={{ color: "var(--onAcc)" }}>{currency}{Number(bill?.grand_total ?? 0).toFixed(2)}</span>
               </button>
             )}
           </>
@@ -1390,14 +1402,14 @@ function BillSheet(props: {
         {hasItems && (
           <button
             onClick={onDownload}
-            className="mt-3 flex w-full items-center justify-center gap-2 border py-3 text-sm font-semibold"
+            className="mt-3 flex w-full items-center justify-center gap-2 border py-3 text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] font-semibold"
             style={{ borderRadius: "var(--rCtrl)", borderColor: "rgba(var(--accRGB),0.5)", color: "var(--accHi)", background: "rgba(var(--accRGB),0.08)" }}
           >
-            <Icon name="download" style={{ fontSize: 17 }} />
+            <Icon name="download" style={{ fontSize: "calc(17px*var(--fs,1))" }} />
             {t("downloadBill")}
           </button>
         )}
-        <button onClick={onClose} className="mt-2 w-full py-2 text-sm text-[#9A978F]">{t("close")}</button>
+        <button onClick={onClose} className="mt-2 w-full py-2 text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] text-[color:var(--inkMuted)]">{t("close")}</button>
       </div>
     </div>
   );
@@ -1646,14 +1658,14 @@ function PaySheet(props: {
       <div
         className="rf-sc mx-auto max-h-[92dvh] w-full max-w-md overflow-y-auto p-5"
         onClick={(e) => { e.stopPropagation(); }}
-        style={{ borderRadius: "26px 26px 0 0", background: "linear-gradient(180deg,#141416,#0D0D0F)", borderTop: "1px solid rgba(255,255,255,0.1)", boxShadow: "0 -30px 60px rgba(0,0,0,0.6)", animation: "rfSheetUp .32s cubic-bezier(0.22,1,0.36,1)" }}
+        style={{ borderRadius: "26px 26px 0 0", background: "linear-gradient(180deg,var(--sheetTop),var(--sheetBot))", borderTop: "1px solid rgba(var(--edgeRGB),0.1)", boxShadow: "0 -30px 60px rgba(0,0,0,0.6)", animation: "rfSheetUp .32s cubic-bezier(0.22,1,0.36,1)" }}
       >
-        <div className="mx-auto mb-3 h-1.5 w-10 rounded-full" style={{ background: "rgba(255,255,255,0.15)" }} />
+        <div className="mx-auto mb-3 h-1.5 w-10 rounded-full" style={{ background: "rgba(var(--edgeRGB),0.15)" }} />
         <div className="flex items-baseline justify-between">
-          <h2 className="rf-serif text-[24px] leading-none text-[#ECEAE6]">{t("payYourBill")}</h2>
-          <span className="rf-num text-[26px] text-[#ECEAE6]">{currency}{billTotal.toFixed(2)}</span>
+          <h2 className="rf-serif text-[length:calc(24px*var(--fs,1))] leading-none text-[color:var(--ink)]">{t("payYourBill")}</h2>
+          <span className="rf-num text-[length:calc(26px*var(--fs,1))] text-[color:var(--ink)]">{currency}{billTotal.toFixed(2)}</span>
         </div>
-        <p className="mb-4 mt-1 text-sm text-[#9A978F]">
+        <p className="mb-4 mt-1 text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] text-[color:var(--inkMuted)]">
           {razorpay ? t("paySubtitleOnline") : t("paySubtitleOffline")}
         </p>
 
@@ -1668,10 +1680,10 @@ function PaySheet(props: {
               {onlineLoading ? t("opening") : t("payOnlineNow")}
             </button>
             {offlineMethods.length > 0 && (
-              <div className="mb-3 flex items-center gap-3 text-xs text-[#615E57]">
-                <div className="h-px flex-1" style={{ background: "rgba(255,255,255,0.1)" }} />
+              <div className="mb-3 flex items-center gap-3 text-[length:calc(12px*var(--fs,1))] leading-[calc(16px*var(--fs,1))] text-[color:var(--inkDim)]">
+                <div className="h-px flex-1" style={{ background: "rgba(var(--edgeRGB),0.1)" }} />
                 {t("orPayAnother")}
-                <div className="h-px flex-1" style={{ background: "rgba(255,255,255,0.1)" }} />
+                <div className="h-px flex-1" style={{ background: "rgba(var(--edgeRGB),0.1)" }} />
               </div>
             )}
           </>
@@ -1684,8 +1696,8 @@ function PaySheet(props: {
               <button
                 key={m.id}
                 onClick={() => { setMethod(m.id); }}
-                className="border px-2 py-3 text-sm font-medium"
-                style={on ? { borderColor: "rgba(var(--accRGB),0.4)", background: "rgba(var(--accRGB),0.14)", color: "var(--accHi)", borderRadius: "var(--rCtrl)" } : { borderColor: "rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", color: "#9A978F", borderRadius: "var(--rCtrl)" }}
+                className="border px-2 py-3 text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] font-medium"
+                style={on ? { borderColor: "rgba(var(--accRGB),0.4)", background: "rgba(var(--accRGB),0.14)", color: "var(--accHi)", borderRadius: "var(--rCtrl)" } : { borderColor: "rgba(var(--edgeRGB),0.08)", background: "rgba(var(--edgeRGB),0.03)", color: "var(--inkMuted)", borderRadius: "var(--rCtrl)" }}
               >
                 {m.label}
               </button>
@@ -1695,7 +1707,7 @@ function PaySheet(props: {
 
         {needsProof && (
           <div className="mt-4">
-            <p className="mb-2 text-sm font-medium text-[#ECEAE6]">{t("uploadProof")}</p>
+            <p className="mb-2 text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] font-medium text-[color:var(--ink)]">{t("uploadProof")}</p>
             <input
               ref={fileRef}
               type="file"
@@ -1708,29 +1720,29 @@ function PaySheet(props: {
             />
             {imageB64 ? (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={imageB64} alt="proof" className="h-40 w-full rounded-xl object-contain" style={{ background: "rgba(255,255,255,0.04)" }} onClick={() => fileRef.current?.click()} />
+              <img src={imageB64} alt="proof" className="h-40 w-full rounded-xl object-contain" style={{ background: "rgba(var(--edgeRGB),0.04)" }} onClick={() => fileRef.current?.click()} />
             ) : (
-              <button onClick={() => fileRef.current?.click()} className="flex h-28 w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed text-sm text-[#9A978F]" style={{ borderColor: "rgba(255,255,255,0.15)" }}>
-                <Icon name="add_photo_alternate" style={{ fontSize: 20, color: "var(--accHi)" }} />
+              <button onClick={() => fileRef.current?.click()} className="flex h-28 w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] text-[color:var(--inkMuted)]" style={{ borderColor: "rgba(var(--edgeRGB),0.15)" }}>
+                <Icon name="add_photo_alternate" style={{ fontSize: "calc(20px*var(--fs,1))", color: "var(--accHi)" }} />
                 {t("tapUpload")}
               </button>
             )}
           </div>
         )}
 
-        {err && <p className="mt-3 text-sm" style={{ color: "#E0A79B" }}>{err}</p>}
+        {err && <p className="mt-3 text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))]" style={{ color: "var(--err)" }}>{err}</p>}
 
         {offlineMethods.length > 0 && (
           <button
             onClick={submit}
             disabled={submitting}
-            className="mt-5 w-full py-4 font-bold text-[#ECEAE6] disabled:opacity-50"
-            style={{ borderRadius: "var(--rCtrl)", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)" }}
+            className="mt-5 w-full py-4 font-bold text-[color:var(--ink)] disabled:opacity-50"
+            style={{ borderRadius: "var(--rCtrl)", background: "rgba(var(--edgeRGB),0.06)", border: "1px solid rgba(var(--edgeRGB),0.12)" }}
           >
             {submitting ? t("submitting") : t("submitPayment")}
           </button>
         )}
-        <button onClick={onClose} className="mt-2 w-full py-2 text-sm text-[#9A978F]">{t("cancel")}</button>
+        <button onClick={onClose} className="mt-2 w-full py-2 text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] text-[color:var(--inkMuted)]">{t("cancel")}</button>
       </div>
     </div>
   );
@@ -1778,29 +1790,29 @@ function OtpGate(props: {
 
   return (
     <div
-      className="relative mx-auto flex min-h-screen max-w-md flex-col items-center justify-center overflow-hidden px-6 text-center text-[#ECEAE6]"
-      style={{ ...themeVars, backgroundColor: "#08080A", fontFamily: bodyFont }}
+      className="relative mx-auto flex min-h-screen max-w-md flex-col items-center justify-center overflow-hidden px-6 text-center text-[color:var(--ink)]"
+      style={{ ...themeVars, backgroundColor: "var(--bg)", fontFamily: bodyFont }}
     >
       <style>{GLOBAL_CSS}</style>
       <div className="pointer-events-none fixed" style={{ top: -120, left: -80, width: 360, height: 360, borderRadius: "50%", background: "radial-gradient(circle, rgba(var(--accRGB),0.2), transparent 65%)", filter: "blur(30px)", animation: "rfFloatOrb 16s ease-in-out infinite" }} />
       <div className="relative flex flex-col items-center">
         {logoUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={logoUrl} alt="logo" className="mb-4 h-16 w-16 rounded-2xl object-contain p-1.5" style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)" }} />
+          <img src={logoUrl} alt="logo" className="mb-4 h-16 w-16 rounded-2xl object-contain p-1.5" style={{ background: "rgba(var(--edgeRGB),0.06)", border: "1px solid rgba(var(--edgeRGB),0.1)" }} />
         ) : (
           <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl" style={{ background: "linear-gradient(145deg, var(--accHi), var(--accDeep))" }}>
-            <Icon name="lock" style={{ fontSize: 30, color: "var(--onAcc)" }} />
+            <Icon name="lock" style={{ fontSize: "calc(30px*var(--fs,1))", color: "var(--onAcc)" }} />
           </div>
         )}
-        <p className="text-sm font-medium text-[#9A978F]">{restaurantName}</p>
+        <p className="text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] font-medium text-[color:var(--inkMuted)]">{restaurantName}</p>
         {tableLabel ? (
-          <p className="mt-1.5 inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold" style={{ background: "rgba(var(--accRGB),0.16)", color: "var(--accHi)" }}>
-            <Icon name="table_restaurant" style={{ fontSize: 13 }} />
+          <p className="mt-1.5 inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[length:calc(12px*var(--fs,1))] leading-[calc(16px*var(--fs,1))] font-semibold" style={{ background: "rgba(var(--accRGB),0.16)", color: "var(--accHi)" }}>
+            <Icon name="table_restaurant" style={{ fontSize: "calc(13px*var(--fs,1))" }} />
             {t("table")} {tableLabel}
           </p>
         ) : null}
-        <h1 className="rf-serif mt-4 text-[30px] leading-tight text-[#ECEAE6]">{t("otpTitle")}</h1>
-        <p className="mt-2 max-w-xs text-sm text-[#9A978F]">{t("otpHelper")}</p>
+        <h1 className="rf-serif mt-4 text-[length:calc(30px*var(--fs,1))] leading-tight text-[color:var(--ink)]">{t("otpTitle")}</h1>
+        <p className="mt-2 max-w-xs text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] text-[color:var(--inkMuted)]">{t("otpHelper")}</p>
 
         <input
           value={code}
@@ -1811,11 +1823,11 @@ function OtpGate(props: {
           maxLength={4}
           placeholder="••••"
           aria-label={t("otpTitle")}
-          className="rf-num mt-6 w-52 py-4 text-center text-[34px] tracking-[0.4em] text-[#ECEAE6] outline-none"
-          style={{ borderRadius: "var(--rCtrl)", border: "2px solid rgba(var(--accRGB),0.5)", background: "rgba(14,14,16,0.7)", caretColor: "var(--accHi)" }}
+          className="rf-num mt-6 w-52 py-4 text-center text-[length:calc(34px*var(--fs,1))] tracking-[0.4em] text-[color:var(--ink)] outline-none"
+          style={{ borderRadius: "var(--rCtrl)", border: "2px solid rgba(var(--accRGB),0.5)", background: "rgba(var(--panelRGB),0.7)", caretColor: "var(--accHi)" }}
         />
 
-        {err && <p className="mt-3 max-w-xs text-sm font-medium" style={{ color: "#E0A79B" }}>{err}</p>}
+        {err && <p className="mt-3 max-w-xs text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] font-medium" style={{ color: "var(--err)" }}>{err}</p>}
 
         <button
           onClick={submit}
@@ -1830,11 +1842,18 @@ function OtpGate(props: {
   );
 }
 
-function Centered({ children }: { children: React.ReactNode }) {
+// Default var bag for screens that render before (or without) the tenant's
+// branding — the shipped dark shell, so var(--bg)/var(--ink*) always resolve.
+const FALLBACK_VARS: React.CSSProperties = {
+  ...guestThemeVars(resolveGuestTheme(DEFAULT_ACCENT, null)),
+  ...paletteVars(resolveGuestPalette(null)),
+};
+
+function Centered({ children, vars }: { children: React.ReactNode; vars?: React.CSSProperties }) {
   return (
     <div
-      className="mx-auto flex min-h-screen max-w-md items-center justify-center p-6 text-center text-[#9A978F]"
-      style={{ backgroundColor: "#08080A", fontFamily: "Roboto, system-ui, sans-serif" }}
+      className="mx-auto flex min-h-screen max-w-md items-center justify-center p-6 text-center text-[color:var(--inkMuted)]"
+      style={{ ...(vars ?? FALLBACK_VARS), backgroundColor: "var(--bg)", fontFamily: "Roboto, system-ui, sans-serif" }}
     >
       <style>{GLOBAL_CSS}</style>
       {children}

@@ -69,7 +69,7 @@ export default function Finale() {
           SOLUTIONS
         </div>
         <p className="exp-final-sub mt-4 text-[18px] font-medium text-ink-2">
-          Operational excellence, in one place.
+          CuisineFlow — the whole restaurant, one login.
         </p>
 
         <div className="relative mt-8">
@@ -97,7 +97,7 @@ export default function Finale() {
           </svg>
           <a
             data-magnetic
-            href="mailto:hello@experio.solutions?subject=Demo%20request%20—%20Experio%20Platform"
+            href="mailto:hello@experio.solutions?subject=Demo%20request%20—%20CuisineFlow"
             className="exp-cta gold-sweep pointer-events-auto flex h-14 items-center rounded-full bg-white/70 px-10 text-[16px] font-semibold text-ink backdrop-blur-md"
           >
             Book a Demo
@@ -113,11 +113,39 @@ export default function Finale() {
             Log in
           </Link>
         </div>
+
+        {/* The film showed six modules; the product ships more. A compact,
+            truthful capability roll — every chip is a live module or shipped
+            feature, nothing aspirational. IN FLOW below the replay row, so the
+            finale's no-overlap layout contract holds on short viewports. */}
+        <div className="exp-cap-grid mt-8 flex max-w-[620px] flex-wrap justify-center gap-1.5 px-6">
+          {[
+            "Guest QR ordering",
+            "Reservations",
+            "Customers & coupons",
+            "Purchase orders",
+            "Attendance",
+            "Roles & permissions",
+            "Valet",
+            "Multi-outlet",
+            "Thermal KOT printing",
+            "What-if simulation",
+            "Audit log",
+            "Auto-updates",
+          ].map((cap) => (
+            <span
+              key={cap}
+              className="rounded-full border border-black/[0.08] bg-white/60 px-2.5 py-1 text-[11px] font-medium text-ink-2"
+            >
+              {cap}
+            </span>
+          ))}
+        </div>
       </div>
 
       <div aria-hidden className="min-h-5 flex-[43_43_0%]" />
       <p className="exp-footnote z-10 mb-6 text-[12px] text-ink-3">
-        Wherever work happens. · © 2026 Experio Solutions
+        Made for Indian restaurants. · © 2026 Experio Solutions
       </p>
     </div>
   );

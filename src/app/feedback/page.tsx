@@ -16,7 +16,11 @@ import {
   DEFAULT_ACCENT,
   GUEST_CSS,
   type GuestBrandConfig,
+  type GuestPalette,
   guestThemeVars,
+  paletteVars,
+  resolveGuestPalette,
+  shellTones,
   pickHex,
   resolveGuestTheme,
 } from "@/lib/guest-theme";
@@ -229,6 +233,9 @@ function FeedbackForm({
   // shape, panel material). Null until branding resolves — every use falls back to
   // the shipped defaults, so an untouched tenant looks exactly like the order page.
   const [brandConfig, setBrandConfig] = useState<GuestBrandConfig | null>(null);
+  // The server-resolved brand_palette (preset scheme + explicit roles, WCAG
+  // clamp applied). Defaults to the shipped dark shell until branding lands.
+  const [palette, setPalette] = useState<GuestPalette>(() => resolveGuestPalette(null));
   const [theme, setTheme] = useState<ThemeTokens>(fallbackTheme);
   const [categories, setCategories] = useState<CategoryQuestion[]>(DEFAULT_CATEGORIES);
   const [config, setConfig] = useState<FeedbackFormConfig | null>(null);
@@ -264,9 +271,12 @@ function FeedbackForm({
   // The same surface theme the guest ordering page builds: the 6-stop accent ramp
   // plus the panel material / control radius / hero wash the tenant chose. Scoped
   // to this page's root element, so the dashboard's own theme vars stay intact.
-  const guestTheme = useMemo(() => resolveGuestTheme(accent, brandConfig), [accent, brandConfig]);
+  const guestTheme = useMemo(() => resolveGuestTheme(accent, brandConfig, palette), [accent, brandConfig, palette]);
   const themeVars: CSSProperties = {
     ...guestThemeVars(guestTheme),
+    // Palette roles + derived shell tones: the CSS module's --fb-* tokens and
+    // chrome tints read these (falling back to the shipped literals).
+    ...paletteVars(palette),
     // The tenant's brand font drives body text; the Instrument Serif display face
     // and the thin Roboto numerals are design constants (set in the CSS module).
     fontFamily: brandConfig?.font ? fontStack(brandConfig.font) : "Roboto, system-ui, sans-serif",
@@ -286,18 +296,19 @@ function FeedbackForm({
   useEffect(() => { if (brandConfig?.font) {loadBrandFont(brandConfig.font);} }, [brandConfig?.font]);
   useEffect(() => { loadDesignFonts(); }, []);
 
-  // Keep the recorded theme tokens in step with the resolved ramp (submitted as
-  // `image_theme`, exactly as before — only the values are now the dark ones).
+  // Keep the recorded theme tokens in step with the resolved palette (submitted
+  // as `image_theme` metadata) — for an untouched tenant these are the same dark
+  // values as before; a preset scheme records its real shell.
   useEffect(() => {
     setTheme({
-      background: "#08080A",
-      surface: "#16161A",
-      text: "#ECEAE6",
-      mutedText: "#9A978F",
+      background: palette.background,
+      surface: palette.surface,
+      text: palette.text,
+      mutedText: shellTones(palette).inkMuted,
       accent: guestTheme.acc,
       ring: guestTheme.acc,
     });
-  }, [guestTheme.acc]);
+  }, [guestTheme.acc, palette]);
 
   // Persist only NON-empty values so we never cache a fallback/blank tenant that a
   // later visitor (without ?rid=) would inherit.
@@ -337,6 +348,7 @@ function FeedbackForm({
         setBrandConfig(bcfg);
         const themePref = pickHex(bcfg?.color_primary, b?.theme_primary, b?.theme_color);
         if (themePref) {setAccent(themePref);}
+        setPalette(resolveGuestPalette(b?.brand_palette, themePref));
       })
       .catch(() => {
         if (active) {

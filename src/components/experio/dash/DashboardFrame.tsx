@@ -60,16 +60,19 @@ export default function DashboardFrame() {
         />
       </svg>
 
+      {/* The frame inside the film is the PRODUCT: CuisineFlow's dark-copper
+          Rustic Fork skin (palette in experio.css), not the light Experio
+          canvas around it. */}
       <div className="exp-dash glass pointer-events-auto flex h-[min(74vh,640px)] overflow-hidden rounded-[26px] will-change-transform">
         {/* Left rail */}
-        <aside className="relative hidden w-44 shrink-0 flex-col border-r border-black/[0.06] py-5 md:flex">
+        <aside className="relative hidden w-44 shrink-0 flex-col border-r border-white/[0.07] py-5 md:flex">
           <div className="mb-6 flex items-center gap-2 px-5 text-ink">
             <MiniMark className="h-3 w-auto" />
-            <span className="text-[12px] font-black tracking-[0.08em] text-ink">EXPERIO</span>
+            <span className="text-[11px] font-black tracking-[0.08em] text-ink">CUISINEFLOW</span>
           </div>
           <div className="relative">
-            {/* Sliding gold indicator */}
-            <span className="exp-side-ind absolute left-0 top-2 h-6 w-[2px] rounded-full bg-gold" />
+            {/* Sliding copper indicator */}
+            <span className="exp-side-ind absolute left-0 top-2 h-6 w-[2px] rounded-full bg-[#E3B89B]" />
             {VIEWS.map((v, i) => (
               <div
                 key={v.name}
@@ -84,15 +87,15 @@ export default function DashboardFrame() {
             ))}
           </div>
           <div className="mt-auto px-5 text-[10px] leading-relaxed text-ink-3">
-            v4.2 · all systems
-            <span className="ml-1.5 inline-block size-1.5 rounded-full bg-emerald align-middle" />
+            v1.7.0 · all systems
+            <span className="ml-1.5 inline-block size-1.5 rounded-full bg-[#8FB27C] align-middle" />
           </div>
         </aside>
 
         {/* Main column */}
         <div className="flex min-w-0 flex-1 flex-col">
           {/* Topbar */}
-          <header className="flex h-12 shrink-0 items-center gap-3 border-b border-black/[0.06] px-5">
+          <header className="flex h-12 shrink-0 items-center gap-3 border-b border-white/[0.07] px-5">
             <div className="relative h-5 w-32 overflow-hidden">
               {VIEWS.map((v, i) => (
                 <span
@@ -106,23 +109,23 @@ export default function DashboardFrame() {
               ))}
             </div>
             <div className="ml-auto hidden items-center gap-2 lg:flex">
-              <span className="flex items-center gap-1.5 rounded-full border border-black/[0.07] bg-white/60 px-2.5 py-1 text-[11px] font-medium text-ink-2">
-                All locations · 12
+              <span className="flex items-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.05] px-2.5 py-1 text-[11px] font-medium text-ink-2">
+                All outlets · 3
                 <ChevronDown size={12} />
               </span>
-              <span className="rounded-full border border-black/[0.07] bg-white/60 px-2.5 py-1 text-[11px] font-medium text-ink-2">
+              <span className="rounded-full border border-white/[0.08] bg-white/[0.05] px-2.5 py-1 text-[11px] font-medium text-ink-2">
                 Fri, Jul 18
               </span>
-              <span className="flex h-[26px] w-40 items-center gap-1.5 rounded-full border border-black/[0.07] bg-white/40 px-2.5 text-[11px] text-ink-3">
+              <span className="flex h-[26px] w-40 items-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.04] px-2.5 text-[11px] text-ink-3">
                 <Search size={11} />
                 Search
               </span>
             </div>
             <span
-              className="exp-sync-dot size-1.5 rounded-full bg-gold"
+              className="exp-sync-dot size-1.5 rounded-full bg-[#E3B89B]"
               title="Live sync"
             />
-            <span className="size-6 rounded-full bg-gradient-to-br from-[#E8E6E0] to-[#CFCCC4]" />
+            <span className="size-6 rounded-full bg-gradient-to-br from-[#E3B89B] to-[#7D5B47]" />
           </header>
 
           {/* Cells */}
@@ -131,7 +134,7 @@ export default function DashboardFrame() {
               <div
                 key={cellIdx}
                 data-tilt
-                className={`exp-widget glass-shine relative min-h-0 rounded-2xl border border-black/[0.06] bg-white/55 shadow-[inset_0_1px_0_rgba(255,255,255,0.9),0_10px_30px_-18px_rgba(17,17,17,0.2)] will-change-transform ${pos}`}
+                className={`exp-widget glass-shine relative min-h-0 rounded-2xl border border-white/[0.07] bg-gradient-to-b from-[#201B1A] to-[#181412] shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_10px_30px_-18px_rgba(0,0,0,0.6)] will-change-transform ${pos}`}
               >
                 {VIEWS.map((v, vi) => (
                   <div

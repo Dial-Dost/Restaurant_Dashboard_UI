@@ -201,10 +201,10 @@ function Note({ tone, icon, title, body, action }: { tone: Tone; icon: string; t
       className="rf-rise flex items-start gap-3 px-4 py-3.5 text-left"
       style={{ borderRadius: "var(--rCard)", background: `rgba(${v.rgb},0.10)`, border: `1px solid rgba(${v.rgb},0.30)` }}
     >
-      <Icon name={icon} style={{ fontSize: 20, color: v.flat, marginTop: 1 }} />
+      <Icon name={icon} style={{ fontSize: "calc(20px*var(--fs,1))", color: v.flat, marginTop: 1 }} />
       <div className="min-w-0 flex-1">
-        <p className="text-[13px] font-semibold leading-snug" style={{ color: v.flat }}>{title}</p>
-        {body ? <p className="mt-1 text-[12px] leading-snug" style={muted(0.62)}>{body}</p> : null}
+        <p className="text-[length:calc(13px*var(--fs,1))] font-semibold leading-snug" style={{ color: v.flat }}>{title}</p>
+        {body ? <p className="mt-1 text-[length:calc(12px*var(--fs,1))] leading-snug" style={muted(0.62)}>{body}</p> : null}
         {action}
       </div>
     </div>
@@ -216,7 +216,7 @@ function Note({ tone, icon, title, body, action }: { tone: Tone; icon: string; t
 function Field({ label, htmlFor, children, className }: { label: string; htmlFor?: string; children: ReactNode; className?: string }) {
   return (
     <div className={className}>
-      <label htmlFor={htmlFor} className="mb-1.5 block text-[11px] font-bold uppercase" style={LABEL}>{label}</label>
+      <label htmlFor={htmlFor} className="mb-1.5 block text-[length:calc(11px*var(--fs,1))] font-bold uppercase" style={LABEL}>{label}</label>
       {children}
     </div>
   );
@@ -264,10 +264,10 @@ function Shell({ vars, font, logoUrl, title, lang, onLang, t, hero = true, child
                   <img src={logoUrl} alt="" className="h-11 w-11 rounded-[14px] object-cover" style={{ border: "1px solid rgba(var(--inkRGB),0.18)", boxShadow: "0 8px 22px rgba(0,0,0,0.45)" }} />
                 ) : (
                   <div className="flex h-11 w-11 items-center justify-center rounded-[14px]" style={{ background: "linear-gradient(145deg, var(--accHi), var(--accDeep))", boxShadow: "0 8px 22px rgba(var(--accShadowRGB),0.5)" }}>
-                    <Icon name="restaurant" style={{ fontSize: 22, color: "var(--onAcc)" }} />
+                    <Icon name="restaurant" style={{ fontSize: "calc(22px*var(--fs,1))", color: "var(--onAcc)" }} />
                   </div>
                 )}
-                <div className="flex overflow-hidden text-[11px] font-bold" style={{ borderRadius: "var(--rCtrl)", border: "1px solid rgba(var(--inkRGB),0.14)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}>
+                <div className="flex overflow-hidden text-[length:calc(11px*var(--fs,1))] font-bold" style={{ borderRadius: "var(--rCtrl)", border: "1px solid rgba(var(--inkRGB),0.14)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }}>
                   {(["en", "hi"] as const).map((l) => (
                     <button
                       key={l}
@@ -284,8 +284,8 @@ function Shell({ vars, font, logoUrl, title, lang, onLang, t, hero = true, child
                 </div>
               </div>
               <div>
-                <div className="mb-1 text-[10px] font-bold uppercase tracking-[2px]" style={{ color: "var(--accHi)", textShadow: "0 1px 8px rgba(0,0,0,0.6)" }}>{t("eyebrow")}</div>
-                <h1 className="rf-serif text-[34px] leading-none" style={{ color: "var(--ink)", textShadow: "0 2px 16px rgba(0,0,0,0.55)" }}>{title}</h1>
+                <div className="mb-1 text-[length:calc(10px*var(--fs,1))] font-bold uppercase tracking-[2px]" style={{ color: "var(--accHi)", textShadow: "0 1px 8px rgba(0,0,0,0.6)" }}>{t("eyebrow")}</div>
+                <h1 className="rf-serif text-[length:calc(34px*var(--fs,1))] leading-none" style={{ color: "var(--ink)", textShadow: "0 2px 16px rgba(0,0,0,0.55)" }}>{title}</h1>
               </div>
             </div>
           </header>
@@ -365,7 +365,7 @@ export default function ReservePage() {
   useEffect(() => { loadDesignFonts(); }, []);
   useEffect(() => { if (brandConfig?.font) {loadBrandFont(brandConfig.font);} }, [brandConfig?.font]);
 
-  const theme = useMemo(() => resolveGuestTheme(palette.primary, brandConfig), [palette.primary, brandConfig]);
+  const theme = useMemo(() => resolveGuestTheme(palette.primary, brandConfig, palette), [palette, brandConfig]);
   const rootVars = useMemo(() => ({ ...guestThemeVars(theme), ...paletteVars(palette) }), [theme, palette]);
   const bodyFont = brandConfig?.font ? fontStack(brandConfig.font) : "Roboto, system-ui, sans-serif";
   const currency = "₹";
@@ -496,8 +496,8 @@ export default function ReservePage() {
             </div>
             <div className="rf-skel mt-3.5 h-14 w-full" />
           </div>
-          <p className="mt-5 flex items-center justify-center gap-2 text-[12.5px]" style={muted(0.5)}>
-            <Icon name="progress_activity" style={{ fontSize: 16, animation: "rfSpin 1s linear infinite" }} />
+          <p className="mt-5 flex items-center justify-center gap-2 text-[length:calc(12.5px*var(--fs,1))]" style={muted(0.5)}>
+            <Icon name="progress_activity" style={{ fontSize: "calc(16px*var(--fs,1))", animation: "rfSpin 1s linear infinite" }} />
             {t("loading")}
           </p>
         </div>
@@ -514,26 +514,26 @@ export default function ReservePage() {
             <div className="relative mx-auto flex h-[92px] w-[92px] items-center justify-center">
               <span className="absolute inset-0 rounded-full" style={{ background: "rgba(var(--okRGB),0.32)", animation: "rfHalo 2.4s ease-out infinite" }} />
               <span className="relative flex h-[92px] w-[92px] items-center justify-center rounded-full" style={{ background: "linear-gradient(150deg, rgba(var(--okRGB),0.95), rgba(var(--okRGB),0.5))", boxShadow: "0 16px 36px rgba(var(--okRGB),0.28)" }}>
-                <Icon name="event_available" style={{ fontSize: 42, color: "var(--bg)" }} />
+                <Icon name="event_available" style={{ fontSize: "calc(42px*var(--fs,1))", color: "var(--bg)" }} />
               </span>
             </div>
-            <h1 className="rf-serif mt-5 text-[30px] leading-tight" style={{ color: "var(--ink)" }}>{t("doneTitle")}</h1>
-            <p className="mx-auto mt-2 max-w-[18rem] text-[13px] leading-snug" style={muted(0.62)}>
+            <h1 className="rf-serif mt-5 text-[length:calc(30px*var(--fs,1))] leading-tight" style={{ color: "var(--ink)" }}>{t("doneTitle")}</h1>
+            <p className="mx-auto mt-2 max-w-[18rem] text-[length:calc(13px*var(--fs,1))] leading-snug" style={muted(0.62)}>
               {t("doneThanks")} {name.trim()} — {t("doneFor")} {party} {party > 1 ? t("guests") : t("guest")}.
             </p>
 
             <div className="mt-5 flex items-stretch gap-2.5">
               <div className="flex-1 px-3 py-3" style={{ borderRadius: "var(--rCtrl)", background: "rgba(var(--accRGB),0.10)", border: "1px solid rgba(var(--accRGB),0.24)" }}>
-                <div className="flex items-center justify-center gap-1.5 text-[10px] font-bold uppercase" style={LABEL}>
-                  <Icon name="calendar_month" style={{ fontSize: 13, color: "var(--accHi)" }} />{t("fieldDate")}
+                <div className="flex items-center justify-center gap-1.5 text-[length:calc(10px*var(--fs,1))] font-bold uppercase" style={LABEL}>
+                  <Icon name="calendar_month" style={{ fontSize: "calc(13px*var(--fs,1))", color: "var(--accHi)" }} />{t("fieldDate")}
                 </div>
-                <div className="rf-num mt-1 text-[18px]" style={{ color: "var(--ink)" }}>{dmy(date)}</div>
+                <div className="rf-num mt-1 text-[length:calc(18px*var(--fs,1))]" style={{ color: "var(--ink)" }}>{dmy(date)}</div>
               </div>
               <div className="flex-1 px-3 py-3" style={{ borderRadius: "var(--rCtrl)", background: "rgba(var(--accRGB),0.10)", border: "1px solid rgba(var(--accRGB),0.24)" }}>
-                <div className="flex items-center justify-center gap-1.5 text-[10px] font-bold uppercase" style={LABEL}>
-                  <Icon name="schedule" style={{ fontSize: 13, color: "var(--accHi)" }} />{t("fieldTime")}
+                <div className="flex items-center justify-center gap-1.5 text-[length:calc(10px*var(--fs,1))] font-bold uppercase" style={LABEL}>
+                  <Icon name="schedule" style={{ fontSize: "calc(13px*var(--fs,1))", color: "var(--accHi)" }} />{t("fieldTime")}
                 </div>
-                <div className="rf-num mt-1 text-[18px]" style={{ color: "var(--ink)" }}>{time}</div>
+                <div className="rf-num mt-1 text-[length:calc(18px*var(--fs,1))]" style={{ color: "var(--ink)" }}>{time}</div>
               </div>
             </div>
 
@@ -565,13 +565,13 @@ export default function ReservePage() {
         <div className="flex min-h-dvh flex-col items-center justify-center px-5 py-10">
           <section className="rf-rise w-full px-6 pb-7 pt-9 text-center" style={PANEL}>
             <div className="mx-auto flex h-[84px] w-[84px] items-center justify-center rounded-full" style={{ background: "linear-gradient(150deg, var(--accHi), var(--accDeep))", boxShadow: "0 16px 36px rgba(var(--accShadowRGB),0.5)" }}>
-              <Icon name="credit_card" style={{ fontSize: 38, color: "var(--onAcc)" }} />
+              <Icon name="credit_card" style={{ fontSize: "calc(38px*var(--fs,1))", color: "var(--onAcc)" }} />
             </div>
-            <h1 className="rf-serif mt-5 text-[29px] leading-tight" style={{ color: "var(--ink)" }}>{t("depositTitle")}</h1>
-            <p className="mx-auto mt-2 max-w-[18rem] text-[13px] leading-snug" style={muted(0.62)}>
+            <h1 className="rf-serif mt-5 text-[length:calc(29px*var(--fs,1))] leading-tight" style={{ color: "var(--ink)" }}>{t("depositTitle")}</h1>
+            <p className="mx-auto mt-2 max-w-[18rem] text-[length:calc(13px*var(--fs,1))] leading-snug" style={muted(0.62)}>
               {restaurantName || restaurant} {t("depositAsks")} {party} {party > 1 ? t("guests") : t("guest")} · {dmy(date)} · {time}
             </p>
-            <div className="rf-num mt-5 text-[46px] leading-none" style={{ color: "var(--accHi)" }}>{currency}{deposit.amount}</div>
+            <div className="rf-num mt-5 text-[length:calc(46px*var(--fs,1))] leading-none" style={{ color: "var(--accHi)" }}>{currency}{deposit.amount}</div>
 
             {typeof deposit.min_spend === "number" && deposit.min_spend > 0 && (
               <div className="mt-4"><Note tone="warn" icon="payments" title={`${t("minSpendNote")} ${currency}${deposit.min_spend}.`} /></div>
@@ -581,14 +581,14 @@ export default function ReservePage() {
             <button
               onClick={() => payDeposit(deposit)}
               disabled={payingDeposit}
-              className="rf-press mt-5 flex w-full items-center justify-center gap-2 py-4 text-[15px] font-bold disabled:opacity-50"
+              className="rf-press mt-5 flex w-full items-center justify-center gap-2 py-4 text-[length:calc(15px*var(--fs,1))] font-bold disabled:opacity-50"
               style={PRIMARY_BTN}
             >
               {payingDeposit
-                ? <><Icon name="progress_activity" style={{ fontSize: 19, animation: "rfSpin 1s linear infinite" }} />{t("opening")}</>
-                : <><Icon name="lock" style={{ fontSize: 18 }} />{`${t("payDeposit")} ${currency}${deposit.amount} ${t("depositCta")}`}</>}
+                ? <><Icon name="progress_activity" style={{ fontSize: "calc(19px*var(--fs,1))", animation: "rfSpin 1s linear infinite" }} />{t("opening")}</>
+                : <><Icon name="lock" style={{ fontSize: "calc(18px*var(--fs,1))" }} />{`${t("payDeposit")} ${currency}${deposit.amount} ${t("depositCta")}`}</>}
             </button>
-            <p className="mt-3 text-[11.5px] leading-snug" style={muted(0.42)}>{t("depositFoot")}</p>
+            <p className="mt-3 text-[length:calc(11.5px*var(--fs,1))] leading-snug" style={muted(0.42)}>{t("depositFoot")}</p>
           </section>
         </div>
       </Shell>
@@ -607,8 +607,8 @@ export default function ReservePage() {
             title={t("offlineTitle")}
             body={t("offlineBody")}
             action={(
-              <button onClick={() => { void loadBranding(); }} className="rf-press mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-bold" style={{ borderRadius: "var(--rCtrl)", background: "rgba(var(--errRGB),0.16)", border: "1px solid rgba(var(--errRGB),0.34)", color: "var(--err)" }}>
-                <Icon name="refresh" style={{ fontSize: 15 }} />{t("retry")}
+              <button onClick={() => { void loadBranding(); }} className="rf-press mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 text-[length:calc(12px*var(--fs,1))] font-bold" style={{ borderRadius: "var(--rCtrl)", background: "rgba(var(--errRGB),0.16)", border: "1px solid rgba(var(--errRGB),0.34)", color: "var(--err)" }}>
+                <Icon name="refresh" style={{ fontSize: "calc(15px*var(--fs,1))" }} />{t("retry")}
               </button>
             )}
           />
@@ -617,11 +617,11 @@ export default function ReservePage() {
         <section className="rf-rise px-5 pb-5 pt-5" style={PANEL}>
           <div className="flex items-center gap-3">
             <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-[14px]" style={{ background: "linear-gradient(145deg, var(--accHi), var(--accDeep))", boxShadow: "0 10px 24px rgba(var(--accShadowRGB),0.45)" }}>
-              <Icon name="event" style={{ fontSize: 22, color: "var(--onAcc)" }} />
+              <Icon name="event" style={{ fontSize: "calc(22px*var(--fs,1))", color: "var(--onAcc)" }} />
             </div>
             <div className="min-w-0">
-              <h2 className="rf-serif text-[24px] leading-none" style={{ color: "var(--ink)" }}>{t("formTitle")}</h2>
-              <p className="mt-1.5 text-[12.5px] leading-snug" style={muted(0.6)}>{t("formSub")}</p>
+              <h2 className="rf-serif text-[length:calc(24px*var(--fs,1))] leading-none" style={{ color: "var(--ink)" }}>{t("formTitle")}</h2>
+              <p className="mt-1.5 text-[length:calc(12.5px*var(--fs,1))] leading-snug" style={muted(0.6)}>{t("formSub")}</p>
             </div>
           </div>
 
@@ -642,8 +642,8 @@ export default function ReservePage() {
                 maxLength={13}
                 aria-invalid={phoneBad}
               />
-              <p className="mt-1.5 flex items-center gap-1 text-[11.5px]" style={phoneBad ? { color: "var(--err)" } : muted(0.5)}>
-                <Icon name={phoneBad ? "error" : "call"} style={{ fontSize: 14 }} />
+              <p className="mt-1.5 flex items-center gap-1 text-[length:calc(11.5px*var(--fs,1))]" style={phoneBad ? { color: "var(--err)" } : muted(0.5)}>
+                <Icon name={phoneBad ? "error" : "call"} style={{ fontSize: "calc(14px*var(--fs,1))" }} />
                 {phoneBad ? t("phoneTenDigits") : t("phoneHint")}
               </p>
             </Field>
@@ -655,7 +655,7 @@ export default function ReservePage() {
             <div className="flex gap-3">
               <Field label={t("fieldDate")} htmlFor="r-date" className="min-w-0 flex-1">
                 <input id="r-date" type="date" value={date} min={todayStr()} onChange={(e) => { setDate(e.target.value); }} className="rf-field" style={{ colorScheme: "dark" }} />
-                <p className="rf-num mt-1.5 text-[12px]" style={muted(0.45)}>{dmy(date)}</p>
+                <p className="rf-num mt-1.5 text-[length:calc(12px*var(--fs,1))]" style={muted(0.45)}>{dmy(date)}</p>
               </Field>
               <Field label={t("fieldTime")} htmlFor="r-time" className="min-w-0 flex-1">
                 <input id="r-time" type="time" value={time} onChange={(e) => { setTime(e.target.value); }} className="rf-field" style={{ colorScheme: "dark" }} />
@@ -665,14 +665,14 @@ export default function ReservePage() {
             <Field label={t("partySize")}>
               <div className="flex items-center gap-3 p-1.5" style={{ borderRadius: "var(--rCtrl)", background: "rgba(var(--bgRGB),0.55)", border: "1.5px solid rgba(var(--inkRGB),0.10)" }}>
                 <button aria-label="Fewer guests" onClick={() => { setParty((p) => Math.max(1, p - 1)); }} className="rf-press flex h-10 w-10 items-center justify-center rounded-full" style={{ background: "rgba(var(--inkRGB),0.06)", border: "1px solid rgba(var(--inkRGB),0.1)" }}>
-                  <Icon name="remove" style={{ fontSize: 20, color: "var(--ink)" }} />
+                  <Icon name="remove" style={{ fontSize: "calc(20px*var(--fs,1))", color: "var(--ink)" }} />
                 </button>
                 <div className="flex flex-1 items-baseline justify-center gap-1.5">
-                  <span className="rf-num text-[30px] leading-none" style={{ color: "var(--ink)" }}>{party}</span>
-                  <span className="text-[12px] font-medium" style={muted(0.5)}>{party > 1 ? t("guests") : t("guest")}</span>
+                  <span className="rf-num text-[length:calc(30px*var(--fs,1))] leading-none" style={{ color: "var(--ink)" }}>{party}</span>
+                  <span className="text-[length:calc(12px*var(--fs,1))] font-medium" style={muted(0.5)}>{party > 1 ? t("guests") : t("guest")}</span>
                 </div>
                 <button aria-label="More guests" onClick={() => { setParty((p) => Math.min(30, p + 1)); }} className="rf-press flex h-10 w-10 items-center justify-center rounded-full" style={{ background: "linear-gradient(180deg, var(--accHi), var(--accMid))", boxShadow: "0 8px 18px rgba(var(--accShadowRGB),0.45)" }}>
-                  <Icon name="add" style={{ fontSize: 20, color: "var(--onAcc)" }} />
+                  <Icon name="add" style={{ fontSize: "calc(20px*var(--fs,1))", color: "var(--onAcc)" }} />
                 </button>
               </div>
             </Field>
@@ -689,12 +689,12 @@ export default function ReservePage() {
             <button
               onClick={submit}
               disabled={!canSubmit}
-              className="rf-press flex w-full items-center justify-center gap-2 py-4 text-[15px] font-bold disabled:opacity-45"
+              className="rf-press flex w-full items-center justify-center gap-2 py-4 text-[length:calc(15px*var(--fs,1))] font-bold disabled:opacity-45"
               style={PRIMARY_BTN}
             >
               {submitting
-                ? <><Icon name="progress_activity" style={{ fontSize: 19, animation: "rfSpin 1s linear infinite" }} />{t("submitting")}</>
-                : <><Icon name="event_available" style={{ fontSize: 19 }} />{t("submit")}</>}
+                ? <><Icon name="progress_activity" style={{ fontSize: "calc(19px*var(--fs,1))", animation: "rfSpin 1s linear infinite" }} />{t("submitting")}</>
+                : <><Icon name="event_available" style={{ fontSize: "calc(19px*var(--fs,1))" }} />{t("submit")}</>}
             </button>
           </div>
         </section>

@@ -5,7 +5,9 @@ import { MODULES, RIBBONS, type Ribbon, cubicAt, svgX, svgY } from "@/lib/experi
 import { scrollState, seg } from "@/lib/experio/scroll";
 import { pointer } from "@/lib/experio/pointer";
 
-const MODULE_METRICS = ["12m 40s", "94.1%", "412 on shift", "9.4 days", "20% margin", "99.98%"];
+/* Indexed to MODULES: Orders, Kitchen, Inventory, Menu, Accounting, Feedback.
+ * Example values, but each is a figure its module really shows. */
+const MODULE_METRICS = ["₹86,410 today", "KOT #214", "3 below par", "142 items live", "GST-ready", "4.6★ today"];
 
 const fract = (v: number) => v - Math.floor(v);
 
@@ -208,7 +210,9 @@ export default function Network() {
         <h2 className="text-[clamp(38px,5vw,72px)] font-bold tracking-[-0.02em] text-ink">
           Nothing runs alone.
         </h2>
-        <p className="mt-3 text-[18px] font-medium text-ink-2">Six modules. One source of truth.</p>
+        <p className="mt-3 text-[18px] font-medium text-ink-2">
+          One order moves the kitchen, the stock and the books.
+        </p>
       </div>
     </div>
   );

@@ -155,7 +155,7 @@ export function Sparkline({
             y1={pad}
             x2={active.x}
             y2={height - pad}
-            stroke="rgba(17,17,17,0.14)"
+            stroke="rgba(255,255,255,0.16)"
             strokeWidth="1"
           />
         )}
@@ -163,13 +163,13 @@ export function Sparkline({
           cx={(active ?? last).x}
           cy={(active ?? last).y}
           r="3.5"
-          fill="#fff"
+          fill="#1B1716"
           stroke={color}
           strokeWidth="2"
         />
       </svg>
       <div
-        className="pointer-events-none absolute -top-1 z-10 -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-lg border border-black/5 bg-white/90 px-2 py-1 text-[11px] font-semibold text-ink shadow-lg backdrop-blur-sm transition-opacity duration-200 tabular-nums"
+        className="pointer-events-none absolute -top-1 z-10 -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-lg border border-white/10 bg-[#26201e]/95 px-2 py-1 text-[11px] font-semibold text-ink shadow-lg backdrop-blur-sm transition-opacity duration-200 tabular-nums"
         style={{
           left: `${(((active ?? last).x - 0) / w) * 100}%`,
           opacity: active ? 1 : 0,
@@ -226,7 +226,7 @@ export function Bars({
             <path
               key={i}
               d={roundedBar(x, chartH - h, bw, h, 4)}
-              fill={isHi ? color : `color-mix(in oklab, ${color} 45%, white)`}
+              fill={isHi ? color : `color-mix(in oklab, ${color} 38%, #1B1716)`}
               className="exp-chart-bar"
               style={{ transformOrigin: `${x + bw / 2}px ${chartH}px` }}
               onPointerEnter={() => setHov(i)}
@@ -251,7 +251,7 @@ export function Bars({
       )}
       {hov !== null && (
         <div
-          className="pointer-events-none absolute top-0 z-10 -translate-x-1/2 -translate-y-1/2 rounded-lg border border-black/5 bg-white/90 px-2 py-1 text-[11px] font-semibold text-ink shadow-lg backdrop-blur-sm tabular-nums"
+          className="pointer-events-none absolute top-0 z-10 -translate-x-1/2 -translate-y-1/2 rounded-lg border border-white/10 bg-[#26201e]/95 px-2 py-1 text-[11px] font-semibold text-ink shadow-lg backdrop-blur-sm tabular-nums"
           style={{ left: `${((x0 + hov * (bw + gap) + bw / 2) / w) * 100}%` }}
         >
           {data[hov].toLocaleString("en-US")}
@@ -289,7 +289,7 @@ export function Donut({
   return (
     <div className="flex h-full items-center justify-center gap-4">
       <svg viewBox="0 0 100 100" style={{ width: size, height: size }} className="-rotate-90">
-        <circle cx="50" cy="50" r={r} fill="none" stroke="#EFEEEA" strokeWidth="9" />
+        <circle cx="50" cy="50" r={r} fill="none" stroke="#2A2422" strokeWidth="9" />
         <circle
           cx="50"
           cy="50"
@@ -352,7 +352,7 @@ export function Heat({
                 onPointerEnter={() => setHov(`${v}`)}
                 onPointerLeave={() => setHov(null)}
                 style={{
-                  background: `color-mix(in oklab, var(${accentVar}) ${Math.round((v / max) * 88)}%, #F4F2EC)`,
+                  background: `color-mix(in oklab, var(${accentVar}) ${Math.round((v / max) * 88)}%, #221C1A)`,
                 }}
               />
             ))}
@@ -393,7 +393,7 @@ export function Rows({
           />
           <span className="flex-1 truncate text-ink-2">{it.label}</span>
           {it.pct !== undefined && (
-            <span className="h-1 w-14 overflow-hidden rounded-full bg-black/[0.06]">
+            <span className="h-1 w-14 overflow-hidden rounded-full bg-white/[0.08]">
               <span
                 className="exp-row-bar block h-full origin-left rounded-full"
                 style={{ background: accentColor(it.accent ?? "gold"), width: `${it.pct}%` }}
@@ -409,12 +409,14 @@ export function Rows({
 
 /* ---------------------------------- Chips ---------------------------------- */
 
+// 12% tints behind chips, matching the product's AppColors.tint() rule.
 const CHIP_STYLE: Record<string, { bg: string; dot: string }> = {
-  emerald: { bg: "rgba(15,166,120,0.10)", dot: "var(--emerald)" },
-  gold: { bg: "rgba(212,175,55,0.14)", dot: "var(--gold-deep)" },
-  azure: { bg: "rgba(62,123,250,0.10)", dot: "var(--azure)" },
-  violet: { bg: "rgba(124,92,252,0.10)", dot: "var(--violet)" },
-  neutral: { bg: "rgba(17,17,17,0.05)", dot: "var(--ink-3)" },
+  copper: { bg: "rgba(227,184,155,0.12)", dot: "var(--copper-hi)" },
+  success: { bg: "rgba(143,178,124,0.12)", dot: "var(--rf-success)" },
+  warning: { bg: "rgba(217,169,98,0.12)", dot: "var(--rf-warning)" },
+  danger: { bg: "rgba(201,123,110,0.12)", dot: "var(--rf-danger)" },
+  info: { bg: "rgba(143,163,184,0.12)", dot: "var(--rf-info)" },
+  neutral: { bg: "rgba(255,255,255,0.06)", dot: "var(--ink-3)" },
 };
 
 export function Chips({ items }: { items: { label: string; accent?: string }[] }) {
@@ -451,11 +453,11 @@ export function Timeline({
           <span className="w-9 shrink-0 text-[10px] text-ink-3 tabular-nums">{it.time}</span>
           <span className="relative flex size-2 shrink-0 items-center justify-center">
             <span
-              className="size-2 rounded-full border-2 bg-white"
-              style={{ borderColor: accentColor(it.accent ?? "gold") }}
+              className="size-2 rounded-full border-2 bg-[#1B1716]"
+              style={{ borderColor: accentColor(it.accent ?? "copper") }}
             />
             {i < items.length - 1 && (
-              <span className="absolute left-1/2 top-2 h-4 w-px -translate-x-1/2 bg-black/[0.08]" />
+              <span className="absolute left-1/2 top-2 h-4 w-px -translate-x-1/2 bg-white/[0.08]" />
             )}
           </span>
           <span className="truncate text-ink-2">{it.label}</span>

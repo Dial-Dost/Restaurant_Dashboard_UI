@@ -233,7 +233,7 @@ export default function Experience() {
         18.5
       );
 
-      /* Act 2 draws Manager's charts under scrub — only what actually exists. */
+      /* Act 2 draws the Overview charts under scrub — only what actually exists. */
       const v0 = '.exp-cell-layer[data-vi="0"]';
       const v0Lines = q$(v0, ".exp-chart-line");
       if (v0Lines.length)
@@ -284,8 +284,10 @@ export default function Experience() {
           pos
         );
         tl.to(".exp-side-ind", { y: k * 40, duration: 0.8, ease: "power2.inOut" }, pos - 0.4);
-        tl.to(`[data-si="${k - 1}"]`, { color: "#74746D", duration: 0.6 }, pos - 0.4);
-        tl.to(`[data-si="${k}"]`, { color: "#111111", duration: 0.6 }, pos - 0.2);
+        // Rail ink for the DARK product frame (Rustic Fork textTertiary /
+        // textPrimary) — the light-ink pair here was invisible on it.
+        tl.to(`[data-si="${k - 1}"]`, { color: "#615E57", duration: 0.6 }, pos - 0.4);
+        tl.to(`[data-si="${k}"]`, { color: "#ECEAE6", duration: 0.6 }, pos - 0.2);
         tl.to(`[data-vt="${k - 1}"]`, { autoAlpha: 0, y: -8, duration: 0.6 }, pos - 0.5);
         tl.fromTo(`[data-vt="${k}"]`, { autoAlpha: 0, y: 8 }, { autoAlpha: 1, y: 0, duration: 0.8 }, pos);
         tl.to(".exp-ghost-roll", { y: -280 * k, duration: 1.6, ease: "power2.inOut" }, pos - 0.8);
@@ -377,6 +379,9 @@ export default function Experience() {
       );
       tl.fromTo(".exp-cta", { autoAlpha: 0 }, { autoAlpha: 1, duration: 1.6 }, 97.2);
       tl.fromTo(".exp-replay", { autoAlpha: 0 }, { autoAlpha: 1, duration: 1.4 }, 98.2);
+      // Capability roll rises with the replay row — content reveal only, the
+      // finale's flow layout still owns all positioning.
+      tl.fromTo(".exp-cap-grid", { autoAlpha: 0, y: 12 }, { autoAlpha: 1, y: 0, duration: 1.4 }, 98.4);
       tl.fromTo(".exp-footnote", { autoAlpha: 0 }, { autoAlpha: 1, duration: 1.2 }, 98.6);
 
       /* ---- persistent furniture ---- */
@@ -511,12 +516,15 @@ export default function Experience() {
 
       {/* The story, for readers and robots. */}
       <article className="sr-only">
-        <h2>Experio Solutions</h2>
+        <h2>CuisineFlow, by Experio Solutions</h2>
         <p>
-          Experio is one intelligent platform for operational excellence. It centralizes
-          operations, workflow, inventory, analytics and administration into a single living
-          dashboard — every role works from one place, every module speaks to every other.
-          Book a demo to see your operation in one frame.
+          CuisineFlow is the restaurant management system built for Indian restaurants: a
+          point of sale with one bill per table, covers and APC, thermal printing with daily
+          KOT numbers, a live kitchen display, table clubbing and bill splitting, a QR
+          waitlist that holds guests&apos; pre-orders, guest QR ordering under your own
+          branding, unit-aware inventory, menu insights with price suggestions, a what-if
+          simulation planner, and GST-ready accounting with a cash register — across every
+          outlet, from one login. Book a demo to see your restaurant in one frame.
         </p>
       </article>
     </div>

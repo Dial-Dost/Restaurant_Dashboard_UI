@@ -27,14 +27,15 @@ export const dashRect = { x0: -0.05, y0: -0.62, x1: 0.93, y1: 0.62 };
 
 export type Module = { label: string; nx: number; ny: number };
 
-/** Six operational modules on a ring around the centered object (act 4). */
+/** Six real CuisineFlow modules on a ring around the centered object (act 4).
+ * Labels are content; the nx/ny ring geometry is mechanics — leave it. */
 export const MODULES: Module[] = [
-  { label: "Operations", nx: 0.62, ny: 0.02 },
-  { label: "Analytics", nx: 0.33, ny: 0.44 },
-  { label: "People", nx: -0.33, ny: 0.44 },
-  { label: "Inventory", nx: -0.62, ny: 0.02 },
-  { label: "Finance", nx: -0.33, ny: -0.46 },
-  { label: "Quality", nx: 0.33, ny: -0.46 },
+  { label: "Orders", nx: 0.62, ny: 0.02 },
+  { label: "Kitchen", nx: 0.33, ny: 0.44 },
+  { label: "Inventory", nx: -0.33, ny: 0.44 },
+  { label: "Menu", nx: -0.62, ny: 0.02 },
+  { label: "Accounting", nx: -0.33, ny: -0.46 },
+  { label: "Feedback", nx: 0.33, ny: -0.46 },
 ];
 
 const CENTER = { nx: 0, ny: 0.04 };

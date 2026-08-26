@@ -2,14 +2,14 @@
 
 import type { ReactNode } from "react";
 import {
-  Activity,
+  Armchair,
   BarChart3,
-  Boxes,
-  Briefcase,
+  ChefHat,
+  Hourglass,
   LayoutDashboard,
-  ShieldCheck,
+  Wallet,
 } from "lucide-react";
-import { Bars, Chips, Delta, Donut, Heat, Rows, Sparkline, Stat, Timeline } from "./charts";
+import { Bars, Delta, Donut, Heat, Rows, Sparkline, Stat, Timeline } from "./charts";
 
 export type View = {
   name: string;
@@ -21,11 +21,17 @@ export type View = {
   cells: { title: string; content: ReactNode }[];
 };
 
-const HOURS = ["09", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20"];
+/* Every number below is example data, but every METRIC is one the product
+ * actually computes and every label is a real module doing its real job:
+ * covers counted once per table, APC = bill / covers (pre-tax), daily KOT
+ * numbers, GST from the outlet's tax config, QR waitlist with held
+ * pre-orders. Nothing here claims a feature CuisineFlow does not ship. */
+
+const HOURS = ["12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23"];
 
 export const VIEWS: View[] = [
   {
-    name: "Manager",
+    name: "Overview",
     headline: "The day, at a glance.",
     icon: <LayoutDashboard size={15} strokeWidth={1.75} />,
     cells: [
@@ -33,39 +39,39 @@ export const VIEWS: View[] = [
         title: "Revenue today",
         content: (
           <div className="flex h-full flex-col justify-between gap-2">
-            <Stat value={128400} prefix="$" delta={6.4} label="vs last Friday" />
+            <Stat value={86410} prefix="₹" delta={6.4} label="61 bills · vs last Friday" />
             <div className="h-10">
-              <Sparkline data={[52, 61, 58, 72, 84, 79, 95, 108, 121, 128]} accent="gold" height={40} />
+              <Sparkline data={[4, 11, 26, 38, 41, 44, 48, 57, 68, 86]} accent="copper" height={40} />
             </div>
           </div>
         ),
       },
       {
-        title: "Throughput by hour",
+        title: "Covers by hour",
         content: (
           <Sparkline
-            data={[120, 180, 320, 640, 520, 340, 300, 380, 460, 560, 610, 430]}
+            data={[18, 42, 36, 14, 8, 10, 16, 34, 52, 58, 40, 22]}
             labels={HOURS}
-            accent="azure"
-            unit=" orders"
+            accent="copper"
+            unit=" covers"
             height={110}
           />
         ),
       },
       {
-        title: "On-time fulfillment",
-        content: <Stat value={96.2} suffix="%" decimals={1} delta={0.8} label="vs 7-day average" />,
+        title: "APC, today",
+        content: <Stat value={412} prefix="₹" delta={2.1} label="per cover · pre-tax" />,
       },
       {
-        title: "Shift coverage",
+        title: "Service pulse",
         content: (
           <Timeline
             items={[
-              { time: "06:00", label: "Open crew · 42", accent: "neutral" },
-              { time: "11:00", label: "Peak · 118", accent: "gold" },
-              { time: "15:00", label: "Mid · 74", accent: "neutral" },
-              { time: "18:00", label: "Peak · 112", accent: "gold" },
-              { time: "22:00", label: "Close · 38", accent: "neutral" },
+              { time: "13:05", label: "T4 seated — 4 covers", accent: "neutral" },
+              { time: "13:09", label: "KOT #118 fired — tandoor", accent: "copper" },
+              { time: "13:31", label: "T2 settled — ₹1,840 · UPI", accent: "success" },
+              { time: "13:38", label: "Guest QR order — Table 9", accent: "info" },
+              { time: "13:44", label: "Feedback in — 5★, Table 2", accent: "success" },
             ]}
           />
         ),
@@ -75,9 +81,10 @@ export const VIEWS: View[] = [
         content: (
           <Rows
             items={[
-              { label: "2 SKUs below par — reorder", value: "15:00", accent: "gold" },
-              { label: "Unassigned shift tomorrow", value: "1", accent: "violet" },
-              { label: "Delivery running late — Harbor 12", value: "40m", accent: "azure" },
+              { label: "T12 — bill printed, unsettled", value: "46m", accent: "warning" },
+              { label: "Waitlist — 3 parties at the gate", value: "3", accent: "info" },
+              { label: "Paneer below par — reorder", value: "1.2 kg", accent: "warning" },
+              { label: "KOT #121 aging — tandoor", value: "9m", accent: "danger" },
             ]}
           />
         ),
@@ -85,45 +92,56 @@ export const VIEWS: View[] = [
     ],
   },
   {
-    name: "Operations",
-    headline: "Flow, in real time.",
-    icon: <Activity size={15} strokeWidth={1.75} />,
+    name: "Tables",
+    headline: "The floor, in real time.",
+    icon: <Armchair size={15} strokeWidth={1.75} />,
     cells: [
       {
-        title: "Avg fulfillment time",
-        content: <Stat value={760} format="minsec" label="−1m 10s vs 7-day average" />,
+        title: "Tables occupied",
+        content: <Stat value={14} suffix="/22" label="2 clubbed · 3 reserved" />,
       },
       {
-        title: "Load by zone",
+        title: "Occupancy by hour",
         content: (
           <Heat
             grid={[
-              [22, 30, 48, 74, 60, 38, 30, 42, 55, 68, 72, 44],
-              [30, 44, 66, 91, 78, 52, 40, 56, 70, 84, 88, 58],
-              [18, 26, 40, 62, 50, 34, 26, 36, 46, 60, 64, 38],
+              [42, 78, 64, 22, 10, 12, 26, 60, 88, 92, 70, 34],
+              [30, 62, 50, 16, 8, 10, 20, 48, 76, 84, 58, 26],
+              [22, 48, 38, 12, 6, 8, 14, 36, 60, 66, 44, 18],
             ]}
-            rowLabels={["Prep", "Assembly", "Dispatch"]}
-            colLabels={["09", "12", "15", "18", "21"]}
+            rowLabels={["AC Hall", "Terrace", "Family"]}
+            colLabels={["12", "15", "18", "21"]}
+            accentVar="--copper"
           />
         ),
       },
       {
-        title: "Equipment uptime",
-        content: <Stat value={98.7} suffix="%" decimals={1} label="142 of 144 stations online" />,
+        title: "Covers so far",
+        content: <Stat value={168} delta={4.8} label="counted once per table" />,
       },
       {
-        title: "Queue depth by channel",
-        content: <Bars data={[14, 9, 22]} labels={["On-site", "Pickup", "Delivery"]} accent="azure" highlight={2} />,
+        title: "Table moves",
+        content: (
+          <Timeline
+            items={[
+              { time: "13:02", label: "T4 + T5 clubbed — one bill", accent: "copper" },
+              { time: "13:20", label: "Item moved T7 → T3", accent: "neutral" },
+              { time: "13:44", label: "Bill split by items — T9", accent: "copper" },
+              { time: "14:01", label: "T6 settled — ₹2,310", accent: "success" },
+              { time: "14:06", label: "T6 reset — free", accent: "neutral" },
+            ]}
+          />
+        ),
       },
       {
-        title: "Exceptions",
+        title: "Open bills",
         content: (
           <Rows
             items={[
-              { label: "Order #4187 stalled — Downtown 05", value: "9m", accent: "gold" },
-              { label: "Chiller temp drift — Harbor 12", value: "live", accent: "azure" },
-              { label: "Courier delayed — Midtown 08", value: "12m", accent: "violet" },
-              { label: "Station offline — Airport 11", value: "1", accent: "neutral" },
+              { label: "T3 · 4 covers · 2 KOTs", value: "₹1,240", accent: "copper" },
+              { label: "T7 · 2 covers · 1 KOT", value: "₹640", accent: "copper" },
+              { label: "T9 · 6 covers · clubbed", value: "₹3,180", accent: "copper" },
+              { label: "T12 · bill printed", value: "46m", accent: "warning" },
             ]}
           />
         ),
@@ -131,52 +149,100 @@ export const VIEWS: View[] = [
     ],
   },
   {
-    name: "Inventory",
-    headline: "Supply, always ahead.",
-    icon: <Boxes size={15} strokeWidth={1.75} />,
+    name: "Waitlist",
+    headline: "The queue runs itself.",
+    icon: <Hourglass size={15} strokeWidth={1.75} />,
     cells: [
       {
-        title: "Stock cover",
-        content: <Stat value={9.4} decimals={1} suffix=" days" delta={0.6} label="network median" />,
+        title: "Waiting now",
+        content: <Stat value={7} label="parties · longest wait 22m" />,
       },
       {
-        title: "Cover by category",
+        title: "Queue through the evening",
         content: (
-          <Bars
-            data={[3.1, 4.8, 5.2, 11, 14, 21]}
-            labels={["Prod", "Prot", "Dairy", "Bev", "Dry", "Pack"]}
-            accent="emerald"
-            highlight={0}
+          <Sparkline
+            data={[1, 2, 4, 7, 9, 8, 6, 4, 2]}
+            labels={["18:00", "18:30", "19:00", "19:30", "20:00", "20:30", "21:00", "21:30", "22:00"]}
+            accent="copper"
+            unit=" waiting"
+            height={110}
           />
         ),
       },
       {
-        title: "Waste rate",
-        content: <Donut value={93} display={2.8} decimals={1} suffix="%" accent="emerald" label="target ≤ 3.0%" />,
+        title: "Joined by QR",
+        content: <Donut value={82} suffix="%" accent="copper" label="scanned at the gate" />,
       },
       {
-        title: "Inbound today",
+        title: "Pre-orders held",
         content: (
-          <Timeline
+          <Rows
             items={[
-              { time: "06:30", label: "Produce — received", accent: "emerald" },
-              { time: "09:00", label: "Dairy — received", accent: "emerald" },
-              { time: "11:30", label: "Dry goods — in transit", accent: "azure" },
-              { time: "14:00", label: "Packaging — scheduled", accent: "neutral" },
-              { time: "16:30", label: "Beverage — scheduled", accent: "neutral" },
+              { label: "Arora · 4 — cart held", value: "6 items", accent: "copper" },
+              { label: "Mehta · 2 — cart held", value: "3 items", accent: "copper" },
+              { label: "Iyer · 5 — browsing menu", value: "—", accent: "neutral" },
             ]}
           />
         ),
       },
       {
-        title: "Reorder queue",
+        title: "Call → seat",
+        content: (
+          <Timeline
+            items={[
+              { time: "19:41", label: "Called — Arora · 4, pop-up on phone", accent: "copper" },
+              { time: "19:44", label: "Seated at T6 — pre-order placed", accent: "success" },
+              { time: "19:45", label: "KOT #164 fired to kitchen", accent: "neutral" },
+              { time: "19:52", label: "Next up — Mehta · 2", accent: "info" },
+            ]}
+          />
+        ),
+      },
+    ],
+  },
+  {
+    name: "Kitchen",
+    headline: "Every KOT, on the clock.",
+    icon: <ChefHat size={15} strokeWidth={1.75} />,
+    cells: [
+      {
+        title: "Open KOTs",
+        content: <Stat value={9} label="oldest 6m · tandoor" />,
+      },
+      {
+        title: "Prep load by station",
+        content: (
+          <Heat
+            grid={[
+              [30, 64, 52, 18, 10, 12, 24, 58, 86, 90, 66, 30],
+              [24, 50, 42, 14, 8, 10, 18, 44, 70, 78, 54, 24],
+              [12, 26, 20, 8, 6, 8, 10, 22, 38, 44, 30, 14],
+            ]}
+            rowLabels={["Tandoor", "Curry", "Chinese"]}
+            colLabels={["12", "15", "18", "21"]}
+            accentVar="--copper"
+          />
+        ),
+      },
+      {
+        title: "Avg prep time",
+        content: <Stat value={754} format="minsec" label="fire to pass, today" />,
+      },
+      {
+        title: "Tickets by channel",
+        content: (
+          <Bars data={[46, 18, 6]} labels={["Dine-in", "Guest QR", "Pre-order"]} accent="copper" highlight={0} />
+        ),
+      },
+      {
+        title: "Firing now",
         content: (
           <Rows
             items={[
-              { label: "Produce — leafy, below par", value: "12", accent: "gold" },
-              { label: "Dairy base — order today", value: "now", accent: "gold" },
-              { label: "Packaging M — 2.1d cover", value: "2.1d", accent: "azure" },
-              { label: "Protein A — vendor confirms", value: "Fri", accent: "neutral" },
+              { label: "KOT #212 — T7 · 2× tandoori platter", value: "2m", accent: "success" },
+              { label: "KOT #213 — T3 · 3× dal makhani", value: "4m", accent: "copper" },
+              { label: "KOT #214 — QR · 1× biryani", value: "1m", accent: "info" },
+              { label: "KOT #209 — T12 · running late", value: "9m", accent: "warning" },
             ]}
           />
         ),
@@ -185,92 +251,47 @@ export const VIEWS: View[] = [
   },
   {
     name: "Analytics",
-    headline: "Patterns become foresight.",
+    headline: "Patterns become decisions.",
     icon: <BarChart3 size={15} strokeWidth={1.75} />,
     cells: [
       {
-        title: "Revenue, weekly",
-        content: <Stat value={1.58} prefix="$" suffix="M" decimals={2} delta={5.1} label="12-week trend" />,
+        title: "Revenue this week",
+        content: <Stat value={6.4} prefix="₹" suffix="L" decimals={1} delta={5.1} label="pre-tax · all outlets" />,
       },
       {
-        title: "Revenue, 12 weeks",
+        title: "APC, 12 weeks · ₹",
         content: (
           <Sparkline
-            data={[1180, 1240, 1195, 1310, 1370, 1330, 1420, 1465, 1440, 1510, 1555, 1580]}
+            data={[382, 391, 388, 402, 410, 405, 418, 424, 421, 431, 436, 442]}
             labels={["W1", "W2", "W3", "W4", "W5", "W6", "W7", "W8", "W9", "W10", "W11", "W12"]}
-            accent="gold"
-            unit="k"
+            accent="copper"
             height={110}
           />
         ),
       },
       {
-        title: "Forecast accuracy",
-        content: <Stat value={94.1} suffix="%" decimals={1} delta={1.2} label="since model refresh" />,
+        title: "Price suggestions",
+        content: <Stat value={6} label="dishes flagged to reprice" />,
       },
       {
         title: "Demand by day",
         content: (
           <Heat
-            grid={[[40, 45, 50, 55, 70, 95, 80]]}
+            grid={[[40, 32, 34, 38, 52, 88, 96]]}
             colLabels={["S", "M", "T", "W", "T", "F", "S"]}
-            accentVar="--violet"
+            accentVar="--copper"
           />
         ),
       },
       {
-        title: "Channel mix",
-        content: <Donut value={54} display={54} suffix="%" accent="violet" label="on-site share" />,
-      },
-    ],
-  },
-  {
-    name: "Executive",
-    headline: "The whole network, one view.",
-    icon: <Briefcase size={15} strokeWidth={1.75} />,
-    cells: [
-      {
-        title: "Network revenue, MTD",
-        content: <Stat value={2.41} prefix="$" suffix="M" decimals={2} delta={8.2} label="YoY · 12 locations" />,
-      },
-      {
-        title: "Revenue by location",
-        content: (
-          <Bars
-            data={[312, 278, 259, 164, 121]}
-            labels={["Dwtn 05", "Rvsd 02", "Arpt 11", "Mdtn 08", "Hrbr 12"]}
-            accent="azure"
-            highlight={0}
-          />
-        ),
-      },
-      {
-        title: "Labor ratio",
-        content: <Stat value={27.6} suffix="%" decimals={1} label="of revenue · target ≤ 28%" />,
-      },
-      {
-        title: "Cost structure",
+        title: "Menu insights",
         content: (
           <Rows
             items={[
-              { label: "Supply", value: "31%", pct: 31, accent: "neutral" },
-              { label: "Labor", value: "28%", pct: 28, accent: "neutral" },
-              { label: "Occupancy", value: "12%", pct: 12, accent: "neutral" },
-              { label: "Margin", value: "20%", pct: 20, accent: "gold" },
-            ]}
-          />
-        ),
-      },
-      {
-        title: "Location scorecard",
-        content: (
-          <Rows
-            items={[
-              { label: "Downtown 05", value: "94", pct: 94, accent: "gold" },
-              { label: "Riverside 02", value: "92", pct: 92, accent: "gold" },
-              { label: "Airport 11", value: "90", pct: 90, accent: "gold" },
-              { label: "Midtown 08", value: "71", pct: 71, accent: "neutral" },
-              { label: "Harbor 12", value: "68", pct: 68, accent: "neutral" },
+              { label: "Butter chicken — top seller", value: "312 plates", accent: "copper" },
+              { label: "Veg biryani — raise ₹20", value: "+₹20", accent: "warning" },
+              { label: "Ravi — top waiter, this week", value: "₹52k", accent: "success" },
+              { label: "What-if: +5% APC", value: "simulate", accent: "info" },
             ]}
           />
         ),
@@ -278,56 +299,46 @@ export const VIEWS: View[] = [
     ],
   },
   {
-    name: "Admin",
-    headline: "Control, without friction.",
-    icon: <ShieldCheck size={15} strokeWidth={1.75} />,
+    name: "Money",
+    headline: "GST-ready, every night.",
+    icon: <Wallet size={15} strokeWidth={1.75} />,
     cells: [
       {
-        title: "Active users",
-        content: <Stat value={214} delta={4.4} label="across 12 locations" />,
+        title: "Grand total, today",
+        content: <Stat value={92140} prefix="₹" delta={4.2} label="tax-inclusive · 61 bills" />,
       },
       {
-        title: "Integrations",
+        title: "Settlements by mode",
+        content: (
+          <Bars data={[31, 18, 9, 3]} labels={["UPI", "Cash", "Card", "Pending"]} accent="copper" highlight={0} />
+        ),
+      },
+      {
+        title: "GST collected",
+        content: <Stat value={4380} prefix="₹" label="CGST + SGST, today" />,
+      },
+      {
+        title: "Cash register",
         content: (
           <Rows
             items={[
-              { label: "Point-of-sale", value: "2m ago", accent: "emerald" },
-              { label: "Payroll", value: "1h ago", accent: "emerald" },
-              { label: "Vendor EDI", value: "14m ago", accent: "emerald" },
-              { label: "Accounting", value: "3h ago", accent: "emerald" },
-              { label: "BI export", value: "nightly", accent: "azure" },
+              { label: "Opening float", value: "₹5,000", accent: "neutral" },
+              { label: "Cash sales", value: "₹22,340", accent: "copper" },
+              { label: "Payouts", value: "−₹1,200", accent: "warning" },
+              { label: "Expected in drawer", value: "₹26,140", accent: "success" },
             ]}
           />
         ),
       },
       {
-        title: "Sync health",
-        content: <Stat value={99.98} suffix="%" decimals={2} label="events delivered, 24h" />,
-      },
-      {
-        title: "Roles",
-        content: (
-          <Chips
-            items={[
-              { label: "Owner · 2", accent: "gold" },
-              { label: "Regional · 4", accent: "violet" },
-              { label: "Site lead · 12", accent: "azure" },
-              { label: "Shift lead · 38", accent: "emerald" },
-              { label: "Team · 158", accent: "neutral" },
-            ]}
-          />
-        ),
-      },
-      {
-        title: "Audit trail",
+        title: "Day close",
         content: (
           <Timeline
             items={[
-              { time: "07:02", label: "Role updated — Riverside 02", accent: "neutral" },
-              { time: "09:15", label: "Par levels changed — network", accent: "gold" },
-              { time: "11:48", label: "User invited", accent: "neutral" },
-              { time: "13:20", label: "Vendor added", accent: "neutral" },
-              { time: "14:05", label: "Export scheduled", accent: "azure" },
+              { time: "22:48", label: "Last bill settled — T9", accent: "neutral" },
+              { time: "23:00", label: "Cash counted — drawer matches", accent: "success" },
+              { time: "23:05", label: "GST summary — ₹2,190 + ₹2,190", accent: "copper" },
+              { time: "23:10", label: "Daily report → owner's bell", accent: "info" },
             ]}
           />
         ),
