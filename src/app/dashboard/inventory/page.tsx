@@ -37,7 +37,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { MoreHorizontal, PlusCircle, Trash2, PackagePlus, Trash, Truck, ChefHat, LineChart, CalendarClock, Tags, Pencil, X } from "lucide-react";
+import { MoreHorizontal, PlusCircle, Trash2, PackagePlus, Trash, Truck, ChefHat, LineChart, CalendarClock, Tags, Pencil, X, Gauge } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -68,7 +68,8 @@ import {
   getStockMovements,
   getInventoryCategories,
   saveInventoryCategories,
-  renameInventoryCategory
+  renameInventoryCategory,
+  setInventoryReorderLevel
 } from "@/lib/db";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/hooks/use-toast";
@@ -82,8 +83,27 @@ export interface InventoryItem {
   category: string;
   stock: number;
   unit: string;
+  /**
+   * DECIDED BY THE SERVER, rendered verbatim here.
+   *
+   * This page used to hold its own copy of the rule (`stock < 10` -> "Low
+   * Stock"), which is how two unit-blind copies of one rule came to disagree:
+   * the server called anything under 10 low, the Overview feed called anything
+   * under 5 low, and neither looked at the unit at all — so 5000 mg of potato
+   * (five grams) read "In Stock" while 5 kg of it read "Low Stock". The rule now
+   * lives in exactly one place (the backend's inventory_units module, which the
+   * inventory list, the concerns feed, its notification and the Supply KPI all
+   * call) and this client renders what it is told.
+   */
   status: "In Stock" | "Low Stock" | "Out of Stock";
   expiry_date?: string | null; // "YYYY-MM-DD" when set
+  /** Reorder level the owner set, in `reorder_unit`; null = none set. */
+  reorder_level?: number | null;
+  reorder_unit?: string | null;
+  /** The threshold `status` was actually decided against, in the item's unit. */
+  reorder_applied?: number | null;
+  /** Where that threshold came from — used to word the hint under the level. */
+  reorder_basis?: "item" | "dimension-default" | "legacy" | null;
 }
 
 const inventorySchema = z.object({
@@ -91,9 +111,17 @@ const inventorySchema = z.object({
   category: z.string().min(1, "Category is required."),
   stock: z.coerce.number().min(0, "Stock cannot be negative."),
   unit: z.string().min(1, "Unit is required."),
+  // Optional: blank means "use the sensible default for this kind of unit".
+  reorder_level: z.union([z.coerce.number().positive("Reorder level must be greater than 0."), z.literal("")]).optional(),
 });
 
 type InventoryFormData = z.infer<typeof inventorySchema>;
+
+// Quantities print whole when whole and to 2dp otherwise. Module-scoped
+// because the reorder dialog needs it too: interpolating a raw default there
+// showed a dozen item "0.416666666667 dozen" (1 dozen expressed in the base
+// unit `each`), which reads as a bug even though the badge was correct.
+const fmtQty = (n: number) => (Number.isInteger(n) ? `${n}` : n.toFixed(2));
 
 function InventoryPageInner() {
   const { timezone } = useTimezone();
@@ -115,6 +143,7 @@ function InventoryPageInner() {
   const [action, setAction] = useState<{ item: InventoryItem; mode: "receive" | "wastage" | "issue" } | null>(null);
   const [historyItem, setHistoryItem] = useState<InventoryItem | null>(null);
   const [expiryItem, setExpiryItem] = useState<InventoryItem | null>(null);
+  const [reorderItem, setReorderItem] = useState<InventoryItem | null>(null);
 
   const refresh = useCallback(async () => {
     if (!restaurantId) {return;}
@@ -136,11 +165,17 @@ function InventoryPageInner() {
 
   const handleAddItem = async (data: InventoryFormData) => {
     if (!restaurantId) {return;}
-    let status: InventoryItem["status"] = "In Stock";
-    if (data.stock === 0) {status = "Out of Stock";}
-    else if (data.stock < 10) {status = "Low Stock";}
-    const newItem: InventoryItem = { id: (inventory.length + 1).toString(), ...data, status };
-    await addInventoryItem(restaurantId, newItem);
+    // No status is computed here any more, and none is sent. The server owns the
+    // rule; `refresh()` reads back the badge it decided. (The id this used to
+    // invent — `inventory.length + 1` — was never the barcode the server stores
+    // either, so it is gone with it.)
+    await addInventoryItem(restaurantId, {
+      name: data.name,
+      category: data.category,
+      stock: data.stock,
+      unit: data.unit,
+      reorder_level: data.reorder_level === "" || data.reorder_level === undefined ? null : Number(data.reorder_level),
+    });
     await refresh();
     setIsDialogOpen(false);
   };
@@ -164,7 +199,16 @@ function InventoryPageInner() {
     }
   };
 
-  const fmtQty = (n: number) => (Number.isInteger(n) ? `${n}` : n.toFixed(2));
+
+  // What the badge was decided against, in the item's own unit — so "Low Stock"
+  // on 50 g is explicable rather than mysterious. Says nothing when the server
+  // could not classify the unit (older payloads, or a unit like "handful"),
+  // because there is no meaningful level to quote in that case.
+  const reorderHint = (item: InventoryItem): string | null => {
+    if (item.reorder_applied == null || item.reorder_basis === "legacy") {return null;}
+    const own = item.reorder_basis === "item";
+    return `${own ? "Reorder at" : "Default reorder"} ${fmtQty(item.reorder_applied)} ${item.unit}`;
+  };
 
   // Days until expiry (negative = already expired); null when no expiry set.
   const daysToExpiry = (item: InventoryItem): number | null => {
@@ -234,7 +278,12 @@ function InventoryPageInner() {
                     <div className="text-sm text-muted-foreground md:hidden">{item.category}</div>
                   </TableCell>
                   <TableCell className="hidden md:table-cell">{item.category}</TableCell>
-                  <TableCell className="hidden md:table-cell text-center">{fmtQty(item.stock)} {item.unit}</TableCell>
+                  <TableCell className="hidden md:table-cell text-center">
+                    <div>{fmtQty(item.stock)} {item.unit}</div>
+                    {reorderHint(item) && (
+                      <div className="text-xs text-muted-foreground">{reorderHint(item)}</div>
+                    )}
+                  </TableCell>
                   <TableCell className="hidden md:table-cell">
                     {item.expiry_date ? (
                       days != null && days <= 7 ? (
@@ -279,6 +328,10 @@ function InventoryPageInner() {
                         <DropdownMenuItem onClick={() => { setExpiryItem(item); }}>
                           <CalendarClock className="mr-2 h-4 w-4" />
                           Set expiry
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => { setReorderItem(item); }}>
+                          <Gauge className="mr-2 h-4 w-4" />
+                          Set reorder level
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem onClick={() => handleRemoveItem(item.id)} className="text-destructive">
@@ -368,6 +421,20 @@ function InventoryPageInner() {
           restaurantId={restaurantId}
           item={historyItem}
           onClose={() => { setHistoryItem(null); }}
+        />
+      )}
+
+      {reorderItem && (
+        <ReorderLevelDialog
+          restaurantId={restaurantId}
+          item={reorderItem}
+          onClose={() => { setReorderItem(null); }}
+          onDone={async () => {
+            setReorderItem(null);
+            await refresh();
+            toast({ title: "Reorder level updated" });
+          }}
+          onError={(msg) => toast({ title: "Error", description: msg, variant: "destructive" })}
         />
       )}
 
@@ -857,10 +924,88 @@ function CategoriesDialog({
   );
 }
 
+/**
+ * Set (or clear) ONE item's reorder level, in that item's own unit.
+ *
+ * Separate from the add form on purpose: the add form posts `stock`, so reusing
+ * it to change a threshold would write a stale quantity over any receive /
+ * wastage / issue that happened while the dialog sat open. A threshold edit must
+ * never move stock.
+ */
+function ReorderLevelDialog({
+  restaurantId,
+  item,
+  onClose,
+  onDone,
+  onError,
+}: {
+  restaurantId: string;
+  item: InventoryItem;
+  onClose: () => void;
+  onDone: () => void | Promise<void>;
+  onError: (msg: string) => void;
+}) {
+  const [value, setValue] = useState(item.reorder_level == null ? "" : String(item.reorder_level));
+  const [busy, setBusy] = useState(false);
+
+  const save = async (level: number | null) => {
+    setBusy(true);
+    try {
+      await setInventoryReorderLevel(restaurantId, item.id, level);
+      await onDone();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Unable to set reorder level");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const parsed = value.trim() === "" ? null : Number(value);
+  const invalid = parsed !== null && !(Number.isFinite(parsed) && parsed > 0);
+
+  return (
+    <Dialog open onOpenChange={(o) => { if (!o) {onClose();} }}>
+      <DialogContent className="sm:max-w-[425px]">
+        <DialogHeader>
+          <DialogTitle>Reorder level — {item.name}</DialogTitle>
+          <DialogDescription>
+            Mark this item Low Stock once it falls to this level or below. Entered in
+            the item&apos;s own unit ({item.unit}).
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-2 py-2">
+          <Label htmlFor="reorder-level">Reorder at or below ({item.unit})</Label>
+          <Input
+            id="reorder-level"
+            type="number"
+            step="any"
+            min="0"
+            value={value}
+            onChange={(e) => { setValue(e.target.value); }}
+            placeholder={item.reorder_applied == null ? "" : `default: ${fmtQty(item.reorder_applied)}`}
+          />
+          {invalid && <p className="text-sm text-destructive">Enter a number greater than 0, or clear the field.</p>}
+          <p className="text-xs text-muted-foreground">
+            Leave blank to use the default for {item.unit}
+            {item.reorder_basis !== "legacy" && item.reorder_applied != null ? ` (${fmtQty(item.reorder_applied)} ${item.unit})` : ""}.
+          </p>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" disabled={busy} onClick={() => save(null)}>Use default</Button>
+          <Button disabled={busy || invalid} onClick={() => save(parsed)}>Save</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function InventoryForm({ categories, inventory, onSubmit, afterSubmit }: { categories: string[]; inventory: InventoryItem[]; onSubmit: (data: InventoryFormData) => void; afterSubmit: () => void; }) {
-  const { register, handleSubmit, control, formState: { errors } } = useForm<InventoryFormData>({
+  const { register, handleSubmit, control, watch, formState: { errors } } = useForm<InventoryFormData>({
     resolver: zodResolver(inventorySchema),
   });
+  // The reorder level is meaningless without the unit it is counted in, so the
+  // field is labelled with whatever the unit box currently says.
+  const unitLabel = (watch("unit") ?? "").trim();
 
   // Managed categories first, then any legacy category present on existing
   // items but no longer in the managed list, so those stay selectable.
@@ -930,6 +1075,19 @@ function InventoryForm({ categories, inventory, onSubmit, afterSubmit }: { categ
         <div className="col-span-3">
           <Input id="unit" {...register("unit")} placeholder="e.g., kg" />
           {errors.unit && <p className="text-sm text-destructive mt-1">{errors.unit.message}</p>}
+        </div>
+      </div>
+      <div className="grid grid-cols-4 items-center gap-4">
+        <Label htmlFor="reorder_level" className="text-right">
+          Reorder at{unitLabel ? ` (${unitLabel})` : ""}
+        </Label>
+        <div className="col-span-3">
+          <Input id="reorder_level" type="number" step="any" min="0" {...register("reorder_level")} placeholder={unitLabel ? `e.g., 5 ${unitLabel}` : "optional"} />
+          {errors.reorder_level && <p className="text-sm text-destructive mt-1">{errors.reorder_level.message}</p>}
+          <p className="text-xs text-muted-foreground mt-1">
+            Optional. Below this{unitLabel ? ` many ${unitLabel}` : ""} the item is flagged Low Stock.
+            Leave blank for a sensible default based on the unit.
+          </p>
         </div>
       </div>
       <DialogFooter>

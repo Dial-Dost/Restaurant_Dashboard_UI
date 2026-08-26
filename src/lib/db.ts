@@ -804,8 +804,16 @@ const mapInventoryItem = (item: any): InventoryItem => ({
     category: String(item.category ?? 'General'),
     stock: Math.max(0, Number(item.stock ?? 0)),
     unit: String(item.unit ?? 'pcs'),
+    // Rendered as given. The server decides In/Low/Out from the quantity, the
+    // unit AND the reorder level; this client deliberately holds no copy of that
+    // rule (see the note on InventoryItem).
     status: (item.status as InventoryItem['status']) ?? 'In Stock',
     expiry_date: typeof item.expiry_date === 'string' ? item.expiry_date : null,
+    reorder_level: item.reorder_level == null ? null : Number(item.reorder_level),
+    reorder_unit: typeof item.reorder_unit === 'string' ? item.reorder_unit : null,
+    // Older backends send neither; fall back to "no threshold to explain".
+    reorder_applied: item.reorder_applied == null ? null : Number(item.reorder_applied),
+    reorder_basis: typeof item.reorder_basis === 'string' ? (item.reorder_basis as InventoryItem['reorder_basis']) : null,
 });
 
 const mapMenuItem = (item: any): MenuItem => ({
@@ -1841,7 +1849,19 @@ export const addCustomer = async (restaurantId: string, customer: Customer) => {
     return { acknowledged: true };
 };
 
-export const addInventoryItem = async (restaurantId: string, item: InventoryItem) => {
+/** What the add/edit form actually submits. NOT an InventoryItem: `status` is
+ *  the server's answer, never the client's input. */
+export interface InventoryItemInput {
+    id?: string;
+    name: string;
+    category: string;
+    stock: number;
+    unit: string;
+    /** Reorder level in the item's own unit. Omit to leave a stored one alone. */
+    reorder_level?: number | null;
+}
+
+export const addInventoryItem = async (restaurantId: string, item: InventoryItemInput) => {
     const response = await backendCall('/inventory', restaurantId, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1853,7 +1873,21 @@ export const addInventoryItem = async (restaurantId: string, item: InventoryItem
         return { acknowledged: true };
     }
 
-    await addToLocalField(restaurantId, 'inventory', item);
+    // OFFLINE ONLY. The status rule (quantity + unit + reorder level) lives on
+    // the server and is not duplicated here — that duplication is precisely what
+    // let the two copies drift apart. The local stand-in states only the part
+    // that needs no unit knowledge, and the real badge arrives with the next
+    // successful load.
+    await addToLocalField(restaurantId, 'inventory', {
+        ...item,
+        id: item.id ?? `${Date.now()}`,
+        status: item.stock <= 0 ? 'Out of Stock' : 'In Stock',
+        expiry_date: null,
+        reorder_level: item.reorder_level ?? null,
+        reorder_unit: item.reorder_level == null ? null : item.unit,
+        reorder_applied: null,
+        reorder_basis: null,
+    } satisfies InventoryItem);
     return { acknowledged: true };
 };
 
@@ -2616,6 +2650,23 @@ export const setInventoryExpiry = async (
     if (!r?.ok) {throw new Error(r ? await readErrorMessage(r) : 'Unable to set expiry');}
 };
 
+// Set (or clear, with null) an inventory item's reorder level, in the item's own
+// unit. Deliberately NOT routed through addInventoryItem: that endpoint writes
+// "Quantity" from the form, so using it to change a threshold would stamp a
+// stale stock figure over any receive/wastage/issue that landed meanwhile.
+export const setInventoryReorderLevel = async (
+    restaurantId: string,
+    inventoryId: string,
+    reorderLevel: number | null,
+): Promise<void> => {
+    const r = await backendCall('/inventory/reorder-level', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inventory_id: inventoryId, reorder_level: reorderLevel }),
+    });
+    if (!r?.ok) {throw new Error(r ? await readErrorMessage(r) : 'Unable to set reorder level');}
+};
+
 // Vendor price history for one ingredient (costed purchases, oldest first).
 export interface PricePoint { date: string; qty: number; unit_cost: number; vendor: string | null }
 export const getPriceHistory = async (restaurantId: string, inventoryId: string): Promise<PricePoint[]> => {
@@ -2922,7 +2973,9 @@ export interface AdvancedAnalytics {
     demographics: { total_customers: number; tagged: number; coverage_pct: number | null; by_gender: { label: string; n: number }[]; by_age: { label: string; n: number }[]; top_pincodes: { label: string; n: number }[] };
     campaigns: { id: string; name: string; cost: number; starts_at: string; ends_at: string; sales_during: number; sales_before: number; uplift_pct: number | null; roi_pct: number | null }[];
     overall_campaign_roi_pct: number | null;
-    stock_alerts: { name: string; qty: number; expiring?: boolean; expiry_date?: string | null }[];
+    // `unit` rides along so a mixed-unit alert list can be read: 5000 of one
+    // thing and 5 of another are not comparable without it.
+    stock_alerts: { name: string; qty: number; unit?: string; expiring?: boolean; expiry_date?: string | null }[];
     seasonal: { month: string; revenue: number; bills: number; index: number }[];
     menu_classes: { name: string; qty: number; revenue: number; popularity_pct: number; class: 'STAR' | 'GREAT' | 'MID' | 'BAD' }[];
     bad_share_pct: number | null;
