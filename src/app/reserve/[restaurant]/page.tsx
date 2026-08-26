@@ -181,7 +181,7 @@ const muted = (a = 0.58): CSSProperties => ({ color: `rgba(var(--inkRGB),${a})` 
 const LABEL: CSSProperties = { color: "rgba(var(--inkRGB),0.5)", letterSpacing: "1.2px" };
 const PRIMARY_BTN: CSSProperties = {
   borderRadius: "var(--rCtrl)",
-  background: "linear-gradient(180deg, var(--accHi), var(--accMid))",
+  background: "var(--btnGrad)",
   color: "var(--onAcc)",
   boxShadow: "0 12px 28px rgba(var(--accShadowRGB),0.5)",
 };
@@ -244,7 +244,8 @@ function Shell({ vars, font, logoUrl, title, lang, onLang, t, hero = true, child
       style={{ ...vars, backgroundColor: "var(--bg)", color: "var(--ink)", fontFamily: font }}
     >
       <style>{GUEST_CSS}{GUEST_FX_CSS}</style>
-      <div className="pointer-events-none fixed inset-0 z-0" style={{ backgroundColor: "var(--bg)" }} />
+      {/* --bgWash is plain var(--bg) unless the tenant set a page-background gradient. */}
+      <div className="pointer-events-none fixed inset-0 z-0" style={{ background: "var(--bgWash)" }} />
       <div className="pointer-events-none fixed z-0" style={{ top: -130, left: -90, width: 360, height: 360, borderRadius: "50%", background: "radial-gradient(circle, rgba(var(--accRGB),0.22), transparent 65%)", filter: "blur(30px)", animation: "rfFloatOrb 16s ease-in-out infinite" }} />
       <div className="pointer-events-none fixed z-0" style={{ bottom: -150, right: -70, width: 340, height: 340, borderRadius: "50%", background: "radial-gradient(circle, rgba(var(--brand2RGB),0.20), transparent 65%)", filter: "blur(34px)", animation: "rfFloatOrb 21s ease-in-out infinite reverse" }} />
       <div className="relative z-10">
@@ -671,7 +672,7 @@ export default function ReservePage() {
                   <span className="rf-num text-[length:calc(30px*var(--fs,1))] leading-none" style={{ color: "var(--ink)" }}>{party}</span>
                   <span className="text-[length:calc(12px*var(--fs,1))] font-medium" style={muted(0.5)}>{party > 1 ? t("guests") : t("guest")}</span>
                 </div>
-                <button aria-label="More guests" onClick={() => { setParty((p) => Math.min(30, p + 1)); }} className="rf-press flex h-10 w-10 items-center justify-center rounded-full" style={{ background: "linear-gradient(180deg, var(--accHi), var(--accMid))", boxShadow: "0 8px 18px rgba(var(--accShadowRGB),0.45)" }}>
+                <button aria-label="More guests" onClick={() => { setParty((p) => Math.min(30, p + 1)); }} className="rf-press flex h-10 w-10 items-center justify-center rounded-full" style={{ background: "var(--btnGrad)", boxShadow: "0 8px 18px rgba(var(--accShadowRGB),0.45)" }}>
                   <Icon name="add" style={{ fontSize: "calc(20px*var(--fs,1))", color: "var(--onAcc)" }} />
                 </button>
               </div>

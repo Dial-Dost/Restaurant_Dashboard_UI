@@ -19,6 +19,7 @@ import { type BrandContrastNote, type BrandSchemeMeta, getBrandConfig, saveBrand
 import { BRAND_FONTS, fontStack, loadBrandFont, loadDesignFonts } from "@/lib/brand-fonts"
 import {
   DEFAULT_ACCENT,
+  GRADIENT_ANGLE_DEFAULTS,
   GUEST_CSS,
   type GuestPalette,
   guestThemeVars,
@@ -31,6 +32,18 @@ import {
 
 const isHex = (v: string) => /^#[0-9a-fA-F]{6}$/.test(v.trim())
 
+// The three brand_config keys of one gradient surface, as the save payload sends
+// them: both stops valid → the full triple; anything else → null for all three
+// (null DELETES the stored key server-side; merge-on-omit would keep it forever).
+const gradientPatch = (surface: "header" | "button" | "bg", from: string, to: string, angle: number) => {
+  const on = isHex(from) && isHex(to)
+  return {
+    [`${surface}_grad_from`]: on ? from : null,
+    [`${surface}_grad_to`]: on ? to : null,
+    [`${surface}_grad_angle`]: on ? angle : null,
+  }
+}
+
 type HeaderStyle = "gradient" | "solid"
 type ButtonShape = "rounded" | "pill" | "square"
 type SurfaceStyle = "frosted" | "solid" | "tinted"
@@ -42,6 +55,9 @@ type CardShape = "rounded" | "sharp"
 // client-side fallback for an older backend that doesn't send it.
 const LIVE_FIELDS = [
   "scheme", "color_primary", "font", "font_scale", "header_style", "button_shape", "surface_style", "card_shape",
+  "header_grad_from", "header_grad_to", "header_grad_angle",
+  "button_grad_from", "button_grad_to", "button_grad_angle",
+  "bg_grad_from", "bg_grad_to", "bg_grad_angle",
 ] as const
 // Retired keys: still stored and returned by the API for tenants who set them
 // once, but the dark guest design derives every surface from the accent, so they
@@ -106,6 +122,17 @@ interface BrandForm {
   button_shape: ButtonShape
   surface_style: SurfaceStyle
   card_shape: CardShape
+  // Gradient washes: blank stops = "no custom gradient" (the server key is
+  // DELETED on save, so the shipped derived wash comes back and keeps evolving).
+  header_grad_from: string
+  header_grad_to: string
+  header_grad_angle: number
+  button_grad_from: string
+  button_grad_to: string
+  button_grad_angle: number
+  bg_grad_from: string
+  bg_grad_to: string
+  bg_grad_angle: number
 }
 
 // Resolved defaults = exactly the shipped guest look, so "reset" lands on the
@@ -129,6 +156,18 @@ const defaultForm = (accent: string): BrandForm => ({
   button_shape: "rounded",
   surface_style: "frosted",
   card_shape: "rounded",
+  // Blank stops = the shipped derived washes; angles sit on the shipped
+  // directions (GRADIENT_ANGLE_DEFAULTS) so enabling a gradient starts exactly
+  // where the design already points.
+  header_grad_from: "",
+  header_grad_to: "",
+  header_grad_angle: GRADIENT_ANGLE_DEFAULTS.header,
+  button_grad_from: "",
+  button_grad_to: "",
+  button_grad_angle: GRADIENT_ANGLE_DEFAULTS.button,
+  bg_grad_from: "",
+  bg_grad_to: "",
+  bg_grad_angle: GRADIENT_ANGLE_DEFAULTS.bg,
 })
 
 // One editable colour ROLE. Leaving it blank means "derive from the accent",
@@ -172,6 +211,98 @@ function ColorRole({
           </Button>
         ) : null}
       </div>
+      <p className="text-[11px] text-muted-foreground">{hint}</p>
+    </div>
+  )
+}
+
+// One editable GRADIENT wash: two stop swatches, an angle slider and a live
+// strip. Off (blank stops) means "the shipped derived wash" — enabling prefills
+// the derived stops so the owner starts from what guests see today, and "Auto"
+// clears both stops (the server then DELETES the keys, so the tenant follows any
+// future evolution of the derived wash).
+function GradientRole({
+  label, hint, from, to, angle, disabled, derivedFrom, derivedTo, onChange,
+}: {
+  label: string; hint: string; from: string; to: string; angle: number; disabled: boolean;
+  derivedFrom: string; derivedTo: string;
+  onChange: (v: { from: string; to: string; angle: number }) => void;
+}) {
+  const active = isHex(from) && isHex(to)
+  const stop = (which: "from" | "to", value: string, derived: string) => (
+    <div className="flex min-w-0 flex-1 items-center gap-1.5">
+      <input
+        type="color"
+        aria-label={`${label} — ${which === "from" ? "first" : "second"} stop`}
+        disabled={disabled}
+        value={isHex(value) ? value : (isHex(derived) ? derived : "#000000")}
+        onChange={(e) => { onChange({ from, to, angle, [which]: e.target.value }); }}
+        className="h-8 w-9 shrink-0 cursor-pointer rounded-md border bg-transparent p-0.5 disabled:cursor-not-allowed disabled:opacity-50"
+      />
+      <Input
+        value={value}
+        disabled={disabled}
+        maxLength={7}
+        spellCheck={false}
+        placeholder={derived}
+        onChange={(e) => {
+          let v = e.target.value.trim()
+          if (v && !v.startsWith("#")) {v = `#${v}`}
+          onChange({ from, to, angle, [which]: v })
+        }}
+        className={cn("h-8 font-mono text-xs uppercase", value && !isHex(value) && "border-destructive")}
+      />
+    </div>
+  )
+  return (
+    <div className="space-y-1.5 rounded-lg border border-dashed p-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <Label className="text-xs font-medium">{label}</Label>
+        {active ? (
+          <Button type="button" variant="ghost" size="sm" disabled={disabled}
+            onClick={() => { onChange({ from: "", to: "", angle }) }} className="h-7 shrink-0 px-2 text-xs">
+            Auto
+          </Button>
+        ) : (
+          <Button type="button" variant="outline" size="sm" disabled={disabled}
+            onClick={() => { onChange({ from: derivedFrom, to: derivedTo, angle }) }} className="h-7 shrink-0 px-2 text-xs">
+            Customise
+          </Button>
+        )}
+      </div>
+      {active ? (
+        <>
+          <div className="flex items-center gap-2">
+            {stop("from", from, derivedFrom)}
+            <span className="ms shrink-0 text-sm text-muted-foreground" aria-hidden="true">arrow_forward</span>
+            {stop("to", to, derivedTo)}
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="range"
+              min={0}
+              max={359}
+              step={1}
+              value={angle}
+              disabled={disabled}
+              aria-label={`${label} — angle`}
+              onChange={(e) => { onChange({ from, to, angle: Number(e.target.value) }) }}
+              className="h-2 min-w-0 flex-1 cursor-pointer accent-primary disabled:cursor-not-allowed"
+            />
+            <span className="w-10 shrink-0 text-right font-mono text-[11px] text-muted-foreground">{angle}°</span>
+          </div>
+          <div
+            className="h-5 w-full rounded-md border border-black/10 dark:border-white/10"
+            style={{ background: `linear-gradient(${angle}deg, ${isHex(from) ? from : derivedFrom}, ${isHex(to) ? to : derivedTo})` }}
+          />
+        </>
+      ) : (
+        <div
+          className="h-5 w-full rounded-md border border-black/10 opacity-70 dark:border-white/10"
+          title="The derived wash guests see today"
+          style={{ background: `linear-gradient(${angle}deg, ${derivedFrom}, ${derivedTo})` }}
+        />
+      )}
       <p className="text-[11px] text-muted-foreground">{hint}</p>
     </div>
   )
@@ -253,7 +384,7 @@ function GuestPreview({ theme, palette, font, restaurantName }: { theme: GuestTh
   return (
     <div
       className="relative overflow-hidden"
-      style={{ ...guestThemeVars(theme), ...paletteVars(palette), backgroundColor: "var(--bg)", color: "var(--ink)", fontFamily: bodyFont }}
+      style={{ ...guestThemeVars(theme), ...paletteVars(palette), background: "var(--bgWash)", color: "var(--ink)", fontFamily: bodyFont }}
     >
       <style>{GUEST_CSS}</style>
       {/* Near-black base + two floating accent orbs behind everything. */}
@@ -341,7 +472,7 @@ function GuestPreview({ theme, palette, font, restaurantName }: { theme: GuestTh
               <div className="text-[9.5px] font-semibold uppercase tracking-wide" style={{ color: "var(--inkMuted)" }}>2 items · tap to review</div>
               <div className="rf-num text-[20px] leading-tight">₹809.00</div>
             </div>
-            <span className="px-3 py-2 text-[11px] font-bold" style={{ borderRadius: 14, background: "linear-gradient(180deg, var(--accHi), var(--accMid))", color: "var(--onAcc)", boxShadow: "0 10px 24px rgba(var(--accShadowRGB),0.5)" }}>Review</span>
+            <span className="px-3 py-2 text-[11px] font-bold" style={{ borderRadius: 14, background: "var(--btnGrad)", color: "var(--onAcc)", boxShadow: "0 10px 24px rgba(var(--accShadowRGB),0.5)" }}>Review</span>
           </div>
         </div>
       </div>
@@ -389,6 +520,9 @@ export function BrandingCustomizer(props: {
         const allowedFonts = (brand_field_options?.font?.length ? brand_field_options.font : brand_fonts).concat(BRAND_FONTS)
         // Only a valid hex is adopted; anything else stays blank = "derive it".
         const hexOrBlank = (v: unknown) => (typeof v === "string" && isHex(v) ? v : "")
+        const angleOr = (v: unknown, dflt: number) =>
+          (typeof v === "number" && Number.isFinite(v) ? ((Math.round(v) % 360) + 360) % 360 : dflt)
+        const raw = cfg as Record<string, unknown>
         setForm({
           scheme: typeof cfg.scheme === "string" && cfg.scheme ? cfg.scheme : "classic",
           color_primary: accent,
@@ -408,6 +542,17 @@ export function BrandingCustomizer(props: {
           surface_style:
             cfg.surface_style === "solid" || cfg.surface_style === "tinted" ? cfg.surface_style : "frosted",
           card_shape: cfg.card_shape === "sharp" ? "sharp" : "rounded",
+          // Gradient keys only exist on tenants that set them (the server passes
+          // them through rather than resolving defaults in), so blank = off.
+          header_grad_from: hexOrBlank(raw.header_grad_from),
+          header_grad_to: hexOrBlank(raw.header_grad_to),
+          header_grad_angle: angleOr(raw.header_grad_angle, GRADIENT_ANGLE_DEFAULTS.header),
+          button_grad_from: hexOrBlank(raw.button_grad_from),
+          button_grad_to: hexOrBlank(raw.button_grad_to),
+          button_grad_angle: angleOr(raw.button_grad_angle, GRADIENT_ANGLE_DEFAULTS.button),
+          bg_grad_from: hexOrBlank(raw.bg_grad_from),
+          bg_grad_to: hexOrBlank(raw.bg_grad_to),
+          bg_grad_angle: angleOr(raw.bg_grad_angle, GRADIENT_ANGLE_DEFAULTS.bg),
         })
         if (brand_schemes?.length) {setSchemes(brand_schemes)}
         if (brand_contrast?.length) {setContrastNotes(brand_contrast)}
@@ -502,6 +647,12 @@ export function BrandingCustomizer(props: {
         button_shape: form.button_shape,
         surface_style: form.surface_style,
         card_shape: form.card_shape,
+        // A disabled gradient sends null for ALL THREE keys, which DELETES them
+        // server-side — absent stays absent, so a cleared tenant renders the
+        // shipped derived wash and follows its future evolution.
+        ...gradientPatch("header", form.header_grad_from, form.header_grad_to, form.header_grad_angle),
+        ...gradientPatch("button", form.button_grad_from, form.button_grad_to, form.button_grad_angle),
+        ...gradientPatch("bg", form.bg_grad_from, form.bg_grad_to, form.bg_grad_angle),
       })
       const savedCfg = saved.brand_config
       loadedAccent.current = isHex(savedCfg.color_primary ?? "") ? (savedCfg.color_primary!) : loadedAccent.current
@@ -543,11 +694,35 @@ export function BrandingCustomizer(props: {
       header_style: form.header_style,
       card_shape: form.card_shape,
       font_scale: form.font_scale,
+      // Gradient washes preview through the same resolver the guest pages use,
+      // so the phone mock's hero/CTAs/shell move exactly as the real pages will.
+      header_grad_from: form.header_grad_from,
+      header_grad_to: form.header_grad_to,
+      header_grad_angle: form.header_grad_angle,
+      button_grad_from: form.button_grad_from,
+      button_grad_to: form.button_grad_to,
+      button_grad_angle: form.button_grad_angle,
+      bg_grad_from: form.bg_grad_from,
+      bg_grad_to: form.bg_grad_to,
+      bg_grad_angle: form.bg_grad_angle,
     }, previewPalette),
-    [form.color_primary, form.button_shape, form.surface_style, form.header_style, form.card_shape, form.font_scale, previewPalette],
+    [form, previewPalette],
   )
   const name = restaurantName?.trim() || "Your Restaurant"
   const shows = (key: string) => live.includes(key)
+
+  // One updater per gradient surface (stops + angle move together).
+  const setGradient = (surface: "header" | "button" | "bg") => (v: { from: string; to: string; angle: number }) => {
+    setForm((f) => ({
+      ...f,
+      [`${surface}_grad_from`]: v.from,
+      [`${surface}_grad_to`]: v.to,
+      [`${surface}_grad_angle`]: v.angle,
+    }))
+  }
+  // The stops each derived wash uses TODAY, so "Customise" starts from exactly
+  // what guests currently see (heroTail mirrors resolveGuestTheme's tail rule).
+  const heroTail = previewPalette.background.toUpperCase() === "#08080A" ? "#0B0B0D" : previewPalette.background
 
   return (
     <Card>
@@ -661,6 +836,16 @@ export function BrandingCustomizer(props: {
                 value={form.color_bg} derived="#08080A"
                 onChange={(v) => { setColor("color_bg", v) }} />
             )}
+            {shows("bg_grad_from") && (
+              <GradientRole
+                label="Page background gradient"
+                hint="A wash painted over the page background — off, guests see the solid shell above."
+                disabled={!isAdmin}
+                from={form.bg_grad_from} to={form.bg_grad_to} angle={form.bg_grad_angle}
+                derivedFrom={previewPalette.background} derivedTo={previewPalette.surface}
+                onChange={setGradient("bg")}
+              />
+            )}
             {shows("color_card") && (
               <ColorRole label="Card surface" hint="Panel base; transparency comes from the panel material." disabled={!isAdmin}
                 value={form.color_card} derived="#1A1A1F"
@@ -732,6 +917,31 @@ export function BrandingCustomizer(props: {
                     />
                   </div>
                 </div>
+              )}
+            </div>
+
+            {/* Custom gradients, grouped with their solid counterparts above:
+                the header wash and the accent buttons. */}
+            <div className="grid gap-4 sm:grid-cols-2">
+              {shows("header_grad_from") && (
+                <GradientRole
+                  label="Header gradient"
+                  hint="Your own two-stop wash behind the restaurant name — overrides the derived accent wash."
+                  disabled={!isAdmin}
+                  from={form.header_grad_from} to={form.header_grad_to} angle={form.header_grad_angle}
+                  derivedFrom={theme.accDeep} derivedTo={heroTail}
+                  onChange={setGradient("header")}
+                />
+              )}
+              {shows("button_grad_from") && (
+                <GradientRole
+                  label="Button gradient"
+                  hint="The fill of every accent button. Pick the same colour twice for solid buttons."
+                  disabled={!isAdmin}
+                  from={form.button_grad_from} to={form.button_grad_to} angle={form.button_grad_angle}
+                  derivedFrom={theme.accHi} derivedTo={theme.accMid}
+                  onChange={setGradient("button")}
+                />
               )}
             </div>
 

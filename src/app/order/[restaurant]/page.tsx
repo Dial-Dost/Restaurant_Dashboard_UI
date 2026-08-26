@@ -654,8 +654,10 @@ function OrderInner() {
       <style>{GLOBAL_CSS}</style>
       <GuestBillReceipt bill={bill} restaurantName={restaurantName || restaurant} logoUrl={logoUrl} tableLabel={tableLabel} currency={currency} />
 
-      {/* Near-black base + two floating accent orbs behind everything. */}
-      <div className="pointer-events-none fixed inset-0 z-0" style={{ backgroundColor: "var(--bg)" }} />
+      {/* Near-black base + two floating accent orbs behind everything. The base
+          paints --bgWash: plain var(--bg) normally (identical to the old solid
+          paint) or the tenant's page-background gradient when one is set. */}
+      <div className="pointer-events-none fixed inset-0 z-0" style={{ background: "var(--bgWash)" }} />
       <div className="pointer-events-none fixed z-0" style={{ top: -120, left: -80, width: 360, height: 360, borderRadius: "50%", background: "radial-gradient(circle, rgba(var(--accRGB),0.20), transparent 65%)", filter: "blur(30px)", animation: "rfFloatOrb 16s ease-in-out infinite" }} />
       <div className="pointer-events-none fixed z-0" style={{ bottom: -140, right: -60, width: 340, height: 340, borderRadius: "50%", background: "radial-gradient(circle, rgba(var(--accDeepRGB),0.22), transparent 65%)", filter: "blur(30px)", animation: "rfFloatOrb 20s ease-in-out infinite reverse" }} />
 
@@ -895,7 +897,7 @@ function OrderInner() {
               )}
             </div>
             {cartCount > 0 && (
-              <button onClick={(e) => { e.stopPropagation(); setShowCart(true); }} className="flex items-center gap-1 px-4 py-3 text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] font-bold transition active:scale-95" style={{ borderRadius: 14, background: "linear-gradient(180deg, var(--accHi), var(--accMid))", color: "var(--onAcc)", boxShadow: "0 10px 24px rgba(var(--accShadowRGB),0.5)" }}>
+              <button onClick={(e) => { e.stopPropagation(); setShowCart(true); }} className="flex items-center gap-1 px-4 py-3 text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] font-bold transition active:scale-95" style={{ borderRadius: 14, background: "var(--btnGrad)", color: "var(--onAcc)", boxShadow: "0 10px 24px rgba(var(--accShadowRGB),0.5)" }}>
                 {t("review")}<Icon name="expand_less" style={{ fontSize: "calc(19px*var(--fs,1))" }} />
               </button>
             )}
@@ -937,7 +939,7 @@ function OrderInner() {
 
       {toast && (
         <div className="fixed inset-x-0 bottom-28 z-40 mx-auto max-w-md px-4">
-          <div className="rounded-xl px-4 py-3 text-center text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] font-semibold shadow-lg" style={{ background: "linear-gradient(180deg, var(--accHi), var(--accMid))", color: "var(--onAcc)" }}>{toast}</div>
+          <div className="rounded-xl px-4 py-3 text-center text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] font-semibold shadow-lg" style={{ background: "var(--btnGrad)", color: "var(--onAcc)" }}>{toast}</div>
         </div>
       )}
 
@@ -1107,7 +1109,7 @@ function ModifierSheet(props: {
         <button
           onClick={confirm}
           className="mt-5 flex w-full items-center justify-between px-5 py-4 font-bold transition active:scale-[0.99]"
-          style={{ borderRadius: "var(--rCtrl)", background: "linear-gradient(180deg, var(--accHi), var(--accMid))", color: "var(--onAcc)", boxShadow: "0 10px 24px rgba(var(--accShadowRGB),0.5)" }}
+          style={{ borderRadius: "var(--rCtrl)", background: "var(--btnGrad)", color: "var(--onAcc)", boxShadow: "0 10px 24px rgba(var(--accShadowRGB),0.5)" }}
         >
           <span>{t("addToOrder")}</span>
           <span className="rf-num text-[length:calc(20px*var(--fs,1))]" style={{ color: "var(--onAcc)" }}>{currency}{unitPrice.toFixed(2)}</span>
@@ -1241,7 +1243,7 @@ function CartSheet(props: {
             onClick={onConfirm}
             disabled={placing || lines.length === 0 || !contactOk}
             className="mt-4 w-full py-4 font-bold transition active:scale-[0.99] disabled:opacity-50"
-            style={{ borderRadius: "var(--rCtrl)", background: "linear-gradient(180deg, var(--accHi), var(--accMid))", color: "var(--onAcc)", boxShadow: "0 10px 24px rgba(var(--accShadowRGB),0.5)" }}
+            style={{ borderRadius: "var(--rCtrl)", background: "var(--btnGrad)", color: "var(--onAcc)", boxShadow: "0 10px 24px rgba(var(--accShadowRGB),0.5)" }}
           >
             {placing ? t("sending") : t("sendOrder")}
           </button>
@@ -1343,7 +1345,7 @@ function BillSheet(props: {
                     onClick={applyCoupon}
                     disabled={applying || !coupon.trim()}
                     className="shrink-0 px-4 py-2.5 text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] font-bold disabled:opacity-50"
-                    style={{ borderRadius: "var(--rCtrl)", background: "linear-gradient(180deg, var(--accHi), var(--accMid))", color: "var(--onAcc)" }}
+                    style={{ borderRadius: "var(--rCtrl)", background: "var(--btnGrad)", color: "var(--onAcc)" }}
                   >
                     {applying ? "…" : t("apply")}
                   </button>
@@ -1391,7 +1393,7 @@ function BillSheet(props: {
               <button
                 onClick={onPay}
                 className="mt-4 flex w-full items-center justify-between px-5 py-4 font-bold transition active:scale-[0.99]"
-                style={{ borderRadius: "var(--rCtrl)", background: "linear-gradient(180deg, var(--accHi), var(--accMid))", color: "var(--onAcc)", boxShadow: "0 10px 24px rgba(var(--accShadowRGB),0.5)" }}
+                style={{ borderRadius: "var(--rCtrl)", background: "var(--btnGrad)", color: "var(--onAcc)", boxShadow: "0 10px 24px rgba(var(--accShadowRGB),0.5)" }}
               >
                 <span>{t("payNow")}</span>
                 <span className="rf-num text-[length:calc(20px*var(--fs,1))]" style={{ color: "var(--onAcc)" }}>{currency}{Number(bill?.grand_total ?? 0).toFixed(2)}</span>
@@ -1675,7 +1677,7 @@ function PaySheet(props: {
               onClick={payOnline}
               disabled={onlineLoading || billTotal <= 0}
               className="mb-4 flex w-full items-center justify-center gap-2 py-4 font-bold transition active:scale-[0.99] disabled:opacity-50"
-              style={{ borderRadius: "var(--rCtrl)", background: "linear-gradient(180deg, var(--accHi), var(--accMid))", color: "var(--onAcc)", boxShadow: "0 10px 24px rgba(var(--accShadowRGB),0.5)" }}
+              style={{ borderRadius: "var(--rCtrl)", background: "var(--btnGrad)", color: "var(--onAcc)", boxShadow: "0 10px 24px rgba(var(--accShadowRGB),0.5)" }}
             >
               {onlineLoading ? t("opening") : t("payOnlineNow")}
             </button>
@@ -1791,7 +1793,7 @@ function OtpGate(props: {
   return (
     <div
       className="relative mx-auto flex min-h-screen max-w-md flex-col items-center justify-center overflow-hidden px-6 text-center text-[color:var(--ink)]"
-      style={{ ...themeVars, backgroundColor: "var(--bg)", fontFamily: bodyFont }}
+      style={{ ...themeVars, background: "var(--bgWash)", fontFamily: bodyFont }}
     >
       <style>{GLOBAL_CSS}</style>
       <div className="pointer-events-none fixed" style={{ top: -120, left: -80, width: 360, height: 360, borderRadius: "50%", background: "radial-gradient(circle, rgba(var(--accRGB),0.2), transparent 65%)", filter: "blur(30px)", animation: "rfFloatOrb 16s ease-in-out infinite" }} />
@@ -1833,7 +1835,7 @@ function OtpGate(props: {
           onClick={submit}
           disabled={checking || code.trim().length < 4}
           className="mt-6 w-52 py-4 font-bold transition active:scale-[0.99] disabled:opacity-50"
-          style={{ borderRadius: "var(--rCtrl)", background: "linear-gradient(180deg, var(--accHi), var(--accMid))", color: "var(--onAcc)", boxShadow: "0 10px 24px rgba(var(--accShadowRGB),0.5)" }}
+          style={{ borderRadius: "var(--rCtrl)", background: "var(--btnGrad)", color: "var(--onAcc)", boxShadow: "0 10px 24px rgba(var(--accShadowRGB),0.5)" }}
         >
           {checking ? t("otpVerifying") : t("otpSubmit")}
         </button>
@@ -1853,7 +1855,7 @@ function Centered({ children, vars }: { children: React.ReactNode; vars?: React.
   return (
     <div
       className="mx-auto flex min-h-screen max-w-md items-center justify-center p-6 text-center text-[color:var(--inkMuted)]"
-      style={{ ...(vars ?? FALLBACK_VARS), backgroundColor: "var(--bg)", fontFamily: "Roboto, system-ui, sans-serif" }}
+      style={{ ...(vars ?? FALLBACK_VARS), background: "var(--bgWash)", fontFamily: "Roboto, system-ui, sans-serif" }}
     >
       <style>{GLOBAL_CSS}</style>
       {children}

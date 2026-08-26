@@ -27,7 +27,47 @@ export interface GuestBrandConfig extends BrandConfig {
   scheme?: string;
   font_scale?: "small" | "medium" | "large";
   card_shape?: "rounded" | "sharp";
+  // Explicit gradient washes (mirrors the backend contract): a pair of hex stops
+  // plus an optional angle per surface. A gradient is ACTIVE only when BOTH of
+  // its stops are valid hexes; ABSENT keys render the shipped derived output
+  // byte-for-byte. Angles default per surface to the shipped wash directions.
+  header_grad_from?: string;
+  header_grad_to?: string;
+  header_grad_angle?: number;
+  button_grad_from?: string;
+  button_grad_to?: string;
+  button_grad_angle?: number;
+  bg_grad_from?: string;
+  bg_grad_to?: string;
+  bg_grad_angle?: number;
 }
+
+// One resolved gradient wash, or null when the tenant hasn't set both stops.
+export interface GuestGradient { from: string; to: string; angle: number }
+
+// Mirror of the backend's BRAND_GRADIENT_ANGLE_DEFAULTS: header 150 / button 180
+// are the literal angles the shipped derived washes already use.
+export const GRADIENT_ANGLE_DEFAULTS = { header: 150, button: 180, bg: 180 } as const;
+
+// Resolve one surface's gradient from brand_config. Only #rrggbb stops count
+// (same strictness as pickHex) and a lone stop stays inactive, so a half-set
+// tenant can never paint a broken wash.
+export function resolveGuestGradient(
+  cfg: GuestBrandConfig | null | undefined,
+  surface: "header" | "button" | "bg",
+): GuestGradient | null {
+  const c = (cfg ?? {}) as Record<string, unknown>;
+  const from = pickHex(c[`${surface}_grad_from`]);
+  const to = pickHex(c[`${surface}_grad_to`]);
+  if (!from || !to) {return null;}
+  const rawAngle = c[`${surface}_grad_angle`];
+  const angle = typeof rawAngle === "number" && Number.isFinite(rawAngle)
+    ? ((Math.round(rawAngle) % 360) + 360) % 360
+    : GRADIENT_ANGLE_DEFAULTS[surface];
+  return { from, to, angle };
+}
+
+const gradientCss = (g: GuestGradient): string => `linear-gradient(${g.angle}deg, ${g.from}, ${g.to})`;
 
 // Only #rrggbb is accepted; anything else (null, "", a name, a short hex) is
 // treated as "not configured" so the next fallback in the chain wins.
@@ -145,6 +185,10 @@ export interface GuestTheme extends Ramp {
   rCard: string; rCtrl: string;
   heroWash: string;
   fs: string;
+  /** Accent CTA fill — the tenant's button gradient, or the shipped accHi→accMid fall. */
+  btnGrad: string;
+  /** Page wash painted over the shell — the tenant's bg gradient, or plain var(--bg). */
+  bgWash: string;
 }
 
 // The full surface theme for a guest page: the accent ramp derived from the
@@ -163,13 +207,27 @@ export function resolveGuestTheme(accent: string, cfg: GuestBrandConfig | null |
   // accent→near-black wash. Both sit under the same dark scrim in the markup.
   // The gradient's tail lands on the page background so a light scheme's hero
   // fades into its own paper, not into someone else's near-black (#0B0B0D is
-  // kept verbatim for the default shell).
+  // kept verbatim for the default shell). An EXPLICIT header gradient (both
+  // stops set) is the owner's deliberate wash and wins over header_style —
+  // that's the only way "custom stops" can mean anything.
   const bg = palette?.background ?? PALETTE_DEFAULTS.background;
   const tail = bg.toUpperCase() === PALETTE_DEFAULTS.background.toUpperCase() ? "#0B0B0D" : bg;
-  const heroWash = cfg?.header_style === "solid"
-    ? "var(--accDeep)"
-    : `linear-gradient(150deg, var(--accDeep), ${tail} 78%)`;
-  return { ...rampHS(h, s), ...surface, rCard, rCtrl, heroWash, fs };
+  const headerGrad = resolveGuestGradient(cfg, "header");
+  const heroWash = headerGrad
+    ? gradientCss(headerGrad)
+    : cfg?.header_style === "solid"
+      ? "var(--accDeep)"
+      : `linear-gradient(150deg, var(--accDeep), ${tail} 78%)`;
+  // Accent CTA fill: the shipped fall EXACTLY (same string the pages inlined)
+  // unless the tenant set button stops; setting both stops to one colour is how
+  // "solid buttons" is expressed.
+  const buttonGrad = resolveGuestGradient(cfg, "button");
+  const btnGrad = buttonGrad ? gradientCss(buttonGrad) : "linear-gradient(180deg, var(--accHi), var(--accMid))";
+  // Page wash: plain var(--bg) resolves to the identical solid paint, so an
+  // untouched tenant's shell is byte-for-byte the current output.
+  const bgGrad = resolveGuestGradient(cfg, "bg");
+  const bgWash = bgGrad ? gradientCss(bgGrad) : "var(--bg)";
+  return { ...rampHS(h, s), ...surface, rCard, rCtrl, heroWash, fs, btnGrad, bgWash };
 }
 
 // The CSS custom properties every guest surface is styled from. Set on the page
@@ -182,6 +240,7 @@ export function guestThemeVars(theme: GuestTheme): CSSProperties {
     "--accShadowRGB": theme.accShadowRGB, "--panelBg": theme.panelBg, "--blur": theme.blur,
     "--pbA": theme.pbA, "--rCard": theme.rCard, "--rCtrl": theme.rCtrl,
     "--heroWash": theme.heroWash, "--fs": theme.fs,
+    "--btnGrad": theme.btnGrad, "--bgWash": theme.bgWash,
   } as CSSProperties;
 }
 

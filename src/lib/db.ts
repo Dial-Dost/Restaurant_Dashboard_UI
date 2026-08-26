@@ -4320,6 +4320,18 @@ export type BrandConfigPatch = Omit<BrandConfig, "color_secondary" | "color_bg" 
     scheme?: string | null;
     font_scale?: string | null;
     card_shape?: string | null;
+    // Gradient washes (hero / buttons / page background): two hex stops + an
+    // angle in degrees per surface. null on write DELETES the stored key —
+    // absent is the contract for "render the shipped derived wash".
+    header_grad_from?: string | null;
+    header_grad_to?: string | null;
+    header_grad_angle?: number | null;
+    button_grad_from?: string | null;
+    button_grad_to?: string | null;
+    button_grad_angle?: number | null;
+    bg_grad_from?: string | null;
+    bg_grad_to?: string | null;
+    bg_grad_angle?: number | null;
 };
 export interface BrandConfigSettings {
     brand_config: BrandConfigPatch;

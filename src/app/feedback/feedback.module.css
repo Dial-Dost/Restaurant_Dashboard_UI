@@ -31,6 +31,7 @@
   --rCard: 22px;
   --rCtrl: 13px;
   --heroWash: linear-gradient(150deg, var(--accDeep), #0b0b0d 78%);
+  --btnGrad: linear-gradient(180deg, var(--accHi), var(--accMid));
 
   --fb-ink: var(--ink, #eceae6);
   --fb-ink-strong: var(--inkStrong, #f7f5f2);
@@ -41,7 +42,8 @@
   position: relative;
   min-height: 100dvh;
   overflow-x: hidden;
-  background: var(--bg, #08080a);
+  /* --bgWash is plain var(--bg) unless the tenant set a page-background gradient. */
+  background: var(--bgWash, var(--bg, #08080a));
   color: var(--fb-ink);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
@@ -320,7 +322,7 @@
   font: inherit;
   font-weight: 700;
   color: var(--onAcc);
-  background: linear-gradient(180deg, var(--accHi), var(--accMid));
+  background: var(--btnGrad, linear-gradient(180deg, var(--accHi), var(--accMid)));
   border: none;
   border-radius: var(--rCtrl);
   padding: 0 18px;
@@ -355,7 +357,7 @@
 }
 .npsBtn:active { transform: scale(0.94); }
 .npsBtnOn {
-  background: linear-gradient(180deg, var(--accHi), var(--accMid));
+  background: var(--btnGrad, linear-gradient(180deg, var(--accHi), var(--accMid)));
   border-color: transparent;
   color: var(--onAcc);
   font-weight: 500;
@@ -379,7 +381,7 @@
   font: inherit;
   font-weight: 700;
   color: var(--onAcc);
-  background: linear-gradient(180deg, var(--accHi), var(--accMid));
+  background: var(--btnGrad, linear-gradient(180deg, var(--accHi), var(--accMid)));
   border: none;
   border-radius: var(--rCtrl);
   padding: 14px 16px;
