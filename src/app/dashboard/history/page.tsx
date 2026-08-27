@@ -8,20 +8,39 @@ import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts"
 import { useAuth } from "@/context/AuthContext"
 import { useCurrency } from "@/hooks/use-currency"
-import { timezoneCaption } from "@/lib/tz"
+import { timezoneCaption, todayInZone } from "@/lib/tz"
 import { useTimezone } from "@/lib/use-timezone"
 import { ClosedBillsSection } from "@/components/closed-bills"
+import { DateRangePicker, RangeNote } from "@/components/date-range-picker"
+import { useDateRange } from "@/hooks/use-date-range"
+import { addDays, rangeLabel, type DateRange } from "@/lib/date-range"
 import { getMonthlyHistory, type MonthlyHistoryRow } from "@/lib/db"
 
 const chartConfig = {
   revenue: { label: "Revenue", color: "hsl(var(--primary))" },
 }
 
-const RANGES = [
-  { months: 12, label: "1 year" },
-  { months: 24, label: "2 years" },
-  { months: 36, label: "3 years" },
-]
+// History exists to show YEARS, so it opens on the last twelve months rather
+// than the 30-day default every other reporting screen uses — a month-by-month
+// table cut to one month is a single row, which looks like a broken page.
+// Applied only on a first visit; a window the owner picked wins (see
+// `useDateRange`'s `fallback`).
+const historyDefault = (timezone: string): DateRange => {
+  const today = todayInZone(timezone)
+  return { from: addDays(today, -364), to: today, preset: "custom" }
+}
+
+// The backend's month series is "the last N months", so a range is served by
+// asking for enough months to reach `from` and then keeping the ones inside the
+// window. 36 is the endpoint's own ceiling; a longer range simply shows what
+// the server retains, which the caption states rather than hides.
+const MAX_HISTORY_MONTHS = 36
+const monthsBack = (from: string, timezone: string): number => {
+  const [fy, fm] = from.split("-").map(Number)
+  const [ty, tm] = todayInZone(timezone).split("-").map(Number)
+  const span = (ty - fy) * 12 + (tm - fm) + 1
+  return Math.max(3, Math.min(MAX_HISTORY_MONTHS, span))
+}
 
 // "2026-06" → "Jun 2026"
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -60,7 +79,11 @@ export default function HistoryPage() {
   const { user } = useAuth()
   const { currency } = useCurrency()
   const { timezone } = useTimezone()
-  const [months, setMonths] = useState(36)
+  // ONE window for the page: the month table, the chart, the totals and the
+  // settled-bill browser below are all cut on it, so nothing on this screen can
+  // disagree with anything else on it.
+  const { range, setRange } = useDateRange("history", { fallback: historyDefault })
+  const months = monthsBack(range.from, timezone)
   const [rows, setRows] = useState<MonthlyHistoryRow[]>([])
   const [loading, setLoading] = useState(true)
   const [hideEmpty, setHideEmpty] = useState(true)
@@ -80,9 +103,14 @@ export default function HistoryPage() {
   }, [user?.restaurantUsername, months])
 
   const hasActivity = (r: MonthlyHistoryRow) => r.revenue > 0 || r.orders > 0 || r.feedback_count > 0 || r.new_customers > 0
-  const visible = hideEmpty ? rows.filter(hasActivity) : rows
-  const chartData = [...rows].reverse().map((r) => ({ month: prettyMonth(r.month), revenue: r.revenue }))
-  const totals = rows.reduce(
+  // Trim the server's month series to the SELECTED window. A month is kept when
+  // it overlaps the range at all: an owner who picks 10 Aug - 20 Sep is asking
+  // about both months, and dropping a partly-covered month would silently
+  // subtract real trade from the totals below.
+  const inRange = rows.filter((r) => r.month >= range.from.slice(0, 7) && r.month <= range.to.slice(0, 7))
+  const visible = hideEmpty ? inRange.filter(hasActivity) : inRange
+  const chartData = [...inRange].reverse().map((r) => ({ month: prettyMonth(r.month), revenue: r.revenue }))
+  const totals = inRange.reduce(
     (acc, r) => ({ revenue: acc.revenue + r.revenue, bills: acc.bills + r.bills, orders: acc.orders + r.orders, customers: acc.customers + r.new_customers }),
     { revenue: 0, bills: 0, orders: 0, customers: 0 },
   )
@@ -95,18 +123,10 @@ export default function HistoryPage() {
           <p className="text-sm text-muted-foreground">Month-by-month summary of the whole business, up to 3 years back.</p>
           <p className="text-xs text-muted-foreground">All times in restaurant time · {timezoneCaption(timezone)}</p>
         </div>
-        <div className="flex gap-1 rounded-lg border p-1">
-          {RANGES.map((r) => (
-            <button
-              key={r.months}
-              onClick={() => { setMonths(r.months); }}
-              className={`rounded-md px-3 py-1 text-sm font-medium transition ${months === r.months ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
-            >
-              {r.label}
-            </button>
-          ))}
-        </div>
+        <DateRangePicker value={range} onChange={setRange} timezone={timezone} />
       </div>
+
+      <RangeNote range={range} timezone={timezone} prefix="Every figure on this page covers" className="text-sm" />
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Card><CardHeader className="pb-2"><CardDescription>Total revenue</CardDescription><CardTitle className="text-xl">{money(totals.revenue)}</CardTitle></CardHeader></Card>
@@ -118,7 +138,7 @@ export default function HistoryPage() {
       <Card>
         <CardHeader>
           <CardTitle>Revenue by month</CardTitle>
-          <CardDescription>Last {months} months.</CardDescription>
+          <CardDescription>{rangeLabel(range, timezone)} · {chartData.length} month{chartData.length === 1 ? "" : "s"}.</CardDescription>
         </CardHeader>
         <CardContent>
           {loading ? (
@@ -142,7 +162,9 @@ export default function HistoryPage() {
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <CardTitle>Monthly summary</CardTitle>
-              <CardDescription>Revenue, volume, guests and service quality per month.</CardDescription>
+              <CardDescription>
+                Revenue, volume, guests and service quality per month. <RangeNote range={range} timezone={timezone} />
+              </CardDescription>
             </div>
             <label className="flex items-center gap-2 text-sm text-muted-foreground">
               <input type="checkbox" checked={hideEmpty} onChange={(e) => { setHideEmpty(e.target.checked); }} className="h-4 w-4 accent-current" />
@@ -216,12 +238,16 @@ export default function HistoryPage() {
         </CardContent>
       </Card>
 
+      {/* Seeded from the page window, and re-seeded when a month row asks for
+          its own bills — so the bill list is never showing a different period
+          from the table above it. `ownDateFilter` keeps its two inputs so a
+          month drill-down can narrow it without moving the whole page. */}
       <ClosedBillsSection
         rid={user?.restaurantUsername ?? ""}
-        from={billRange?.from}
-        to={billRange?.to}
+        from={billRange?.from ?? range.from}
+        to={billRange?.to ?? range.to}
         ownDateFilter
-        description="Every bill this business has settled. Leave the dates blank for all time, or open a month above and jump straight to its bills."
+        description="Every bill this business has settled, within the selected period. Open a month above to jump straight to its bills."
       />
     </div>
   )

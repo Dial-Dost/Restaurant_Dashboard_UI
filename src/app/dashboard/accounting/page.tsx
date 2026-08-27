@@ -13,6 +13,8 @@ import { useAuth } from "@/context/AuthContext"
 import { useCurrency } from "@/hooks/use-currency"
 import { useToast } from "@/hooks/use-toast"
 import { ClosedBillsSection } from "@/components/closed-bills"
+import { DateRangePicker, RangeNote } from "@/components/date-range-picker"
+import { useDateRange } from "@/hooks/use-date-range"
 import { ScheduledReportsSection } from "./scheduled-reports"
 import {
   getSalesReport, getGstReport, getProfitAndLoss, getExpenses, addExpense, deleteExpense, getSalesCsv, getTallyXml,
@@ -21,15 +23,13 @@ import {
   type SalesReport, type GstReport, type ProfitAndLoss, type ExpenseRow, type PayrollData, type PayrollRow,
   type BalanceSheet, type ReconciliationRow, type DiscountsReport, type OpenBillSummary,
 } from "@/lib/db"
-import { daysAgoInZone, formatDate, formatFullDateTime, monthKeyInZone, timezoneCaption, todayInZone } from "@/lib/tz"
+import { formatDate, formatFullDateTime, monthKeyInZone, timezoneCaption, todayInZone } from "@/lib/tz"
 import { useTimezone } from "@/lib/use-timezone"
 
 const salesChartConfig = { sales: { label: "Sales", color: "hsl(var(--primary))" } }
 
 // Open bills are bounded by table count, so one page almost always covers them all.
 const PAGE_SIZE = 25
-
-const isIsoDate = (s: string | null | undefined): s is string => !!s && /^\d{4}-\d{2}-\d{2}$/.test(s)
 
 function AccountingInner() {
   const { user } = useAuth()
@@ -38,24 +38,19 @@ function AccountingInner() {
   const { timezone } = useTimezone()
   const rid = user?.restaurantUsername ?? ""
 
-  // Every date boundary on this page is a RESTAURANT day, not a UTC one. The
-  // previous `new Date().toISOString().slice(0, 10)` was a UTC day key, so for a
-  // restaurant on IST every sale rung up between midnight and 05:30 fell into the
-  // previous day — precisely the late-night covers, and precisely the numbers an
-  // accountant reconciles against the till.
-  const isoDaysAgo = useCallback((days: number) => daysAgoInZone(days, timezone), [timezone])
-
-  // Drill-down entry point: History month rows link here with ?from=&to= so the
-  // page opens straight on that month's records instead of the default 30 days.
+  // Every date boundary on this page is a RESTAURANT day, not a UTC one. A UTC
+  // day key filed every sale rung up before the rollover under the previous
+  // day — precisely the late-night covers, and precisely the numbers an
+  // accountant reconciles against the till. The page range comes from
+  // `useDateRange`; the two single-date controls below seed off `todayInZone`.
+  // ONE window for the whole page, from the shared control. It seeds from
+  // ?from=&to= (History's month rows deep-link here), then from what this screen
+  // was last set to in this session, then from the 30-day default — so coming
+  // back from another module does not silently reset the period the owner was
+  // reasoning about.
   const search = useSearchParams()
-  const [from, setFrom] = useState(() => {
-    const q = search?.get("from")
-    return isIsoDate(q) ? q : isoDaysAgo(29)
-  })
-  const [to, setTo] = useState(() => {
-    const q = search?.get("to")
-    return isIsoDate(q) ? q : isoDaysAgo(0)
-  })
+  const { range, setRange } = useDateRange("accounting", { params: search })
+  const { from, to } = range
   const [loading, setLoading] = useState(true)
   const [sales, setSales] = useState<SalesReport | null>(null)
   const [gst, setGst] = useState<GstReport | null>(null)
@@ -179,9 +174,10 @@ function AccountingInner() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Input type="date" value={from} onChange={(e) => { setFrom(e.target.value); }} className="w-auto" />
-          <span className="text-muted-foreground">→</span>
-          <Input type="date" value={to} onChange={(e) => { setTo(e.target.value); }} className="w-auto" />
+          <DateRangePicker value={range} onChange={setRange} timezone={timezone} />
+          {/* Both exports are cut on the SAME `range` the screen is showing. An
+              export that quietly disagrees with the figures above it is worse
+              than no export — it is the version that gets filed. */}
           <Button variant="outline" size="sm" onClick={exportSalesCsv} disabled={!sales}>
             <Download className="mr-1 h-4 w-4" /> Sales CSV
           </Button>
@@ -191,6 +187,12 @@ function AccountingInner() {
         </div>
       </div>
 
+      {/* The five headline figures are the ones most likely to be misread as
+          all-time numbers, so the window is stated directly above them rather
+          than only on the toolbar, which scrolls away. */}
+      <div className="flex items-center justify-between gap-2">
+        <RangeNote range={range} timezone={timezone} prefix="All figures below cover" className="text-sm" />
+      </div>
       {/* Summary cards drill down to the section holding their source records. */}
       <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
         <a href="#sales-section" className="block" title="Jump to daily sales">

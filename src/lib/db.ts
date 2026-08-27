@@ -3003,6 +3003,37 @@ export const getMonthlyApcInsight = async (
     return data ?? null;
 };
 
+// --- The reporting window ---------------------------------------------------
+// One shape for "which days am I asking about", shared by every analytics and
+// reporting read below. It is what `useDateRange` hands over, unchanged.
+//
+// WHY ALL THREE PARAMETERS GO ON THE WIRE
+// ---------------------------------------
+// /reports/* has always taken explicit `from`/`to`; the /analytics/* routes were
+// built around a ROLLING `days` count ending today, which cannot express "1-15
+// August" at all. Sending `from`, `to` AND `days` together means one control
+// drives both families: a route that understands the range uses it, and a route
+// that only knows `days` still receives a window of the RIGHT LENGTH rather than
+// silently answering for its own 30-day default. `days` is the INCLUSIVE span of
+// the same range, so the two readings can never differ in length.
+export interface AnalyticsWindow { from?: string; to?: string; days?: number }
+
+// Accepts the legacy bare day count so a caller that genuinely wants a rolling
+// window (nothing does today) is still expressible and still typechecks.
+const qWindow = (window: AnalyticsWindow | number | undefined, fallbackDays: number): string => {
+    const w = typeof window === 'number' ? { days: window } : (window ?? {});
+    const days = Math.max(1, Math.round(Number(w.days) || fallbackDays));
+    return `&days=${days}`
+        + (w.from ? `&from=${encodeURIComponent(w.from)}` : '')
+        + (w.to ? `&to=${encodeURIComponent(w.to)}` : '');
+};
+
+/** The day count a window covers, for the captions that still say "N days". */
+const windowDays = (window: AnalyticsWindow | number | undefined, fallbackDays: number): number => {
+    const w = typeof window === 'number' ? { days: window } : (window ?? {});
+    return Math.max(1, Math.round(Number(w.days) || fallbackDays));
+};
+
 export interface ApcTrendPoint { month: string; period_start: string; total_revenue: number; total_covers: number; monthly_apc: number; bills: number }
 
 export const getApcTrends = async (restaurantId: string, months = 12): Promise<ApcTrendPoint[]> => {
@@ -3060,9 +3091,12 @@ export interface AdvancedAnalytics {
     kpis: KpiCard[];
 }
 
-export const getAdvancedAnalytics = async (restaurantId: string, days = 90): Promise<AdvancedAnalytics | null> => {
+export const getAdvancedAnalytics = async (
+    restaurantId: string,
+    window?: AnalyticsWindow | number,
+): Promise<AdvancedAnalytics | null> => {
     const data = await backendJson<AdvancedAnalytics>(
-        `/analytics/advanced?restaurantId=${encodeURIComponent(restaurantId)}&days=${Math.max(7, days)}`,
+        `/analytics/advanced?restaurantId=${encodeURIComponent(restaurantId)}${qWindow(window, 90)}`,
         restaurantId,
         { method: 'GET' },
     );
@@ -3075,9 +3109,12 @@ export interface OutletComparison {
     outlets: { outlet_id: string; name: string; revenue: number; bills: number; orders: number; avg_rating: number | null }[];
 }
 
-export const getOutletsComparison = async (restaurantId: string, days = 30): Promise<OutletComparison | null> => {
+export const getOutletsComparison = async (
+    restaurantId: string,
+    window?: AnalyticsWindow | number,
+): Promise<OutletComparison | null> => {
     const data = await backendJson<OutletComparison>(
-        `/analytics/outlets?restaurantId=${encodeURIComponent(restaurantId)}&days=${Math.max(1, days)}`,
+        `/analytics/outlets?restaurantId=${encodeURIComponent(restaurantId)}${qWindow(window, 30)}`,
         restaurantId,
         { method: 'GET' },
     );
@@ -3222,10 +3259,10 @@ export interface MenuInsights {
 
 export const getMenuInsights = async (
     restaurantId: string,
-    days = 30,
+    window?: AnalyticsWindow | number,
 ): Promise<MenuInsights | null> => {
     const data = await backendJson<MenuInsights>(
-        `/analytics/menu-insights?restaurantId=${encodeURIComponent(restaurantId)}&days=${days}`,
+        `/analytics/menu-insights?restaurantId=${encodeURIComponent(restaurantId)}${qWindow(window, 30)}`,
         restaurantId,
         { method: 'GET' },
     );
@@ -3259,10 +3296,10 @@ export interface OperationsAnalytics {
 
 export const getOperationsAnalytics = async (
     restaurantId: string,
-    days = 30,
+    window?: AnalyticsWindow | number,
 ): Promise<OperationsAnalytics | null> => {
     const data = await backendJson<OperationsAnalytics>(
-        `/analytics/operations?restaurantId=${encodeURIComponent(restaurantId)}&days=${days}`,
+        `/analytics/operations?restaurantId=${encodeURIComponent(restaurantId)}${qWindow(window, 30)}`,
         restaurantId,
         { method: 'GET' },
     );
@@ -3405,14 +3442,14 @@ const emptyKitchenAnalytics = (days: number): KitchenAnalytics => ({
 
 export const getKitchenAnalytics = async (
     restaurantId: string,
-    days = 30,
+    window?: AnalyticsWindow | number,
 ): Promise<KitchenAnalytics> => {
     const data = await backendJson<KitchenAnalytics>(
-        `/analytics/kitchen?days=${days}`,
+        `/analytics/kitchen?${qWindow(window, 30).slice(1)}`,
         restaurantId,
         { method: 'GET' },
     );
-    return data ?? emptyKitchenAnalytics(days);
+    return data ?? emptyKitchenAnalytics(windowDays(window, 30));
 };
 
 
@@ -3495,12 +3532,12 @@ export interface OverviewInsights {
 
 export const getOverviewInsights = async (
     restaurantId: string,
-    days = 30,
+    window?: AnalyticsWindow | number,
 ): Promise<OverviewInsights | null> => {
     // A failed insight read must never blank the whole Overview tab — the caller
     // renders its existing sections when this is null.
     return await backendJson<OverviewInsights>(
-        `/analytics/overview?days=${days}`,
+        `/analytics/overview?${qWindow(window, 30).slice(1)}`,
         restaurantId,
         { method: 'GET' },
     );

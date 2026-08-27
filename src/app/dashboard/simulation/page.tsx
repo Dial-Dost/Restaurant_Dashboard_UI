@@ -259,6 +259,16 @@ export default function SimulationPage() {
 
   const sources = baseline?.sources ?? {};
   const isEstimated = (field: string): boolean => sources[field] === "default";
+  // NO date-range control on this screen, deliberately.
+  //
+  // Every other reporting surface carries the shared picker, but GET
+  // /simulation/baseline takes no window at all — it is fixed at the backend's
+  // SIM_WINDOW_DAYS. Mounting the picker here would let an owner select "1-15
+  // Aug" and be shown a projection built from the last 30 days regardless, which
+  // is a worse failure than having no control: it looks answered. So the window
+  // is STATED instead, sourced from the server's own echo, and the screen says
+  // plainly that it is fixed. When the endpoint learns from/to, the picker drops
+  // in here the same way it did everywhere else.
   const windowDays = baseline ? finite(baseline.window_days) || 30 : 30;
 
   // Colour for a delta cell: green when the move helps profit, red when it
@@ -336,7 +346,11 @@ export default function SimulationPage() {
               <CardTitle>Current Performance</CardTitle>
               <LiveBadge />
             </div>
-            <CardDescription>Your real last-{windowDays}-day averages — the baseline every simulation starts from.</CardDescription>
+            <CardDescription>
+              Your real last-{windowDays}-day averages — the baseline every simulation starts from.
+              {" "}This window is fixed: unlike the other reporting screens, the simulator always
+              models the most recent {windowDays} days of trade.
+            </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-3">
             {baselineLoading ? (

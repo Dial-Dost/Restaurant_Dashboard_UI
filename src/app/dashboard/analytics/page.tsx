@@ -14,11 +14,73 @@ import { Button } from "@/components/ui/button"
 import { useToast } from "@/hooks/use-toast"
 import { formatLongDate, formatMonth, timezoneCaption, todayInZone } from "@/lib/tz"
 import { useTimezone } from "@/lib/use-timezone"
+import { DateRangePicker, RangeNote } from "@/components/date-range-picker"
+import { useDateRange } from "@/hooks/use-date-range"
+import { type DateRange, type RangeQuery } from "@/lib/date-range"
 import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, Download, Filter, Flame, HelpCircle, Info, Maximize2, Trophy, Lightbulb, Snail, TriangleAlert, X } from "lucide-react"
 
 // Series colour for every InteractiveChart on the page — one accent, so the
 // tooltip swatch, the bars and the line always agree.
 const SERIES_COLOR = "hsl(var(--primary))"
+
+// ---------------------------------------------------------------------------
+// The page's reporting window.
+//
+// This screen is ~15 independently-fetching sections, and before this each one
+// hardcoded its own span — 30 days here, 90 there, 12 months in the trends card
+// — with "last 30 days" written into about forty captions. So the page showed
+// three different periods at once and told the owner all of them were "the last
+// 30 days". Context rather than props because the sections are nested several
+// levels deep and every one of them needs both the query AND the label; passing
+// two values through four layers of presentational components is how a caption
+// ends up disagreeing with the fetch beside it.
+//
+// `fallbackDays` exists for the two cards whose natural window is genuinely
+// longer than the page default (the KPI dashboard's 90 days, the month-by-month
+// trend's 12 months). They use it only until the owner picks a window; once
+// there is a selection, EVERY card is cut on it, because a screen where one card
+// silently ignores the picker is worse than one with no picker.
+interface AnalyticsWindowValue {
+  range: DateRange
+  query: RangeQuery
+  label: string
+  timezone: string
+  /** True once the owner has chosen a window, rather than landing on the default. */
+  chosen: boolean
+}
+const AnalyticsWindowContext = createContext<AnalyticsWindowValue | null>(null)
+
+function useAnalyticsWindow(): AnalyticsWindowValue {
+  const ctx = useContext(AnalyticsWindowContext)
+  if (ctx) {return ctx}
+  // A section rendered outside the provider (a future standalone mount) must
+  // still fetch something sane rather than crash the tab.
+  const range: DateRange = { from: "", to: "", preset: "last30" }
+  return { range, query: { from: "", to: "", days: 30 }, label: "last 30 days", timezone: "Asia/Kolkata", chosen: false }
+}
+
+/**
+ * The window a card should fetch. Identical to the page window except for the
+ * two cards that open wider (see `fallbackDays` above).
+ */
+function windowFor(w: AnalyticsWindowValue, fallbackDays?: number): RangeQuery {
+  if (!fallbackDays || w.chosen) {return w.query}
+  return { from: "", to: "", days: fallbackDays }
+}
+
+/** How a caption should NAME the window a card was cut on. */
+function windowText(w: AnalyticsWindowValue, fallbackDays?: number): string {
+  if (!fallbackDays || w.chosen) {return w.label}
+  return `last ${fallbackDays} days`
+}
+
+/** Whole months a range touches — for the one series that is month-granular. */
+function monthsSpanned(range: DateRange): number {
+  const [fy, fm] = range.from.split("-").map(Number)
+  const [ty, tm] = range.to.split("-").map(Number)
+  if (!fy || !ty) {return 12}
+  return Math.max(3, Math.min(24, (ty - fy) * 12 + (tm - fm) + 1))
+}
 
 const KPI_COLORS: Record<string, string> = {
   blue: "border-blue-300 bg-blue-50 text-blue-900 dark:border-blue-900 dark:bg-blue-950 dark:text-blue-200",
@@ -885,6 +947,7 @@ function PriceExplainer({ s, delta, deltaPct }: { s: PriceSuggestion; delta: str
 }
 
 function ActionableInsights({ view, onOpenView }: { view: ViewId; onOpenView: (v: ViewId) => void }) {
+  const win = useAnalyticsWindow();
   const { timezone } = useTimezone();
   const { user } = useAuth();
   const { currency, currencySymbol } = useCurrency();
@@ -924,11 +987,11 @@ function ActionableInsights({ view, onOpenView }: { view: ViewId; onOpenView: (v
     if (!user?.restaurantUsername) {return;}
     let active = true;
     setLoading(true);
-    getMenuInsights(user.restaurantUsername, 30)
+    getMenuInsights(user.restaurantUsername, win.query)
       .then((d) => { if (active) {setData(d);} })
       .finally(() => { if (active) {setLoading(false);} });
     return () => { active = false; };
-  }, [user?.restaurantUsername, reload]);
+  }, [user?.restaurantUsername, reload, win.query]);
 
   const confirmApplyPrice = async () => {
     const s = pendingPrice;
@@ -990,7 +1053,9 @@ function ActionableInsights({ view, onOpenView }: { view: ViewId; onOpenView: (v
   const priceSuggestions = sortRows(data.price_suggestions, priceFields, priceSort);
   const slowMovers = sortRows(data.slow_movers, slowFields, slowSort);
 
-  const windowLabel = `Last ${data.period_days} days`;
+  // The window as the OWNER chose it ("1-15 Aug"), not as a day count. A
+  // count is ambiguous the moment a custom range is possible.
+  const windowLabel = win.label;
   // Breakdowns for the three headline tiles — all from `data`, no extra fetch.
   const dishRevenueRows: DrillRow[] = data.top_dishes.map((d) => ({ name: d.name, value: d.revenue }));
   const dishQtyRows: DrillRow[] = data.top_dishes.map((d) => ({ name: d.name, value: d.quantity }));
@@ -1005,7 +1070,7 @@ function ActionableInsights({ view, onOpenView }: { view: ViewId; onOpenView: (v
   const revenueDetail: MetricDetail = {
     title: "Revenue",
     value: money(data.total_revenue),
-    sub: windowLabel.toLowerCase(),
+    sub: windowLabel,
     explainerKey: "revenue",
     note: `${data.total_items_sold} item${data.total_items_sold === 1 ? "" : "s"} sold across ${data.top_dishes.length} distinct dish${data.top_dishes.length === 1 ? "" : "es"}.`,
     chart: "bar",
@@ -1020,7 +1085,7 @@ function ActionableInsights({ view, onOpenView }: { view: ViewId; onOpenView: (v
   const itemsSoldDetail: MetricDetail = {
     title: "Items sold",
     value: String(data.total_items_sold),
-    sub: windowLabel.toLowerCase(),
+    sub: windowLabel,
     explainerKey: "top_dish",
     note: `Every line item on every non-cancelled order in the window, quantities added up. That is ${data.top_dishes.length > 0 ? `an average of ${Math.round((data.total_items_sold / data.top_dishes.length) * 10) / 10} per dish` : "no sales yet"}.`,
     chart: "bar",
@@ -1060,20 +1125,21 @@ function ActionableInsights({ view, onOpenView }: { view: ViewId; onOpenView: (v
                 [`Revenue (${currencySymbol})`, Number(data.total_revenue ?? 0).toFixed(0)],
                 ["Items sold", data.total_items_sold],
                 ["Distinct dishes", data.top_dishes.length],
+                ["Window", `${win.range.from} to ${win.range.to}`],
                 ["Window (days)", data.period_days],
               ]}
             />
           </div>
           <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
-            <MetricTile className="bg-card shadow-sm" label={`Revenue (${data.period_days}d)`} value={money(data.total_revenue)} onOpen={() => { setDetail(revenueDetail); }} />
-            <MetricTile className="bg-card shadow-sm" label={`Items sold (${data.period_days}d)`} value={data.total_items_sold} onOpen={() => { setDetail(itemsSoldDetail); }} />
+            <MetricTile className="bg-card shadow-sm" label={`Revenue · ${windowLabel}`} value={money(data.total_revenue)} onOpen={() => { setDetail(revenueDetail); }} />
+            <MetricTile className="bg-card shadow-sm" label={`Items sold · ${windowLabel}`} value={data.total_items_sold} onOpen={() => { setDetail(itemsSoldDetail); }} />
             <MetricTile className="bg-card shadow-sm" label="Distinct dishes" value={data.top_dishes.length} onOpen={() => { setDetail(distinctDishesDetail); }} />
           </div>
         </div>
       )}
 
       {!hasAny && (showDishes || showWaiters || showPrices) && (
-        <Card><CardContent className="py-8 text-center text-muted-foreground">No sales in the last 30 days yet — insights will appear as orders come in.</CardContent></Card>
+        <Card><CardContent className="py-8 text-center text-muted-foreground">No sales in {windowLabel} — insights will appear as orders come in, or widen the date range.</CardContent></Card>
       )}
 
       <div className="grid gap-4 md:grid-cols-2 md:gap-8">
@@ -1097,7 +1163,7 @@ function ActionableInsights({ view, onOpenView }: { view: ViewId; onOpenView: (v
                   <Flame className="h-5 w-5 text-orange-500" /> Top-selling dishes
                   <ExplainerHint label="top dish" onOpen={() => { setDetail({ ...revenueDetail, title: "Top dish", value: data.top_dishes[0]?.name ?? "—", sub: data.top_dishes[0] ? `${money(data.top_dishes[0].revenue)} from ${data.top_dishes[0].quantity} sold` : undefined, explainerKey: "top_dish", note: undefined }); }} />
                 </CardTitle>
-                <CardDescription>Best performers over the last {data.period_days} days.</CardDescription>
+                <CardDescription>Best performers over {windowLabel}.</CardDescription>
               </SectionHeaderRow>
             </CardHeader>
             <CardContent className="space-y-2">
@@ -1134,7 +1200,7 @@ function ActionableInsights({ view, onOpenView }: { view: ViewId; onOpenView: (v
                 </HeaderControls>
               }>
                 <CardTitle className="flex items-center gap-2"><Trophy className="h-5 w-5 text-amber-500" /> Top waiters</CardTitle>
-                <CardDescription>By revenue brought in (last 30 days).</CardDescription>
+                <CardDescription>By revenue brought in ({windowLabel}).</CardDescription>
               </SectionHeaderRow>
             </CardHeader>
             <CardContent className="space-y-2">
@@ -1368,6 +1434,7 @@ function ActionableInsights({ view, onOpenView }: { view: ViewId; onOpenView: (v
 // Real operational charts (replaces the previous hardcoded mock data): peak order
 // times by hour and order volume by day of week, computed from actual orders.
 function OperationsCharts({ view, onOpenView }: { view: ViewId; onOpenView: (v: ViewId) => void }) {
+  const win = useAnalyticsWindow();
   const { user } = useAuth();
   const { currencySymbol } = useCurrency();
   const explainers = useMetricExplainers();
@@ -1380,11 +1447,11 @@ function OperationsCharts({ view, onOpenView }: { view: ViewId; onOpenView: (v: 
     if (!user?.restaurantUsername) {return;}
     let active = true;
     setLoading(true);
-    getOperationsAnalytics(user.restaurantUsername, 30)
+    getOperationsAnalytics(user.restaurantUsername, win.query)
       .then((d) => { if (active) {setData(d);} })
       .finally(() => { if (active) {setLoading(false);} });
     return () => { active = false; };
-  }, [user?.restaurantUsername]);
+  }, [user?.restaurantUsername, win.query]);
 
   if (!inView(view, "operations")) {return null;}
 
@@ -1408,7 +1475,7 @@ function OperationsCharts({ view, onOpenView }: { view: ViewId; onOpenView: (v: 
     key: `h-${h.hour}`,
     label: hourLabel(h.hour),
     value: h.orders,
-    caption: `${hourLabel(h.hour)}–${hourLabel((h.hour + 1) % 24)} · last 30 days`,
+    caption: `${hourLabel(h.hour)}–${hourLabel((h.hour + 1) % 24)} · ${win.label}`,
     meta: [
       { label: "Revenue", value: money(h.revenue) },
       { label: "Avg ticket", value: h.orders > 0 ? money(h.revenue / h.orders) : "—" },
@@ -1418,7 +1485,7 @@ function OperationsCharts({ view, onOpenView }: { view: ViewId; onOpenView: (v: 
     key: `w-${w.weekday}`,
     label: w.label,
     value: w.orders,
-    caption: `Every ${w.label} in the last 30 days`,
+    caption: `Every ${w.label} in ${win.label}`,
     meta: [
       { label: "Revenue", value: money(w.revenue) },
       { label: "Avg ticket", value: w.orders > 0 ? money(w.revenue / w.orders) : "—" },
@@ -1435,8 +1502,8 @@ function OperationsCharts({ view, onOpenView }: { view: ViewId; onOpenView: (v: 
     setDetail({
       title: `Orders at ${hourLabel(h.hour)}`,
       value: `${h.orders}`,
-      sub: `${hourLabel(h.hour)}–${hourLabel((h.hour + 1) % 24)} · last 30 days`,
-      filters: [`Hour: ${hourLabel(h.hour)}`, "Window: last 30 days", "Metric: orders placed"],
+      sub: `${hourLabel(h.hour)}–${hourLabel((h.hour + 1) % 24)} · ${win.label}`,
+      filters: [`Hour: ${hourLabel(h.hour)}`, `Window: ${win.label}`, "Metric: orders placed"],
       note: [
         `This hour took ${h.orders} of the ${hourOrders} orders in the window (${Math.round(share * 10) / 10}%) and ${money(h.revenue)} of revenue — the ${rank === 1 ? "busiest" : `${ordinalWord(rank)} busiest`} hour of the day, against an average hour of ${Math.round(avgHourOrders * 10) / 10}.`,
         rank > 1 && busiestHour ? `Your peak is ${hourLabel(busiestHour.hour)} with ${busiestHour.orders}.` : "",
@@ -1463,7 +1530,7 @@ function OperationsCharts({ view, onOpenView }: { view: ViewId; onOpenView: (v: 
           ["Rank among 24 hours", `${rank} of ${hours.length}`],
         ],
       },
-      footnote: "Last 30 days · times are the restaurant's local time",
+      footnote: `${win.label} · times are the restaurant's local time`,
       link: "/dashboard/orders",
       linkLabel: "Open orders",
       view: "operations",
@@ -1478,8 +1545,8 @@ function OperationsCharts({ view, onOpenView }: { view: ViewId; onOpenView: (v: 
     setDetail({
       title: `${w.label} orders`,
       value: `${w.orders}`,
-      sub: `Every ${w.label} in the last 30 days`,
-      filters: [`Day: ${w.label}`, "Window: last 30 days", "Metric: orders placed"],
+      sub: `Every ${w.label} in ${win.label}`,
+      filters: [`Day: ${w.label}`, `Window: ${win.label}`, "Metric: orders placed"],
       note: `${w.label} carried ${Math.round(share * 10) / 10}% of the week's ${weekdayOrders} orders and ${money(w.revenue)} of revenue — ${rank === 1 ? "your busiest day" : `the ${ordinalWord(rank)} busiest day, behind ${busiestDay?.label ?? "—"}`}.`,
       chart: "bar",
       keepOrder: true,
@@ -1498,7 +1565,7 @@ function OperationsCharts({ view, onOpenView }: { view: ViewId; onOpenView: (v: 
           ["Rank", `${rank} of ${weekdays.length}`],
         ],
       },
-      footnote: "Last 30 days",
+      footnote: win.label,
       link: "/dashboard/orders",
       linkLabel: "Open orders",
       view: "operations",
@@ -1506,7 +1573,7 @@ function OperationsCharts({ view, onOpenView }: { view: ViewId; onOpenView: (v: 
   };
 
   const empty = (
-    <div className="py-10 text-center text-muted-foreground">No orders in the last 30 days yet.</div>
+    <div className="py-10 text-center text-muted-foreground">No orders in {win.label}.</div>
   );
   const spinner = (
     <div className="py-10 text-center text-muted-foreground">Loading…</div>
@@ -1524,7 +1591,7 @@ function OperationsCharts({ view, onOpenView }: { view: ViewId; onOpenView: (v: 
             />
           ) : null}>
             <CardTitle>Peak Order Times</CardTitle>
-            <CardDescription>Order volume by hour of day (restaurant local time), last 30 days. Hover any hour for its figures; click it for the full breakdown.</CardDescription>
+            <CardDescription>Order volume by hour of day (restaurant local time), {win.label}. Hover any hour for its figures; click it for the full breakdown.</CardDescription>
           </SectionHeaderRow>
         </CardHeader>
         <CardContent>
@@ -1553,7 +1620,7 @@ function OperationsCharts({ view, onOpenView }: { view: ViewId; onOpenView: (v: 
             />
           ) : null}>
             <CardTitle>Orders by Day of Week</CardTitle>
-            <CardDescription>Which days are busiest, last 30 days. Every bar is hoverable and clickable.</CardDescription>
+            <CardDescription>Which days are busiest, {win.label}. Every bar is hoverable and clickable.</CardDescription>
           </SectionHeaderRow>
         </CardHeader>
         <CardContent>
@@ -1602,6 +1669,7 @@ interface KitchenSectionItems {
 type KitchenAnalyticsWithItems = KitchenAnalytics & { by_section_items?: KitchenSectionItems[] }
 
 function KitchenAnalyticsView({ view, onOpenView }: { view: ViewId; onOpenView: (v: ViewId) => void }) {
+  const win = useAnalyticsWindow();
   const { user } = useAuth();
   const { currency, currencySymbol } = useCurrency();
   const explainers = useMetricExplainers();
@@ -1622,11 +1690,11 @@ function KitchenAnalyticsView({ view, onOpenView }: { view: ViewId; onOpenView: 
     if (!user?.restaurantUsername) {return;}
     let active = true;
     setLoading(true);
-    getKitchenAnalytics(user.restaurantUsername, 30)
+    getKitchenAnalytics(user.restaurantUsername, win.query)
       .then((d) => { if (active) {setData(d);} })
       .finally(() => { if (active) {setLoading(false);} });
     return () => { active = false; };
-  }, [user?.restaurantUsername]);
+  }, [user?.restaurantUsername, win.query]);
 
   // Dedicated Kitchen view + Operations/Everything (as before) + a compact cut
   // on Overview so the section is discoverable without opening the view picker.
@@ -1660,7 +1728,8 @@ function KitchenAnalyticsView({ view, onOpenView }: { view: ViewId; onOpenView: 
   const sectionItems: KitchenSectionItems[] = (data as KitchenAnalyticsWithItems | null)?.by_section_items ?? [];
   const hasData = (summary?.orders_timed ?? 0) > 0 || byDishRaw.length > 0 || bySectionRaw.length > 0;
   const periodDays = data?.period_days ?? 30;
-  const windowLabel = `Last ${periodDays} days`;
+  // Named by the chosen dates, not the day count the server echoed back.
+  const windowLabel = win.label;
 
   const byDish = sortRows(byDishRaw, dishFields, dishSort);
   const bySection = sortRows(bySectionRaw, sectionFields, sectionSort);
@@ -1784,7 +1853,7 @@ function KitchenAnalyticsView({ view, onOpenView }: { view: ViewId; onOpenView: 
     key: `si-${s.section}`,
     label: s.section,
     value: s.avg_prep_ms,
-    caption: `${s.dishes_total} dish${s.dishes_total === 1 ? "" : "es"} · ${s.items_timed} item${s.items_timed === 1 ? "" : "s"} timed · ${windowLabel.toLowerCase()}`,
+    caption: `${s.dishes_total} dish${s.dishes_total === 1 ? "" : "es"} · ${s.items_timed} item${s.items_timed === 1 ? "" : "s"} timed · ${windowLabel}`,
     meta: [
       { label: "P90", value: fmtPrepMs(itemSectionP90(s)) },
       { label: "Slowest item", value: fmtPrepMs(s.max_prep_ms) },
@@ -1803,7 +1872,7 @@ function KitchenAnalyticsView({ view, onOpenView }: { view: ViewId; onOpenView: 
       title: `${s.section} — item-wise prep`,
       value: fmtPrepMs(s.avg_prep_ms),
       sub: `${s.dishes_total} dish${s.dishes_total === 1 ? "" : "es"} · ${s.items_timed} item${s.items_timed === 1 ? "" : "s"} timed`,
-      filters: [`Section: ${s.section}`, `Window: last ${periodDays} days`, "Metric: average prep time"],
+      filters: [`Section: ${s.section}`, `Window: ${windowLabel}`, "Metric: average prep time"],
       explainerKey: "section_avg_prep",
       note: [
         `${s.section} handled ${s.items_timed} of the ${totalItems} timed items (${Math.round(share * 10) / 10}%) and is the ${rank === 1 ? "slowest" : `${ordinalWord(rank)} slowest`} of ${sectionItems.length} station${sectionItems.length === 1 ? "" : "s"}.`,
@@ -1838,7 +1907,7 @@ function KitchenAnalyticsView({ view, onOpenView }: { view: ViewId; onOpenView: 
       title: d.name,
       value: fmtPrepMs(d.avg_prep_ms),
       sub: `${s.section} · ${d.count} timing${d.count === 1 ? "" : "s"} recorded`,
-      filters: [`Section: ${s.section}`, `Dish: ${d.name}`, `Window: last ${periodDays} days`],
+      filters: [`Section: ${s.section}`, `Dish: ${d.name}`, `Window: ${windowLabel}`],
       explainerKey: "avg_prep_ms",
       note: [
         `${d.name} was timed ${d.count} time${d.count === 1 ? "" : "s"}, ${Math.round(share * 10) / 10}% of everything ${s.section} sent out, and is the ${rank === 1 ? "slowest" : `${ordinalWord(rank)} slowest`} of the ${s.dishes.length} dish${s.dishes.length === 1 ? "" : "es"} shown for that station.`,
@@ -1907,6 +1976,7 @@ function KitchenAnalyticsView({ view, onOpenView }: { view: ViewId; onOpenView: 
                       ["P90 prep", fmtPrepMs(summary?.p90_prep_ms)],
                       ["Bark → served", fmtPrepMs(summary?.avg_bark_to_served_ms)],
                       ["Max prep", fmtPrepMs(summary?.max_prep_ms)],
+                      ["Window", `${win.range.from} to ${win.range.to}`],
                       ["Window (days)", periodDays],
                     ]}
                   />
@@ -1920,12 +1990,12 @@ function KitchenAnalyticsView({ view, onOpenView }: { view: ViewId; onOpenView: 
             }
           >
             <CardTitle className="flex items-center gap-2"><Flame className="h-5 w-5 text-orange-500" /> Kitchen analytics</CardTitle>
-            <CardDescription>Prep time from bark to served, last {periodDays} days. Pauses are excluded. Click any number for what it means.</CardDescription>
+            <CardDescription>Prep time from bark to served, {windowLabel}. Pauses are excluded. Click any number for what it means.</CardDescription>
           </SectionHeaderRow>
         </CardHeader>
         <CardContent>
           {!hasData ? (
-            <p className="py-6 text-center text-sm text-muted-foreground">No timed orders in the last {periodDays} days yet — prep times appear once tickets are barked and served.</p>
+            <p className="py-6 text-center text-sm text-muted-foreground">No timed orders in {windowLabel} — prep times appear once tickets are barked and served.</p>
           ) : (
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <MetricTile label="Avg prep" value={fmtPrepMs(summary?.avg_prep_ms)} sub={ordersSub} onOpen={() => { openDetail(avgDetail); }} />
@@ -2216,6 +2286,12 @@ function KitchenAnalyticsView({ view, onOpenView }: { view: ViewId; onOpenView: 
 }
 
 function PerformanceTrends({ view, onOpenView }: { view: ViewId; onOpenView: (v: ViewId) => void }) {
+  const win = useAnalyticsWindow();
+  // This series is MONTH-granular (one point per month), so the window becomes a
+  // month count rather than a day range. Floored at 3 because a single point is
+  // not a trend, and capped at the endpoint's own 24.
+  const trendMonths = win.chosen ? monthsSpanned(win.range) : 12;
+  const trendText = win.chosen ? win.label : "the last 12 months";
   const { timezone } = useTimezone();
   const { user } = useAuth();
   const { currency, currencySymbol } = useCurrency();
@@ -2229,11 +2305,11 @@ function PerformanceTrends({ view, onOpenView }: { view: ViewId; onOpenView: (v:
     if (!user?.restaurantUsername) {return;}
     let active = true;
     setLoading(true);
-    getApcTrends(user.restaurantUsername, 12)
+    getApcTrends(user.restaurantUsername, trendMonths)
       .then((d) => { if (active) {setData(d);} })
       .finally(() => { if (active) {setLoading(false);} });
     return () => { active = false; };
-  }, [user?.restaurantUsername]);
+  }, [user?.restaurantUsername, trendMonths]);
 
   const showRevenue = inView(view, "sales", true); // headline chart on Overview
   const showApc = inView(view, "sales");
@@ -2299,7 +2375,7 @@ function PerformanceTrends({ view, onOpenView }: { view: ViewId; onOpenView: (v:
       title: isRevenue ? `Revenue — ${p.month}` : `APC — ${p.month}`,
       value: isRevenue ? money(p.total_revenue) : money(p.monthly_apc),
       sub: monthCaption(p),
-      filters: [`Month: ${p.month}`, `Metric: ${isRevenue ? "revenue" : "average per cover"}`, "Window: last 12 months"],
+      filters: [`Month: ${p.month}`, `Metric: ${isRevenue ? "revenue" : "average per cover"}`, `Window: ${trendText}`],
       explainerKey: isRevenue ? "revenue" : "apc",
       note: [
         isRevenue
@@ -2579,6 +2655,9 @@ function KpiDrilldown({ kpi, data, money, explainers, onOpenChange, onOpenView }
   onOpenChange: (open: boolean) => void
   onOpenView: (v: ViewId) => void
 }) {
+  // Same 90-day-until-chosen rule as the card this dialog opens from, so the
+  // drill-down can never claim a different window from the tile behind it.
+  const kpiWindowText = windowText(useAnalyticsWindow(), 90)
   const spec = kpi ? kpiDrilldownSpec(kpi, data) : null
   const detail: MetricDetail | null = kpi && spec ? {
     title: kpi.label,
@@ -2589,12 +2668,12 @@ function KpiDrilldown({ kpi, data, money, explainers, onOpenChange, onOpenView }
       </span>
     ),
     explainerKey: KPI_EXPLAINER_KEY[kpi.key],
-    note: KPI_MEANINGS[kpi.key] ?? (spec.type === "none" ? `Current value for the last ${data.window_days} days.` : undefined),
+    note: KPI_MEANINGS[kpi.key] ?? (spec.type === "none" ? `Current value for ${kpiWindowText}.` : undefined),
     chart: spec.type,
     rows: spec.rows,
     unit: spec.unit,
     breakdownTitle: spec.type === "none" ? undefined : "Breakdown",
-    footnote: `Last ${data.window_days} days`,
+    footnote: kpiWindowText,
     link: KPI_LINKS[kpi.key],
     // The analytics view that owns this KPI's full section. Every key in
     // KPI_VIEW resolves; anything unmapped falls back to Everything, which is
@@ -2606,6 +2685,12 @@ function KpiDrilldown({ kpi, data, money, explainers, onOpenChange, onOpenView }
 }
 
 function AdvancedAnalyticsView({ view, kpiSort, onOpenView }: { view: ViewId; kpiSort: KpiSort; onOpenView: (v: ViewId) => void }) {
+  const win = useAnalyticsWindow();
+  // The KPI bands were calibrated on a quarter, so this card opens on 90 days —
+  // until the owner picks a window, at which point it follows the page like
+  // everything else.
+  const kpiWindow = windowFor(win, 90);
+  const kpiWindowText = windowText(win, 90);
   const { user } = useAuth();
   const { currency, currencySymbol } = useCurrency();
   const { toast } = useToast();
@@ -2638,11 +2723,11 @@ function AdvancedAnalyticsView({ view, kpiSort, onOpenView }: { view: ViewId; kp
     if (!user?.restaurantUsername) {return;}
     let active = true;
     setLoading(true);
-    getAdvancedAnalytics(user.restaurantUsername, 90)
+    getAdvancedAnalytics(user.restaurantUsername, kpiWindow)
       .then((d) => { if (active) {setData(d);} })
       .finally(() => { if (active) {setLoading(false);} });
     return () => { active = false; };
-  }, [user?.restaurantUsername, refresh]);
+  }, [user?.restaurantUsername, refresh, kpiWindow]);
 
   const addCampaign = async () => {
     if (!user?.restaurantUsername) {return;}
@@ -2777,7 +2862,7 @@ function AdvancedAnalyticsView({ view, kpiSort, onOpenView }: { view: ViewId; kp
             </HeaderControls>
           }>
             <CardTitle>KPI health</CardTitle>
-            <CardDescription>Last {data.window_days} days, colour-coded against target bands. Click a tile for its breakdown.</CardDescription>
+            <CardDescription>{kpiWindowText}, colour-coded against target bands. Click a tile for its breakdown.</CardDescription>
           </SectionHeaderRow>
         </CardHeader>
         <CardContent>
@@ -2821,11 +2906,12 @@ function AdvancedAnalyticsView({ view, kpiSort, onOpenView }: { view: ViewId; kp
                   ["Total bills", data.discounts.total_bills],
                   [`Total discount value (${currencySymbol})`, Number(data.discounts.total_discount ?? 0).toFixed(0)],
                   ["Coupon redemptions", data.discounts.redemptions],
+                  ["Window", kpiWindowText],
                   ["Window (days)", data.window_days],
                 ]}
               />
             }>
-              <CardTitle>Discounts &amp; offers</CardTitle><CardDescription>Utilization and redemptions, last {data.window_days} days.</CardDescription>
+              <CardTitle>Discounts &amp; offers</CardTitle><CardDescription>Utilization and redemptions, {kpiWindowText}.</CardDescription>
             </SectionHeaderRow>
           </CardHeader>
           <CardContent className="space-y-2 text-sm">
@@ -2845,7 +2931,7 @@ function AdvancedAnalyticsView({ view, kpiSort, onOpenView }: { view: ViewId; kp
                 ],
                 unit: "count",
                 breakdownTitle: "Bills in this window",
-                footnote: `Last ${data.window_days} days`,
+                footnote: kpiWindowText,
                 link: "/dashboard/orders",
                 linkLabel: "View orders",
                 view: "discounts",
@@ -2866,7 +2952,7 @@ function AdvancedAnalyticsView({ view, kpiSort, onOpenView }: { view: ViewId; kp
                   { name: "Full-price bills", value: Math.max(0, data.discounts.total_bills - data.discounts.discount_bills) },
                 ],
                 unit: "count",
-                footnote: `Last ${data.window_days} days`,
+                footnote: kpiWindowText,
                 link: "/dashboard/orders",
                 linkLabel: "View orders",
                 view: "discounts",
@@ -2882,7 +2968,7 @@ function AdvancedAnalyticsView({ view, kpiSort, onOpenView }: { view: ViewId; kp
                 explainerKey: "discount_total",
                 note: `That is ${money(data.discounts.discount_bills > 0 ? data.discounts.total_discount / data.discounts.discount_bills : 0)} per discounted bill on average.`,
                 chart: "none",
-                footnote: `Last ${data.window_days} days`,
+                footnote: kpiWindowText,
                 link: "/dashboard/orders",
                 linkLabel: "View orders",
                 view: "discounts",
@@ -2901,7 +2987,7 @@ function AdvancedAnalyticsView({ view, kpiSort, onOpenView }: { view: ViewId; kp
                 rows: (data.offers ?? []).map((o) => ({ name: o.code, value: o.used })),
                 unit: "count",
                 breakdownTitle: "Uses per code",
-                footnote: `Last ${data.window_days} days`,
+                footnote: kpiWindowText,
                 link: "/dashboard/coupons",
                 linkLabel: "View coupons",
                 view: "discounts",
@@ -3177,7 +3263,7 @@ function AdvancedAnalyticsView({ view, kpiSort, onOpenView }: { view: ViewId; kp
                       rows: (data.tat.by_table ?? []).map((t) => ({ name: t.table_name, value: t.avg_min })),
                       unit: "min",
                       breakdownTitle: "Slowest tables",
-                      footnote: `Last ${data.window_days} days`,
+                      footnote: kpiWindowText,
                       link: "/dashboard/tables",
                       linkLabel: "View tables",
                       view: "operations",
@@ -3196,7 +3282,7 @@ function AdvancedAnalyticsView({ view, kpiSort, onOpenView }: { view: ViewId; kp
                       rows: (data.tat.by_table ?? []).map((t) => ({ name: t.table_name, value: t.avg_min })),
                       unit: "min",
                       breakdownTitle: "Average per table",
-                      footnote: `Last ${data.window_days} days`,
+                      footnote: kpiWindowText,
                       link: "/dashboard/tables",
                       linkLabel: "View tables",
                       view: "operations",
@@ -3426,6 +3512,7 @@ const ATTENTION_SEVERITY: Record<AttentionRow["severity"], { word: string; pill:
 // (/analytics/overview), composed from the same helpers the detail panels use,
 // so a figure here can never disagree with the screen it links to.
 function OverviewInsightsStrip({ view, onOpenView }: { view: ViewId; onOpenView: (v: ViewId) => void }) {
+  const win = useAnalyticsWindow();
   const { user } = useAuth()
   const { currencySymbol } = useCurrency()
   const [ins, setIns] = useState<OverviewInsights | null>(null)
@@ -3435,11 +3522,11 @@ function OverviewInsightsStrip({ view, onOpenView }: { view: ViewId; onOpenView:
     if (!user?.restaurantUsername) {return}
     let active = true
     setLoading(true)
-    getOverviewInsights(user.restaurantUsername, 30)
+    getOverviewInsights(user.restaurantUsername, win.query)
       .then((d) => { if (active) {setIns(d)} })
       .finally(() => { if (active) {setLoading(false)} })
     return () => { active = false }
-  }, [user?.restaurantUsername])
+  }, [user?.restaurantUsername, win.query])
 
   // Overview is the point of this strip; "Everything" shows it too.
   if (!(view === "overview" || view === "everything")) {return null}
@@ -3526,7 +3613,7 @@ function OverviewInsightsStrip({ view, onOpenView }: { view: ViewId; onOpenView:
           <div>
             <CardTitle>At a glance</CardTitle>
             <CardDescription>
-              Last {ins.window_days} days · {timezoneCaption(ins.timezone)} · money shown incl. tax
+              {win.label} · {timezoneCaption(ins.timezone)} · money shown incl. tax
             </CardDescription>
           </div>
           <SectionDownload
@@ -3763,6 +3850,7 @@ function OverviewInsightsStrip({ view, onOpenView }: { view: ViewId; onOpenView:
 }
 
 function OutletsComparisonCard({ view, onOpenView }: { view: ViewId; onOpenView: (v: ViewId) => void }) {
+  const win = useAnalyticsWindow();
   const { user } = useAuth();
   const { currency, currencySymbol } = useCurrency();
   const [data, setData] = useState<OutletComparison | null>(null);
@@ -3772,9 +3860,9 @@ function OutletsComparisonCard({ view, onOpenView }: { view: ViewId; onOpenView:
   useEffect(() => {
     if (!user?.restaurantUsername) {return;}
     let active = true;
-    getOutletsComparison(user.restaurantUsername, 30).then((d) => { if (active) {setData(d);} });
+    getOutletsComparison(user.restaurantUsername, win.query).then((d) => { if (active) {setData(d);} });
     return () => { active = false; };
-  }, [user?.restaurantUsername]);
+  }, [user?.restaurantUsername, win.query]);
 
   if (!inView(view, "sales", true)) {return null;}
   if (!data || data.outlets.length < 2) {return null;}
@@ -3852,6 +3940,19 @@ function OutletsComparisonCard({ view, onOpenView }: { view: ViewId; onOpenView:
 export default function AnalyticsPage() {
   const { timezone } = useTimezone();
   const { user } = useAuth();
+  // ONE window for every section on the page. `chosen` is what lets the two
+  // naturally-wider cards (KPI dashboard, month trends) keep their own default
+  // until the owner actually picks something — after that everything agrees.
+  const { range, setRange, query, label } = useDateRange("analytics");
+  const [rangeChosen, setRangeChosen] = useState(false);
+  const windowValue = useMemo<AnalyticsWindowValue>(
+    () => ({ range, query, label, timezone, chosen: rangeChosen }),
+    [range, query, label, timezone, rangeChosen],
+  );
+  const pickRange = (next: DateRange) => {
+    setRange(next);
+    setRangeChosen(true);
+  };
   const [view, setView] = useState<ViewId>("overview");
   const [kpiSort, setKpiSort] = useState<KpiSort>("severity");
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -3876,18 +3977,30 @@ export default function AnalyticsPage() {
 
   // One file, every section currently rendered: a label row, the section's own
   // rows, then a blank separator row.
+  //
+  // The window is written into the file — as a header line AND into the filename
+  // — because a spreadsheet outlives the screen it came off. Two exports taken
+  // on different ranges are otherwise indistinguishable once they are sitting in
+  // a Downloads folder, and that is exactly when they get compared.
   const downloadAll = () => {
     const sections = registry.list();
     if (sections.length === 0) {return;}
-    const rows: CsvCell[][] = [];
+    const rows: CsvCell[][] = [
+      ["Period", `${range.from} to ${range.to}`, label],
+      ["Timezone", timezone],
+      [],
+    ];
     for (const s of sections) {
       const body = s.build();
       if (body.length === 0) {continue;}
-      if (rows.length > 0) {rows.push([]);}
+      if (rows.length > 3) {rows.push([]);}
       rows.push([s.label]);
       rows.push(...body);
     }
-    downloadCsv(csvFilename(user?.restaurantUsername, `analytics-${view}`, timezone), rows);
+    downloadCsv(
+      csvFilename(user?.restaurantUsername, `analytics-${view}-${range.from}-to-${range.to}`, timezone),
+      rows,
+    );
   };
 
   // Restore persisted choices after mount (localStorage is client-only, and
@@ -3917,12 +4030,17 @@ export default function AnalyticsPage() {
   const viewLabel = VIEWS.find((v) => v.id === view)?.label ?? "Overview";
 
   return (
+    <AnalyticsWindowContext.Provider value={windowValue}>
     <div className="grid gap-4 md:gap-8">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-lg font-semibold md:text-2xl">Analytics</h1>
           <p className="text-xs text-muted-foreground">All times in restaurant time · {timezoneCaption(timezone)}</p>
         </div>
+        {/* The control itself lives in the sticky toolbar below, so it is on
+            screen at every scroll position. This is the plain statement of what
+            the whole page is currently showing. */}
+        <RangeNote range={range} timezone={timezone} prefix="Showing" className="text-sm" />
       </div>
 
       {/* Sticky toolbar: pick a view (only that slice renders) + KPI sort.
@@ -3947,6 +4065,10 @@ export default function AnalyticsPage() {
             View: {viewLabel} <ChevronDown className="ml-1 h-4 w-4" />
           </Button>
           <div className="ml-auto flex items-center gap-1.5">
+            {/* In the sticky bar on purpose: a reporting page is long, and a
+                window control that scrolls out of sight is how a figure gets
+                read as the all-time number. */}
+            <DateRangePicker value={range} onChange={pickRange} timezone={timezone} />
             <Button
               variant="outline"
               size="sm"
@@ -4017,5 +4139,6 @@ export default function AnalyticsPage() {
         </div>
       )}
     </div>
+    </AnalyticsWindowContext.Provider>
   );
 }

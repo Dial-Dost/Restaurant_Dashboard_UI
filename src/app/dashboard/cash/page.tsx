@@ -9,8 +9,10 @@ import { Lock, Unlock, RefreshCw } from "lucide-react"
 import { useAuth } from "@/context/AuthContext"
 import { useCurrency } from "@/hooks/use-currency"
 import { useToast } from "@/hooks/use-toast"
-import { daysAgoInZone, formatDateTime, timezoneCaption } from "@/lib/tz"
+import { formatDateTime, timezoneCaption } from "@/lib/tz"
 import { useTimezone } from "@/lib/use-timezone"
+import { DateRangePicker, RangeNote } from "@/components/date-range-picker"
+import { useDateRange } from "@/hooks/use-date-range"
 import {
   getCurrentCashSession, getCashSessions, openCashSession, closeCashSession,
   type CashSession, type CurrentCashSession,
@@ -22,16 +24,19 @@ export default function CashPage() {
   const { toast } = useToast()
   const { timezone } = useTimezone()
   // A cash session opened at 23:00 and closed at 01:00 is ONE shift on the
-  // restaurant's calendar; a UTC day key would file it under two.
-  const isoDaysAgo = useCallback((days: number) => daysAgoInZone(days, timezone), [timezone])
+  // restaurant's calendar; a UTC day key would file it under two. The shared
+  // window below counts its days the same way.
   const fmtTime = useCallback((iso: string | null) => formatDateTime(iso, timezone), [timezone])
   const rid = user?.restaurantUsername ?? ""
 
   const [loading, setLoading] = useState(true)
   const [current, setCurrent] = useState<CurrentCashSession | null>(null)
   const [history, setHistory] = useState<CashSession[]>([])
-  const [from, setFrom] = useState(() => isoDaysAgo(29))
-  const [to, setTo] = useState(() => isoDaysAgo(0))
+  // The same control every other reporting screen uses, kept per-screen for the
+  // session: a Z-report hunt is its own question and should not be dragged
+  // around by whatever window Accounting was last left on.
+  const { range, setRange } = useDateRange("cash")
+  const { from, to } = range
 
   // Forms
   const [openingFloat, setOpeningFloat] = useState("")
@@ -181,12 +186,11 @@ export default function CashPage() {
         <CardHeader className="flex flex-row items-center justify-between gap-3">
           <div>
             <CardTitle>Past sessions</CardTitle>
-            <CardDescription>Closed registers with their cash variance (Z-reports).</CardDescription>
+            <CardDescription>
+              Closed registers with their cash variance (Z-reports). <RangeNote range={range} timezone={timezone} />
+            </CardDescription>
           </div>
-          <div className="flex items-end gap-2">
-            <Input type="date" className="w-36" value={from} onChange={(e) => { setFrom(e.target.value); }} />
-            <Input type="date" className="w-36" value={to} onChange={(e) => { setTo(e.target.value); }} />
-          </div>
+          <DateRangePicker value={range} onChange={setRange} timezone={timezone} />
         </CardHeader>
         <CardContent>
           {history.length === 0 ? (
