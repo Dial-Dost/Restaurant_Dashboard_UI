@@ -51,6 +51,7 @@ import {
     saveLayout,
     type TableLayout,
 } from "./sections";
+import { seatingLeftTableUnattended } from "@/lib/table-assignment";
 import {
     // addAuditLogEntry,
     occupyTable,
@@ -1115,10 +1116,19 @@ export default function TablesPage() {
         if (!user?.restaurantUsername) {return;}
         setBusyTableName(tableName);
         try {
-            await occupyTable(user.restaurantUsername, tableName, numCovers);
+            const res = await occupyTable(user.restaurantUsername, tableName, numCovers);
+            // Seating is supposed to make the seater this table's waiter. Say what
+            // actually happened, here, at the moment of seating. The bug this
+            // replaces was silent on both ends: the server skipped the assignment
+            // without logging and the client never asked, so a floor running with
+            // no waiter on any table looked completely normal for weeks.
+            const assignment = res.assignment;
+            const unattended = seatingLeftTableUnattended(assignment);
             toast({
-                title: "Table occupied",
-                description: `${tableName} is now marked occupied with ${numCovers} cover${numCovers === 1 ? "" : "s"}.`,
+                title: unattended ? "Occupied — but no waiter assigned" : "Table occupied",
+                description: `${tableName} is now marked occupied with ${numCovers} cover${numCovers === 1 ? "" : "s"}.`
+                    + (assignment ? ` ${assignment.message}` : ""),
+                variant: unattended ? "destructive" : undefined,
             });
             await loadTables();
         } catch (error: any) {

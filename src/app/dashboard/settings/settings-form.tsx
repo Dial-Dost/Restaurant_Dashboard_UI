@@ -36,6 +36,7 @@ import type { RestaurantProfile} from "@/lib/db";
 import { getRestaurantProfile, updateRestaurantProfile, getRequireTableOtp, setRequireTableOtp } from "@/lib/db"
 import { BillPrintSettingsCard } from "./bill-print-settings"
 import { BrandingCustomizer } from "./branding-customizer"
+import { PostersEditor } from "./posters-editor"
 import { TimezoneSelector } from "./timezone-selector"
 
 const settingsFormSchema = z.object({
@@ -426,6 +427,13 @@ export function SettingsForm() {
             isAdmin={hasRole("admin")}
             restaurantName={currentProfile?.restaurant_name || form.watch("name")}
           />
+        ) : null}
+
+        {/* Sits directly under the branding card because it is the same job —
+            what the guest pages look like — and is gated the same way (the
+            backend routes require Manage Branding). */}
+        {hasRole("admin") && user?.restaurantUsername ? (
+          <PostersEditor restaurantId={user.restaurantUsername} isAdmin={hasRole("admin")} />
         ) : null}
 
         <Card>

@@ -18,10 +18,22 @@ import {
   resolveGuestTheme,
 } from "@/lib/guest-theme";
 import { isMobile10, isOptionalMobile10, normalizeMobile10, sanitizePhoneInput } from "@/lib/phone";
+import { badgesById, capBadges, guestBadgeStyle, parseBadgeCatalogue, type MenuBadge } from "@/lib/menu-badges";
+import { GuestPosters, readGuestPosters, type GuestPoster } from "@/components/guest-posters";
+import {
+  applyServerCategoryOrder,
+  readQueueMenuPresentation,
+  QUEUE_MENU_PRESENTATION_DEFAULT,
+  type QueueMenuPresentation,
+} from "@/lib/queue-menu";
 
 const BASE = guestBackendBase();
 
-interface MenuItem { id: string; name: string; price: number; category: string; image_url?: string; available?: boolean }
+// `badges` are RESOLVED ids from the server (tags + allergen-derived safety
+// badges, ordered alert -> diet -> promo). Same payload the QR order page reads,
+// so a queuing guest and a seated guest are told the same thing about a dish.
+interface MenuItem { id: string; name: string; price: number; category: string; image_url?: string; available?: boolean; badges?: string[] }
+
 interface PreItem { id: string; name: string; price: number; quantity: number }
 interface Entry {
   id: string;
@@ -303,6 +315,20 @@ function QueueInner() {
   const [brandConfig, setBrandConfig] = useState<GuestBrandConfig | null>(null);
   const [brandError, setBrandError] = useState(false);
   const [menu, setMenu] = useState<MenuItem[]>([]);
+  // Empty for a restaurant that configured no badges — which is every existing
+  // tenant, and why this page is unchanged for them.
+  const [menuBadges, setMenuBadges] = useState<MenuBadge[]>([]);
+  // Promotional posters. Loaded from the same /qr/:slug/menu payload as the
+  // brand and the dishes, and ABSENT from it for a restaurant with none.
+  const [posters, setPosters] = useState<GuestPoster[]>([]);
+  // The queue menu's own copy + price switch, and the category order the server
+  // already applied. Defaults reproduce the shipped page exactly.
+  const [queueMenu, setQueueMenu] = useState<QueueMenuPresentation>(QUEUE_MENU_PRESENTATION_DEFAULT);
+  const [serverCategories, setServerCategories] = useState<string[]>([]);
+  // True when the restaurant has DELIBERATELY narrowed the pre-order list. It is
+  // the difference between "we couldn't load a menu" (apologise) and "this
+  // restaurant takes no pre-orders" (say nothing at all).
+  const [menuCurated, setMenuCurated] = useState(false);
   const [token, setToken] = useState<string | null>(null);
   const [entry, setEntry] = useState<Entry | null>(null);
   // True only when THIS visit actively engaged with the current entry — i.e. the
@@ -352,12 +378,24 @@ function QueueInner() {
   };
   const t: Tr = useCallback((key) => STRINGS[lang][key] ?? STRINGS.en[key] ?? key, [lang]);
 
-  // Load branding + menu. Kept in a callback so the offline banner can retry it
-  // without a full page reload.
+  // Load branding + the QUEUE menu. Kept in a callback so the offline banner can
+  // retry it without a full page reload.
+  //
+  // This reads /queue-menu, NOT the dine-in /menu: the restaurant decides which
+  // dishes a party still standing at the door may pre-order, and that filtering
+  // happens on the server — a dish kept off this list never reaches the browser
+  // at all, and the pre-order write refuses it too. It falls back to /menu so a
+  // page deployed ahead of the backend still shows something rather than an
+  // offline banner; the write side is enforced either way.
   const loadBrand = useCallback(async () => {
     if (!restaurant) {return;}
     try {
-      const r = await fetch(`${BASE}/qr/${encodeURIComponent(restaurant)}/menu`);
+      let curated = true;
+      let r = await fetch(`${BASE}/qr/${encodeURIComponent(restaurant)}/queue-menu`);
+      if (r.status === 404) {
+        r = await fetch(`${BASE}/qr/${encodeURIComponent(restaurant)}/menu`);
+        curated = false; // the old payload carries no queue rules
+      }
       if (!r.ok) { setBrandError(true); return; }
       const d = await r.json();
       setBrand({
@@ -366,6 +404,11 @@ function QueueInner() {
         currency: d.currency || "₹",
         showMenu: d.queue_show_menu !== false,
       });
+      setQueueMenu(readQueueMenuPresentation(d.queue_menu));
+      // The server already ordered these; falling back to [] lets the page sort
+      // for itself exactly as it always did.
+      setServerCategories(curated && Array.isArray(d.categories) ? d.categories.map((c: unknown) => String(c)) : []);
+      setMenuCurated(curated && d.configured === true);
       // Colour comes from the RESOLVED brand palette the backend returns; the
       // legacy theme_primary/theme_color pair is only a fallback for a payload
       // that predates it (for real tenants theme_color is often a dark grey,
@@ -373,6 +416,8 @@ function QueueInner() {
       setPalette(resolveGuestPalette(d.brand_palette, pickHex(d.theme_primary, d.theme_color)));
       setBrandConfig((d.brand_config ?? null) as GuestBrandConfig | null);
       setMenu(Array.isArray(d.items) ? d.items : []);
+      setMenuBadges(parseBadgeCatalogue(d.menu_badges));
+      setPosters(readGuestPosters(d.posters));
       setBrandError(false);
     } catch { setBrandError(true); }
   }, [restaurant]);
@@ -659,7 +704,13 @@ function QueueInner() {
     for (const it of availableMenu) {(m[it.category || "Menu"] ??= []).push(it);}
     return m;
   }, [availableMenu]);
-  const categories = useMemo(() => Object.keys(byCategory).sort(), [byCategory]);
+  // Category order comes from the SERVER (the restaurant arranged it), filtered
+  // to the ones that actually have items here. No server order — an older
+  // payload, or a restaurant that never arranged anything — falls back to the
+  // alphabetical sort this page has always used.
+  const categories = useMemo(() => {
+    return applyServerCategoryOrder(serverCategories, Object.keys(byCategory));
+  }, [byCategory, serverCategories]);
   const active = activeCat && categories.includes(activeCat) ? activeCat : categories[0];
   const shown = active ? byCategory[active] ?? [] : [];
 
@@ -688,6 +739,11 @@ function QueueInner() {
   const MenuRow = ({ m }: { m: MenuItem }) => {
     const qty = cart[m.id] ?? 0;
     const monogram = (m.name.trim()[0] ?? "•").toUpperCase();
+    // One highlight only: this row is a photo, a name, a price and a stepper on
+    // a phone. Warnings and dietary badges are never the ones cut — a queuing
+    // guest choosing a pre-order has the same right to "contains nuts" as a
+    // seated one, and there is no item sheet here to hide it in.
+    const badgeRow = capBadges(badgesById(menuBadges, m.badges), 1);
     return (
       <div className="flex items-center gap-3 p-2.5" style={{ ...PANEL, borderRadius: 18, boxShadow: "0 10px 26px rgba(0,0,0,0.32)" }}>
         <div className="relative flex h-[62px] w-[62px] flex-shrink-0 items-center justify-center overflow-hidden rounded-[15px]" style={{ background: "linear-gradient(150deg, rgba(var(--accDeepRGB),0.35), rgba(var(--bgRGB),0.9))", border: "1px solid rgba(var(--inkRGB),0.07)" }}>
@@ -698,7 +754,28 @@ function QueueInner() {
         </div>
         <div className="min-w-0 flex-1">
           <p className="truncate text-[length:calc(14px*var(--fs,1))] font-semibold" style={{ color: "var(--ink)" }}>{m.name}</p>
+          {badgeRow.shown.length > 0 && (
+            <div className="mt-1 flex flex-wrap items-center gap-1">
+              {badgeRow.shown.map((b) => (
+                <span
+                  key={b.id}
+                  className="rounded-full border px-1.5 py-0.5 text-[length:calc(9.5px*var(--fs,1))] font-semibold leading-[1.4]"
+                  style={guestBadgeStyle(b.kind)}
+                >
+                  {b.label}
+                </span>
+              ))}
+              {badgeRow.hidden > 0 && (
+                <span className="text-[length:calc(9.5px*var(--fs,1))] leading-[1.4]" style={{ color: "rgba(var(--inkRGB),0.5)" }}>+{badgeRow.hidden}</span>
+              )}
+            </div>
+          )}
+          {/* A restaurant can run the queue menu without prices — the pre-order
+              is not a bill, and some kitchens would rather the party picked by
+              appetite. Nothing is charged here either way. */}
+          {queueMenu.showPrices ? (
           <p className="rf-num mt-0.5 text-[length:calc(17px*var(--fs,1))]" style={{ color: "rgba(var(--inkRGB),0.8)" }}>{money(m.price)}</p>
+          ) : null}
         </div>
         {qty ? (
           <div className="flex flex-shrink-0 items-center gap-2 p-1.5" style={{ borderRadius: "var(--rCtrl)", background: "rgba(var(--accRGB),0.15)", border: "1px solid rgba(var(--accRGB),0.28)" }}>
@@ -774,6 +851,11 @@ function QueueInner() {
             </div>
           </div>
         </header>
+
+        {/* POSTERS — hero banner slot, immediately under the header, exactly
+            where /order puts it so the owner's "Banner" choice looks the same on
+            both surfaces. Dismissible; nothing renders without posters. */}
+        <GuestPosters posters={posters} slot="top" />
 
         <div className="space-y-4 px-4 pt-4">
           {brandError ? (
@@ -865,6 +947,11 @@ function QueueInner() {
                 <h2 className="rf-serif mt-4 text-[length:calc(25px*var(--fs,1))] leading-tight" style={{ color: "var(--ink)" }}>{t("decideTitle")}</h2>
                 <p className="mx-auto mt-2 max-w-[19rem] text-[length:calc(13px*var(--fs,1))] leading-snug" style={muted(0.6)}>{t("decideBody")}</p>
               </div>
+              {/* PRICES ALWAYS SHOW HERE, even when the queue menu ran without
+                  them. This is the moment the held picks become a real, billable
+                  order — the restaurant may choose not to price the browsing
+                  list, but nobody sends food to a kitchen without being told
+                  what it costs. */}
               <div className="mt-4 max-h-52 overflow-y-auto rounded-xl" style={{ background: "rgba(var(--bgRGB),0.5)" }}>
                 {entry.pre_order.map((it) => (
                   <div key={it.id} className="flex items-baseline justify-between gap-3 px-3.5 py-2 text-[length:calc(13px*var(--fs,1))]">
@@ -1047,9 +1134,23 @@ function QueueInner() {
                       <Icon name="restaurant_menu" style={{ fontSize: "calc(19px*var(--fs,1))", color: "var(--accHi)" }} />
                     </div>
                     <div className="min-w-0">
-                      <h3 className="text-[length:calc(15.5px*var(--fs,1))] font-bold" style={{ color: "var(--ink)" }}>{t("preTitle")}</h3>
-                      <p className="mt-0.5 text-[length:calc(11.5px*var(--fs,1))] leading-snug" style={muted(0.55)}>{t("preSub")}</p>
+                      {/* The restaurant's own words when they wrote any, else the
+                          page's localised line. A custom headline is one string,
+                          so it shows in both EN and HI — it is the restaurant
+                          talking, not the interface. */}
+                      <h3 className="text-[length:calc(15.5px*var(--fs,1))] font-bold" style={{ color: "var(--ink)" }}>{queueMenu.headline || t("preTitle")}</h3>
+                      <p className="mt-0.5 text-[length:calc(11.5px*var(--fs,1))] leading-snug" style={muted(0.55)}>{queueMenu.intro || t("preSub")}</p>
                     </div>
+                  </div>
+
+                  {/* POSTERS — in-menu slot. Inside the pre-order section, so a
+                      "With the menu" poster appears with the dishes here just as
+                      it does on /order. A restaurant that turned the queue menu
+                      OFF has no menu section at all, and therefore no in-menu
+                      poster either — only its banner shows on this page, which is
+                      the honest reading of where the owner asked for it. */}
+                  <div className="mt-3.5">
+                    <GuestPosters posters={posters} slot="menu" />
                   </div>
 
                   {categories.length > 1 && (
@@ -1085,7 +1186,19 @@ function QueueInner() {
                 </section>
               )}
 
-              {brand.showMenu && availableMenu.length === 0 && menu.length === 0 ? (
+              {/* The apology is for a menu we could not load — NOT for a
+                  restaurant that deliberately offers nothing to pre-order while
+                  you wait. `menuCurated` is how the two are told apart; without
+                  it, turning the pre-order list off would read to the guest as a
+                  broken page.
+
+                  ONE deliberate change from the old behaviour: `menu` now
+                  arrives already free of sold-out dishes (the server refuses
+                  them, so they can't be pre-ordered by an API caller either), so
+                  a restaurant with EVERY dish 86'd now gets this line instead of
+                  a silent blank gap. That is the honest answer to "where is the
+                  menu", and it is the only case where the two differ. */}
+              {brand.showMenu && !menuCurated && availableMenu.length === 0 && menu.length === 0 ? (
                 <section className="rf-rise px-6 py-8 text-center" style={PANEL}>
                   <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full" style={{ background: "rgba(var(--inkRGB),0.05)", border: "1px solid rgba(var(--inkRGB),0.1)" }}>
                     <Icon name="no_meals" style={{ fontSize: "calc(26px*var(--fs,1))", color: "rgba(var(--inkRGB),0.45)" }} />
@@ -1119,7 +1232,12 @@ function QueueInner() {
                   </span>
                 ) : null}
               </div>
-              <div className="rf-num text-[length:calc(23px*var(--fs,1))] leading-tight" style={{ color: "var(--ink)" }}>{money(cartTotal)}</div>
+              {/* With prices off the bar shows what they picked, not what it
+                  costs — quoting a total the menu never printed would be worse
+                  than showing none. */}
+              <div className="rf-num text-[length:calc(23px*var(--fs,1))] leading-tight" style={{ color: "var(--ink)" }}>
+                {queueMenu.showPrices ? money(cartTotal) : <>{cartCount} {cartCount === 1 ? t("item") : t("items")}</>}
+              </div>
             </div>
             <button onClick={() => setConfirming(true)} disabled={busy || cartItems().length === 0} className="rf-press flex flex-shrink-0 items-center gap-1.5 px-4 py-3 text-[length:calc(13px*var(--fs,1))] font-bold disabled:opacity-50" style={PRIMARY_BTN}>
               <Icon name="bookmark_added" style={{ fontSize: "calc(17px*var(--fs,1))" }} />{t("savePicks")}
@@ -1157,7 +1275,9 @@ function QueueInner() {
                 <div key={it.id} className="flex items-baseline justify-between gap-3 px-3.5 py-2 text-[length:calc(13px*var(--fs,1))]">
                   <span style={{ color: "var(--accHi)" }} className="rf-num flex-shrink-0">{it.quantity}&times;</span>
                   <span className="flex-1 truncate" style={{ color: "var(--ink)" }}>{it.name}</span>
-                  <span className="rf-num flex-shrink-0" style={muted()}>{money(it.price * it.quantity)}</span>
+                  {queueMenu.showPrices ? (
+                    <span className="rf-num flex-shrink-0" style={muted()}>{money(it.price * it.quantity)}</span>
+                  ) : null}
                 </div>
               ))}
             </div>
@@ -1166,7 +1286,9 @@ function QueueInner() {
               <span className="text-[length:calc(12px*var(--fs,1))] font-bold uppercase tracking-wide" style={muted()}>
                 {cartCount} {cartCount === 1 ? t("item") : t("items")}
               </span>
-              <span className="rf-num text-[length:calc(19px*var(--fs,1))]" style={{ color: "var(--ink)" }}>{money(cartTotal)}</span>
+              {queueMenu.showPrices ? (
+                <span className="rf-num text-[length:calc(19px*var(--fs,1))]" style={{ color: "var(--ink)" }}>{money(cartTotal)}</span>
+              ) : null}
             </div>
 
             <div className="mt-5 flex gap-2.5">

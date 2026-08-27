@@ -10,6 +10,7 @@ import { type Booking } from '@/app/dashboard/bookings/data';
 import { type Customer } from '@/app/dashboard/customers/page';
 import { type InventoryItem } from '@/app/dashboard/inventory/page';
 import { type MenuItem } from '@/app/dashboard/menu/data';
+import { MenuBadgeInUseError, parseBadgeCatalogue, type MenuBadge } from '@/lib/menu-badges';
 import { type Order } from '@/app/dashboard/orders/page';
 import { type Table } from '@/app/dashboard/tables/data';
 import { type AuditLog } from '@/app/dashboard/audit-logs/page';
@@ -827,6 +828,15 @@ const mapMenuItem = (item: any): MenuItem => ({
     available: item.available !== false,
     station: typeof item.station === 'string' && item.station ? item.station : null,
     allergens: Array.isArray(item.allergens) ? item.allergens.filter((a: unknown) => typeof a === 'string' && a).map(String) : [],
+    // Configurable badge TAGS (ids into the restaurant's badge catalogue). The
+    // key is only carried when the dish HAS tags — same discipline as `blurb`
+    // above, and for a sharper reason: the backend reads an absent `badges` as
+    // "keep the stored tags", so a bulk save (drag-reorder, delete-an-item) made
+    // from a snapshot taken before someone tagged dishes elsewhere cannot send
+    // [] and wipe them. Untagged items simply omit the key.
+    ...(Array.isArray(item.badges) && item.badges.length > 0
+        ? { badges: item.badges.filter((b: unknown) => typeof b === 'string' && b).map(String) }
+        : {}),
     // Guest-facing description. The key is only carried when there IS one: the
     // backend treats an omitted `blurb` as "keep the stored text", so a bulk save
     // of items that never had a description can't accidentally clear anything.
@@ -1323,7 +1333,39 @@ export const getTables = async (restaurantId: string): Promise<Table[]> => {
     return readLocalField<Table[]>(restaurantId, 'tables');
 };
 
-export const occupyTable = async (restaurantId: string, tableName: string, numCovers?: number | null, linkedOrderId?: string | null) => {
+/** Mirrors the backend's TableAssignmentOutcome (database_supabase.ts): what a
+ *  seating did about the table's waiter, and — when it assigned nobody — why.
+ *  `assigned: false` with an `employee_id` means someone else already had the
+ *  table and was kept; `assigned: false` with a null `employee_id` means the
+ *  table has NO waiter, which is the case a human needs to be told about.
+ *
+ *  The TYPE stays here (types are erased before Next inspects this "use server"
+ *  module, so they are legal); the synchronous `seatingLeftTableUnattended`
+ *  predicate that reads it lives in ./table-assignment, because a Server Actions
+ *  file may export only async functions and a plain `export const` there fails
+ *  the BUILD — invisibly to tsc and jest, while every page that imports db.ts
+ *  goes down with it. */
+export interface TableAssignmentOutcome {
+    assigned: boolean;
+    reason: 'assigned' | 'already_assigned' | 'unknown_employee' | 'not_clocked_in' | 'no_actor' | 'error';
+    employee_id: string | null;
+    employee_name: string | null;
+    message: string;
+}
+
+export interface OccupyTableResult {
+    acknowledged: true;
+    table_id?: string;
+    is_occupied?: boolean;
+    num_covers?: number;
+    linked_order_id?: string | null;
+    /** null when the call was not a seating at all — the order flow re-occupies
+     *  an already-occupied table around every save, and that has no opinion
+     *  about the waiter. */
+    assignment: TableAssignmentOutcome | null;
+}
+
+export const occupyTable = async (restaurantId: string, tableName: string, numCovers?: number | null, linkedOrderId?: string | null): Promise<OccupyTableResult> => {
     const payload: any = { table_name: tableName };
     if (typeof numCovers === 'number' && numCovers >= 1) {payload.num_covers = numCovers;}
     if (typeof linkedOrderId === 'string' && linkedOrderId.trim().length > 0) {payload.order_id = linkedOrderId;}
@@ -1335,6 +1377,14 @@ export const occupyTable = async (restaurantId: string, tableName: string, numCo
     });
 
     if (response?.ok) {
+        // The body was being thrown away in favour of `{acknowledged:true}`. It
+        // carries `assignment` — who this seating credited, or why nobody — which
+        // the host has to see at the moment of seating; it also carries
+        // linked_order_id, which the orders page has been "sanity checking" for
+        // on an object that could never contain it.
+        let body: Partial<OccupyTableResult> | null = null;
+        try { body = (await response.json()) as Partial<OccupyTableResult>; } catch { body = null; }
+
         await getTables(restaurantId);
         // notify other UI parts (Tables page) that table data changed
         try {
@@ -1344,7 +1394,14 @@ export const occupyTable = async (restaurantId: string, tableName: string, numCo
         } catch {
             // ignore
         }
-        return { acknowledged: true };
+        return {
+            acknowledged: true,
+            table_id: body?.table_id,
+            is_occupied: body?.is_occupied,
+            num_covers: body?.num_covers,
+            linked_order_id: body?.linked_order_id ?? null,
+            assignment: body?.assignment ?? null,
+        };
     }
 
     throw new Error(response ? await readErrorMessage(response) : 'Unable to occupy table');
@@ -3892,6 +3949,8 @@ export interface SeatWaitlistResult {
     waitlist_id: string;
     pre_order_status: 'none' | 'pending' | 'confirmed' | 'declined' | 'claimed';
     pending_preorder: PendingPreorder | null;
+    /** Who this seating put on the table, or why nobody. */
+    assignment: TableAssignmentOutcome | null;
 }
 
 export const seatWaitlistEntry = async (restaurantId: string, id: string, tableName: string): Promise<SeatWaitlistResult> => {
@@ -4115,6 +4174,146 @@ export const saveKitchenSections = async (restaurantId: string, sections: string
 // item that pointed at the old one.
 export const renameKitchenSection = async (restaurantId: string, from: string, to: string): Promise<{ success: boolean; updated_items?: number; kitchen_sections?: string[] }> =>
     postJson('/kitchen-sections/rename', restaurantId, { from, to });
+
+// --- Configurable menu badges -----------------------------------------------
+// The CATALOGUE is restaurant-wide; the TAGS live on each item. Both are the
+// tenant's, and an absent catalogue means no badge renders anywhere — so these
+// calls never invent a default set, they only ever return what was configured.
+
+export interface MenuBadgeCatalogue {
+    badges: MenuBadge[];
+    /** The starter set the server offers; NOT applied until the owner says so. */
+    presets: MenuBadge[];
+    per_item_max: number;
+    label_max: number;
+}
+
+export const getMenuBadges = async (restaurantId: string): Promise<MenuBadgeCatalogue> => {
+    const res = await backendCall('/menu/badges', restaurantId, { method: 'GET' });
+    const empty: MenuBadgeCatalogue = { badges: [], presets: [], per_item_max: 8, label_max: 24 };
+    if (!res?.ok) {return empty;}
+    try {
+        const j = await res.json();
+        return {
+            badges: parseBadgeCatalogue(j?.badges),
+            presets: parseBadgeCatalogue(j?.presets),
+            per_item_max: Number(j?.per_item_max) > 0 ? Number(j.per_item_max) : 8,
+            label_max: Number(j?.label_max) > 0 ? Number(j.label_max) : 24,
+        };
+    } catch { return empty; }
+};
+
+/**
+ * Replace the catalogue. `releaseTagged` confirms untagging the dishes that
+ * still carry a dietary/safety badge being removed — without it the server
+ * answers 409 and changes nothing, which is what MenuBadgeInUseError carries
+ * back so the editor can ask rather than just failing.
+ */
+export const saveMenuBadges = async (
+    restaurantId: string,
+    badges: MenuBadge[],
+    opts?: { releaseTagged?: boolean },
+): Promise<{ badges: MenuBadge[]; released: number }> => {
+    const res = await backendCall('/menu/badges', restaurantId, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ badges, ...(opts?.releaseTagged ? { release_tagged: true } : {}) }),
+    });
+    if (!res) {throw new Error('Request failed');}
+    if (res.status === 409) {
+        const payload = await res.json().catch(() => null);
+        throw new MenuBadgeInUseError(
+            typeof payload?.error === 'string' ? payload.error : 'Some dishes still carry that badge.',
+            Array.isArray(payload?.badges) ? payload.badges : [],
+        );
+    }
+    if (!res.ok) {throw new Error(await readErrorMessage(res));}
+    const j = await res.json().catch(() => ({}));
+    return { badges: parseBadgeCatalogue(j?.badges), released: Number(j?.released ?? 0) };
+};
+
+/**
+ * Bulk-tag dishes. Sends ONLY ids and tags — never whole items — so a stale menu
+ * snapshot in the browser cannot overwrite an image, a recipe or a price. That
+ * is deliberate: the full-menu replace is what once wiped 56 dishes.
+ */
+export const tagMenuBadges = async (
+    restaurantId: string,
+    items: { id: string; badges: string[] }[],
+): Promise<{ updated: number }> => {
+    const j = await postJson('/menu/badges/tag', restaurantId, { items });
+    return { updated: Number(j?.updated ?? 0) };
+};
+
+// --- Queue pre-order menu (what a QUEUING walk-in may order) -----------------
+// Which dishes the waitlist pre-order list offers and how it presents itself.
+// The rule is enforced server-side (GET /qr/:slug/queue-menu serves only the
+// allowed dishes, and the pre-order write refuses the rest) — this is only the
+// editor's read/write. An ABSENT config means the whole menu, exactly as before
+// the feature existed, which is why `reset` is its own call rather than a
+// payload of empty values.
+export type QueueMenuMode = 'all' | 'include' | 'exclude';
+export interface QueueMenuConfig {
+    /** 'all' = the whole menu; 'include' = only what is listed; 'exclude' = all but. */
+    mode: QueueMenuMode;
+    /** Menu item ids the mode applies to. */
+    items: string[];
+    /** Category names the mode applies to (case-insensitive). */
+    categories: string[];
+    /** Categories floated to the front, in this order; the rest stay alphabetical. */
+    category_order: string[];
+    /** '' means "keep the queue page's own localised copy". */
+    headline: string;
+    intro: string;
+    show_prices: boolean;
+}
+export interface QueueMenuItem {
+    id: string;
+    name: string;
+    price: number;
+    category: string;
+    available?: boolean;
+    /** Whether the CURRENT rule lets this dish onto the queue menu. Computed by
+     *  the same function the guest endpoint uses, so the editor cannot disagree
+     *  with what a queuing guest is actually served. */
+    queue_included: boolean;
+}
+export interface QueueMenuConfigPayload {
+    config: QueueMenuConfig;
+    /** False when the tenant never customized anything (the whole menu). */
+    configured: boolean;
+    /** The master on/off — a queue page with no pre-order section at all. */
+    queue_show_menu: boolean;
+    items: QueueMenuItem[];
+    /** Categories in the order the queue page will render them. */
+    categories: string[];
+}
+
+const QUEUE_MENU_FALLBACK: QueueMenuConfigPayload = {
+    config: { mode: 'all', items: [], categories: [], category_order: [], headline: '', intro: '', show_prices: true },
+    configured: false,
+    queue_show_menu: true,
+    items: [],
+    categories: [],
+};
+
+export const getQueueMenuConfig = async (restaurantId: string): Promise<QueueMenuConfigPayload> => {
+    const res = await backendCall('/queue-menu-config', restaurantId, { method: 'GET' });
+    if (!res?.ok) {return QUEUE_MENU_FALLBACK;}
+    try { return (await res.json()) as QueueMenuConfigPayload; } catch { return QUEUE_MENU_FALLBACK; }
+};
+
+/** Partial saves are fine: keys omitted keep their stored value, and a key sent
+ *  as null is cleared back to its default (that is the server's merge rule). */
+export const saveQueueMenuConfig = async (
+    restaurantId: string,
+    patch: Partial<Record<keyof QueueMenuConfig, unknown>>,
+): Promise<{ config: QueueMenuConfig; configured: boolean }> =>
+    postJson('/queue-menu-config', restaurantId, patch);
+
+/** Back to the whole menu, bit-for-bit — the only way to un-configure. */
+export const resetQueueMenuConfig = async (restaurantId: string): Promise<{ config: QueueMenuConfig; configured: boolean }> =>
+    postJson('/queue-menu-config', restaurantId, { reset: true });
 
 // --- Require-table-OTP toggle (boolean in /restaurant/settings) --------------
 // When enabled, guests must enter the 4-digit per-table code shown by staff
@@ -4397,6 +4596,114 @@ export const saveBrandConfig = async (
             brand_contrast: Array.isArray(j?.brand_contrast) ? (j.brand_contrast as BrandContrastNote[]) : [],
         };
     } catch { return { brand_config: brandConfig, brand_contrast: [] }; }
+};
+
+// --- Guest-menu posters -----------------------------------------------------
+// Promotional images shown with the guest menu (/order and the queue page).
+// Backed by the "Posters" table, gated by Manage Branding, and scheduled by
+// CALENDAR KEY in the restaurant's own timezone — see the backend's posters.ts.
+export type PosterPlacement = 'top' | 'menu';
+export interface PosterRecord {
+    id: string;
+    image_url: string;
+    title: string;
+    placement: PosterPlacement;
+    sort_order: number;
+    /** Inclusive YYYY-MM-DD bounds in the RESTAURANT's zone; null = open-ended. */
+    start_on: string | null;
+    end_on: string | null;
+    active: boolean;
+    /** Intrinsic size of the stored image, so a preview can reserve its box. */
+    width: number;
+    height: number;
+    created_at: string;
+}
+export interface PosterLibrary {
+    posters: PosterRecord[];
+    /** TODAY as the restaurant sees it. The editor's "showing now" badge is
+     *  computed against THIS and never against the browser's clock — an owner
+     *  administering from a different country would otherwise be told a poster is
+     *  live when their diners cannot see it. */
+    today: string;
+    timezone: string;
+    placements: { value: PosterPlacement; label: string; hint: string }[];
+    max_posters: number;
+    max_upload_bytes: number;
+}
+/** A poster create, as the editor sends it: the image plus its metadata in ONE
+ *  request, so a picked-then-abandoned file never becomes an orphan in storage. */
+export interface PosterCreate {
+    image_base64: string;
+    content_type: string;
+    title?: string;
+    placement?: PosterPlacement;
+    sort_order?: number;
+    start_on?: string | null;
+    end_on?: string | null;
+    active?: boolean;
+}
+/** Merge-on-omit: a key left out keeps its stored value; a date sent as null
+ *  clears that bound (which is how "remove the end date" is expressed). */
+export type PosterPatch = Partial<Omit<PosterRecord, 'id' | 'image_url' | 'width' | 'height' | 'created_at'>>;
+
+const EMPTY_POSTER_LIBRARY: PosterLibrary = {
+    posters: [],
+    today: '',
+    timezone: 'Asia/Kolkata',
+    placements: [
+        { value: 'top', label: 'Banner', hint: 'Full-width strip under the header.' },
+        { value: 'menu', label: 'With the menu', hint: 'A card above the dishes.' },
+    ],
+    max_posters: 24,
+    max_upload_bytes: 3 * 1024 * 1024,
+};
+
+export const getPosters = async (restaurantId: string): Promise<PosterLibrary> => {
+    const res = await backendCall('/posters', restaurantId, { method: 'GET' });
+    // A tenant whose backend predates this feature (or a caller without Manage
+    // Branding) gets an empty library rather than an error card — the editor then
+    // renders its own "no posters yet" state, which is the truth either way.
+    if (!res?.ok) {return EMPTY_POSTER_LIBRARY;}
+    try {
+        const j = await res.json();
+        return {
+            posters: Array.isArray(j?.posters) ? (j.posters as PosterRecord[]) : [],
+            today: typeof j?.today === 'string' ? j.today : '',
+            timezone: typeof j?.timezone === 'string' ? j.timezone : EMPTY_POSTER_LIBRARY.timezone,
+            placements: Array.isArray(j?.placements) && j.placements.length > 0
+                ? (j.placements as PosterLibrary['placements'])
+                : EMPTY_POSTER_LIBRARY.placements,
+            max_posters: Number(j?.max_posters) || EMPTY_POSTER_LIBRARY.max_posters,
+            max_upload_bytes: Number(j?.max_upload_bytes) || EMPTY_POSTER_LIBRARY.max_upload_bytes,
+        };
+    } catch {
+        return EMPTY_POSTER_LIBRARY;
+    }
+};
+
+export const createPoster = async (restaurantId: string, poster: PosterCreate): Promise<PosterRecord> => {
+    const res = await backendCall('/posters', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(poster),
+    });
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to save poster');}
+    return await res.json() as PosterRecord;
+};
+
+export const updatePoster = async (restaurantId: string, id: string, patch: PosterPatch): Promise<PosterRecord> => {
+    const res = await backendCall(`/posters/${encodeURIComponent(id)}`, restaurantId, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+    });
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to save poster');}
+    return await res.json() as PosterRecord;
+};
+
+export const deletePoster = async (restaurantId: string, id: string): Promise<void> => {
+    const res = await backendCall(`/posters/${encodeURIComponent(id)}`, restaurantId, { method: 'DELETE' });
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to delete poster');}
 };
 
 // --- Inventory categories (managed list in /restaurant/settings) ------------

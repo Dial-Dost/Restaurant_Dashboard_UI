@@ -16,12 +16,19 @@ import {
   resolveGuestTheme,
 } from "@/lib/guest-theme";
 import { isMobile10, normalizeMobile10, sanitizePhoneInput } from "@/lib/phone";
+import { GuestPosters, readGuestPosters, type GuestPoster } from "@/components/guest-posters";
+
+import { badgesById, capBadges, guestBadgeStyle, parseBadgeCatalogue, type MenuBadge } from "@/lib/menu-badges";
 
 const BASE = guestBackendBase();
 
 interface ModOption { name: string; price: number }
 interface ModGroup { name: string; multi: boolean; required: boolean; options: ModOption[] }
-interface MenuItem { id: string; name: string; price: number; category: string; image_url?: string; available?: boolean; modifiers?: ModGroup[]; allergens?: string[]; blurb?: string }
+// `badges` here are RESOLVED ids from the server: the dish's own tags filtered
+// to the restaurant's enabled catalogue, unioned with the allergen-derived
+// safety badges, already ordered alert -> diet -> promo. This page never
+// re-derives them — one rule, on the server, decides what a diner is told.
+interface MenuItem { id: string; name: string; price: number; category: string; image_url?: string; available?: boolean; modifiers?: ModGroup[]; allergens?: string[]; blurb?: string; badges?: string[] }
 interface CartLine { key: string; itemId: string; name: string; unitPrice: number; quantity: number }
 interface PayMethod { id: string; label: string; enabled?: boolean; requires_screenshot?: boolean; online?: boolean }
 interface TaxLine { name: string; percentage: number; amount: number }
@@ -283,6 +290,15 @@ function OrderInner() {
   const [currency, setCurrency] = useState("₹");
   const [payMethods, setPayMethods] = useState<PayMethod[]>(DEFAULT_METHODS);
   const [items, setItems] = useState<MenuItem[]>([]);
+  // Promotional posters, if the restaurant has any showing today. The menu
+  // payload OMITS the key entirely for a restaurant with none, so [] is both
+  // the initial state and the permanent one for almost every tenant.
+  const [posters, setPosters] = useState<GuestPoster[]>([]);
+  // The restaurant's badge catalogue, plus the allergen tags a derived badge
+  // already speaks for. Both empty for a tenant that configured none, which is
+  // why this page looks exactly as it did before badges existed.
+  const [menuBadges, setMenuBadges] = useState<MenuBadge[]>([]);
+  const [badgeAllergens, setBadgeAllergens] = useState<string[]>([]);
   const [cart, setCart] = useState<Record<string, CartLine>>({});
   const [query, setQuery] = useState("");
   const [activeCat, setActiveCat] = useState<string | null>(null);
@@ -404,6 +420,11 @@ function OrderInner() {
         if (typeof data.currency === "string" && data.currency.trim()) {setCurrency(data.currency.trim());}
         if (Array.isArray(data.payment_methods) && data.payment_methods.length > 0) {setPayMethods(data.payment_methods);}
         setRequireOtp(data.require_table_otp === true);
+        setPosters(readGuestPosters(data.posters));
+        setMenuBadges(parseBadgeCatalogue(data.menu_badges));
+        setBadgeAllergens(Array.isArray(data.badge_allergens)
+          ? (data.badge_allergens as unknown[]).filter((a): a is string => typeof a === "string")
+          : []);
         setItems(Array.isArray(data.items) ? data.items : []);
       } catch (e: any) {
         if (active) {setError(e?.message ?? "Failed to load menu");}
@@ -686,6 +707,12 @@ function OrderInner() {
           </div>
         </header>
 
+        {/* POSTERS — hero banner slot. Directly under the header so it is the
+            first thing a guest sees, and above the bill/search controls so it
+            never sits between them and a control they came here to use.
+            Dismissible; renders nothing when the tenant has no banner poster. */}
+        <GuestPosters posters={posters} slot="top" />
+
         {/* CONTROLS: bill total, shared table code, language. */}
         <div className="flex items-center gap-2 px-4 pt-3">
           <button
@@ -772,6 +799,10 @@ function OrderInner() {
 
         {/* MENU GRID (2 columns) */}
         <main className="px-4 pb-4 pt-2.5">
+          {/* POSTERS — in-menu slot, above the dishes. Hidden while SEARCHING:
+              a guest typing a dish name has asked a question, and answering it
+              with an advertisement first is the wrong trade. */}
+          {!searching && <GuestPosters posters={posters} slot="menu" />}
           {!searching && active && (
             <div className="mb-3 mt-1 px-1 text-[length:calc(11px*var(--fs,1))] font-bold uppercase tracking-[1.3px] text-[color:var(--inkDim)]">{t("fullMenu")} · {active}</div>
           )}
@@ -781,7 +812,15 @@ function OrderInner() {
               const line = cart[it.id];
               const monogram = (it.name.trim()[0] ?? "•").toUpperCase();
               const blurb = itemBlurb(it);
-              const openable = hasItemDetails(it);
+              // Two per row: at most two highlights fit before the price line
+              // starts wrapping. capBadges only ever drops `promo`.
+              const badgeRow = capBadges(badgesById(menuBadges, it.badges), 2);
+              // An allergen a badge already states is not printed a second time
+              // as a quiet grey chip.
+              const plainAllergens = (it.allergens ?? []).filter((a) => !badgeAllergens.includes(a.toLowerCase()));
+              // A dish whose only extra is a TRIMMED highlight still has to open,
+              // or the "+2" on its card is a promise the page cannot keep.
+              const openable = hasItemDetails(it) || badgeRow.hidden > 0;
               // Tapping the photo/name of a dish that has a description and/or
               // options opens its sheet (read the blurb, pick options) without
               // adding anything to the cart.
@@ -837,9 +876,30 @@ function OrderInner() {
                         {blurb}
                       </div>
                     ) : null}
-                    {(it.allergens ?? []).length > 0 && (
+                    {/* Badges, then the allergens no badge already speaks for.
+                        Warnings and dietary badges are never trimmed; only the
+                        restaurant's own highlights are, and the overflow is
+                        counted rather than swallowed. Two columns on a phone is
+                        why there is a cap at all. */}
+                    {badgeRow.shown.length > 0 && (
+                      <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                        {badgeRow.shown.map((b) => (
+                          <span
+                            key={b.id}
+                            className="rounded-full border px-1.5 py-0.5 text-[length:calc(9.5px*var(--fs,1))] font-semibold leading-[1.4]"
+                            style={guestBadgeStyle(b.kind)}
+                          >
+                            {b.label}
+                          </span>
+                        ))}
+                        {badgeRow.hidden > 0 && (
+                          <span className="text-[length:calc(9.5px*var(--fs,1))] leading-[1.4] text-[color:var(--inkDim)]">+{badgeRow.hidden}</span>
+                        )}
+                      </div>
+                    )}
+                    {plainAllergens.length > 0 && (
                       <div className="mt-1.5 flex flex-wrap gap-1">
-                        {(it.allergens ?? []).map((a) => (
+                        {plainAllergens.map((a) => (
                           <span key={a} className="rounded-full border px-1.5 py-0.5 text-[length:calc(9px*var(--fs,1))] capitalize leading-none text-[color:var(--inkMuted)]" style={{ borderColor: "rgba(var(--edgeRGB),0.1)", backgroundColor: "rgba(var(--edgeRGB),0.04)" }}>{a}</span>
                         ))}
                       </div>
@@ -929,6 +989,7 @@ function OrderInner() {
       {modItem && (
         <ModifierSheet
           item={modItem}
+          badges={badgesById(menuBadges, modItem.badges)}
           accent={theme.acc}
           currency={currency}
           onClose={() => { setModItem(null); }}
@@ -989,15 +1050,36 @@ function OrderInner() {
   );
 }
 
+// The item sheet has room, so it shows every badge — the card's cap is a layout
+// concession, never a decision about what a guest is allowed to know.
+function ItemSheetBadges({ badges }: { badges: MenuBadge[] }) {
+  if (badges.length === 0) {return null;}
+  return (
+    <div className="mb-3 flex flex-wrap gap-1.5">
+      {badges.map((b) => (
+        <span
+          key={b.id}
+          className="rounded-full border px-2 py-0.5 text-[length:calc(11px*var(--fs,1))] font-semibold leading-[1.5]"
+          style={guestBadgeStyle(b.kind)}
+        >
+          {b.label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function ModifierSheet(props: {
   item: MenuItem;
+  /** Already resolved and ordered by the server; shown in full here. */
+  badges: MenuBadge[];
   accent: string;
   currency: string;
   onClose: () => void;
   onAdd: (line: CartLine) => void;
   t: Tr;
 }) {
-  const { item, currency, onClose, onAdd, t } = props;
+  const { item, badges, currency, onClose, onAdd, t } = props;
   const groups = item.modifiers ?? [];
   const blurb = itemBlurb(item);
   // selection: groupIndex -> set of chosen option names
@@ -1058,6 +1140,7 @@ function ModifierSheet(props: {
         </div>
 
         <div className="rf-sc min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch]">
+          <ItemSheetBadges badges={badges} />
           {/* The kitchen's own words about the dish (brand_config-independent —
               it comes from the menu item). Newlines are preserved. */}
           {blurb ? (

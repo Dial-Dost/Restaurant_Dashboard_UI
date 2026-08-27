@@ -10,6 +10,7 @@ import { useCurrency } from "@/hooks/use-currency"
 import { useToast } from "@/hooks/use-toast"
 import { useHighlightRow } from "@/hooks/use-highlight-row"
 import { getWaitlist, callWaitlistEntry, seatWaitlistEntry, cancelWaitlistEntry, confirmWaitlistPreorder, declineWaitlistPreorder, getPendingPreorders, getTables, type PendingPreorder, type PendingPreorderEntry, type WaitlistEntry } from "@/lib/db"
+import { seatingLeftTableUnattended } from "@/lib/table-assignment"
 import { getSelectedOutletId } from "@/lib/outlet"
 import { type Table } from "@/app/dashboard/tables/data"
 
@@ -119,11 +120,18 @@ function WaitlistPageInner() {
       // Seating HOLDS the pre-order (never places it): the response's
       // pending_preorder is the cue to ask, right now, whether it should fire.
       const r = await seatWaitlistEntry(rid, entry.id, table)
+      // Who ended up on the table, or why nobody did. The host is standing here
+      // with the party right now — this is the only moment where "no waiter was
+      // assigned" is cheap to fix, which is why it is said out loud.
+      const assigned = r.assignment
+      const unattended = seatingLeftTableUnattended(assigned)
+      const who = assigned ? `${assigned.message} ` : ""
+      const title = unattended ? `Seated at ${table} - no waiter assigned` : `Seated at ${table}`
       if (r?.pending_preorder && r.pending_preorder.items.length > 0) {
         setSeatDialog({ id: entry.id, name: entry.name, table, pre: r.pending_preorder })
-        toast({ title: `Seated at ${table}`, description: "They picked items while waiting - confirm to send them to the kitchen." })
+        toast({ title, description: `${who}They picked items while waiting - confirm to send them to the kitchen.`, variant: unattended ? "destructive" : undefined })
       } else {
-        toast({ title: `Seated at ${table}` })
+        toast({ title, description: assigned?.message, variant: unattended ? "destructive" : undefined })
       }
     })
   }

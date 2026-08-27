@@ -22,6 +22,14 @@ export interface MenuItem {
    * characters. Semantics on write: omitted => keep what is stored, "" => clear.
    */
   blurb?: string;
+  /**
+   * Configurable badge TAGS: ids into the restaurant's badge catalogue
+   * ("Must Try", "Jain"...). Stored server-side as the `badges` key inside the
+   * Menu.description JSON blob, like every other item extra. Omitted on write =
+   * keep the stored tags, [] = clear them. Allergen-derived safety badges are
+   * NOT listed here — they come from `allergens` (see lib/menu-badges.ts).
+   */
+  badges?: string[];
 }
 
 export const initialMenuItems: MenuItem[] = [

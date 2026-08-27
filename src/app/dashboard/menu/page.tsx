@@ -54,6 +54,9 @@ import { useDroppable } from "@dnd-kit/core";
 import { SortableContext, useSortable, arrayMove } from "@dnd-kit/sortable";
 import { cn } from "@/lib/utils";
 import { type MenuItem, type RecipeIngredient } from "./data";
+import { ItemBadgeChips, MenuBadgesCard, TagBadgesDialog } from "./badges";
+import { type MenuBadge } from "@/lib/menu-badges";
+import { QueuePreorderMenuCard } from "./queue-preorder-menu";
 import { useAuth } from "@/context/AuthContext";
 import { useCurrency } from "@/hooks/use-currency";
 import {
@@ -67,6 +70,9 @@ import {
   getKitchenSections,
   saveKitchenSections,
   renameKitchenSection,
+  getMenuBadges,
+  saveMenuBadges,
+  tagMenuBadges,
   type MenuCosting,
   type MenuCostingItem,
 } from "@/lib/db";
@@ -100,7 +106,7 @@ type CategoryFormData = z.infer<typeof categorySchema>;
 const isManagedStation = (station: string | null | undefined, sections: string[]) =>
     !!station && sections.some((s) => s.toLowerCase() === station.toLowerCase());
 
-function SortableMenuItem({ item, onRemoveItem, onEditItem, onEditRecipe, costing, currencySymbol, isDragging, sections = [], showCategory = false }: { item: MenuItem, onRemoveItem: (id: string) => void, onEditItem?: (item: MenuItem) => void, onEditRecipe?: (item: MenuItem) => void, costing?: MenuCostingItem, currencySymbol: string, isDragging?: boolean, sections?: string[], showCategory?: boolean }) {
+function SortableMenuItem({ item, onRemoveItem, onEditItem, onEditRecipe, costing, currencySymbol, isDragging, sections = [], showCategory = false, badges = [] }: { item: MenuItem, onRemoveItem: (id: string) => void, onEditItem?: (item: MenuItem) => void, onEditRecipe?: (item: MenuItem) => void, costing?: MenuCostingItem, currencySymbol: string, isDragging?: boolean, sections?: string[], showCategory?: boolean, badges?: MenuBadge[] }) {
     const { attributes, listeners, setNodeRef } = useSortable({
         id: item.id,
         data: { category: item.category },
@@ -134,6 +140,9 @@ function SortableMenuItem({ item, onRemoveItem, onEditItem, onEditRecipe, costin
                                 {item.category}
                             </Badge>
                         ) : null}
+                        {/* Exactly what a guest will see on this dish, in the guest's
+                            order — warnings first, then dietary, then highlights. */}
+                        <ItemBadgeChips catalogue={badges} item={item} />
                     </p>
                     {/* Guest-facing description — two lines here, the full text
                         on hover; guests see it when they open the item. */}
@@ -188,7 +197,7 @@ function SortableMenuItem({ item, onRemoveItem, onEditItem, onEditRecipe, costin
     );
 }
 
-function DroppableCategory({ category, items, onRemoveItem, onRemoveCategory, onEditItem, onEditRecipe, costingById, currencySymbol, activeId, sections }: { category: string, items: MenuItem[], onRemoveItem: (id: string) => void, onRemoveCategory: (category: string) => void, onEditItem: (item: MenuItem) => void, onEditRecipe: (item: MenuItem) => void, costingById: Map<string, MenuCostingItem>, currencySymbol: string, activeId: string | null, sections: string[] }) {
+function DroppableCategory({ category, items, onRemoveItem, onRemoveCategory, onEditItem, onEditRecipe, costingById, currencySymbol, activeId, sections, badges }: { category: string, items: MenuItem[], onRemoveItem: (id: string) => void, onRemoveCategory: (category: string) => void, onEditItem: (item: MenuItem) => void, onEditRecipe: (item: MenuItem) => void, costingById: Map<string, MenuCostingItem>, currencySymbol: string, activeId: string | null, sections: string[], badges: MenuBadge[] }) {
     const { isOver, setNodeRef } = useDroppable({
         id: category,
     });
@@ -232,7 +241,7 @@ function DroppableCategory({ category, items, onRemoveItem, onRemoveCategory, on
                     {items && items.length > 0 ? (
                         <ul className="space-y-2">
                             {items.map(item => (
-                                <SortableMenuItem key={item.id} item={item} onRemoveItem={onRemoveItem} onEditItem={onEditItem} onEditRecipe={onEditRecipe} costing={costingById.get(item.id)} currencySymbol={currencySymbol} isDragging={activeId === item.id} sections={sections} />
+                                <SortableMenuItem key={item.id} item={item} onRemoveItem={onRemoveItem} onEditItem={onEditItem} onEditRecipe={onEditRecipe} costing={costingById.get(item.id)} currencySymbol={currencySymbol} isDragging={activeId === item.id} sections={sections} badges={badges} />
                             ))}
                         </ul>
                     ) : (
@@ -270,6 +279,14 @@ export default function MenuPage() {
     // category (same idiom as the order-entry search); empty query keeps the
     // grouped/draggable accordion exactly as before.
     const [menuSearch, setMenuSearch] = useState("");
+    // The tenant's badge catalogue + the starter set the server offers. Both
+    // default to empty, which is what an unconfigured restaurant has: no badge
+    // renders anywhere until the owner adds one.
+    const [badges, setBadges] = useState<MenuBadge[]>([]);
+    const [badgePresets, setBadgePresets] = useState<MenuBadge[]>([]);
+    const [badgeLimits, setBadgeLimits] = useState({ perItem: 8, label: 24 });
+    const [badgeBusy, setBadgeBusy] = useState(false);
+    const [isTaggerOpen, setIsTaggerOpen] = useState(false);
 
     const refreshCosting = async (restaurantUsername: string) => {
         try {
@@ -285,6 +302,10 @@ export default function MenuPage() {
           setMenuItems(await getMenuItems(user.restaurantUsername));
           setCategories(await getMenuCategories(user.restaurantUsername));
           setSections(await getKitchenSections(user.restaurantUsername));
+          const badgeData = await getMenuBadges(user.restaurantUsername);
+          setBadges(badgeData.badges);
+          setBadgePresets(badgeData.presets);
+          setBadgeLimits({ perItem: badgeData.per_item_max, label: badgeData.label_max });
           await refreshCosting(user.restaurantUsername);
         }
         fetchData();
@@ -449,6 +470,33 @@ export default function MenuPage() {
         setMenuItems(await getMenuItems(user.restaurantUsername));
         setIsOrganiseOpen(false);
     };
+
+    // --- Badges -----------------------------------------------------------
+    // Saving the catalogue can RELEASE tagged dishes (the confirm lives in
+    // MenuBadgesCard), so the menu is reloaded afterwards rather than patched
+    // locally — the server is the authority on which dishes still carry what.
+    const handleSaveBadges = async (next: MenuBadge[], opts?: { releaseTagged?: boolean }) => {
+        if (!user) {return;}
+        setBadgeBusy(true);
+        try {
+            const saved = await saveMenuBadges(user.restaurantUsername, next, opts);
+            setBadges(saved.badges);
+            if (saved.released > 0) {setMenuItems(await getMenuItems(user.restaurantUsername));}
+        } finally {
+            setBadgeBusy(false);
+        }
+    };
+
+    // Tag-only write: ids and tags travel, never whole items, so a stale menu in
+    // this browser cannot overwrite an image, a recipe or a price.
+    const handleTagBadges = async (updates: { id: string; badges: string[] }[]) => {
+        if (!user) {return;}
+        await tagMenuBadges(user.restaurantUsername, updates);
+        setMenuItems(await getMenuItems(user.restaurantUsername));
+        setIsTaggerOpen(false);
+    };
+
+    const badgeUsage = (id: string) => menuItems.filter((it) => (it.badges ?? []).includes(id)).length;
 
     const normalizeColumn = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, "");
     const normalizeCell = (value: unknown) => String(value ?? "").trim();
@@ -827,6 +875,19 @@ export default function MenuPage() {
                 </div>
             </CardContent>
         </Card>
+        {/* The SECOND, narrower view of this menu: what a walk-in still waiting
+            in the queue may pre-order. Sits beside kitchen sections because both
+            are ways of scoping the same items, not settings. */}
+        {user?.restaurantUsername ? <QueuePreorderMenuCard restaurantId={user.restaurantUsername} /> : null}
+        <MenuBadgesCard
+            catalogue={badges}
+            presets={badgePresets}
+            labelMax={badgeLimits.label}
+            busy={badgeBusy}
+            itemsTaggedWith={badgeUsage}
+            onSave={handleSaveBadges}
+            onOpenTagger={() => { setIsTaggerOpen(true); }}
+        />
         <Card>
             <CardHeader>
             <CardTitle>Menu Items</CardTitle>
@@ -876,6 +937,7 @@ export default function MenuPage() {
                                         currencySymbol={currencySymbol}
                                         isDragging={activeId === item.id}
                                         sections={sections}
+                                        badges={badges}
                                         showCategory
                                     />
                                 ))}
@@ -902,6 +964,7 @@ export default function MenuPage() {
                                 currencySymbol={currencySymbol}
                                 activeId={activeId}
                                 sections={sections}
+                                badges={badges}
                             />
                         ))}
                     </Accordion>
@@ -940,6 +1003,15 @@ export default function MenuPage() {
                     />
                 </DialogContent>
             </Dialog>
+        )}
+        {isTaggerOpen && (
+            <TagBadgesDialog
+                items={menuItems}
+                catalogue={badges}
+                perItemMax={badgeLimits.perItem}
+                onClose={() => { setIsTaggerOpen(false); }}
+                onSave={handleTagBadges}
+            />
         )}
         {isOrganiseOpen && (
             <OrganiseByKitchenDialog
