@@ -17,6 +17,18 @@ import { type AuditLog } from '@/app/dashboard/audit-logs/page';
 import { serverBackendBase, serverBaseUrlFrom } from '@/lib/backend-url';
 import { SELECTED_OUTLET_KEY } from '@/lib/outlet';
 import type { BrandConfig } from '@/lib/brand-fonts';
+import type {
+    BillTenderState,
+    BillingCounterRecord,
+    MenuGroupAssignments,
+    MenuGroupRecord,
+    MenuVariationRecord,
+    NonChargeableRecord,
+    OrderVoidRecord,
+    ServiceChargeWaiverRecord,
+    TenderWire,
+} from '@/lib/mis-capture';
+import type { MisReportPayload } from '@/lib/mis-reports';
 
 export interface User {
     id: string;
@@ -861,6 +873,22 @@ const mapOrderItem = (item: any) => ({
     station: typeof item.station === 'string' && item.station ? item.station : null,
     course_hold: item.course_hold === true,
     fired_at: typeof item.fired_at === 'string' && item.fired_at ? item.fired_at : null,
+    // MIGRATION 034 — SERVER-OWNED, READ-ONLY HERE. `nc` decides whether a guest
+    // is charged for this line, and it is written by exactly one path
+    // (MarkOrderItemNonChargeable), which also writes the ledger row naming the
+    // authoriser. The backend strips these three keys off anything a client
+    // POSTs, so carrying them through the mapper cannot become a way to comp
+    // something — it is the only way a screen can SHOW that a line is already
+    // comped, which without it looked identical to a line that was not.
+    nc: item.nc === true,
+    nc_id: typeof item.nc_id === 'string' && item.nc_id ? item.nc_id : null,
+    nc_kind: typeof item.nc_kind === 'string' && item.nc_kind ? item.nc_kind : null,
+    // MIGRATION 039 — the price point this line named, stamped server-side by
+    // applyMenuPriceFloor. `variation_name` is the label SNAPSHOTTED at order
+    // time so a re-printed historical bill still says what the guest saw.
+    menu_id: typeof item.menu_id === 'string' && item.menu_id ? item.menu_id : null,
+    variation_id: typeof item.variation_id === 'string' && item.variation_id ? item.variation_id : null,
+    variation_name: typeof item.variation_name === 'string' && item.variation_name ? item.variation_name : null,
 });
 
 const mapOrder = (item: any): Order => ({
@@ -4773,3 +4801,760 @@ export const mergeTables = async (restaurantId: string, fromTable: string, toTab
     postJson('/bills/merge', restaurantId, { from_table: fromTable, to_table: toTable });
 export const refundBill = async (restaurantId: string, opts: { table_name?: string; bill_id?: string; amount?: number; reason?: string }): Promise<{ amount: number; gateway: string }> =>
     postJson('/bills/refund', restaurantId, opts);
+
+// --- MIS / control reports (Insights → Reports) ------------------------------
+//
+// The fifteen documents an owner or an auditor reads, served under
+// /reports/mis/* and gated on the SAME accounting permission as every other
+// /reports/* route.
+// READ-ONLY, all of it.
+//
+// EVERY EXPORT HERE IS `async`. db.ts carries "use server", so a plain
+// `export const X = {...}` is a build error that tsc and jest both pass while
+// each page 500s at runtime — the report types, the catalogue and all the pure
+// helpers therefore live in `@/lib/mis-reports`, which is a plain module.
+//
+// WHY THESE DO NOT GO THROUGH `backendJson`: the Reports workspace has its own
+// outlet selector, so a report must be able to target one outlet (or the "all"
+// sentinel) WITHOUT the global switcher's full page reload. `backendJson`
+// resolves the outlet itself and overwrites any `X-Outlet-Id` handed to it, so
+// these call `headersForRestaurant` with an explicit outlet instead — the same
+// per-call override the header helper has always supported. An omitted
+// `outletId` falls through to the app-wide scope, which is what makes Reports
+// open on whatever outlet the rest of the dashboard is showing.
+
+
+/** The window/scope/search/paging query, exactly as /reports/mis/* takes it. */
+export interface MisQuery {
+    from?: string;
+    to?: string;
+    days?: number;
+    /** An outlet id, or 'all'. Omitted means "whatever scope the app is in". */
+    outletId?: string;
+    /** Bill No. / KOT / table / payment mode — free text, matched per report. */
+    search?: string;
+    limit?: number;
+    offset?: number;
+    /** The time-wise toggle. Only Sales Summary changes shape for it. */
+    bucket?: 'day' | 'hour';
+}
+
+const misSearchParams = (restaurantId: string, q: MisQuery): string => {
+    const qs = new URLSearchParams({ restaurantId });
+    if (q.from) {qs.set('from', q.from);}
+    if (q.to) {qs.set('to', q.to);}
+    if (typeof q.days === 'number' && Number.isFinite(q.days)) {qs.set('days', String(Math.max(1, Math.round(q.days))));}
+    if (q.search && q.search.trim().length > 0) {qs.set('search', q.search.trim().slice(0, 120));}
+    if (typeof q.limit === 'number' && Number.isFinite(q.limit)) {qs.set('limit', String(Math.max(1, Math.round(q.limit))));}
+    if (typeof q.offset === 'number' && Number.isFinite(q.offset)) {qs.set('offset', String(Math.max(0, Math.round(q.offset))));}
+    if (q.bucket) {qs.set('bucket', q.bucket);}
+    return qs.toString();
+};
+
+/**
+ * GET a MIS endpoint with an explicit outlet scope.
+ *
+ * Returns null for anything that is not a 200 — an unreachable backend, a 403
+ * from a plan without the accounting feature, a 500. The screen distinguishes
+ * that null from a legitimately EMPTY report (a restaurant that was shut all
+ * week is a 200 with zeros) and says "couldn't load" rather than "no trade",
+ * because those two read identically as a blank grid and mean opposite things.
+ */
+const misFetch = async <T>(path: string, restaurantId: string, outletId?: string): Promise<T | null> => {
+    let status = 0;
+    try {
+        const hdrs = await headersForRestaurant(path, restaurantId, undefined, outletId);
+        const response = await fetch(`${apiBaseUrl()}${path}`, { method: 'GET', cache: 'no-store', headers: hdrs });
+        status = response.status;
+        if (response.ok) {return (await response.json()) as T;}
+        if (status !== 401) {return null;}
+    } catch (error) {
+        console.warn(`MIS report request failed for ${path}`, error);
+        return null;
+    }
+    // A 401 means the session died under us; fall through to the shared gate so
+    // redirect()'s NEXT_REDIRECT is never swallowed by the catch above.
+    enforceSessionAlive(path, status);
+    return null;
+};
+
+/** One entry of the backend's report catalogue. */
+export interface MisCatalogueEntry {
+    key: string;
+    title: string;
+    path: string;
+    rows: string;
+    paged: boolean;
+}
+
+/**
+ * The shell every report speaks — which query keys it takes, and (the part this
+ * client reads) which CLOCK each one buckets on.
+ *
+ * `basis` maps a clock to the reports on it. It is served rather than hardcoded
+ * so a report whose basis the backend changes relabels itself without a client
+ * release, which matters because that label is what stops two reports over the
+ * same dates being read as disagreeing with each other.
+ */
+export interface MisCatalogueShell {
+    basis?: Record<string, string[]>;
+}
+
+/**
+ * The server's own list of the fifteen, so the tab strip is not a second copy
+ * that can drift. The screen falls back to `MIS_REPORTS` in @/lib/mis-reports
+ * when this is null, so a catalogue outage costs the tab titles, never the
+ * reports.
+ */
+export const getMisCatalogue = async (
+    restaurantId: string,
+    outletId?: string,
+): Promise<{ reports: MisCatalogueEntry[]; shell?: MisCatalogueShell } | null> =>
+    misFetch<{ reports: MisCatalogueEntry[]; shell?: MisCatalogueShell }>(
+        `/reports/mis?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        outletId,
+    );
+
+/**
+ * One of the nine. `path` comes from the catalogue (or its fallback) and is
+ * always a literal /reports/mis/* route — never user input.
+ */
+export const getMisReport = async (
+    restaurantId: string,
+    path: string,
+    q: MisQuery = {},
+): Promise<MisReportPayload | null> => {
+    if (!restaurantId || !path.startsWith('/reports/mis/')) {return null;}
+    return misFetch<MisReportPayload>(`${path}?${misSearchParams(restaurantId, q)}`, restaurantId, q.outletId);
+};
+
+/**
+ * The full bill behind a drilled-down row. Deliberately the same
+ * `ClosedBillDetail` the History screen renders, via the backend reader both
+ * share — a drill-down that showed a different bill from the rest of the
+ * product would be the worst possible bug in a fraud-control document.
+ */
+export const getMisBillDetail = async (
+    restaurantId: string,
+    billId: string,
+    outletId?: string,
+): Promise<ClosedBillDetail | null> => {
+    if (!billId) {return null;}
+    return misFetch<ClosedBillDetail>(
+        `/reports/mis/bill/${encodeURIComponent(billId)}?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        outletId,
+    );
+};
+
+/** One line of a KOT, as the ticket recorded it. */
+export interface MisOrderItem {
+    name: string;
+    quantity: number;
+    price: number;
+    line_total: number;
+    note: string | null;
+    station: string | null;
+}
+
+/**
+ * The full KOT behind a Void KOT row, or a Bill Edit row that names an order.
+ * Carries the ticket's own audit trail, which is the thing a void is actually
+ * being read for.
+ */
+export interface MisOrderDetail {
+    id: string;
+    created_at: string;
+    updated_at: string | null;
+    status: string | number;
+    order_type: string;
+    table_name: string | null;
+    customer: string | null;
+    taken_by: string | null;
+    items: MisOrderItem[];
+    item_count: number;
+    qty: number;
+    value: number;
+    bill_id: string | null;
+    bill_no: string | null;
+    trail: { at: string; action: string; description: string | null; by: string | null }[];
+}
+
+export const getMisKotDetail = async (
+    restaurantId: string,
+    orderId: string,
+    outletId?: string,
+): Promise<MisOrderDetail | null> => {
+    if (!orderId) {return null;}
+    return misFetch<MisOrderDetail>(
+        `/reports/mis/kot/${encodeURIComponent(orderId)}?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        outletId,
+    );
+};
+
+// --- MIS DATA CAPTURE (migrations 034-039) ----------------------------------
+//
+// The six things a restaurant could not record before this release: a comp, a
+// void reason, a service-charge waiver, a split tender with a tip, the till a
+// bill was rung on, and the menu group / price-point taxonomy. Every one of them
+// is what makes the last six reports something other than an empty grid.
+//
+// EVERY EXPORT HERE IS `async`. db.ts carries "use server", so a plain
+// `export const NC_KINDS = [...]` is a build error that tsc and jest both pass
+// while every page 500s at runtime. The vocabularies, the permission ids and all
+// the pure helpers live in `@/lib/mis-capture`, which is a plain module.
+//
+// THE ACTOR IS NEVER IN A BODY. `marked_by` / `voided_by` / `waived_by` /
+// `settled_by` are taken from the verified session server-side and there is no
+// parameter below that can set one. What IS in the body is `authorised_by` — the
+// SECOND name, resolved server-side against the staff list and checked for the
+// same permission that gates the route — and `tip_credited_to_username`, which
+// is a destination rather than an actor (a tip is routinely owed to the kitchen
+// or to a pool, i.e. to people who hold no POS permission at all).
+//
+// NOTHING HERE IS IDEMPOTENT, and that is deliberate: the server opted none of
+// these routes into idempotency.ts (a waiver can mint a bill, and with it an
+// invoice number; a queued comp means the printed bill and the server disagree),
+// so the Flutter outbox allowlist is untouched and still mirrors the server's
+// opt-in exactly. Do not add a retry wrapper to any of them.
+
+/**
+ * The error sentence a capture write should show the person at the till.
+ *
+ * Distinct from the shared `readErrorMessage` in one place that matters: a 403
+ * here is not "Action forbidden", it is the server naming WHY — "'ravi' is not
+ * permitted to authorise a void." That sentence is the whole point of the
+ * second-name control, and flattening it to a generic refusal would leave a
+ * manager re-typing a username that can never work.
+ */
+const captureErrorMessage = async (response: Response, fallback: string): Promise<string> => {
+    try {
+        const payload = await response.json();
+        if (typeof payload?.error === 'string' && payload.error.trim().length > 0) {
+            return payload.error;
+        }
+    } catch { /* fall through to the generic sentence */ }
+    return `${fallback} (${String(response.status)})`;
+};
+
+/** POST/PATCH a capture route and surface the server's own refusal verbatim. */
+const captureWrite = async <T>(
+    path: string,
+    restaurantId: string,
+    method: 'POST' | 'PATCH',
+    body: unknown,
+    fallback: string,
+): Promise<T> => {
+    const response = await backendCall(path, restaurantId, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body ?? {}),
+    });
+    if (!response) {throw new Error('Could not reach the server. This change was not recorded.');}
+    if (!response.ok) {throw new Error(await captureErrorMessage(response, fallback));}
+    try { return (await response.json()) as T; } catch { return {} as T; }
+};
+
+/** Identify a bill the three ways every bill route accepts. At least one is required. */
+export interface BillTarget {
+    bill_id?: string;
+    table_name?: string;
+    order_id?: string;
+}
+
+const billTargetBody = (target: BillTarget): Record<string, string> => {
+    const out: Record<string, string> = {};
+    if (target.bill_id?.trim()) {out.bill_id = target.bill_id.trim();}
+    if (target.table_name?.trim()) {out.table_name = target.table_name.trim();}
+    if (target.order_id?.trim()) {out.order_id = target.order_id.trim();}
+    return out;
+};
+
+// --- 034: NON-CHARGEABLE -----------------------------------------------------
+
+export interface MarkNonChargeableResult {
+    non_chargeable: NonChargeableRecord;
+    /** The order's chargeable subtotal AFTER the comp — the server's own figure. */
+    order_subtotal: number;
+    order_nc_total: number;
+    /** The whole table's chargeable subtotal after the comp. */
+    table_subtotal: number;
+}
+
+/**
+ * Comp one order line — take it OUT of what the guest pays while still counting
+ * it as revenue given away.
+ *
+ * `quantity` comps part of a line ("one of the three desserts was on the
+ * house"); omitted, the whole line goes. The money that comes back is the
+ * SERVER's: `value` on the record is computed by Postgres (034: GENERATED
+ * ALWAYS) and the two subtotals are recomputed inside the same transaction, so
+ * the screen never has to work out what the comp did to the bill.
+ */
+export const markOrderItemNonChargeable = async (
+    restaurantId: string,
+    orderId: string,
+    itemId: string,
+    body: { nc_kind: string; reason: string; authorised_by: string; quantity?: number },
+): Promise<MarkNonChargeableResult> =>
+    captureWrite<MarkNonChargeableResult>(
+        `/orders/${encodeURIComponent(orderId)}/items/${encodeURIComponent(itemId)}/non-chargeable`,
+        restaurantId,
+        'POST',
+        body,
+        'Unable to make that item non-chargeable',
+    );
+
+/**
+ * Put a comped dish back on the bill.
+ *
+ * SUPERSESSION, NOT DELETION — the ledger row stays and is stamped, so the NC
+ * Summary shows "12 comps, 2 of them reversed" instead of showing 10 and hiding
+ * the argument. No authoriser: putting a charge BACK on a guest's bill is not
+ * the act the second-name control exists to catch.
+ */
+export const reverseNonChargeable = async (
+    restaurantId: string,
+    ncId: string,
+    reason: string,
+): Promise<{ non_chargeable: NonChargeableRecord }> =>
+    captureWrite<{ non_chargeable: NonChargeableRecord }>(
+        `/non-chargeables/${encodeURIComponent(ncId)}/reverse`,
+        restaurantId,
+        'POST',
+        { reason },
+        'Unable to reverse that non-chargeable',
+    );
+
+/**
+ * The comps on one order, with reason, value, both names and the id needed to
+ * reverse one. Gated on the comp permission — the bill view already shows a
+ * waiter WHICH lines are comped; this is the control data behind them.
+ */
+export const getOrderNonChargeables = async (
+    restaurantId: string,
+    orderId: string,
+): Promise<NonChargeableRecord[]> => {
+    const data = await backendJson<{ non_chargeables?: NonChargeableRecord[] }>(
+        `/orders/${encodeURIComponent(orderId)}/non-chargeables?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+    return Array.isArray(data?.non_chargeables) ? data.non_chargeables : [];
+};
+
+// --- 035: VOID REASON + STAGE ------------------------------------------------
+
+/**
+ * Cancel an order AND record why, in one transaction.
+ *
+ * THE STAGE IS NOT A PARAMETER AND NEVER WILL BE. before_print / after_print /
+ * after_bill is derived server-side from facts the client cannot reach — whether
+ * a bill exists for the table, whether the order was barked, whether a KOT print
+ * job went out — because the person whose void it is has an obvious interest in
+ * it reading "before_print". It comes back on the record so the screen can show
+ * what the server decided.
+ */
+export const voidOrderWithReason = async (
+    restaurantId: string,
+    orderId: string,
+    body: { void_kind: string; reason: string; authorised_by: string },
+): Promise<{ void: OrderVoidRecord; previous_status: string | number }> =>
+    captureWrite<{ void: OrderVoidRecord; previous_status: string | number }>(
+        `/orders/${encodeURIComponent(orderId)}/void`,
+        restaurantId,
+        'POST',
+        body,
+        'Unable to void that order',
+    );
+
+// --- 036: SERVICE CHARGE WAIVER ----------------------------------------------
+
+export interface WaiveServiceChargeResult {
+    waiver: ServiceChargeWaiverRecord;
+    /** The bill's grand total BEFORE the waiver, as the server computed it. */
+    grand_total_before: number;
+    grand_total_after: number;
+}
+
+/**
+ * Take the service charge off a table's OPEN bill.
+ *
+ * THE REDUCTION IS THE SERVER'S, AND IT HAS TO BE. This fleet runs two tax
+ * shapes: with `Restaurant.service_charge` the GST sits ON the charge, so the
+ * grand total falls by MORE than the charge itself; with a "Service Charge" line
+ * inside `Outlets.default_tax` it does not. The server measures the saving by
+ * running the real charge computation twice and differencing, and hands back
+ * both totals. A browser that multiplied a percentage would be right for one
+ * tenant and wrong for the other, and would look right in both.
+ */
+export const waiveServiceCharge = async (
+    restaurantId: string,
+    body: BillTarget & { waiver_kind: string; reason: string; authorised_by: string },
+): Promise<WaiveServiceChargeResult> =>
+    captureWrite<WaiveServiceChargeResult>(
+        '/bills/service-charge-waiver',
+        restaurantId,
+        'POST',
+        {
+            ...billTargetBody(body),
+            waiver_kind: body.waiver_kind,
+            reason: body.reason,
+            authorised_by: body.authorised_by,
+        },
+        'Unable to waive the service charge',
+    );
+
+/** Put the service charge back. Supersession, like the comp reversal. */
+export const reverseServiceChargeWaiver = async (
+    restaurantId: string,
+    waiverId: string,
+    reason: string,
+): Promise<{ waiver: ServiceChargeWaiverRecord }> =>
+    captureWrite<{ waiver: ServiceChargeWaiverRecord }>(
+        `/bills/service-charge-waiver/${encodeURIComponent(waiverId)}/reverse`,
+        restaurantId,
+        'POST',
+        { reason },
+        'Unable to reverse that waiver',
+    );
+
+// --- 037: TENDERS AND TIPS ---------------------------------------------------
+
+/**
+ * What this bill is worth and what has been paid against it.
+ *
+ * READ-ONLY EVEN WHEN THERE IS NO BILL ROW YET — a table that has ordered and
+ * not asked for the bill has none, and this must not create one: a GET that
+ * allocated an invoice number is how a polling payment screen mints phantom
+ * bills. It answers with the grand total the guest currently owes and nothing
+ * tendered, which is the true state and the one a payment screen needs.
+ *
+ * `outstanding` from here is THE figure the settle screen shows. It is never
+ * recomputed in the browser.
+ */
+export const getBillTenderState = async (
+    restaurantId: string,
+    target: BillTarget,
+): Promise<BillTenderState | null> => {
+    const qs = new URLSearchParams({ restaurantId });
+    for (const [k, v] of Object.entries(billTargetBody(target))) {qs.set(k, v);}
+    if (!qs.has('bill_id') && !qs.has('table_name') && !qs.has('order_id')) {return null;}
+    return backendJson<BillTenderState>(`/bills/tenders?${qs.toString()}`, restaurantId, { method: 'GET' });
+};
+
+/**
+ * Record one or more payments against an OPEN bill.
+ *
+ * THE PART-PAYMENT ROUTE. The amounts may come to less than the bill and the
+ * bill stays open, with `outstanding` saying what is left. A tender's `amount`
+ * is the portion of the BILL it settles and never includes the tip — the tip
+ * rides on the same row because that is how it is physically taken, and is
+ * excluded from every sum that reconciles against the grand total.
+ */
+export const recordBillTenders = async (
+    restaurantId: string,
+    body: BillTarget & { tenders: TenderWire[] },
+): Promise<BillTenderState> =>
+    captureWrite<BillTenderState>(
+        '/bills/tenders',
+        restaurantId,
+        'POST',
+        { ...billTargetBody(body), tenders: body.tenders },
+        'Unable to record that payment',
+    );
+
+/**
+ * Void one recorded payment.
+ *
+ * SUPERSEDED, NEVER DELETED: the row stays, stamped with who voided it and why,
+ * and drops out of every sum. That is what closes the double-count — a card
+ * payment keyed twice leaves two rows and one live amount, and the evidence
+ * survives for the day the acquirer's statement shows two authorisations.
+ */
+export const voidBillTender = async (
+    restaurantId: string,
+    tenderId: string,
+    reason: string,
+): Promise<BillTenderState> =>
+    captureWrite<BillTenderState>(
+        `/bills/tenders/${encodeURIComponent(tenderId)}/void`,
+        restaurantId,
+        'POST',
+        { reason },
+        'Unable to void that payment',
+    );
+
+export interface TipLedgerEntry {
+    credited_to: string;
+    tips: number;
+    tender_count: number;
+    by_mode?: { mode: string; tips: number }[];
+}
+
+export interface TipLedger {
+    from: string;
+    to: string;
+    /** NOT REVENUE. Reaches no sales figure, no APC and no ABV. */
+    total_tips: number;
+    by_credited_to: TipLedgerEntry[];
+    rows: unknown[];
+}
+
+/** Who is owed what, over a window. A PAYROLL read — it reports tips and nothing else. */
+export const getTipLedger = async (
+    restaurantId: string,
+    from?: string,
+    to?: string,
+): Promise<TipLedger | null> => {
+    const qs = new URLSearchParams({ restaurantId });
+    if (from) {qs.set('from', from);}
+    if (to) {qs.set('to', to);}
+    return backendJson<TipLedger>(`/tips?${qs.toString()}`, restaurantId, { method: 'GET' });
+};
+
+// --- 038: BILLING COUNTERS ---------------------------------------------------
+
+/**
+ * The outlet's tills.
+ *
+ * EMPTY IS THE NORMAL ANSWER, AND IT IS NOT THE SAME AS AN ERROR. Most tenants
+ * have one till per outlet and never configure a counter; they get `[]` here and
+ * NULL attribution everywhere, which reads as "this outlet's till" in every
+ * report. A caller must render `[]` as "not configured", never as a failure —
+ * and must render NULL (the request did not come back) as a failure, never as
+ * "not configured", because "every bill counts as this outlet's single till" is
+ * a claim about the configuration and would be a lie if nobody could read it.
+ */
+export const getBillingCounters = async (
+    restaurantId: string,
+    includeInactive = false,
+): Promise<BillingCounterRecord[] | null> => {
+    const qs = new URLSearchParams({ restaurantId });
+    if (includeInactive) {qs.set('include_inactive', '1');}
+    const data = await backendJson<{ counters?: BillingCounterRecord[] }>(
+        `/billing-counters?${qs.toString()}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+    if (data === null) {return null;}
+    return Array.isArray(data.counters) ? data.counters : [];
+};
+
+/**
+ * Create or rename a till.
+ *
+ * UPSERTS ON THE CODE, case-insensitively per outlet, so re-saving the
+ * configuration screen updates rather than duplicating and "C1" and "c1" can
+ * never become two tills nobody can tell apart on a cash-up sheet at 1am.
+ *
+ * THERE IS NO DELETE, here or on the server. Removing a counter would orphan the
+ * attribution on every bill it ever rang, which is precisely the history the
+ * column exists to keep. `active: false` retires it.
+ */
+export const saveBillingCounter = async (
+    restaurantId: string,
+    body: { id?: string; code: string; name?: string; kind?: string; device_hint?: string | null; active?: boolean; sort_order?: number },
+): Promise<BillingCounterRecord> => {
+    const result = await captureWrite<{ counter: BillingCounterRecord }>(
+        '/billing-counters',
+        restaurantId,
+        'POST',
+        body,
+        'Unable to save that counter',
+    );
+    return result.counter;
+};
+
+/**
+ * Attribute a bill to the till that rang it.
+ *
+ * The settle route already does this from the `counter_id` it is handed, so this
+ * exists for the two cases that cannot: attributing a bill BEFORE it is settled,
+ * and CORRECTING an attribution after a terminal was found to be misconfigured.
+ * A `null` counter clears it back to "this outlet's single till", which is the
+ * state of every bill that predates migration 038.
+ */
+export const setBillCounter = async (
+    restaurantId: string,
+    target: BillTarget,
+    counterId: string | null,
+): Promise<{ bill_id: string; counter_id: string | null }> =>
+    captureWrite<{ bill_id: string; counter_id: string | null }>(
+        '/bills/counter',
+        restaurantId,
+        'POST',
+        { ...billTargetBody(target), ...(counterId ? { counter_id: counterId } : {}) },
+        'Unable to attribute that bill',
+    );
+
+// --- 039: MENU GROUPS AND VARIATIONS -----------------------------------------
+//
+// NEVER A WHOLESALE REPLACE. There is no PUT here and none on the server: a
+// full-replace bulk save once wiped 56 menu items' images, sections and recipes,
+// and the rule that came out of it is that a field absent from a payload means
+// "keep what is stored". Every write below is ONE row, merged server-side over a
+// snapshot of itself. There is no DELETE either — a variation id is stamped onto
+// order lines, and an order that named "Half" must still print that label next
+// year, so retiring is `{ active: false }`.
+
+/** The outlet's groups. Both axes unless one is asked for. */
+export const getMenuGroups = async (
+    restaurantId: string,
+    opts: { kind?: string; includeInactive?: boolean } = {},
+): Promise<MenuGroupRecord[]> => {
+    const qs = new URLSearchParams({ restaurantId });
+    if (opts.kind) {qs.set('kind', opts.kind);}
+    if (opts.includeInactive) {qs.set('include_inactive', 'true');}
+    const data = await backendJson<{ groups?: MenuGroupRecord[] }>(
+        `/menu-groups?${qs.toString()}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+    return Array.isArray(data?.groups) ? data.groups : [];
+};
+
+/**
+ * The classification map: every category and every dish, with what it is filed
+ * as and what that resolves to.
+ *
+ * THE ONLY PLACE A CLIENT CAN LEARN A CATEGORY'S ID. GetMenuCategories returns
+ * bare names and the menu read flattens the taxonomy to one string, so without
+ * this the category default — the assignment actually worth making — could not
+ * be set at all, and an owner would be filing 300 items one at a time.
+ */
+export const getMenuGroupAssignments = async (
+    restaurantId: string,
+    kind = 'revenue',
+): Promise<MenuGroupAssignments | null> =>
+    backendJson<MenuGroupAssignments>(
+        `/menu-group-assignments?restaurantId=${encodeURIComponent(restaurantId)}&kind=${encodeURIComponent(kind)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+
+/**
+ * Create a group. A 409 means that name is taken on that axis — and the server
+ * hands the EXISTING row back with the refusal, so the editor can offer "you
+ * already have this, edit it?" instead of a dead end.
+ */
+export const createMenuGroup = async (
+    restaurantId: string,
+    body: { name: string; kind?: string; active?: boolean; sort_order?: number },
+): Promise<MenuGroupRecord> => {
+    const result = await captureWrite<{ group: MenuGroupRecord }>(
+        '/menu-groups',
+        restaurantId,
+        'POST',
+        body,
+        'Unable to create that group',
+    );
+    return result.group;
+};
+
+/** Rename a group, move it to the other axis, reposition it, or retire it. A MERGE. */
+export const updateMenuGroup = async (
+    restaurantId: string,
+    groupId: string,
+    patch: { name?: string; kind?: string; active?: boolean; sort_order?: number },
+): Promise<MenuGroupRecord> => {
+    const result = await captureWrite<{ group: MenuGroupRecord }>(
+        `/menu-groups/${encodeURIComponent(groupId)}`,
+        restaurantId,
+        'PATCH',
+        patch,
+        'Unable to update that group',
+    );
+    return result.group;
+};
+
+/**
+ * File a CATEGORY (the default) or one DISH (the exception) under a group.
+ *
+ * `group_id: null` CLEARS. On an item that means "fall back to my category"; on
+ * a category it means "everything under me is Unclassified until somebody says
+ * otherwise". Neither is an error — an unclassified menu is what every tenant
+ * has on the day this ships, and the reports say so out loud rather than
+ * inventing a group.
+ */
+export const assignMenuGroup = async (
+    restaurantId: string,
+    target: { menu_id?: string; main_cat_id?: string },
+    groupId: string | null,
+): Promise<{ assigned: boolean; group_id: string | null }> =>
+    captureWrite<{ assigned: boolean; group_id: string | null }>(
+        '/menu-group-assignments',
+        restaurantId,
+        'POST',
+        {
+            ...(target.menu_id ? { menu_id: target.menu_id } : {}),
+            ...(target.main_cat_id ? { main_cat_id: target.main_cat_id } : {}),
+            group_id: groupId,
+        },
+        'Unable to file that under a group',
+    );
+
+/** The price points of one dish, or of the whole menu. */
+export const getMenuVariations = async (
+    restaurantId: string,
+    opts: { menuId?: string; includeInactive?: boolean } = {},
+): Promise<MenuVariationRecord[]> => {
+    const qs = new URLSearchParams({ restaurantId });
+    if (opts.menuId) {qs.set('menu_id', opts.menuId);}
+    if (opts.includeInactive) {qs.set('include_inactive', 'true');}
+    const data = await backendJson<{ variations?: MenuVariationRecord[] }>(
+        `/menu-variations?${qs.toString()}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+    return Array.isArray(data?.variations) ? data.variations : [];
+};
+
+/**
+ * Add a price point to a dish.
+ *
+ * A ZERO PRICE IS REFUSED by the server even though the CHECK allows it, and the
+ * reason is the money sentence of migration 039: a line naming a variation is
+ * FLOORED at that variation's price on both the guest and the staff order paths,
+ * so a ₹0 variation is a standing invitation to ring any quantity of that dish
+ * in at ₹0 with the bill still printing its name. Free food is a comp, which has
+ * a reason, an authoriser and a ledger row.
+ */
+export const createMenuVariation = async (
+    restaurantId: string,
+    body: { menu_id: string; name: string; price: number; is_default?: boolean; active?: boolean; sort_order?: number },
+): Promise<MenuVariationRecord> => {
+    const result = await captureWrite<{ variation: MenuVariationRecord }>(
+        '/menu-variations',
+        restaurantId,
+        'POST',
+        body,
+        'Unable to add that variation',
+    );
+    return result.variation;
+};
+
+/**
+ * Reprice, rename, reposition or retire a price point.
+ *
+ * `menu_id` CANNOT BE CHANGED and the server refuses it in a sentence: the id on
+ * this row is stamped onto order lines, so re-pointing it would silently
+ * relabel every past sale that named it — last month's "Half" would start
+ * reporting under another dish.
+ */
+export const updateMenuVariation = async (
+    restaurantId: string,
+    variationId: string,
+    patch: { name?: string; price?: number; is_default?: boolean; active?: boolean; sort_order?: number },
+): Promise<MenuVariationRecord> => {
+    const result = await captureWrite<{ variation: MenuVariationRecord }>(
+        `/menu-variations/${encodeURIComponent(variationId)}`,
+        restaurantId,
+        'PATCH',
+        patch,
+        'Unable to update that variation',
+    );
+    return result.variation;
+};

@@ -34,7 +34,9 @@ import { useAuth } from "@/context/AuthContext"
 import { useCurrency } from "@/hooks/use-currency"
 import type { RestaurantProfile} from "@/lib/db";
 import { getRestaurantProfile, updateRestaurantProfile, getRequireTableOtp, setRequireTableOtp } from "@/lib/db"
+import { PERM_SETTINGS, hasPermission } from "@/lib/mis-capture"
 import { BillPrintSettingsCard } from "./bill-print-settings"
+import { BillingCountersCard } from "./billing-counters"
 import { BrandingCustomizer } from "./branding-customizer"
 import { PostersEditor } from "./posters-editor"
 import { TimezoneSelector } from "./timezone-selector"
@@ -419,6 +421,18 @@ export function SettingsForm() {
 
         {user?.restaurantUsername ? (
           <BillPrintSettingsCard restaurantId={user.restaurantUsername} isAdmin={hasRole("admin")} />
+        ) : null}
+
+        {/* Sits beside the bill-print card because both answer "how does this
+            outlet ring a bill". Visible to everyone who can open Settings —
+            seeing which tills exist is not a configuration act — and editable
+            only with the settings permission the backend's POST requires, which
+            is what `canEdit` carries. */}
+        {user?.restaurantUsername ? (
+          <BillingCountersCard
+            restaurantId={user.restaurantUsername}
+            canEdit={hasPermission(user.actions_set, PERM_SETTINGS)}
+          />
         ) : null}
 
         {hasRole("admin") && user?.restaurantUsername ? (

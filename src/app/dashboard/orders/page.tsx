@@ -70,6 +70,7 @@ import {
   barkOrder,
   getKdsExpo,
   getKitchenSections,
+  getMenuVariations,
   getOrdersScope,
   // addAuditLogEntry,
   type MonthlyApcInsight,
@@ -87,7 +88,9 @@ import { useHighlightRow } from "@/hooks/use-highlight-row";
 import { dayKeyInZone, formatDate, formatDateTime, formatFullDateTime, formatTime, timezoneAbbreviation, todayInZone } from "@/lib/tz";
 import { useTimezone } from "@/lib/use-timezone";
 import type { MenuItem } from "../menu/data";
+import { type MenuVariationRecord } from "@/lib/mis-capture";
 import { BillActions } from "./bill-actions";
+import { CaptureActions } from "./capture-actions";
 import { OrdersScopeNotice } from "./orders-scope-notice";
 
 
@@ -103,6 +106,18 @@ interface OrderItem {
   // Course hold-and-fire: held items wait (no prep ageing) until fired.
   course_hold?: boolean;
   fired_at?: string | null;
+  // Migration 034 — SERVER-OWNED. True when this line has been comped: it stays
+  // on the ticket and leaves the chargeable subtotal. Written by exactly one
+  // path (POST .../non-chargeable, which also writes the ledger row naming the
+  // authoriser) and stripped off anything a client posts, so these are read-only
+  // here — the screen shows them, it can never set them.
+  nc?: boolean;
+  nc_id?: string | null;
+  nc_kind?: string | null;
+  // Migration 039 — the price point this line named, stamped server-side.
+  menu_id?: string | null;
+  variation_id?: string | null;
+  variation_name?: string | null;
 }
 
 // Per-item prep timer as stored in Orders.timing (mirrors the backend shape).
@@ -416,6 +431,10 @@ function OrdersDashboard() {
   // Drives OrdersScopeNotice so an empty grid always explains itself.
   const [ordersScope, setOrdersScope] = useState<OrdersScope | null>(null);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+  // Migration 039 — the ACTIVE sizes of every dish, keyed by menu id, so the
+  // order form can offer them. A tenant that has configured none gets an empty
+  // map, no picker anywhere, and an order payload byte-identical to before.
+  const [variations, setVariations] = useState<MenuVariationRecord[]>([]);
   const [tables, setTables] = useState<{ id: number; name: string; capacity: number; qr_token?: string | null }[]>([]);
   const [monthlyApcInsight, setMonthlyApcInsight] = useState<MonthlyApcInsight | null>(null);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
@@ -456,6 +475,19 @@ function OrdersDashboard() {
   }, [selectedTableName, tables]);
 
   const displayOrders = useMemo(() => dedupeOrdersById(orders), [orders]);
+  // ACTIVE sizes only, grouped by dish. A retired size must never be offerable
+  // again — it stays resolvable on every order line that already named it, which
+  // is a different question from whether it can be sold today.
+  const variationsByMenuId = useMemo(() => {
+    const map = new Map<string, MenuVariationRecord[]>();
+    for (const v of variations) {
+      if (!v.active) {continue;}
+      const list = map.get(v.menu_id);
+      if (list) {list.push(v);} else {map.set(v.menu_id, [v]);}
+    }
+    for (const list of map.values()) {list.sort((a, b) => a.sort_order - b.sort_order || a.price - b.price);}
+    return map;
+  }, [variations]);
 
   // A discount-approval notification resolves to entity type `discount_request`,
   // which lands on this page too — so it gets the same focus treatment as an order.
@@ -525,6 +557,15 @@ function OrdersDashboard() {
         setOrders(Array.isArray(ordersData) ? dedupeOrdersById(ordersData) : []);
         setMenuItems(Array.isArray(menuData) ? menuData : []);
         setMonthlyApcInsight(apcInsight ?? null);
+        // Sizes are decoration on a working order form and never a reason to fail
+        // the page: a tenant with none, or a backend without migration 039, both
+        // land on an empty list and the form behaves as it always has.
+        try {
+          const vs = await getMenuVariations(user.restaurantUsername);
+          if (isActive) {setVariations(vs);}
+        } catch {
+          if (isActive) {setVariations([]);}
+        }
         // Scope context is decoration for a working grid but the whole
         // explanation for an empty one — never let it fail the page load.
         try {
@@ -564,6 +605,7 @@ function OrdersDashboard() {
         }
         setOrders([]);
         setMenuItems([]);
+        setVariations([]);
         setMonthlyApcInsight(null);
       }
     };
@@ -654,7 +696,7 @@ function OrdersDashboard() {
     window.open(url, '_blank');
   }
   
-  const handleAddOrder = async (newOrderData: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null; course_hold?: boolean }[]; covers?: number }) => {
+  const handleAddOrder = async (newOrderData: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null; course_hold?: boolean; variation_id?: string }[]; covers?: number }) => {
     if (!user?.restaurantUsername) {return;}
     const items = newOrderData.items.map(it => ({
       id: it.id ?? `i${Date.now()}${Math.random().toString(36).slice(2,5)}`,
@@ -664,6 +706,12 @@ function OrdersDashboard() {
       orderedAt: new Date().toISOString(),
       note: typeof it.note === "string" && it.note.trim().length > 0 ? it.note.trim() : null,
       ...(it.course_hold ? { course_hold: true } : {}),
+      // MIGRATION 039 — the guest's PICK travels, and only the id. The price, the
+      // label and the dish it belongs to are all re-resolved server-side against
+      // the live menu (applyMenuPriceFloor), which is what makes this line
+      // reportable under that size AND makes it impossible to under-ring by
+      // sending a cheap price with an expensive size's name.
+      ...(it.variation_id ? { variation_id: it.variation_id } : {}),
     }));
     const subtotal = items.reduce((acc, it) => acc + it.price * it.quantity, 0);
     const defaults = deriveDefaultsForCharges(defaultTax);
@@ -1350,6 +1398,7 @@ function OrdersDashboard() {
           <OrderForm
             onSubmit={handleAddOrder}
             menuItems={menuItems}
+            variationsByMenuId={variationsByMenuId}
             tables={tables}
             selectedTableName={selectedTable?.name ?? selectedTableName}
             onClearSelectedTable={() => { router.push("/dashboard/orders"); }}
@@ -1536,6 +1585,37 @@ function OrdersDashboard() {
                         restaurantId={user?.restaurantUsername ?? ''}
                         tableName={order.table}
                         isAdmin={isAdmin}
+                        onChanged={() => { void refreshOrders(); }}
+                      />
+                    )}
+                    {/* The five RECORDED acts — comp, void-with-reason, service-charge
+                        waiver, split tender + tip, and the till. Sits beside the bill
+                        operations rather than inside them because these are the ones
+                        that write a control ledger: each names a reason and a second
+                        person, and each is what the matching MIS report reads. Its own
+                        permission gating is inside, so a waiter sees the menu and is
+                        told which items need a manager rather than tapping into a 403. */}
+                    {order.table && order.status !== 'Cancelled' && (
+                      <CaptureActions
+                        restaurantId={user?.restaurantUsername ?? ''}
+                        order={{
+                          id: order.id,
+                          table: order.table,
+                          status: order.status,
+                          // The flattened lines are the ones the comp route addresses by
+                          // id, and they carry the server's own `nc` flags — which is how
+                          // an already-comped line is told apart from a chargeable one
+                          // without matching names against a ledger.
+                          items: (order.items_flattened ?? order.items).map((i) => ({
+                            id: i.id,
+                            name: i.name,
+                            quantity: i.quantity,
+                            price: i.price,
+                            nc: i.nc === true,
+                            nc_id: i.nc_id ?? null,
+                            nc_kind: i.nc_kind ?? null,
+                          })),
+                        }}
                         onChanged={() => { void refreshOrders(); }}
                       />
                     )}
@@ -2572,7 +2652,7 @@ function KitchenKioskDisplay({ station }: { station: string }) {
   );
 }
 
-function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSelectedTable }: { onSubmit: (data: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null; course_hold?: boolean }[]; covers?: number }) => Promise<void> | void; menuItems: MenuItem[]; tables: { id: number; name: string; capacity: number }[]; selectedTableName?: string; onClearSelectedTable?: () => void }) {
+function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSelectedTable, variationsByMenuId }: { onSubmit: (data: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null; course_hold?: boolean; variation_id?: string }[]; covers?: number }) => Promise<void> | void; menuItems: MenuItem[]; tables: { id: number; name: string; capacity: number }[]; selectedTableName?: string; onClearSelectedTable?: () => void; variationsByMenuId?: Map<string, MenuVariationRecord[]> }) {
   const { currencySymbol } = useCurrency();
   const [selectedTableId, setSelectedTableId] = useState<string>(() => {
     if (selectedTableName) {
@@ -2585,7 +2665,11 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
   const [selectedQuantity, setSelectedQuantity] = useState<number>(1);
   const [selectedNote, setSelectedNote] = useState("");
   const [selectedHold, setSelectedHold] = useState(false);
-  const [itemsList, setItemsList] = useState<{ id?: string; name: string; price: number; quantity: number; note?: string | null; course_hold?: boolean }[]>([]);
+  // Migration 039 — which SIZE of the picked dish. "" is the dish's base price,
+  // which is what every line was before variations existed and what every dish
+  // that has none still is.
+  const [selectedVariationId, setSelectedVariationId] = useState("");
+  const [itemsList, setItemsList] = useState<{ id?: string; name: string; price: number; quantity: number; note?: string | null; course_hold?: boolean; variation_id?: string; variation_label?: string }[]>([]);
   const [covers, setCovers] = useState<number>(1);
 
   useEffect(() => {
@@ -2607,34 +2691,55 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
   const menuOptions = menuItems.map(item => ({ value: item.name.toLowerCase(), label: item.name }));
   const tableOptions = tables.map(t => ({ value: String(t.id), label: t.name }));
 
+  // The sizes this dish is sold in, if any. A dish with none behaves exactly as
+  // it always has — no picker, no extra key on the line, no change anywhere.
+  const selectedMenuItemForSize = menuItems.find((m) => m.name.toLowerCase() === selectedItemValue.trim().toLowerCase());
+  const sizesForSelected = selectedMenuItemForSize
+    ? variationsByMenuId?.get(selectedMenuItemForSize.id) ?? []
+    : [];
+  const chosenSize = sizesForSelected.find((v) => v.id === selectedVariationId) ?? null;
+
   const addItem = () => {
     const name = selectedItemValue.trim();
     const selectedMenuItem = menuItems.find((m) => m.name.toLowerCase() === name.toLowerCase());
     if (!selectedMenuItem) {return;}
-    const price = Number(selectedMenuItem.price || 0);
+    // The size's price when one was picked. It is a PREVIEW: the server floors
+    // this line at the same variation's stored price, so a stale price here is
+    // corrected rather than billed.
+    const price = chosenSize ? Number(chosenSize.price || 0) : Number(selectedMenuItem.price || 0);
     const note = selectedNote.trim();
     const hold = selectedHold;
+    const variationId = chosenSize?.id;
+    // Half and Full are DIFFERENT LINES, so the size is part of what makes two
+    // adds the same line. Without it, adding a Full after a Half would silently
+    // bump the Half's quantity and the guest would be billed the wrong size.
+    const same = (p: { name: string; note?: string | null; course_hold?: boolean; variation_id?: string }) =>
+      p.name.toLowerCase() === name.toLowerCase()
+      && String(p.note ?? "") === note
+      && Boolean(p.course_hold) === hold
+      && String(p.variation_id ?? "") === String(variationId ?? "");
     setItemsList(prev => {
-      const existing = prev.find(
-        p => p.name.toLowerCase() === name.toLowerCase() && String(p.note ?? "") === note && Boolean(p.course_hold) === hold,
-      );
-      if (existing) {
-        return prev.map(p =>
-          p.name.toLowerCase() === name.toLowerCase() && String(p.note ?? "") === note && Boolean(p.course_hold) === hold
-            ? { ...p, quantity: p.quantity + selectedQuantity }
-            : p,
-        );
+      if (prev.some(same)) {
+        return prev.map(p => (same(p) ? { ...p, quantity: p.quantity + selectedQuantity } : p));
       }
-      return [...prev, { id: undefined, name, price, quantity: selectedQuantity, note: note || null, course_hold: hold }];
+      return [...prev, {
+        id: undefined, name, price, quantity: selectedQuantity, note: note || null, course_hold: hold,
+        ...(variationId ? { variation_id: variationId, variation_label: chosenSize?.name } : {}),
+      }];
     });
     setSelectedItemValue("");
     setSelectedQuantity(1);
     setSelectedNote("");
     setSelectedHold(false);
+    setSelectedVariationId("");
   };
 
-  const removeItem = (name: string, note?: string | null) => {
-    setItemsList(prev => prev.filter(p => !(p.name === name && String(p.note ?? "") === String(note ?? ""))));
+  const removeItem = (name: string, note?: string | null, variationId?: string) => {
+    setItemsList(prev => prev.filter(p => !(
+      p.name === name
+      && String(p.note ?? "") === String(note ?? "")
+      && String(p.variation_id ?? "") === String(variationId ?? "")
+    )));
   };
 
   const subtotal = itemsList.reduce((acc, it) => acc + it.price * it.quantity, 0);
@@ -2642,7 +2747,12 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
   const handleSubmit = () => {
     const tableIdNum = Number(selectedTableId);
     if (!selectedTableId || Number.isNaN(tableIdNum) || itemsList.length === 0) {return;}
-    void onSubmit({ tableId: tableIdNum, items: itemsList, covers });
+    // `variation_label` is a label for THIS form and nothing else — the server
+    // stamps its own from the live variation. Sending it would put a
+    // client-authored string on a stored order line, which is exactly the kind of
+    // key that later gets read as authoritative by something.
+    const items = itemsList.map(({ variation_label: _label, ...rest }) => rest);
+    void onSubmit({ tableId: tableIdNum, items, covers });
   };
 
   return (
@@ -2685,6 +2795,10 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
             onChange={(value) => {
               const selected = menuItems.find(m => m.name.toLowerCase() === value);
               setSelectedItemValue(selected?.name ?? value ?? '');
+              // A size belongs to ONE dish, so changing the dish drops it. Carrying
+              // it over would attach another dish's price point to this line, which
+              // the server refuses — but only after the waiter has pressed Add.
+              setSelectedVariationId('');
             }}
             placeholder="Select or type item"
             searchPlaceholder="Search for an item..."
@@ -2695,6 +2809,28 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
         <Button onClick={addItem} className="col-span-2">Add</Button>
       </div>
       </div>
+      {/* Only for a dish that actually has sizes. A picker offering nothing but
+          "Base" on 300 dishes is noise on the busiest screen in the building. */}
+      {sizesForSelected.length > 0 ? (
+      <div className="grid grid-cols-4 items-center gap-4">
+        <Label htmlFor="item-size" className="text-right">Size</Label>
+        <div className="col-span-3">
+          <Select value={selectedVariationId || "__base__"} onValueChange={(v) => { setSelectedVariationId(v === "__base__" ? "" : v); }}>
+            <SelectTrigger id="item-size"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__base__">Standard — {currencySymbol}{Number(selectedMenuItemForSize?.price ?? 0).toFixed(2)}</SelectItem>
+              {sizesForSelected.map((v) => (
+                <SelectItem key={v.id} value={v.id}>{v.name} — {currencySymbol}{v.price.toFixed(2)}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="pt-1 text-xs text-muted-foreground">
+            The size is billed and reported at its own price — the server floors this line at that
+            price, so it can never be rung below it.
+          </p>
+        </div>
+      </div>
+      ) : null}
       <div className="grid grid-cols-4 items-center gap-4">
         <Label htmlFor="item-note" className="text-right">Note</Label>
         <Input
@@ -2719,10 +2855,13 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
       ) : (
         <div className="space-y-2">
           {itemsList.map(it => (
-            <div key={`${it.name}-${String(it.note ?? "")}-${it.course_hold ? "h" : ""}`} className="flex items-center justify-between">
+            <div key={`${it.name}-${String(it.note ?? "")}-${it.course_hold ? "h" : ""}-${String(it.variation_id ?? "")}`} className="flex items-center justify-between">
               <div>
                 <div className="flex items-center gap-1.5">
                   {it.quantity}x {it.name}
+                  {it.variation_label ? (
+                    <Badge variant="outline" className="text-[10px] px-1.5 py-0">{it.variation_label}</Badge>
+                  ) : null}
                   {it.course_hold ? (
                     <Badge variant="outline" className="border-amber-400 bg-amber-50 text-amber-800 text-[10px] px-1.5 py-0">HOLD</Badge>
                   ) : null}
@@ -2731,7 +2870,7 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
               </div>
               <div className="flex items-center gap-2">
                 <div>{currencySymbol}{(it.price * it.quantity).toFixed(2)}</div>
-                <Button variant="ghost" size="icon" onClick={() => { removeItem(it.name, it.note); }}><X className="h-4 w-4"/></Button>
+                <Button variant="ghost" size="icon" onClick={() => { removeItem(it.name, it.note, it.variation_id); }}><X className="h-4 w-4"/></Button>
               </div>
             </div>
           ))}

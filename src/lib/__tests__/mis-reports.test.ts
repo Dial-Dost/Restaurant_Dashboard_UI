@@ -1,0 +1,524 @@
+// What these tests are actually protecting.
+//
+// The Reports workspace makes three promises that are expensive to break:
+//   1. THE EXPORT IS THE SCREEN. Same columns, same order, same sort, same
+//      rows. A filed sheet that differs from the grid it was taken from is the
+//      failure mode that costs an auditor's trust in all fifteen reports at once.
+//   2. A BLANK IS NOT A ZERO. These reports show gaps where the schema holds
+//      nothing (no void authorizer, no recoverable KOT number, no resolvable
+//      seating). Those must never render, sort or export as 0.
+//   3. NOTHING IS INVENTED. No client-side subtotal, no computed difference,
+//      and no total for a column the backend does not total.
+//
+// Everything below is pure: fixed rows in, strings out. No DOM, no fetch, no
+// clock — the storage helpers are exercised against a stubbed localStorage.
+
+import {
+    MIS_REPORTS,
+    buildExportMatrix,
+    clockFromBasis,
+    columnPrefsKey,
+    compareCells,
+    csvEscape,
+    defaultHidden,
+    drillTarget,
+    exportBaseName,
+    formatCell,
+    formatMatrix,
+    formatMoney,
+    formatPercent,
+    loadColumnPrefs,
+    nextSort,
+    pageCaption,
+    reportDef,
+    rowsOf,
+    saveColumnPrefs,
+    sortRows,
+    toCsv,
+    totalsLabelFor,
+    visibleColumns,
+    type MisColumn,
+    type MisPage,
+    type MisReportMeta,
+    type MisRow,
+} from '../mis-reports';
+
+const FMT = { timezone: 'Asia/Kolkata', currencySymbol: '₹' };
+
+// A cut-down Order Summary: one of every column type, including a `total: true`
+// column the backend does NOT total (`item_count`), which is the real shape.
+const COLUMNS: MisColumn[] = [
+    { key: 'bill_no', label: 'Bill No.', type: 'text' },
+    { key: 'table_name', label: 'Table', type: 'text' },
+    { key: 'covers', label: 'Covers', type: 'int' },
+    { key: 'item_count', label: 'Items', type: 'int', total: true },
+    { key: 'net', label: 'Net', type: 'money', total: true },
+    { key: 'grand_total', label: 'Grand total', type: 'money', total: true },
+    { key: 'share_pct', label: '% of sales', type: 'percent' },
+    { key: 'refund', label: 'Refund', type: 'money', total: true, default_on: false },
+];
+
+const ROWS: MisRow[] = [
+    { bill_no: '1002', table_name: 'T2', covers: 4, item_count: 6, net: 1200, grand_total: 1416, share_pct: 40.5, refund: 0 },
+    { bill_no: '1001', table_name: 'T1', covers: 2, item_count: 3, net: 800.5, grand_total: 944.59, share_pct: 27.1, refund: null },
+    { bill_no: '1003', table_name: null, covers: null, item_count: 4, net: 1150, grand_total: 1357, share_pct: 32.4, refund: 100 },
+];
+
+// Note the ABSENCE of item_count — the backend's ladder does not carry it.
+const TOTALS: Record<string, unknown> = { net: 3150.5, grand_total: 3717.59, refund: 100, bills: 3 };
+
+const META: MisReportMeta = {
+    report: 'order_summary',
+    title: 'Order Summary',
+    window: { from: '2026-08-01', to: '2026-08-31', days: 31 },
+    timezone: 'Asia/Kolkata',
+    outlet_scope: 'outlet',
+    outlet_id: 'o-1',
+    outlet_name: 'Gaia Test / Indiranagar',
+    generated_at: '2026-09-01T10:00:00.000Z',
+    notes: ['Bills are counted on the day they were SETTLED.'],
+};
+
+describe('the catalogue', () => {
+    it('carries exactly the fifteen reports this system can source, in the backend\'s own order', () => {
+        // The order matters as well as the set: the screen merges the server's
+        // catalogue over this one BY KEY and renders the server's order, so a
+        // fallback that listed them differently would reshuffle the tab strip the
+        // moment the catalogue request failed.
+        expect(MIS_REPORTS).toHaveLength(15);
+        expect(MIS_REPORTS.map((r) => r.key)).toEqual([
+            'item_wise', 'discount', 'void_kot', 'bill_edit', 'sales_summary',
+            'order_summary', 'executive_summary', 'cover_size_summary', 'settlement_summary',
+            'nc_summary', 'service_charge_deny', 'group_summary', 'variation_summary',
+            'tip_summary', 'counter_summary',
+        ]);
+    });
+
+    it('states a clock for every report, and never guesses one', () => {
+        // A report's clock is what its date range MEANS. Two reports over the same
+        // fortnight on different clocks are not expected to reconcile, and a
+        // toolbar that says "1–15 Aug" over both without saying which is how a
+        // manager concludes the reports disagree with each other.
+        for (const r of MIS_REPORTS) {
+            expect(['settlement', 'order_placement', 'act_time']).toContain(r.clock);
+        }
+        // The three item-level reports share ONE clock, because they are the same
+        // order lines re-cut and their totals are asserted equal server-side.
+        expect(reportDef('item_wise')?.clock).toBe('order_placement');
+        expect(reportDef('group_summary')?.clock).toBe('order_placement');
+        expect(reportDef('variation_summary')?.clock).toBe('order_placement');
+        // Counter Summary composes the same bill set as the Sales Summary, so it
+        // must be on the same clock or the two could not agree.
+        expect(reportDef('counter_summary')?.clock).toBe('settlement');
+        expect(reportDef('sales_summary')?.clock).toBe('settlement');
+        // A comp, a waiver and a tip are dated by the ACT, not by the settlement.
+        expect(reportDef('nc_summary')?.clock).toBe('act_time');
+        expect(reportDef('service_charge_deny')?.clock).toBe('act_time');
+        expect(reportDef('tip_summary')?.clock).toBe('act_time');
+    });
+
+    it('takes the clock from the server\'s basis map, and keeps its own when the map is silent', () => {
+        const basis = {
+            settlement: ['sales_summary', 'counter_summary'],
+            order_placement: ['item_wise'],
+            act_time: ['nc_summary'],
+        };
+        expect(clockFromBasis(basis, 'counter_summary')).toBe('settlement');
+        expect(clockFromBasis(basis, 'item_wise')).toBe('order_placement');
+        expect(clockFromBasis(basis, 'nc_summary')).toBe('act_time');
+        // NULL, not a default. A report the map does not name keeps the value this
+        // build shipped with rather than being relabelled with the commonest clock
+        // — which would mislabel precisely the one report that is different.
+        expect(clockFromBasis(basis, 'tip_summary')).toBeNull();
+        expect(clockFromBasis(undefined, 'tip_summary')).toBeNull();
+        expect(clockFromBasis(null, 'tip_summary')).toBeNull();
+        expect(clockFromBasis({ settlement: 'not-an-array' }, 'settlement')).toBeNull();
+    });
+
+    it('offers a drill-down wherever a row names one record, and nowhere else', () => {
+        // A summary row is many bills; opening "one" of them would be a lie. The
+        // six new reports split cleanly: the three ledgers name a record, the
+        // three rollups do not.
+        expect(reportDef('nc_summary')?.drill).toBe('bill_or_kot');
+        expect(reportDef('service_charge_deny')?.drill).toBe('bill');
+        expect(reportDef('tip_summary')?.drill).toBe('bill');
+        expect(reportDef('group_summary')?.drill).toBe('none');
+        expect(reportDef('variation_summary')?.drill).toBe('none');
+        expect(reportDef('counter_summary')?.drill).toBe('none');
+    });
+
+    it('has no stub for a report the backend does not serve', () => {
+        // The rule that kept the last six out of this list until their data
+        // existed still applies to anything else: a tab that opens onto nothing
+        // is a promise the numbers cannot keep. These are keys the backend has
+        // never served, and the catalogue must not sprout one speculatively.
+        for (const absent of ['tax_report', 'kot_report', 'hourly_sales', 'waiter_wise', 'nc_kot', 'modifier_wise']) {
+            expect(reportDef(absent)).toBeUndefined();
+        }
+    });
+
+    it('points every report at a real /reports/mis path and names its row array', () => {
+        for (const r of MIS_REPORTS) {
+            expect(r.path.startsWith('/reports/mis/')).toBe(true);
+            expect(['rows', 'series', 'by_outlet']).toContain(r.rowsKey);
+        }
+    });
+
+    it('reads the row array each report actually returns', () => {
+        const sales = reportDef('sales_summary');
+        const exec = reportDef('executive_summary');
+        if (!sales || !exec) {throw new Error('catalogue is missing a report');}
+        expect(rowsOf({ meta: META, columns: [], series: [{ bucket: '2026-08-01' }] }, sales)).toHaveLength(1);
+        expect(rowsOf({ meta: META, columns: [], by_outlet: [{ outlet_id: 'a' }, { outlet_id: 'b' }] }, exec)).toHaveLength(2);
+        // A payload missing its array is an empty table, never a crash.
+        expect(rowsOf({ meta: META, columns: [] }, sales)).toEqual([]);
+        expect(rowsOf(null, sales)).toEqual([]);
+    });
+});
+
+describe('formatting — a blank is not a zero', () => {
+    it('renders every empty value as an em-dash, never as 0', () => {
+        for (const type of ['text', 'int', 'money', 'percent', 'datetime', 'date'] as const) {
+            expect(formatCell(null, type, FMT)).toBe('—');
+            expect(formatCell(undefined, type, FMT)).toBe('—');
+            expect(formatCell('', type, FMT)).toBe('—');
+        }
+    });
+
+    it('keeps a real zero distinguishable from a blank', () => {
+        expect(formatCell(0, 'money', FMT)).toBe('₹0.00');
+        expect(formatCell(0, 'int', FMT)).toBe('0');
+        expect(formatCell(null, 'money', FMT)).toBe('—');
+    });
+
+    it('formats money to two decimals with the tenant currency symbol', () => {
+        expect(formatMoney(1416, '₹')).toBe('₹1,416.00');
+        expect(formatMoney(944.59, '₹')).toBe('₹944.59');
+        // The minus goes OUTSIDE the symbol: "-₹100.00", never "₹-100.00".
+        expect(formatMoney(-100, '₹')).toBe('-₹100.00');
+        expect(formatMoney(null, '₹')).toBe('—');
+    });
+
+    it('signs a growth percentage so a fall cannot read as a rise', () => {
+        expect(formatPercent(8.24, { signed: true })).toBe('+8.2%');
+        expect(formatPercent(-8.24, { signed: true })).toBe('-8.2%');
+        expect(formatPercent(8.24)).toBe('8.2%');
+        expect(formatPercent(null)).toBe('—');
+    });
+});
+
+describe('sorting', () => {
+    it('sorts nulls LAST in both directions', () => {
+        // A null here means "not captured". Floating it to the top of a
+        // descending sort would bury the rows the reader came for.
+        const asc = sortRows(ROWS, { key: 'covers', dir: 'asc' }, COLUMNS);
+        const desc = sortRows(ROWS, { key: 'covers', dir: 'desc' }, COLUMNS);
+        expect(asc[asc.length - 1]?.covers).toBeNull();
+        expect(desc[desc.length - 1]?.covers).toBeNull();
+    });
+
+    it('sorts money numerically, not lexically', () => {
+        const sorted = sortRows(ROWS, { key: 'net', dir: 'desc' }, COLUMNS);
+        expect(sorted.map((r) => r.net)).toEqual([1200, 1150, 800.5]);
+    });
+
+    it('is stable for equal values', () => {
+        const rows: MisRow[] = [
+            { bill_no: 'a', net: 10 }, { bill_no: 'b', net: 10 }, { bill_no: 'c', net: 10 },
+        ];
+        expect(sortRows(rows, { key: 'net', dir: 'desc' }, COLUMNS).map((r) => r.bill_no)).toEqual(['a', 'b', 'c']);
+    });
+
+    it('never mutates the rows it was given', () => {
+        const before = ROWS.map((r) => r.bill_no);
+        sortRows(ROWS, { key: 'net', dir: 'asc' }, COLUMNS);
+        expect(ROWS.map((r) => r.bill_no)).toEqual(before);
+    });
+
+    it('ignores a sort on a column that is not there', () => {
+        expect(sortRows(ROWS, { key: 'nope', dir: 'asc' }, COLUMNS)).toHaveLength(3);
+    });
+
+    it('opens money columns descending and text columns ascending', () => {
+        expect(nextSort(null, 'net', 'money').dir).toBe('desc');
+        expect(nextSort(null, 'bill_no', 'text').dir).toBe('asc');
+        // Clicking the same header flips it.
+        expect(nextSort({ key: 'net', dir: 'desc' }, 'net', 'money').dir).toBe('asc');
+    });
+
+    it('does not let a junk value in a numeric column poison the order', () => {
+        expect(compareCells('not-a-number', 5, 'money', 'asc')).toBe(1);
+        expect(compareCells(5, 'not-a-number', 'money', 'asc')).toBe(-1);
+    });
+});
+
+describe('column configuration', () => {
+    it('starts from the backend layout — default_on:false columns are hidden', () => {
+        expect(defaultHidden(COLUMNS)).toEqual(['refund']);
+        expect(visibleColumns(COLUMNS, defaultHidden(COLUMNS)).map((c) => c.key)).not.toContain('refund');
+    });
+
+    it('keeps the server column ORDER regardless of what is hidden', () => {
+        const shown = visibleColumns(COLUMNS, ['table_name', 'net']);
+        expect(shown.map((c) => c.key)).toEqual(['bill_no', 'covers', 'item_count', 'grand_total', 'share_pct', 'refund']);
+    });
+
+    it('never renders a headerless grid', () => {
+        // A stale pref (or a user determined to hide everything) must not produce
+        // a blank rectangle the reader then has to work out how to escape.
+        const shown = visibleColumns(COLUMNS, COLUMNS.map((c) => c.key));
+        expect(shown.length).toBeGreaterThan(0);
+    });
+
+    it('ignores stored keys the backend no longer serves', () => {
+        expect(visibleColumns(COLUMNS, ['gone_away']).map((c) => c.key)).toEqual(COLUMNS.map((c) => c.key));
+    });
+
+    it('is meaningless across reports — which is why the screen waits for matching columns', () => {
+        // REGRESSION. The tab strip changes the active report before the new
+        // payload lands, so for one render `columns` still belongs to the
+        // PREVIOUS report. Deriving the default layout there hides the wrong
+        // keys — silently, because unknown keys are ignored — and the new
+        // report opens with every column on instead of the backend's layout.
+        // The screen therefore applies preferences only once
+        // `payload.meta.report` matches the active report.
+        const otherReport: MisColumn[] = [
+            { key: 'method', label: 'Payment mode', type: 'text' },
+            { key: 'amount', label: 'Collected', type: 'money', total: true },
+            { key: 'share_pct', label: '% of takings', type: 'percent', default_on: false },
+        ];
+        const wrongHidden = defaultHidden(COLUMNS); // ['refund'] — not a column of `otherReport`
+        expect(visibleColumns(otherReport, wrongHidden).map((c) => c.key))
+            .toEqual(['method', 'amount', 'share_pct']); // share_pct should have been hidden
+        expect(visibleColumns(otherReport, defaultHidden(otherReport)).map((c) => c.key))
+            .toEqual(['method', 'amount']);
+    });
+
+    it('scopes the stored layout per user AND per report', () => {
+        expect(columnPrefsKey('emp-1', 'discount')).not.toBe(columnPrefsKey('emp-2', 'discount'));
+        expect(columnPrefsKey('emp-1', 'discount')).not.toBe(columnPrefsKey('emp-1', 'void_kot'));
+    });
+
+    it('round-trips through storage and survives junk', () => {
+        const store = new Map<string, string>();
+        const stub = {
+            getItem: (k: string) => store.get(k) ?? null,
+            setItem: (k: string, v: string) => { store.set(k, v); },
+            removeItem: (k: string) => { store.delete(k); },
+        };
+        (globalThis as unknown as { window?: unknown }).window = { localStorage: stub };
+        try {
+            saveColumnPrefs('emp-1', 'discount', { hidden: ['reason'] });
+            expect(loadColumnPrefs('emp-1', 'discount')).toEqual({ hidden: ['reason'] });
+            // A value from an older build must fall back, not throw.
+            store.set(columnPrefsKey('emp-1', 'discount'), '{not json');
+            expect(loadColumnPrefs('emp-1', 'discount')).toBeNull();
+            store.set(columnPrefsKey('emp-1', 'discount'), '{"hidden":"nope"}');
+            expect(loadColumnPrefs('emp-1', 'discount')).toBeNull();
+        } finally {
+            delete (globalThis as unknown as { window?: unknown }).window;
+        }
+    });
+
+    it('is a no-op on the server rather than throwing', () => {
+        expect(loadColumnPrefs('emp-1', 'discount')).toBeNull();
+        expect(() => { saveColumnPrefs('emp-1', 'discount', { hidden: [] }); }).not.toThrow();
+    });
+});
+
+describe('the export is the screen', () => {
+    const shown = visibleColumns(COLUMNS, defaultHidden(COLUMNS));
+    const sorted = sortRows(ROWS, { key: 'net', dir: 'desc' }, COLUMNS);
+
+    it('exports the visible columns, in the order shown, and no others', () => {
+        const m = buildExportMatrix(shown, sorted, TOTALS);
+        expect(m.header).toEqual(['Bill No.', 'Table', 'Covers', 'Items', 'Net', 'Grand total', '% of sales']);
+        expect(m.header).not.toContain('Refund');
+    });
+
+    it('exports the rows in the order the grid sorted them', () => {
+        const m = buildExportMatrix(shown, sorted, TOTALS);
+        expect(m.body.map((r) => r[0])).toEqual(['1002', '1003', '1001']);
+    });
+
+    it('reflects a re-configured column set', () => {
+        const custom = visibleColumns(COLUMNS, ['table_name', 'covers', 'share_pct']);
+        const m = buildExportMatrix(custom, sorted, TOTALS);
+        expect(m.header).toEqual(['Bill No.', 'Items', 'Net', 'Grand total', 'Refund']);
+        expect(m.body[0]).toHaveLength(5);
+    });
+
+    it('keeps numbers NUMERIC so a spreadsheet can sum them', () => {
+        const m = buildExportMatrix(shown, sorted, TOTALS);
+        const netIndex = m.header.indexOf('Net');
+        expect(m.body.map((r) => r[netIndex])).toEqual([1200, 1150, 800.5]);
+        expect(typeof m.body[0]?.[netIndex]).toBe('number');
+    });
+
+    it('exports a blank as empty, never as 0', () => {
+        const m = buildExportMatrix(shown, sorted, TOTALS);
+        const coversIndex = m.header.indexOf('Covers');
+        // Row "1003" has null covers.
+        const row1003 = m.body.find((r) => r[0] === '1003');
+        expect(row1003?.[coversIndex]).toBeNull();
+    });
+
+    it('totals ONLY the columns the backend totals — it invents nothing', () => {
+        const m = buildExportMatrix(shown, sorted, TOTALS);
+        expect(m.totals).not.toBeNull();
+        const at = (label: string) => m.totals?.[m.header.indexOf(label)];
+        expect(at('Net')).toBe(3150.5);
+        expect(at('Grand total')).toBe(3717.59);
+        // `item_count` is marked total:true but the ladder carries no value for
+        // it. It must stay EMPTY — summing the visible rows would be a page
+        // subtotal wearing a window total's clothes.
+        expect(at('Items')).toBeNull();
+        // A column that is not a total column is empty too.
+        expect(at('Covers')).toBeNull();
+    });
+
+    it('labels the totals row, in the first column', () => {
+        const m = buildExportMatrix(shown, sorted, TOTALS, 'Total · all 2,431 rows in range');
+        expect(m.totals?.[0]).toBe('Total · all 2,431 rows in range');
+    });
+
+    it('omits the totals row entirely when the report totals nothing', () => {
+        // Bill Edit is all text: there is nothing to add up.
+        const textOnly: MisColumn[] = [{ key: 'at', label: 'Date & time', type: 'datetime' }];
+        expect(buildExportMatrix(textOnly, [{ at: '2026-08-01T10:00:00Z' }], { edits: 4 }).totals).toBeNull();
+        expect(buildExportMatrix(shown, sorted, null).totals).toBeNull();
+    });
+});
+
+describe('CSV', () => {
+    it('quotes what has to be quoted and doubles inner quotes', () => {
+        expect(csvEscape('plain')).toBe('plain');
+        expect(csvEscape('has,comma')).toBe('"has,comma"');
+        expect(csvEscape('has"quote')).toBe('"has""quote"');
+        expect(csvEscape('has\nnewline')).toBe('"has\nnewline"');
+        expect(csvEscape(' padded ')).toBe('" padded "');
+        expect(csvEscape(null)).toBe('');
+        expect(csvEscape(1416)).toBe('1416');
+    });
+
+    it('defuses spreadsheet formula injection', () => {
+        // A guest-typed name or a discount reason ends up in a finance workbook.
+        // "=cmd|..." must arrive as text, not as something Excel evaluates.
+        expect(csvEscape('=1+1')).toBe('"\t=1+1"');
+        expect(csvEscape('+SUM(A1)')).toBe('"\t+SUM(A1)"');
+        expect(csvEscape('-2+3')).toBe('"\t-2+3"');
+        expect(csvEscape('@import')).toBe('"\t@import"');
+        // A genuine negative NUMBER is untouched — it is not a string.
+        expect(csvEscape(-100)).toBe('-100');
+    });
+
+    it('writes a BOM and CRLF so Excel on Windows renders ₹ correctly', () => {
+        const csv = toCsv(buildExportMatrix(COLUMNS, ROWS, TOTALS));
+        expect(csv.startsWith('﻿')).toBe(true);
+        expect(csv).toContain('\r\n');
+    });
+
+    it('emits header + every row + the totals row, and nothing else', () => {
+        const csv = toCsv(buildExportMatrix(COLUMNS, ROWS, TOTALS, 'Total'));
+        const lines = csv.replace(/^﻿/, '').trimEnd().split('\r\n');
+        expect(lines).toHaveLength(1 + ROWS.length + 1);
+        expect(lines[0]).toContain('Bill No.');
+        expect(lines[lines.length - 1]?.startsWith('Total')).toBe(true);
+    });
+});
+
+describe('the printable matrix', () => {
+    it('renders every cell the way the grid renders it', () => {
+        const shown = visibleColumns(COLUMNS, defaultHidden(COLUMNS));
+        const m = buildExportMatrix(shown, ROWS, TOTALS);
+        const display = formatMatrix(m, FMT);
+        expect(display[0]).toEqual(m.header);
+        const netIndex = m.header.indexOf('Net');
+        expect(display[1]?.[netIndex]).toBe(formatCell(1200, 'money', FMT));
+        // The totals row is the last line and carries its label.
+        expect(display[display.length - 1]?.[0]).toBe('Total');
+    });
+});
+
+describe('the totals row says what it is a total of', () => {
+    const page = (over: Partial<MisPage>): MisPage => ({ limit: 100, offset: 0, total: 100, has_more: false, ...over });
+
+    it('names the whole range when the grid is showing one page of many', () => {
+        // Without this the reader adds up the 100 visible rows, gets a different
+        // number, and stops trusting the report.
+        expect(totalsLabelFor(page({ total: 2431 }), 100)).toBe('Total · all 2,431 rows in range');
+    });
+
+    it('says just "Total" when every row is on screen', () => {
+        expect(totalsLabelFor(page({ total: 12 }), 12)).toBe('Total');
+        expect(totalsLabelFor(undefined, 12)).toBe('Total');
+    });
+
+    it('captions the page honestly', () => {
+        expect(pageCaption(page({ total: 2431, offset: 100, limit: 100 }), 100)).toBe('Showing 101–200 of 2,431');
+        expect(pageCaption(page({ total: 0 }), 0)).toBe('');
+    });
+});
+
+describe('drill-down targets', () => {
+    it('opens a bill from a Discount or Order Summary row', () => {
+        const d = reportDef('discount');
+        if (!d) {throw new Error('missing');}
+        expect(drillTarget({ bill_id: 'b-1' }, d)).toEqual({ kind: 'bill', id: 'b-1' });
+    });
+
+    it('opens a ticket from a Void KOT row', () => {
+        const d = reportDef('void_kot');
+        if (!d) {throw new Error('missing');}
+        expect(drillTarget({ order_id: 'o-9', kot_no: null }, d)).toEqual({ kind: 'kot', id: 'o-9' });
+    });
+
+    it('opens whichever record a Bill Edit row names, preferring the bill', () => {
+        const d = reportDef('bill_edit');
+        if (!d) {throw new Error('missing');}
+        expect(drillTarget({ bill_id: 'b-2', order_id: 'o-2' }, d)).toEqual({ kind: 'bill', id: 'b-2' });
+        expect(drillTarget({ bill_id: null, order_id: 'o-2' }, d)).toEqual({ kind: 'kot', id: 'o-2' });
+        expect(drillTarget({ bill_id: null, order_id: null }, d)).toBeNull();
+    });
+
+    it('never offers a drill-down on an aggregate row', () => {
+        // A Sales/Executive/Cover-size/Settlement row is a roll-up over many
+        // bills — there is no single record to open, and a control that looks
+        // clickable and does nothing is worse than one that is plainly inert.
+        for (const key of ['sales_summary', 'executive_summary', 'cover_size_summary', 'settlement_summary', 'item_wise']) {
+            const d = reportDef(key);
+            if (!d) {throw new Error(`missing ${key}`);}
+            expect(d.drill).toBe('none');
+            expect(drillTarget({ bill_id: 'b-1', order_id: 'o-1' }, d)).toBeNull();
+        }
+    });
+
+    it('treats a stringified null as no target', () => {
+        const d = reportDef('order_summary');
+        if (!d) {throw new Error('missing');}
+        expect(drillTarget({ bill_id: 'null' }, d)).toBeNull();
+        expect(drillTarget({ bill_id: '  ' }, d)).toBeNull();
+    });
+});
+
+describe('the export filename carries its own provenance', () => {
+    it('names the report, the outlet and the window', () => {
+        const d = reportDef('order_summary');
+        if (!d) {throw new Error('missing');}
+        expect(exportBaseName(META, d)).toBe('order-summary_Gaia-Test-Indiranagar_2026-08-01_to_2026-08-31');
+    });
+
+    it('says so when the scope is every outlet', () => {
+        const d = reportDef('executive_summary');
+        if (!d) {throw new Error('missing');}
+        const allOutlets = { ...META, outlet_scope: 'all' as const, outlet_name: null };
+        expect(exportBaseName(allOutlets, d)).toContain('all-outlets');
+    });
+
+    it('never produces a path separator or a quote in a filename', () => {
+        const d = reportDef('discount');
+        if (!d) {throw new Error('missing');}
+        const nasty = { ...META, outlet_name: 'A/B "Café" \\ 2' };
+        expect(exportBaseName(nasty, d)).not.toMatch(/["/\\]/);
+    });
+});

@@ -55,6 +55,8 @@ import { SortableContext, useSortable, arrayMove } from "@dnd-kit/sortable";
 import { cn } from "@/lib/utils";
 import { type MenuItem, type RecipeIngredient } from "./data";
 import { ItemBadgeChips, MenuBadgesCard, TagBadgesDialog } from "./badges";
+import { MenuTaxonomyCard } from "./taxonomy";
+import { PERM_EDIT_MENU, hasPermission } from "@/lib/mis-capture";
 import { type MenuBadge } from "@/lib/menu-badges";
 import { QueuePreorderMenuCard } from "./queue-preorder-menu";
 import { useAuth } from "@/context/AuthContext";
@@ -879,6 +881,17 @@ export default function MenuPage() {
             in the queue may pre-order. Sits beside kitchen sections because both
             are ways of scoping the same items, not settings. */}
         {user?.restaurantUsername ? <QueuePreorderMenuCard restaurantId={user.restaurantUsername} /> : null}
+        {/* Groups and sizes (migration 039). Sits beside badges because all three
+            are ways of SAYING SOMETHING ABOUT a dish rather than editing the dish
+            — and, like badges, every write here is one targeted row, never a
+            menu-wide save. */}
+        {user?.restaurantUsername ? (
+            <MenuTaxonomyCard
+                restaurantId={user.restaurantUsername}
+                menuItems={menuItems.map((m) => ({ id: m.id, name: m.name, price: m.price, category: m.category }))}
+                canEdit={hasPermission(user.actions_set, PERM_EDIT_MENU)}
+            />
+        ) : null}
         <MenuBadgesCard
             catalogue={badges}
             presets={badgePresets}

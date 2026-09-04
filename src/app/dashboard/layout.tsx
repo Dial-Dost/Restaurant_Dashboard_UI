@@ -26,6 +26,7 @@ import {
   Hourglass,
   History,
   SlidersHorizontal,
+  FileSpreadsheet,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import Link from 'next/link';
@@ -155,6 +156,12 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
         // beside Analytics and opens for exactly the same roles.
         { href: '/dashboard/simulation', label: 'Simulation', icon: <SlidersHorizontal className="h-6 w-6" />, actionKeywords: ['analytics', 'apc', 'report'] },
         { href: '/dashboard/history', label: 'History', icon: <History className="h-6 w-6" />, actionKeywords: ['analytics', 'report'] },
+        // The MIS / control report set (Item Wise, Void KOT, Bill Edit, …).
+        // Gated on ACCOUNTING, not analytics: every /reports/mis/* route carries
+        // the SAME ACCOUNTING_PERM as the rest of /reports/*, so keywording it
+        // like its Insights neighbours would show the tab to a user whose every
+        // request inside it comes back 403.
+        { href: '/dashboard/reports', label: 'Reports', icon: <FileSpreadsheet className="h-6 w-6" />, actionKeywords: ['report', 'accounting', 'finance'] },
       ],
     },
     {
