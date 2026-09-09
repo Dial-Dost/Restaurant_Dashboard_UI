@@ -52,7 +52,14 @@ interface Order {
 // nothing after it, and never a blank line standing in for a field it lacks.
 // This mirrors escpos.ts (the backend renderer that drives the thermal agent) —
 // the two must agree, because the same bill can be printed through either.
-const clean = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+// "null" and "undefined" count as unset. A JS null that has been through a
+// template literal, a form field or an older client's JSON body arrives as the
+// four-letter STRING, and `GSTN : null` on a tax document reads as a filed
+// registration rather than a missing one. Mirrors present() in escpos.ts.
+const clean = (v: unknown): string => {
+    const s = typeof v === 'string' ? v.trim() : '';
+    return s.toLowerCase() === 'null' || s.toLowerCase() === 'undefined' ? '' : s;
+};
 
 // A stored address is one text field owners fill in with real line breaks.
 // Honour those as hard breaks and drop blank ones, so a trailing newline never
@@ -62,12 +69,17 @@ function addressLines(address: unknown): string[] {
 }
 
 // The header lines under the restaurant name, in reference-receipt order:
-// legal entity, address, GST registration. Absent fields contribute nothing.
+// legal entity, address, phone, GST registration. Absent fields contribute
+// nothing. The phone is the line that lets a guest ring the restaurant about the
+// bill in their hand; every outlet already stores one ("Outlets".outlet_main_ph)
+// and neither print path used to carry it.
 function billHeaderLines(profile: RestaurantProfile | null, billPrint: BillPrintSettings | null): string[] {
     const lines: string[] = [];
     const legalName = clean(billPrint?.legalName);
     if (legalName) {lines.push(legalName);}
     lines.push(...addressLines(profile?.outlet_add));
+    const phone = clean(profile?.outlet_phone);
+    if (phone) {lines.push(`Ph : ${phone}`);}
     const gstin = clean(billPrint?.gstin);
     if (gstin) {lines.push(`GSTN : ${gstin}`);}
     return lines;
