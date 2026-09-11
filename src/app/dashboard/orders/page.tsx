@@ -30,7 +30,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { MoreHorizontal, PlusCircle, Clock, Printer, Trash2, X, ChevronUp, ChevronDown, Flame, ChefHat, CheckCircle2, MonitorSmartphone, Megaphone, Store } from "lucide-react";
+import { MoreHorizontal, PlusCircle, Clock, Printer, Trash2, X, ChevronUp, ChevronDown, Flame, ChefHat, CheckCircle2, MonitorSmartphone, Megaphone, Store, ReceiptText } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -190,6 +190,13 @@ export interface Order {
   // Last change to the ticket (status walk, item split/move/void). Stamped by a
   // BEFORE UPDATE trigger backend-side, so it is never stale.
   updated_at?: string | null;
+  // The KOT number(s) the KITCHEN knows this order by — the distinct `kot_no`
+  // of the order's print jobs, in allocation order. OPTIONAL on purpose:
+  // ABSENT means "this backend cannot tell us" (a tenant whose migration has
+  // not applied, or an older server), NOT "no KOT was printed". Every surface
+  // must therefore render a row without it exactly as it rendered before the
+  // field existed — no empty chip, no dash, no reserved column.
+  kot_nos?: number[] | null;
 }
 
 // Un-barked orders sit greyed with idle timers until the expo barks them.
@@ -199,6 +206,36 @@ const isOrderBarked = (o: Order): boolean => (o.barked_at === undefined ? true :
 // (status, bark, fire, serve, hold, delete). The one sanctioned reversal is an
 // undo from the Audit Log — the server refuses everything else anyway.
 const isOrderCancelled = (o: Order): boolean => o.status === "Cancelled";
+
+// "KOT 214" / "KOTs 214, 218, 236" — the handle staff quote when they reprint,
+// cancel or move a ticket. Returns "" when the backend sent nothing, which is
+// every call site's signal to draw NOTHING rather than a placeholder.
+//
+// Duplicates are collapsed: a single docket fanned out to several stations
+// enqueues several print jobs under ONE allocated number, and a card reading
+// "KOTs 214, 214" would have the kitchen hunting for a second ticket that was
+// never fired. Non-positive/unparseable values are dropped for the same reason
+// — KOT numbers are 1-based and gapless, so "KOT 0" can only be corruption.
+const kotLabel = (o: Order): string => {
+  // Read as `unknown` on purpose. The declared type says number[], but this
+  // comes off the wire as JSON from a server we may be running ahead of, and a
+  // board that renders "KOT NaN" because one tenant sent strings is worse than
+  // one that renders nothing.
+  const raw: unknown = o.kot_nos;
+  if (!Array.isArray(raw)) {return "";}
+  const seen = new Set<number>();
+  const nos: string[] = [];
+  for (const entry of raw as unknown[]) {
+    const parsed = Number(entry);
+    if (!Number.isFinite(parsed) || parsed <= 0) {continue;}
+    const v = Math.round(parsed);
+    if (seen.has(v)) {continue;}
+    seen.add(v);
+    nos.push(String(v));
+  }
+  if (nos.length === 0) {return "";}
+  return `${nos.length === 1 ? "KOT" : "KOTs"} ${nos.join(", ")}`;
+};
 const CANCELLED_LOCK_REASON = "Cancelled orders are final — reverse from the Audit Log";
 
 const PAYMENT_METHOD_OPTIONS: PaymentMethod[] = [
@@ -1488,6 +1525,9 @@ function OrdersDashboard() {
             <TableBody>
               {displayOrders.map((order) => {
                 const apcInsight = orderApcByOrderId.get(String(order.id));
+                // The handle staff quote when they reprint, cancel or move this
+                // ticket. "" on a backend that does not send `kot_nos`.
+                const kot = kotLabel(order);
                 return (
                 <TableRow
                   key={order.id}
@@ -1498,6 +1538,16 @@ function OrdersDashboard() {
                 >
                   <TableCell className="font-medium">
                     <div>{order.table}</div>
+                    {/* Sits with the table name because those two together are
+                        how a ticket is named out loud ("KOT 218 on table 7") —
+                        and because an absent number then simply costs the row
+                        nothing, leaving it byte-for-byte what it was. */}
+                    {kot ? (
+                      <div className="mt-0.5 flex items-center gap-1 text-xs font-normal text-muted-foreground">
+                        <ReceiptText className="h-3 w-3 shrink-0" />
+                        <span className="tabular-nums">{kot}</span>
+                      </div>
+                    ) : null}
                   </TableCell>
                   {/* When the ticket was placed. The clock alone for today's
                       orders (the common case — the grid is a live board), with
@@ -2050,6 +2100,10 @@ const SourceBadge = ({ source }: { source?: string | null }) => {
 
 function KitchenDisplay({ orders, restaurantId, onRefresh, managedSections = [], initialStation }: { orders: Order[]; restaurantId: string; onRefresh: () => Promise<void>; managedSections?: string[]; initialStation?: string }) {
   const { toast } = useToast();
+  // A placed-at clock on a kitchen board must be the RESTAURANT's time, not the
+  // browser's — this board is read next to printed dockets, which carry the
+  // house clock, and a laptop on the wrong zone would silently disagree.
+  const { timezone } = useTimezone();
   const [mode, setMode] = useState<"tickets" | "expo">("tickets");
   // ?station= deep link initialises the filter so a wall screen stays locked to
   // one kitchen section.
@@ -2235,6 +2289,15 @@ function KitchenDisplay({ orders, restaurantId, onRefresh, managedSections = [],
               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                 {tickets.map(({ order, items }) => {
                   const orderMs = timerElapsedMs(order.timing?.order, now);
+                  // B1 — the number the kitchen calls this ticket by, and the
+                  // only thing that ties a card to the docket in a cook's hand
+                  // or to a reprint/cancel/move request.
+                  const kot = kotLabel(order);
+                  // A3 — WHEN the ticket was placed. The chip beside the stage
+                  // counts elapsed minutes, which answers "how late is this"
+                  // but never "when did it land" — the question at a shift
+                  // handover, and the only one that matches printed paper.
+                  const placed = order.created_at ? formatTime(order.created_at, timezone) : "";
                   // Un-barked tickets sit greyed with idle timers until barked.
                   const barked = isOrderBarked(order);
                   // Items can only be un-served while the ORDER is still in progress; once it is Served as a whole the server refuses.
@@ -2260,6 +2323,32 @@ function KitchenDisplay({ orders, restaurantId, onRefresh, managedSections = [],
                             )}
                           </div>
                         </div>
+                        {/* Ticket identity on its own line: the header row above
+                            already gives way to the timer and the stage, and a
+                            fourth thing in it would start truncating the table
+                            name — the one label on a kitchen card that may
+                            never be cut. Each half renders only when its data
+                            exists, so a ticket carrying neither adds no line at
+                            all and the card is unchanged. */}
+                        {kot || placed ? (
+                          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                            {kot ? (
+                              <span className="inline-flex items-center gap-1 font-medium text-foreground">
+                                <ReceiptText className="h-3 w-3 shrink-0" />
+                                <span className="tabular-nums">{kot}</span>
+                              </span>
+                            ) : null}
+                            {placed ? (
+                              <span
+                                className="inline-flex items-center gap-1"
+                                title={order.created_at ? formatFullDateTime(order.created_at, timezone) : undefined}
+                              >
+                                <Clock className="h-3 w-3 shrink-0" />
+                                <span className="tabular-nums">Placed {placed}</span>
+                              </span>
+                            ) : null}
+                          </div>
+                        ) : null}
                       </CardHeader>
                       <CardContent className="space-y-1.5 pt-0">
                         {items.map((item) => {
@@ -2562,6 +2651,10 @@ function KitchenKioskDisplay({ station }: { station: string }) {
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
             {tickets.map(({ order, items }) => {
               const barked = isOrderBarked(order);
+              // Same two facts as the in-dashboard board, set larger: which KOT
+              // this is, and the wall-clock instant it was placed.
+              const kot = kotLabel(order);
+              const placed = order.created_at ? formatTime(order.created_at, timezone) : "";
               // Items can only be un-served while the ORDER is still in progress; once it is Served as a whole the server refuses.
               const orderFullyServed = !["preparing", "pending"].includes(String(order.status ?? "").toLowerCase());
               const orderMs = timerElapsedMs(order.timing?.order, now);
@@ -2594,6 +2687,25 @@ function KitchenKioskDisplay({ station }: { station: string }) {
                         )}
                       </div>
                     </div>
+                    {/* Read from across the kitchen, so a size up from the
+                        dashboard board. Omitted entirely when the order carries
+                        neither number nor placed time. */}
+                    {kot || placed ? (
+                      <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-base text-muted-foreground">
+                        {kot ? (
+                          <span className="inline-flex items-center gap-1.5 font-semibold text-foreground">
+                            <ReceiptText className="h-4 w-4 shrink-0" />
+                            <span className="tabular-nums">{kot}</span>
+                          </span>
+                        ) : null}
+                        {placed ? (
+                          <span className="inline-flex items-center gap-1.5">
+                            <Clock className="h-4 w-4 shrink-0" />
+                            <span className="tabular-nums">Placed {placed}</span>
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </CardHeader>
                   <CardContent className="flex-1 space-y-2 pt-0">
                     {items.map((item) => {
