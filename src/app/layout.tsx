@@ -30,6 +30,35 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning data-scroll-behavior="smooth" className={`${alegreya.variable} ${inter.variable}`}>
+      <head>
+        {/*
+          THE PALETTE GOES ON <html> BEFORE THE FIRST PAINT.
+
+          Without this the page renders one palette and swaps to another the
+          moment React hydrates — the same flash-of-wrong-theme `next-themes`
+          runs its own inline script to avoid. It has to be inline and
+          blocking; a `useEffect` is by definition after the paint.
+
+          It is deliberately tiny and deliberately total: ANY failure — no
+          storage, a blocked cookie jar, a value this build does not know —
+          lands on the default rather than leaving the attribute unset, because
+          an unset attribute leaves every token at its `:root` value, which is
+          the LIGHT palette, and a white dashboard in a dark room reads as a
+          broken toggle.
+
+          The literals are duplicated from src/lib/palette.ts because this
+          string cannot import; a test pins the two against each other.
+        */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              "(function(){try{var v=localStorage.getItem('cuisineflow-palette');"
+              + "if(v!=='rustic'&&v!=='gaia'){v='rustic';}"
+              + "document.documentElement.setAttribute('data-palette',v);}"
+              + "catch(e){document.documentElement.setAttribute('data-palette','rustic');}})();",
+          }}
+        />
+      </head>
       <body className="font-sans antialiased">
         {/*
           DARK BY DEFAULT, AND THE LIGHT TOGGLE STAYS.

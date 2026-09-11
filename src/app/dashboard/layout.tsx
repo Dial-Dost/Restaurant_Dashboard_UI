@@ -42,6 +42,7 @@ import {
 import Image from 'next/image';
 import { ThemeProvider } from '@/components/ThemeProvider';
 import { ThemeToggle } from '@/components/ThemeToggle';
+import { PaletteToggle } from '@/components/PaletteToggle';
 import { OutletSwitcher } from './outlet-switcher';
 import { NotificationsBell } from '@/components/notifications-bell';
 import { SubscriptionBanner } from '@/components/subscription-banner';
@@ -363,6 +364,9 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
             ? <DishAvailabilitySidebar rid={user.restaurantUsername} />
             : null}
           <NotificationsBell />
+          {/* Two controls, not one: dark/light is "how bright is the room",
+              palette is "which product is this". See PaletteToggle's header. */}
+          <PaletteToggle />
           <ThemeToggle />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>

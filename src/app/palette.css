@@ -1,0 +1,147 @@
+/* ===========================================================================
+   THE TWO VISUAL LANGUAGES, TRANSCRIBED FROM THE FLUTTER APP.
+   ===========================================================================
+
+   Every colour below is converted from a Dart constant in
+   `restaurant_owner_app/lib/ui/`, and each block names its source file and
+   line. They are TRANSCRIBED, not matched by eye: the whole point of the
+   parity work is that a manager looking at the till and a manager looking at
+   the laptop are looking at one product, and "close enough" is what makes two
+   screens feel like two products.
+
+   WHY HSL TRIPLES WITH NO `hsl()` WRAPPER. That is shadcn's contract — every
+   component writes `hsl(var(--token))`, sometimes with an alpha as
+   `hsl(var(--border) / 0.5)`. A token holding a finished colour breaks every
+   one of those. So each value here is `H S% L%` and nothing else.
+
+   WHY SOME TOKENS ARE FLATTENED. The Flutter palette uses translucent borders
+   (`0x12FFFFFF` — 7% white). A CSS variable that only ever appears inside
+   `hsl()` cannot carry alpha, so the border tokens are the same 7% white
+   COMPOSITED over that palette's own ground. Identical on the surface it was
+   designed against, which is the one it is used on.
+   =========================================================================== */
+
+/* ---------------------------------------------------------------------------
+   RUSTIC FORK — the shipped look.
+   Source: lib/ui/theme/app_colors.dart
+     bg #0C0A09 (:112)  surface #151211 (:114)  card #1B1716 (:115)
+     cardRaised #231E1E (:118)  inset #110E0D (:119)
+     text #ECEAE6 / #9A978F / #615E57 (:120-122)
+     border 7% white (:144)  borderStrong 12% (:145)
+     copper hi #E3B89B, base #C9997A, on #221510 (:168-173)
+     success #8FB27C, warning #D9A962, danger #C97B6E, info #8FA3B8 (:257-260)
+   --------------------------------------------------------------------------- */
+[data-palette="rustic"].dark {
+  --background: 20 14.3% 4.1%;        /* #0C0A09 */
+  --foreground: 40 13.6% 91.4%;       /* #ECEAE6 */
+  --card: 12 10.2% 9.6%;              /* #1B1716 */
+  --card-foreground: 40 13.6% 91.4%;
+  --popover: 0 7.7% 12.7%;            /* #231E1E — raised, so it lifts off a card */
+  --popover-foreground: 40 13.6% 91.4%;
+
+  /* PRIMARY IS THE COPPER, not a near-white. Stock shadcn dark makes `primary`
+     the foreground colour, which is why every filled button on this dashboard
+     was white. The app's filled control is copper with a near-black label. */
+  --primary: 24 42.2% 63.3%;          /* #C9997A */
+  --primary-foreground: 17 36% 9.8%;  /* #221510 */
+
+  --secondary: 15 10.5% 7.5%;         /* #151211 */
+  --secondary-foreground: 40 13.6% 91.4%;
+  --muted: 15 10.5% 7.5%;
+  --muted-foreground: 44 5.2% 58.2%;  /* #9A978F */
+  --accent: 0 7.7% 12.7%;             /* #231E1E */
+  --accent-foreground: 24 56.3% 74.9%;/* #E3B89B — the hi stop, for hover text */
+
+  --destructive: 9 45.7% 61%;         /* #C97B6E */
+  --destructive-foreground: 17 36% 9.8%;
+
+  --border: 20 5.5% 10.8%;            /* 7% white over #0C0A09 */
+  --input: 15 7% 14%;                 /* 12% white over the ground — inputs read deeper */
+  --ring: 24 42.2% 63.3%;             /* the copper, so focus is visibly the accent */
+
+  /* 14px radii, from AppTheme. Stock shadcn is 8px, which reads noticeably
+     tighter beside the app. */
+  --radius: 0.875rem;
+
+  --chart-1: 24 42.2% 63.3%;          /* copper */
+  --chart-2: 99 26% 59.2%;            /* success  #8FB27C */
+  --chart-3: 36 61% 61.8%;            /* warning  #D9A962 */
+  --chart-4: 211 22.4% 64.1%;         /* info     #8FA3B8 */
+  --chart-5: 9 45.7% 61%;             /* danger   #C97B6E */
+}
+
+/* The LIGHT half, which the Flutter app does not have.
+   The user asked for the light toggle to keep working, so this is NOT a
+   guessed light version of a dark palette — it is the existing light theme
+   with the palette's ACCENT, so a copper product stays a copper product in a
+   bright room instead of turning into stock shadcn blue-black. */
+[data-palette="rustic"]:not(.dark) {
+  --primary: 24 38% 42%;              /* a copper dark enough to carry white text */
+  --primary-foreground: 40 30% 97%;
+  --accent-foreground: 24 38% 32%;
+  --ring: 24 38% 42%;
+  --radius: 0.875rem;
+  --chart-1: 24 38% 42%;
+  --chart-2: 99 26% 45%;
+  --chart-3: 36 61% 48%;
+  --chart-4: 211 22.4% 48%;
+  --chart-5: 9 45.7% 48%;
+}
+
+/* ---------------------------------------------------------------------------
+   GAIA — forest ground, champagne accent.
+   Source: lib/ui/gaia/gaia_colors.dart
+     bg #0C1513 (:114)  surface #132320 (:115)  raised #182B27 (:116)
+     line #243430 (:117)  line2 #31443D (:118)
+     champagne #D3B88B (:87)  champagne2 #E2CFA6 (:88)  ink #1A1410 (:92)
+     text #EDE6D6 / #B3AC99 (:100-101), text3AA #95907C (:108 — the AA-safe
+     tertiary, used here rather than #7D7866 because web text is smaller)
+     coral #D9705F, sage #9BC4A0, amber #D9B06A (:95-97)
+   --------------------------------------------------------------------------- */
+[data-palette="gaia"].dark {
+  --background: 167 27.3% 6.5%;       /* #0C1513 */
+  --foreground: 42 39% 88.4%;         /* #EDE6D6 */
+  --card: 169 29.6% 10.6%;            /* #132320 */
+  --card-foreground: 42 39% 88.4%;
+  --popover: 167 28.4% 13.1%;         /* #182B27 */
+  --popover-foreground: 42 39% 88.4%;
+
+  --primary: 38 45% 68.6%;            /* #D3B88B */
+  --primary-foreground: 24 23.8% 8.2%;/* #1A1410 */
+
+  --secondary: 169 29.6% 10.6%;
+  --secondary-foreground: 42 39% 88.4%;
+  --muted: 167 28.4% 13.1%;
+  --muted-foreground: 44 14.6% 65.1%; /* #B3AC99 */
+  --accent: 165 18.2% 17.3%;          /* #243430 */
+  --accent-foreground: 41 50.8% 76.9%;/* #E2CFA6 */
+
+  --destructive: 8 61.6% 61.2%;       /* #D9705F */
+  --destructive-foreground: 24 23.8% 8.2%;
+
+  --border: 165 18.2% 17.3%;          /* #243430 — Gaia draws real hairlines */
+  --input: 158 16.2% 22.9%;           /* #31443D */
+  --ring: 38 45% 68.6%;
+
+  /* Gaia is a 2px-edge system, not a rounded one. */
+  --radius: 0.125rem;
+
+  --chart-1: 38 45% 68.6%;            /* champagne */
+  --chart-2: 127 25.8% 68.8%;         /* sage  #9BC4A0 */
+  --chart-3: 38 59.4% 63.3%;          /* amber #D9B06A */
+  --chart-4: 158 16.2% 45%;
+  --chart-5: 8 61.6% 61.2%;           /* coral #D9705F */
+}
+
+[data-palette="gaia"]:not(.dark) {
+  --primary: 38 42% 34%;              /* champagne, darkened to carry white text */
+  --primary-foreground: 42 39% 97%;
+  --accent-foreground: 38 42% 26%;
+  --ring: 38 42% 34%;
+  --radius: 0.125rem;
+  --chart-1: 38 42% 34%;
+  --chart-2: 127 25.8% 40%;
+  --chart-3: 38 59.4% 45%;
+  --chart-4: 158 16.2% 35%;
+  --chart-5: 8 61.6% 48%;
+}
