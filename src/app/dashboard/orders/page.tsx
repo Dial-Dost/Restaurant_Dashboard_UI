@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   Card,
@@ -81,7 +81,52 @@ import {
   type OrdersScope,
 } from "@/lib/db";
 // Removed DnD kit - using simple arrow controls instead
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { cn } from "@/lib/utils";
 import { useAuth } from "@/context/AuthContext";
+import {
+  can,
+  hasPermission,
+  isWaiterOnly as sessionIsWaiterOnly,
+  PERM_ORDER_DELETE,
+} from "@/lib/session-scope";
+/*
+  THE PREP TIMERS STAY LOCAL; THE SERVICE CLOCK DOES NOT.
+
+  `timerElapsedMs` reads `Orders.timing` — the kitchen's per-item prep timers,
+  which the backend does not summarise and which the pass needs to tick between
+  polls. That arithmetic belongs here.
+
+  D1 and D2 do NOT. They used to be `sincePlacedMs` / `orderToSettlement` from
+  the same module — `Date.now() - created_at` in the browser — and the owner app
+  computed its own, which is one rule implemented twice and drifting. The server
+  now answers both on every order (`service`), so this screen reads the answer;
+  `formatDuration` and `waitTone` come through `service-clock.ts` so the figure
+  and its colouring are still the kitchen board's own.
+*/
+import {
+  timerElapsedMs,
+  type OrderTiming,
+} from "@/lib/order-clock";
+import {
+  elapsedSincePlaced,
+  elapsedToSettlement,
+  formatDuration,
+  latestAsOfMs,
+  monotonicNow,
+  readServiceClock,
+  waitTone,
+  type ServiceClock,
+} from "@/lib/service-clock";
 import { useCurrency } from "@/hooks/use-currency";
 import { useToast } from "@/hooks/use-toast";
 import { useHighlightRow } from "@/hooks/use-highlight-row";
@@ -120,20 +165,12 @@ interface OrderItem {
   variation_name?: string | null;
 }
 
-// Per-item prep timer as stored in Orders.timing (mirrors the backend shape).
-interface OrderTimer {
-  started_at: string | null;
-  ended_at: string | null;
-  paused: boolean;
-  pause_started_at: string | null;
-  paused_ms: number;
-}
-
-interface OrderTiming {
-  ordered_at?: string;
-  order?: OrderTimer;
-  items?: Record<string, OrderTimer>;
-}
+/*
+  The prep-timer shapes stored in `Orders.timing` now have ONE declaration, in
+  `src/lib/order-clock.ts`, beside the arithmetic that reads them — the tables
+  screen needs the same shapes and a second copy here is how the two screens
+  start disagreeing about what a paused timer means.
+*/
 
 export type OrderStatus =
   | "Preparing"
@@ -197,6 +234,21 @@ export interface Order {
   // must therefore render a row without it exactly as it rendered before the
   // field existed — no empty chip, no dash, no reserved column.
   kot_nos?: number[] | null;
+  /*
+    D1 + D2 — THE SERVER'S SERVICE CLOCK FOR THIS TICKET.
+
+    The backend's `service_clock.ts` measures "placed -> settled" against the
+    SERVER's clock and ships the duration as a number of milliseconds plus the
+    instant it was measured at. It was wired into this feed specifically so this
+    screen and the owner app could not report two different durations for the
+    same table — and so that a till whose own clock runs fast stops inventing
+    waits that are not happening.
+
+    OPTIONAL: absent on a backend older than the clock, and the row then draws
+    no duration at all. `src/lib/service-clock.ts` is the only thing that reads
+    it; nothing on this screen subtracts a timestamp any more.
+  */
+  service?: ServiceClock | null;
 }
 
 // Un-barked orders sit greyed with idle timers until the expo barks them.
@@ -442,7 +494,44 @@ function OrdersDashboard() {
     return Array.isArray(user.role_all) ? user.role_all.includes(role) : false;
   };
   const isAdmin = hasRole("admin");
-  const isWaiterOnly = hasRole("waiter") && !isAdmin;
+  /*
+    THE SERVER DECIDES WHO IS A SCOPED WAITER. See src/lib/session-scope.ts.
+
+    This read `hasRole("waiter") && !isAdmin`, a test on the SPELLING of a role:
+    a waiter granted any custom role carries that role's UUID in `role_all`, the
+    test flipped, and this screen handed them every control on it.
+  */
+  const isWaiterOnly = sessionIsWaiterOnly(user);
+  /*
+    C2 — SETTLING A BILL IS A PERMISSION, NOT THE WORD "admin".
+
+    Both settle steps are gated server-side: POST /bills/order/:id/close on
+    "Close Bill" and .../admin-approve-payment on "Approve Payment". Asking
+    `hasRole('admin')` here was wrong in BOTH directions — it refused a manager
+    or cashier the tenant had deliberately granted the permission (C2 asks for
+    exactly those people to be able to settle), and it offered the control to an
+    admin-by-name whose action set the server would still have checked. Ask the
+    resolved action list, which is the same list the route checks.
+  */
+  const canSettleBill = can(user, "settle_bill");
+  const canVoidOrder = can(user, "void_order");
+  /*
+    MAY THIS SESSION PERFORM ANY OF THE THREE RECORDED CONTROL ACTS?
+
+    Three answers from the server's own `scope` block, ORed — not a role test.
+    It decides whether a scoped waiter is offered the Controls menu at all:
+    holding none of them, the menu has nothing in it they may do and C1 asks for
+    it to be gone rather than greyed; holding one, the server has said yes and
+    this screen has no business saying otherwise. Everyone else keeps the menu
+    unconditionally, because it also carries the two tender/till acts, which ride
+    on a different permission the component asks about itself.
+  */
+  const canAnyControlAct = canVoidOrder || can(user, "comp_item") || can(user, "waive_service_charge");
+  // No capability flag for the hard delete yet, so this still reads the SERVER's
+  // resolved action list for the uuid DELETE /orders/:id is gated on. Same list,
+  // one hop less direct; it should move into the `scope` block when the backend
+  // publishes an answer for it.
+  const canDeleteOrder = hasPermission(user?.actions_set, PERM_ORDER_DELETE);
   // Same gate as the header's OutletSwitcher: only these roles may target another
   // outlet, so only they are offered the "switch outlet" actions.
   const canSwitchOutlet = isAdmin || hasRole("manager");
@@ -451,6 +540,19 @@ function OrdersDashboard() {
     toast({
       title: "Access denied",
       description: `You do not have the required role for this action. Required role: ${requiredRole}.`,
+      variant: "destructive",
+    });
+  };
+
+  /*
+    The refusal an owner can ACT on. A toast naming a role sends them looking for
+    a switch that does not exist; naming the permission names the checkbox in
+    Employees -> Role Access Control that turns it on.
+  */
+  const showPermissionRequiredToast = (permissionName: string) => {
+    toast({
+      title: "Access denied",
+      description: `This action needs the “${permissionName}” permission. An admin can grant it from Role Access Control.`,
       variant: "destructive",
     });
   };
@@ -464,6 +566,54 @@ function OrdersDashboard() {
   };
 
   const [orders, setOrders] = useState<Order[]>([]);
+  // A2 — the order the Delete confirmation is currently about. Null = closed.
+  const [deleteTarget, setDeleteTarget] = useState<Order | null>(null);
+  /*
+    D1 + D2 — THE SERVER OWNS THE DURATION; THIS PAGE OWNS ONLY THE TICK.
+
+    WHAT THIS USED TO BE. `Date.now() - created_at`, once per second, in the
+    browser. The owner app did its own version of the same subtraction. That is
+    one rule implemented twice, and the backend built `service_clock.ts` and
+    wired it into three reads precisely so the two could not drift apart in front
+    of the same manager — a field this screen then ignored.
+
+    AND IT WAS WRONG ON ITS OWN TERMS, because A TILL'S WALL CLOCK IS NOT
+    EVIDENCE. A Windows laptop ten minutes fast rendered every ticket as ten
+    minutes late the instant it landed; one ten minutes slow hid a table that
+    really was. The server now measures the duration against its OWN clock and
+    ships it with `as_of`, the instant it measured at.
+
+    SO THE ONLY THING MEASURED HERE IS HOW LONG THIS DEVICE HAS HELD THE
+    RESPONSE — `clockTickMs`, a difference between two readings of one local
+    timer, which is unaffected by that timer being wrong. Add it to the server's
+    figure and the clock ticks smoothly between polls without importing a single
+    bit of this machine's opinion about what time it is.
+
+    RESET ON `as_of`, NOT ON THE ARRAY. The local delta is zeroed when the SERVER
+    re-measured, which is exactly `as_of` advancing. Zeroing it whenever `orders`
+    changes identity would rewind every visible duration by however long it had
+    been ticking each time an optimistic edit replaced the array — on the one row
+    the user had just touched.
+
+    One interval rather than one per row: a busy service is fifty rows, and fifty
+    independent timers is fifty React re-render cascades a second on the laptop
+    that is also driving the floor.
+  */
+  const [clockTickMs, setClockTickMs] = useState(0);
+  const clockOriginRef = useRef<{ asOf: number; at: number }>({ asOf: 0, at: monotonicNow() });
+  const ordersAsOfMs = useMemo(() => latestAsOfMs(orders), [orders]);
+  useEffect(() => {
+    if (ordersAsOfMs > clockOriginRef.current.asOf) {
+      clockOriginRef.current = { asOf: ordersAsOfMs, at: monotonicNow() };
+      setClockTickMs(0);
+    }
+  }, [ordersAsOfMs]);
+  useEffect(() => {
+    const id = setInterval(() => {
+      setClockTickMs(Math.max(0, monotonicNow() - clockOriginRef.current.at));
+    }, 1000);
+    return () => { clearInterval(id); };
+  }, []);
   // Which outlet this grid is scoped to + how many live orders sit on the others.
   // Drives OrdersScopeNotice so an empty grid always explains itself.
   const [ordersScope, setOrdersScope] = useState<OrdersScope | null>(null);
@@ -900,6 +1050,18 @@ function OrdersDashboard() {
 
   const handleDeleteOrder = async (orderId: string) => {
     if (!user?.restaurantUsername) {return;}
+    /*
+      The same check the menu item makes, made again at the write. The item is
+      hidden without the permission, but "hidden" is not a control — a stale tab
+      whose session was demoted between render and click still reaches this
+      function, and DELETE /orders/:id is the most destructive route in the
+      product. The server refuses it too; this is the layer that refuses it
+      without a round trip and with a sentence the user can act on.
+    */
+    if (!canDeleteOrder) {
+      showPermissionRequiredToast('Delete Orders');
+      return;
+    }
     try {
       await deleteOrder(user.restaurantUsername, orderId);
         const [updatedOrders, updatedApcInsight] = await Promise.all([
@@ -1173,8 +1335,10 @@ function OrdersDashboard() {
 
   const handleAdminApprovePayment = async (order: Order) => {
     if (!user?.restaurantUsername || !user.employeeId) {return;}
-    if (!hasRole('admin')) {
-      showRoleRequiredToast('admin');
+    // C2. The route is gated on "Approve Payment"; asking for the admin ROLE
+    // here refused every manager and cashier the tenant had granted it.
+    if (!canSettleBill) {
+      showPermissionRequiredToast('Close Bill');
       return;
     }
 
@@ -1212,8 +1376,10 @@ function OrdersDashboard() {
 
   const handleCloseBill = async (order: Order) => {
     if (!user?.restaurantUsername || !user.employeeId) {return;}
-    if (!hasRole('admin')) {
-      showRoleRequiredToast('admin');
+    // C2 — the settle gate, the same capability POST /bills/order/:id/close
+    // checks. Only a session holding "Close Bill" ever gets this far.
+    if (!canSettleBill) {
+      showPermissionRequiredToast('Close Bill');
       return;
     }
     const confirmed = window.confirm('Close this bill? This finalizes the order.');
@@ -1512,6 +1678,10 @@ function OrdersDashboard() {
             <TableHeader>
               <TableRow>
                 <TableHead>Table</TableHead>
+                {/* D1 + D2 ride in this column rather than two new ones: they are
+                    facts ABOUT the placed instant, and a live board that has to
+                    scroll sideways to show how late a table is has answered
+                    nothing. */}
                 <TableHead className="whitespace-nowrap">Placed</TableHead>
                 <TableHead>Order Details</TableHead>
                 <TableHead className="hidden md:table-cell text-right">Total</TableHead>
@@ -1528,6 +1698,74 @@ function OrdersDashboard() {
                 // The handle staff quote when they reprint, cancel or move this
                 // ticket. "" on a backend that does not send `kot_nos`.
                 const kot = kotLabel(order);
+                /*
+                  D1 — time since the ticket was placed, which is what a waiter
+                  reads to answer "is this table waiting". D2 — order to bill
+                  settlement, counting live and freezing at the real figure once
+                  the bill closes.
+
+                  BOTH ARE THE SERVER'S, read off this order's `service` block
+                  and ticked forward only by how long this device has held the
+                  response. Nothing here subtracts a timestamp against the
+                  browser's clock, which is what makes this row and the same
+                  table on the owner app report one duration instead of two.
+
+                  Both are null when the backend sent no clock — an order the
+                  server could not date, or a backend older than the field — and
+                  the cell then draws the dash it always drew. ABSENT IS NOT
+                  ZERO: a clock reading "0s" on a ticket that went in twenty
+                  minutes ago is worse than no clock.
+
+                  A CANCELLED ticket gets neither: it is not something anybody is
+                  waiting for, and a red "48m" beside a cancelled order is a
+                  fabricated alarm.
+                */
+                const cancelled = isOrderCancelled(order);
+                const serviceClock = cancelled ? null : readServiceClock(order);
+                const elapsedMs = serviceClock === null ? null : elapsedSincePlaced(serviceClock, clockTickMs);
+                const span = serviceClock === null ? null : elapsedToSettlement(serviceClock, clockTickMs);
+                const elapsedTone = waitTone(elapsedMs);
+                /*
+                  THE FIVE RECORDED CONTROL ACTS — comp, void-with-reason,
+                  service-charge waiver, split tender + tip, and the till. Each
+                  writes a control ledger naming a reason and a second person,
+                  and each is what the matching MIS report reads.
+
+                  Built once per row and placed by the block below, because a
+                  scoped waiter and everybody else reach it under DIFFERENT
+                  conditions and a second copy of this JSX is how the two start
+                  disagreeing about which lines the comp route can address.
+
+                  Its per-item permission gating lives INSIDE the component and
+                  reads the server's capability flags (`comp_item`, `void_order`,
+                  `waive_service_charge`), so an identity that holds some of the
+                  five sees the menu and is told which grant the others need
+                  rather than tapping into a 403.
+                */
+                const captureActions = order.table && order.status !== 'Cancelled' ? (
+                  <CaptureActions
+                    restaurantId={user?.restaurantUsername ?? ''}
+                    order={{
+                      id: order.id,
+                      table: order.table,
+                      status: order.status,
+                      // The flattened lines are the ones the comp route addresses by
+                      // id, and they carry the server's own `nc` flags — which is how
+                      // an already-comped line is told apart from a chargeable one
+                      // without matching names against a ledger.
+                      items: (order.items_flattened ?? order.items).map((i) => ({
+                        id: i.id,
+                        name: i.name,
+                        quantity: i.quantity,
+                        price: i.price,
+                        nc: i.nc === true,
+                        nc_id: i.nc_id ?? null,
+                        nc_kind: i.nc_kind ?? null,
+                      })),
+                    }}
+                    onChanged={() => { void refreshOrders(); }}
+                  />
+                ) : null;
                 return (
                 <TableRow
                   key={order.id}
@@ -1571,6 +1809,31 @@ function OrdersDashboard() {
                     ) : (
                       <span className="text-xs text-muted-foreground">—</span>
                     )}
+                    {elapsedMs !== null ? (
+                      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
+                        <span
+                          className={cn(
+                            "tabular-nums",
+                            elapsedTone === "late" ? "font-semibold text-red-500"
+                              : elapsedTone === "watch" ? "font-medium text-amber-500"
+                                : "text-muted-foreground",
+                          )}
+                          title="Time since this order was placed."
+                        >
+                          {formatDuration(elapsedMs)} ago
+                        </span>
+                        {span ? (
+                          <span
+                            className="tabular-nums text-muted-foreground"
+                            title={span.settled
+                              ? "Order to settlement — the final figure for this ticket."
+                              : "Order to settlement — still running. It stops when the bill is settled."}
+                          >
+                            · {span.settled ? `settled in ${formatDuration(span.ms)}` : `open ${formatDuration(span.ms)}`}
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </TableCell>
                   <TableCell>
                     <div className="font-medium">{(order as any).items_flattened?.length ? (order as any).items_flattened.map((i: any) => `${i.quantity}x ${i.name}${i.note ? ` (${i.note})` : ""}`).join(', ') : order.items.map(i => `${i.quantity}x ${i.name}${i.note ? ` (${i.note})` : ""}`).join(', ')}</div>
@@ -1618,8 +1881,81 @@ function OrdersDashboard() {
                     )}
                   </TableCell>
                   <TableCell>
-                    {isWaiterOnly ? null : (
+                    {/*
+                      C1 — A WAITER GETS ADD ORDER AND PRINT BILL, AND KEEPS THEM.
+
+                      This cell used to render NOTHING AT ALL for a waiter
+                      (`isWaiterOnly ? null : …`), which took Print Bill away from
+                      the one person C1 says must have it — the requirement asks
+                      for the money controls to be hidden, not for the waiter's
+                      own two buttons to be. So the row now draws for everyone and
+                      each control is gated individually:
+
+                        * Print Bill — kept. It renders the order this session can
+                          already read; there is no server act behind it.
+                        * The five recorded control acts (comp, void, waiver,
+                          tenders, till) — offered to a scoped waiter EXACTLY WHEN
+                          THE SERVER'S CAPABILITY FLAGS SAY SO, and to nobody else
+                          on that role. The stock waiter holds none of the three,
+                          so for them the menu does not render at all: C1 is
+                          explicit that "Waive Service Charge" and "Comp an Item"
+                          must be COMPLETELY HIDDEN, not merely disabled, and
+                          CaptureActions' honest-degrade (show it, say it needs a
+                          manager) is the wrong answer for that role. A waiter the
+                          TENANT has granted one gets it, because that grant is
+                          the server's answer and this screen does not overrule it.
+                        * Bill operations (discount / split / merge / refund) —
+                          hidden from a scoped waiter; each is also refused by its
+                          own route.
+                        * Bark, status walk, payment approval, close, delete —
+                          hidden too, each also refused by its own route. The
+                          waiter's own confirm-payment step rides on "Confirm
+                          Payment Method", which the core waiter role does not
+                          hold, so hiding it here matches the server rather than
+                          contradicting it.
+                    */}
                     <div className="flex items-center justify-end gap-1" onClick={(e) => { e.stopPropagation(); }}>
+                    {isWaiterOnly ? (
+                      <>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        title="Print this table's bill"
+                        onClick={() => { triggerPrint(order); }}
+                        disabled={cancelled}
+                      >
+                        <Printer className="mr-1 h-3.5 w-3.5" /> Print Bill
+                      </Button>
+                      {/*
+                        THE SERVER'S GRANT OUTRANKS THE ROLE.
+
+                        This branch used to end here, which meant a scoped waiter
+                        got the Controls menu taken away EVEN WHEN THE SERVER HAD
+                        SAID THEY MAY USE IT. `scope.waiter_only` and
+                        `scope.comp_item` are two answers from the same block;
+                        letting the first veto the second is exactly the
+                        client-side re-derivation the block exists to end, and it
+                        is what makes a tenant's deliberate grant — "our senior
+                        waiter may void a KOT" — silently do nothing on the web
+                        while working on the phone.
+
+                        C1 IS STILL SATISFIED, AND BY THE SERVER RATHER THAN BY A
+                        ROLE NAME. C1 asks for "Waive Service Charge" and "Comp an
+                        Item" to be COMPLETELY HIDDEN from a waiter, and the stock
+                        waiter role holds none of the three control acts, so this
+                        condition is false for them and the menu does not render
+                        at all — no greyed row, no honest-degrade. It renders only
+                        for a waiter the tenant has positively granted one, which
+                        is the same sentence read the other way round.
+
+                        Hiding is the courtesy either way: every item behind it is
+                        gated on the route as well.
+                      */}
+                      {canAnyControlAct ? captureActions : null}
+                      </>
+                    ) : (
+                    <>
                     {order.status === "Preparing" && !isOrderBarked(order) && !isOrderCancelled(order) ? (
                       <Button
                         size="sm"
@@ -1638,37 +1974,7 @@ function OrdersDashboard() {
                         onChanged={() => { void refreshOrders(); }}
                       />
                     )}
-                    {/* The five RECORDED acts — comp, void-with-reason, service-charge
-                        waiver, split tender + tip, and the till. Sits beside the bill
-                        operations rather than inside them because these are the ones
-                        that write a control ledger: each names a reason and a second
-                        person, and each is what the matching MIS report reads. Its own
-                        permission gating is inside, so a waiter sees the menu and is
-                        told which items need a manager rather than tapping into a 403. */}
-                    {order.table && order.status !== 'Cancelled' && (
-                      <CaptureActions
-                        restaurantId={user?.restaurantUsername ?? ''}
-                        order={{
-                          id: order.id,
-                          table: order.table,
-                          status: order.status,
-                          // The flattened lines are the ones the comp route addresses by
-                          // id, and they carry the server's own `nc` flags — which is how
-                          // an already-comped line is told apart from a chargeable one
-                          // without matching names against a ledger.
-                          items: (order.items_flattened ?? order.items).map((i) => ({
-                            id: i.id,
-                            name: i.name,
-                            quantity: i.quantity,
-                            price: i.price,
-                            nc: i.nc === true,
-                            nc_id: i.nc_id ?? null,
-                            nc_kind: i.nc_kind ?? null,
-                          })),
-                        }}
-                        onChanged={() => { void refreshOrders(); }}
-                      />
-                    )}
+                    {captureActions}
                     {(() => {
                       // Customer-facing display: full-screen live bill for this table
                       // (public page — the signed table token is the auth).
@@ -1820,18 +2126,31 @@ function OrdersDashboard() {
                             </DropdownMenuItem>
                           </DropdownMenuSubContent>
                         </DropdownMenuSub>
-                        <DropdownMenuItem
-                          onClick={() => { void handleAdminApprovePayment(order); }}
-                          disabled={order.status !== 'Payment Pending Approval'}
-                        >
-                          Approve Payment (Admin)
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onClick={() => { void handleCloseBill(order); }}
-                          disabled={order.status !== 'Paid'}
-                        >
-                          Close Bill (Admin)
-                        </DropdownMenuItem>
+                        {/* C2 — ONLY SOMEONE WHO MAY SETTLE SEES A SETTLE CONTROL.
+                            Hidden rather than disabled: a greyed "Close Bill" on
+                            every waiter's screen is an invitation to go and find
+                            someone's password. The routes behind both items carry
+                            the same two permissions, so this is the courtesy and
+                            not the control. Labelled by the PERMISSION, because
+                            "(Admin)" was never true — a cashier holds these in the
+                            stock role set and a manager holds them wherever the
+                            tenant has granted them. */}
+                        {canSettleBill ? (
+                          <>
+                            <DropdownMenuItem
+                              onClick={() => { void handleAdminApprovePayment(order); }}
+                              disabled={order.status !== 'Payment Pending Approval'}
+                            >
+                              Approve Payment
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onClick={() => { void handleCloseBill(order); }}
+                              disabled={order.status !== 'Paid'}
+                            >
+                              Close Bill
+                            </DropdownMenuItem>
+                          </>
+                        ) : null}
                         {isAdmin && (
                           <DropdownMenuItem
                             onClick={() => { void handleReopenBill(order); }}
@@ -1841,33 +2160,62 @@ function OrdersDashboard() {
                           </DropdownMenuItem>
                         )}
                         <DropdownMenuSeparator />
-                        <DropdownMenuItem 
-                          onClick={() => {
-                            runAdminAction(() => {
-                              if (confirm('Are you sure you want to delete this order? This action cannot be undone.')) {
-                                void handleDeleteOrder(order.id);
-                              }
-                            });
-                          }}
-                          disabled={
-                            order.status === 'Bill Verification' ||
-                            order.status === 'Payment Pending Approval'
-                            || order.status === 'Paid'
-                            || order.status === 'Closed'
-                            || order.status === 'Cancelled'
-                          }
-                          className="text-red-600"
-                        >
-                          Delete Order
-                        </DropdownMenuItem>
+                        {/*
+                          A2 — A CANCELLATION CARRIES A REASON, OR IT IS NOT A
+                          CANCELLATION.
+
+                          "Cancellation Reason Prompt: mandatory confirmation
+                          prompt before cancelling a KOT, requiring a cancellation
+                          reason before the action can be processed and finalized."
+
+                          There are two ways to stop food being cooked from this
+                          screen, and only one of them could ever record why:
+
+                            * VOID (POST /orders/:id/void) takes a controlled
+                              reason, a free-text note and a second name, writes
+                              the OrderVoids control row the Void KOT report is
+                              built from, and prints the kitchen's cancellation
+                              slip. It lives in the CaptureActions menu beside
+                              this one.
+                            * DELETE (DELETE /orders/:id) destroys the row. It
+                              records nothing but "Deleted order <id>" in the
+                              audit log — there is no reason field on the route to
+                              send one to — and it was reachable behind a bare
+                              window.confirm() that said only "cannot be undone".
+
+                          So the destructive item now names itself honestly and,
+                          for anyone who CAN void, offers the recorded path first:
+                          a reason that ends up in a control report is worth more
+                          than a reason typed into a box that discards it. Delete
+                          survives for the rows a void cannot help with — a
+                          duplicate rung on the wrong table before anything was
+                          cooked — and its confirmation says what it does and does
+                          not keep.
+                        */}
+                        {canDeleteOrder ? (
+                          <DropdownMenuItem
+                            onClick={() => { setDeleteTarget(order); }}
+                            disabled={
+                              order.status === 'Bill Verification' ||
+                              order.status === 'Payment Pending Approval'
+                              || order.status === 'Paid'
+                              || order.status === 'Closed'
+                              || order.status === 'Cancelled'
+                            }
+                            className="text-red-600"
+                          >
+                            Delete Order
+                          </DropdownMenuItem>
+                        ) : null}
                         <DropdownMenuItem onClick={() => { triggerPrint(order); }} disabled={order.status !== 'Bill Verification' && order.status !== 'Payment Pending Approval' && order.status !== 'Paid' && order.status !== 'Closed'}>
                             <Printer className="mr-2 h-4 w-4" />
                             Print Bill
                         </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
-                    </div>
+                    </>
                     )}
+                    </div>
                   </TableCell>
                 </TableRow>
               )})}
@@ -1875,6 +2223,76 @@ function OrdersDashboard() {
           </Table>
         </CardContent>
       </Card>
+
+      {/*
+        A2 — DELETING AN ORDER, SAID OUT LOUD.
+
+        A2 asks for "a mandatory confirmation prompt before cancelling a KOT,
+        requiring a cancellation reason before the action can be processed".
+
+        On this screen the reason-recording path already exists and already
+        enforces the reason: Controls -> "Void this order…" refuses to submit
+        without a controlled void_kind, a free-text reason AND a second person's
+        name, and POST /orders/:id/void validates all three server-side before it
+        writes the OrderVoids row the Void KOT report is built from.
+
+        DELETE is the other path, and it is the one that could not carry a
+        reason: the route takes no body, so there is nowhere for one to go. It
+        was reachable behind a one-line window.confirm() reading "This action
+        cannot be undone", which said nothing about what was being destroyed and
+        nothing about the recorded alternative sitting two clicks away. Putting a
+        reason box on it would be theatre — the text would be discarded. So this
+        dialog does the honest thing: it names the ticket, counts what goes, says
+        the reason will NOT be recorded, and points at the path that records one.
+      */}
+      <AlertDialog open={deleteTarget !== null} onOpenChange={(open) => { if (!open) { setDeleteTarget(null); } }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Delete the order on table {deleteTarget?.table}?
+            </AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-3 text-sm">
+                <div>
+                  <p className="font-medium text-foreground">This destroys the ticket:</p>
+                  <ul className="mt-1 list-disc space-y-1 pl-5">
+                    <li>
+                      {(deleteTarget?.items_flattened ?? deleteTarget?.items ?? []).length} line
+                      {((deleteTarget?.items_flattened ?? deleteTarget?.items ?? []).length) === 1 ? "" : "s"}
+                      {deleteTarget ? ` worth ${currencySymbol}${deleteTarget.total.toFixed(2)}` : ""}
+                      {deleteTarget && kotLabel(deleteTarget) ? ` — ${kotLabel(deleteTarget)}` : ""}.
+                    </li>
+                    <li>The row is removed, so it leaves the sales figures and the order history with it.</li>
+                    <li>A cancellation slip goes to the kitchen so nothing is cooked for a ticket that no longer exists.</li>
+                    <li>It cannot be undone.</li>
+                  </ul>
+                </div>
+                <div className="rounded-md border border-amber-500/60 bg-amber-500/[0.07] p-2.5">
+                  <p className="font-medium text-foreground">No reason is recorded.</p>
+                  <p className="mt-0.5">
+                    {canVoidOrder
+                      ? "Use Controls → “Void this order…” instead if you want the cancellation to carry a reason, an authoriser and a figure — that is the one that reaches the Void KOT report."
+                      : "Only the audit log will show that it was deleted, and by whom. A manager holding “Void Orders With Reason” can cancel it with a recorded reason instead."}
+                  </p>
+                </div>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep the order</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
+              onClick={() => {
+                const target = deleteTarget;
+                setDeleteTarget(null);
+                if (target) { void handleDeleteOrder(target.id); }
+              }}
+            >
+              Delete permanently
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <Dialog open={splitPayOrder !== null} onOpenChange={(v) => { if (!v && !splitBusy) {setSplitPayOrder(null);} }}>
         <DialogContent>
@@ -2057,21 +2475,15 @@ function OrdersDashboard() {
 
 // ---- Kitchen display (KDS): station-filtered tickets + expo/pass view ------
 
-// Live elapsed (ms) for a prep timer, mirroring the backend computation.
-const timerElapsedMs = (t?: OrderTimer | null, nowMs?: number): number => {
-  if (!t?.started_at) {return 0;}
-  const now = nowMs ?? Date.now();
-  const end = t.ended_at ? Date.parse(t.ended_at) : now;
-  let paused = t.paused_ms ?? 0;
-  if (t.paused && t.pause_started_at) {paused += now - Date.parse(t.pause_started_at);}
-  return Math.max(0, end - Date.parse(t.started_at) - paused);
-};
-
-const formatElapsed = (ms: number) => {
-  const s = Math.floor(ms / 1000);
-  const m = Math.floor(s / 60);
-  return m > 0 ? `${m}m ${String(s % 60).padStart(2, "0")}s` : `${s}s`;
-};
+/*
+  The prep timer and its formatter used to live here, as a second copy of the
+  arithmetic. D2 asks for the table clocks to read "identical to the kitchen
+  section display", and the only way that stays true is for both to BE the same
+  code — so both now come from `src/lib/order-clock.ts`, which is tested and
+  which the tables screen reads as well. The aliases keep every call site below
+  spelled exactly as it was.
+*/
+const formatElapsed = formatDuration;
 
 const isItemHeld = (item: OrderItem) => item.course_hold === true && !item.fired_at;
 

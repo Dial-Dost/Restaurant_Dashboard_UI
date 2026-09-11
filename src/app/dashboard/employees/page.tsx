@@ -1,5 +1,6 @@
 "use client";
 
+import type { JSX } from "react";
 import { Suspense, useMemo, useState, useEffect, useRef } from "react";
 import {
   Card,
@@ -58,7 +59,17 @@ import { addEmployeeToRestaurant, removeEmployeeFromRestaurant } from "@/service
 import type {
   User,
   RoleDefinition,
+  CoreRoleRow,
   PasswordResetRequest} from "@/lib/db";
+import {
+  UNKNOWN_PERMISSION_LABEL,
+  permissionSummary,
+  renderRolePermissions,
+  roleIsEditable,
+  unresolvedCount,
+  type ActionCatalog,
+  type RoleLike,
+} from "@/lib/role-permissions";
 import {
   getRestaurantUsers,
   getRoles,
@@ -73,6 +84,20 @@ import {
   dismissPasswordRequest,
 } from "@/lib/db";
 import{ toTitleCase } from "@/lib/utils";
+import {
+  can,
+  canOpenEmployeesPage,
+  canOpenRoles,
+  hasPermission,
+  PERM_ADD_EMPLOYEE,
+  PERM_ASSIGN_ROLE,
+  PERM_DELETE_ROLES,
+  PERM_PASSWORDS,
+  PERM_REMOVE_EMPLOYEE,
+  PERM_REMOVE_ROLE,
+  PERM_VIEW_ACTIONS,
+  PERM_VIEW_EMPLOYEES,
+} from "@/lib/session-scope";
 
 // core roles are loaded from server
 
@@ -104,10 +129,121 @@ const addEmployeeSchema = z.object({
 
 type AddEmployeeFormData = z.infer<typeof addEmployeeSchema>;
 
+/**
+ * WHAT A ROLE GRANTS, READABLE — C6.
+ *
+ * ONE renderer for both kinds of role, because "what does this grant" is one
+ * question and answering it twice is how a core role and a custom role start
+ * disagreeing about the same permission id.
+ *
+ * IT DRAWS EVERY ID THE ROLE CARRIES. An id the server could not name is still a
+ * permission the role GRANTS: it keeps its place, says so, and prints its id.
+ * Dropping it — or shortening the list to the rows that resolved — would let
+ * somebody open a role, count the lines and conclude it grants less than it
+ * does, which on an access-control screen is the failure worth fearing. It is
+ * not an ugly row that is dangerous, it is a safe-looking one.
+ *
+ * The names come from the server's `permissions` projection and need NO second
+ * read; `renderRolePermissions` only falls back to the /actions catalogue for a
+ * backend older than the projection. That is the whole of C6: this dialog used
+ * to render uuids for anybody holding View Roles without View Actions.
+ */
+function PermissionList({
+  role,
+  catalog,
+  emptyLabel,
+}: {
+  role: RoleLike | null | undefined;
+  catalog: ActionCatalog;
+  emptyLabel: string;
+}): JSX.Element {
+  const rows = renderRolePermissions(role, catalog);
+  if (rows.length === 0) {
+    return <p className="text-sm text-muted-foreground">{emptyLabel}</p>;
+  }
+  const unnamed = unresolvedCount(rows);
+  return (
+    <div className="grid gap-2">
+      {rows.map((row, index) => (
+        <div key={`${row.id}-${String(index)}`} className="text-sm" title={row.desc ?? row.id}>
+          {row.resolved ? (
+            <>
+              <span>{row.name}</span>
+              {row.group ? (
+                <span className="ml-2 text-xs text-muted-foreground">{row.group}</span>
+              ) : null}
+            </>
+          ) : (
+            <>
+              <span className="text-muted-foreground">{UNKNOWN_PERMISSION_LABEL}</span>
+              <span className="ml-2 font-mono text-xs text-muted-foreground break-all">{row.id}</span>
+            </>
+          )}
+        </div>
+      ))}
+      {unnamed > 0 ? (
+        // Said out loud, because the alternative reading of an unnamed row is
+        // "this screen is broken" and the true one is "this role grants
+        // something whose catalogue entry is missing" — a real answer, and one
+        // an admin can act on.
+        <p className="pt-1 text-xs text-muted-foreground">
+          {unnamed} of these {unnamed === 1 ? 'is' : 'are'} granted by id with no matching entry in the
+          permissions catalogue. {unnamed === 1 ? 'It is' : 'They are'} still granted.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function EmployeesPageInner() {
   const { user } = useAuth();
   const { toast } = useToast();
   const hasShownAccessToastRef = useRef(false);
+
+  /*
+    C5 + C6 — WHAT THIS SCREEN OFFERS IS DECIDED BY THE SERVER'S RESOLVED ACTION
+    SET, NOT BY THE NAME OF A ROLE.
+
+    THE C6 DEFECT, WHICH TURNED OUT NOT TO BE THE CORE-ROLE DIALOG AT ALL. The
+    dialog, the fetch and the click handler were all present and correct. What
+    stopped "users clicking and viewing core roles" was the gate above them:
+
+        if (user?.role !== "admin") { return <p>You do not have permission…</p> }
+
+    `user.role` is the PRIMARY role from the session, and the backend's
+    `parseEmployeeRoles` rewrites a primary it does not recognise — a custom
+    role's UUID, or an employee record whose primary was never set — to the
+    literal string "employee" (database_supabase.ts, `toRole` does the same).
+    So a genuine Super Admin who had also been given one custom role arrived
+    here as `role: "employee"`, was refused the entire page, and never reached a
+    core role to click. It is the same defect family as the waiter scoping that
+    just landed: a decision taken on the SPELLING of a role rather than on
+    authority, taken in the client, where the answer is a guess.
+
+    AND C5's OTHER HALF. "Super Admins and Managers can view and edit custom
+    roles" cannot be expressed as `role === "admin"` at all. It is expressed as
+    the permission the route itself demands: GET /roles and GET /core-roles are
+    gated on "View Roles", POST /roles on "Create Role", and so on. Asking
+    `actions_set` means an admin is admitted by the "*" wildcard however their
+    primary role was recorded, and a manager is admitted exactly when the tenant
+    has granted them the permission — which is what "customizable" means.
+
+    THE HIDING IS THE COURTESY, NOT THE CONTROL. Every one of these ids is the
+    backend's own `validateAction` argument; a control hidden here is a control
+    whose route already refuses, so a deep link or a stale tab gains nothing.
+  */
+  const actions = user?.actions_set;
+  const canSeeEmployees = hasPermission(actions, PERM_VIEW_EMPLOYEES);
+  const canAddEmployee = hasPermission(actions, PERM_ADD_EMPLOYEE);
+  const canRemoveEmployee = hasPermission(actions, PERM_REMOVE_EMPLOYEE);
+  const canManagePasswords = hasPermission(actions, PERM_PASSWORDS);
+  const canSeeRoles = canOpenRoles(user);
+  const canEditRoles = can(user, "manage_roles");
+  const canDeleteRoles = hasPermission(actions, PERM_DELETE_ROLES);
+  const canAssignRoles = hasPermission(actions, PERM_ASSIGN_ROLE);
+  const canRemoveRoles = hasPermission(actions, PERM_REMOVE_ROLE);
+  const canSeeActionCatalog = hasPermission(actions, PERM_VIEW_ACTIONS);
+  const canOpenPage = canOpenEmployeesPage(user);
 
   const [employees, setEmployees] = useState<User[]>([]);
   const [roleDefinitions, setRoleDefinitions] = useState<RoleDefinition[]>([]);
@@ -125,8 +261,8 @@ function EmployeesPageInner() {
   const [selectedRoleToEdit, setSelectedRoleToEdit] = useState<RoleDefinition | null>(null);
   const [isEditRoleDialogOpen, setIsEditRoleDialogOpen] = useState(false);
   const [editRoleActions, setEditRoleActions] = useState<string[]>([]);
-  const [coreRoles, setCoreRoles] = useState<{ role: string; actions: string[] }[]>([]);
-  const [selectedCoreRoleToView, setSelectedCoreRoleToView] = useState<{ role: string; actions: string[] } | null>(null);
+  const [coreRoles, setCoreRoles] = useState<CoreRoleRow[]>([]);
+  const [selectedCoreRoleToView, setSelectedCoreRoleToView] = useState<CoreRoleRow | null>(null);
   const [isViewCoreRoleDialogOpen, setIsViewCoreRoleDialogOpen] = useState(false);
 
   const [passwordRequests, setPasswordRequests] = useState<PasswordResetRequest[]>([]);
@@ -141,15 +277,50 @@ function EmployeesPageInner() {
     return Array.from(new Set([...cores, ...custom]));
   }, [roleDefinitions, coreRoles]);
 
-  const actionInfoMap = useMemo(() => {
-    const m: Record<string, { name: string; desc?: string | null }> = {};
+  /*
+    THE /actions CATALOGUE — NOW A FALLBACK, NOT THE RENDERING STRATEGY.
+
+    C6's symptom was a role that opened to a column of raw UUIDs, and the reason
+    was here: to put a NAME on an id this screen had to join it against GET
+    /actions, which carries its OWN permission (2b6f7948…), different from the one
+    that opens this screen (17ba6407…). The stock core `manager` holds both; a
+    tenant's custom "shift lead" granted View Roles and not View Actions holds
+    one, opens a role, and is shown uuids. A join across two differently-
+    permissioned reads is not a rendering strategy, it is a coin flip on how the
+    tenant configured their roles.
+
+    /core-roles and /roles now project `permissions` — the same ids, same order,
+    same length, with name, description and group attached — exactly so this join
+    is no longer needed. `src/lib/role-permissions.ts` reads that projection and
+    falls back to this map ONLY for a backend older than it, which is why the map
+    survives at all. The checkbox grids below still need the full catalogue,
+    because offering a permission to GRANT is a different question from naming
+    one a role already holds.
+  */
+  const actionCatalog = useMemo<ActionCatalog>(() => {
+    const m: Record<string, { name: string; desc: string | null; group: string | null }> = {};
     for (const g of accessCatalog) {
       for (const a of g.actions) {
-        m[a.id] = { name: a.name, desc: a.desc ?? null };
+        m[a.id] = { name: a.name, desc: a.desc ?? null, group: g.group };
       }
     }
     return m;
   }, [accessCatalog]);
+
+  /*
+    MAY THE ROLE CURRENTLY OPEN BE WRITTEN?
+
+    TWO questions, and both are the server's. `manage_roles` is whether this
+    SESSION may edit roles at all. `editable` is whether THIS ROLE has a write
+    route behind it — /roles projects it precisely so a client stops re-deriving
+    "is this name one of the core roles" by matching strings, which is the same
+    spelling-versus-authority mistake that un-scoped a waiter in production.
+
+    `!== false` and not `=== true`: a backend that does not send the flag leaves
+    the answer undefined, and the screen must then behave exactly as it did
+    before the flag existed rather than locking every role.
+  */
+  const editingRoleWritable = canEditRoles && roleIsEditable(selectedRoleToEdit) !== false;
 
   const roleIdToName = useMemo(() => {
     const m: Record<string, string> = {};
@@ -230,11 +401,23 @@ function EmployeesPageInner() {
 
     let isActive = true;
 
+    /*
+      EACH READ IS ASKED FOR ONLY BY A SESSION THE ROUTE WILL ANSWER.
+
+      Every one of these four endpoints carries its own permission, and firing
+      all four regardless meant a manager holding one half of this screen
+      collected three 403s on every mount — noise in the logs, and a console full
+      of failures that look like a broken page rather than a deliberate one.
+
+      A failure still degrades to empty rather than to a crash: `getCoreRoles`
+      and friends are 'use server' actions, and a throw there arrives as an
+      opaque redacted error, so the catch stays.
+    */
     (async () => {
       try {
         const [employeesData, rolesData] = await Promise.all([
-          getRestaurantUsers(user.restaurantUsername, user.employeeId),
-          getRoles(user.restaurantUsername),
+          canSeeEmployees ? getRestaurantUsers(user.restaurantUsername, user.employeeId) : Promise.resolve([]),
+          canSeeRoles ? getRoles(user.restaurantUsername) : Promise.resolve([]),
         ]);
         if (!isActive) {return;}
         setEmployees(Array.isArray(employeesData) ? employeesData : []);
@@ -247,36 +430,48 @@ function EmployeesPageInner() {
         }
       }
 
-      try {
-        const cores = await getCoreRoles(user.restaurantUsername, user.actions_set);
-        if (!isActive) {return;}
-        setCoreRoles(Array.isArray(cores) ? cores : []);
-      } catch (err) {
-        console.error('fetch_core_roles_failed', err);
-        if (isActive) {setCoreRoles([]);}
+      if (canSeeRoles) {
+        try {
+          // `actions_set` may be undefined on a session stored before it existed;
+          // getCoreRoles joins it into a header, and an undefined there throws
+          // ACROSS the server-action boundary, which lands in the catch below and
+          // renders as "No core roles available" — a page that looks broken for a
+          // reason that has nothing to do with roles.
+          const cores = await getCoreRoles(user.restaurantUsername, actions ?? []);
+          if (!isActive) {return;}
+          setCoreRoles(Array.isArray(cores) ? cores : []);
+        } catch (err) {
+          console.error('fetch_core_roles_failed', err);
+          if (isActive) {setCoreRoles([]);}
+        }
       }
 
-      try {
-        const catalog = await getActions(user.restaurantUsername, user.actions_set);
-        if (!isActive) {return;}
-        setAccessCatalog(Array.isArray(catalog) ? catalog : []);
-      } catch (err) {
-        console.error('fetch_actions_failed', err);
-        if (isActive) {setAccessCatalog([]);}
+      if (canSeeActionCatalog) {
+        try {
+          const catalog = await getActions(user.restaurantUsername, actions ?? []);
+          if (!isActive) {return;}
+          setAccessCatalog(Array.isArray(catalog) ? catalog : []);
+        } catch (err) {
+          console.error('fetch_actions_failed', err);
+          if (isActive) {setAccessCatalog([]);}
+        }
       }
 
-      try {
-        const reqs = await getPasswordRequests(user.restaurantUsername);
-        if (!isActive) {return;}
-        setPasswordRequests(Array.isArray(reqs) ? reqs : []);
-      } catch (err) {
-        console.error('fetch_password_requests_failed', err);
-        if (isActive) {setPasswordRequests([]);}
+      if (canManagePasswords) {
+        try {
+          const reqs = await getPasswordRequests(user.restaurantUsername);
+          if (!isActive) {return;}
+          setPasswordRequests(Array.isArray(reqs) ? reqs : []);
+        } catch (err) {
+          console.error('fetch_password_requests_failed', err);
+          if (isActive) {setPasswordRequests([]);}
+        }
       }
     })();
 
     return () => { isActive = false; };
-  }, [user?.restaurantUsername, user?.employeeId, user?.actions_set]);
+  }, [user?.restaurantUsername, user?.employeeId, actions,
+      canSeeEmployees, canSeeRoles, canSeeActionCatalog, canManagePasswords]);
 
   const handleAddEmployee = async (data: AddEmployeeFormData) => {
     if (!user) {return;}
@@ -383,7 +578,7 @@ function EmployeesPageInner() {
     setIsEditRoleDialogOpen(true);
   };
 
-  const openViewCoreRole = (role: { role: string; actions: string[] }) => {
+  const openViewCoreRole = (role: CoreRoleRow): void => {
     setSelectedCoreRoleToView(role);
     setIsViewCoreRoleDialogOpen(true);
   };
@@ -453,22 +648,33 @@ function EmployeesPageInner() {
   };
 
   useEffect(() => {
-    if (!user || user.role === "admin" || hasShownAccessToastRef.current) {
+    if (!user || canOpenPage || hasShownAccessToastRef.current) {
       return;
     }
 
     toast({
       title: "Access denied",
-      description: "You do not have the required role for this page. Required role: admin.",
+      description: "This page needs the “View Employees” or “View Roles” permission.",
       variant: "destructive",
     });
     hasShownAccessToastRef.current = true;
-  }, [user, toast]);
+  }, [user, canOpenPage, toast]);
 
-  if (user?.role !== "admin") {
+  /*
+    The front door, and it names the PERMISSION rather than a role — see the
+    block at the top of this component for why "Required role: admin" was both
+    wrong and unactionable. It stays a hard stop because a deep link, a bookmark
+    or a back-navigation reaches this page regardless of the nav; the routes
+    behind it refuse independently, which is what makes that safe.
+  */
+  if (!user || !canOpenPage) {
     return (
-      <div className="p-4">
-        <p>You do not have permission to view this page. Required role: admin.</p>
+      <div className="p-4 text-sm text-muted-foreground">
+        <p className="font-medium text-foreground">You do not have permission to view this page.</p>
+        <p className="mt-1">
+          Viewing staff needs the “View Employees” permission and viewing roles needs “View Roles”.
+          An admin can grant either from Role Access Control.
+        </p>
       </div>
     );
   }
@@ -477,9 +683,11 @@ function EmployeesPageInner() {
     <div className="grid gap-4 md:gap-8">
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold md:text-2xl">Employee List</h1>
+        {/* POST /restaurant/users carries its own permission; without it the
+            dialog's Save button is the only thing that would tell you. */}
         <Dialog open={isAddEmployeeDialogOpen} onOpenChange={setIsAddEmployeeDialogOpen}>
           <DialogTrigger asChild>
-            <Button>
+            <Button disabled={!canAddEmployee} title={canAddEmployee ? undefined : "Adding staff needs the “Add Employee” permission"}>
               <PlusCircle className="mr-2 h-4 w-4" />
               Add Employee
             </Button>
@@ -545,6 +753,11 @@ function EmployeesPageInner() {
         </DialogContent>
       </Dialog>
 
+      {/* The staff half of this page. A session holding only "View Roles" — a
+          manager the tenant set up to manage permissions but not people — gets
+          the Role Access Control card below and nothing here, rather than an
+          empty table that looks like the restaurant has no staff. */}
+      {canSeeEmployees ? (
       <Card>
         <CardHeader>
           <CardTitle>All Employees</CardTitle>
@@ -612,6 +825,10 @@ function EmployeesPageInner() {
                         <DropdownMenuContent align="end">
                           <DropdownMenuLabel>Actions</DropdownMenuLabel>
 
+                          {/* Each entry below is the permission the route it calls
+                              demands. A menu item that 403s is a menu item that
+                              teaches staff the screen is lying to them. */}
+                          {canAssignRoles ? (
                           <DropdownMenuSub>
                             <DropdownMenuSubTrigger>Add Role</DropdownMenuSubTrigger>
                             <DropdownMenuSubContent>
@@ -629,7 +846,9 @@ function EmployeesPageInner() {
                               )}
                             </DropdownMenuSubContent>
                           </DropdownMenuSub>
+                          ) : null}
 
+                          {canRemoveRoles ? (
                           <DropdownMenuSub>
                             <DropdownMenuSubTrigger>Remove Role</DropdownMenuSubTrigger>
                             <DropdownMenuSubContent>
@@ -647,7 +866,9 @@ function EmployeesPageInner() {
                               )}
                             </DropdownMenuSubContent>
                           </DropdownMenuSub>
+                          ) : null}
 
+                          {canManagePasswords ? (
                           <DropdownMenuItem
                             onClick={() => { openResetPassword(
                               employee.employee_id,
@@ -657,8 +878,9 @@ function EmployeesPageInner() {
                             <KeyRound className="mr-2 h-4 w-4" />
                             Reset Password
                           </DropdownMenuItem>
+                          ) : null}
 
-                          {!employee.is_superadmin ? (
+                          {canRemoveEmployee && !employee.is_superadmin ? (
                             <DropdownMenuItem
                               onClick={() => void handleRemoveEmployee(employee.employee_id)}
                               className="text-destructive"
@@ -677,7 +899,9 @@ function EmployeesPageInner() {
           </Table>
         </CardContent>
       </Card>
+      ) : null}
 
+      {canSeeRoles ? (
       <Card>
         <CardHeader className="flex flex-row items-start justify-between gap-4">
           <div>
@@ -688,7 +912,16 @@ function EmployeesPageInner() {
           </div>
           <Dialog open={isCreateRoleDialogOpen} onOpenChange={setIsCreateRoleDialogOpen}>
             <DialogTrigger asChild>
-              <Button variant="outline">Create Custom Role</Button>
+              {/* POST /roles is what both creating and EDITING a role write, so
+                  one permission governs both and the button says so rather than
+                  failing after the form is filled in. */}
+              <Button
+                variant="outline"
+                disabled={!canEditRoles}
+                title={canEditRoles ? undefined : "Creating a role needs the “Create Role” permission"}
+              >
+                Create Custom Role
+              </Button>
             </DialogTrigger>
             <DialogContent className="sm:max-w-[740px]">
               <DialogHeader>
@@ -745,9 +978,13 @@ function EmployeesPageInner() {
           <Dialog open={isEditRoleDialogOpen} onOpenChange={setIsEditRoleDialogOpen}>
             <DialogContent className="sm:max-w-[740px]">
               <DialogHeader>
-                <DialogTitle>Edit Role</DialogTitle>
+                <DialogTitle>{editingRoleWritable ? "Edit Role" : "Role"}</DialogTitle>
                 <DialogDescription>
-                  Modify the actions linked to this role.
+                  {editingRoleWritable
+                    ? "Modify the actions linked to this role. Saving signs out everyone holding it, so the new list actually applies."
+                    : roleIsEditable(selectedRoleToEdit) === false
+                      ? "What this role grants. This role is defined in the product and has no write route — a tenant that wants a different split creates a custom role."
+                      : "What this role grants. Changing it needs the “Create Role” permission."}
                 </DialogDescription>
               </DialogHeader>
 
@@ -759,7 +996,32 @@ function EmployeesPageInner() {
 
                 <div className="max-h-[360px] overflow-y-auto rounded-md border p-3">
                   {accessCatalog.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">No actions available.</p>
+                    /*
+                      NO CATALOGUE IS NOT "NO PERMISSIONS" — C6 ON A CUSTOM ROLE.
+
+                      The checkbox grid needs GET /actions, which carries its own
+                      permission: it is the list of everything that COULD be
+                      granted. An identity holding View Roles without View Actions
+                      cannot have it, and this panel used to answer them with "No
+                      actions available" — which reads as "this role grants
+                      nothing" and is false.
+
+                      What the role actually holds comes from the role itself now,
+                      so that session sees the grant read-only instead of an empty
+                      box. They still cannot re-grant it, which is correct: that
+                      is what the missing permission means.
+                    */
+                    <>
+                      <PermissionList
+                        role={selectedRoleToEdit}
+                        catalog={actionCatalog}
+                        emptyLabel="This role grants no permissions."
+                      />
+                      <p className="pt-2 text-xs text-muted-foreground">
+                        Shown read-only: changing which permissions a role holds needs the “View Actions”
+                        permission as well, because the full list of grantable permissions is served by it.
+                      </p>
+                    </>
                   ) : (
                     accessCatalog.map((group) => (
                       <div key={group.group} className="mb-3">
@@ -772,6 +1034,7 @@ function EmployeesPageInner() {
                                 <input
                                   type="checkbox"
                                   checked={checked}
+                                  disabled={!editingRoleWritable}
                                   onChange={() => { toggleEditRoleAction(action.id); }}
                                 />
                                 <span className="text-sm" title={action.desc ?? ''} aria-label={action.desc ?? ''}>{action.name}</span>
@@ -786,7 +1049,11 @@ function EmployeesPageInner() {
               </div>
 
               <DialogFooter>
-                <Button onClick={() => void handleSaveRoleChanges()}>Save Changes</Button>
+                {editingRoleWritable ? (
+                  <Button onClick={() => void handleSaveRoleChanges()}>Save Changes</Button>
+                ) : (
+                  <Button variant="outline" onClick={() => { setIsEditRoleDialogOpen(false); }}>Close</Button>
+                )}
               </DialogFooter>
             </DialogContent>
           </Dialog>
@@ -797,17 +1064,11 @@ function EmployeesPageInner() {
                 <DialogDescription>Actions granted to this core role.</DialogDescription>
               </DialogHeader>
               <div className="p-3">
-                {selectedCoreRoleToView?.actions?.length ? (
-                  <div className="grid gap-2">
-                    {selectedCoreRoleToView.actions.map((aid) => (
-                      <div key={aid} className="text-sm" title={aid === '*' ? 'All actions' : actionInfoMap[aid]?.desc ?? ''}>
-                        {aid === '*' ? 'All actions' : actionInfoMap[aid]?.name ?? aid}
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-sm text-muted-foreground">No actions configured for this core role.</p>
-                )}
+                <PermissionList
+                  role={selectedCoreRoleToView}
+                  catalog={actionCatalog}
+                  emptyLabel="No actions configured for this core role."
+                />
               </div>
               <DialogFooter>
                 <Button onClick={() => { setIsViewCoreRoleDialogOpen(false); }}>Close</Button>
@@ -817,49 +1078,82 @@ function EmployeesPageInner() {
         </CardHeader>
 
         <CardContent>
-          <div className="space-y-2">
-            <div className="flex flex-wrap gap-2">
-              {coreRoles.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No core roles available</p>
-              ) : (
-                coreRoles.map((r) => (
-                  <Button key={`core-${r.role}`} variant="ghost" size="sm" onClick={() => { openViewCoreRole(r); }}>
-                    {toTitleCase(r.role)} (core)
-                  </Button>
-                ))
-              )}
+          <div className="space-y-3">
+            {/* C6 — THE CORE ROLES, CLICKABLE. Each opens a read-only view of
+                exactly what that role grants. The roles themselves are the
+                backend's `CORE_ROLES` table and are not editable from anywhere;
+                a tenant that wants a different split creates a custom role, which
+                is what the list underneath is for. */}
+            <div>
+              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Core roles — click one to see what it grants
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {coreRoles.length === 0 ? (
+                  // Says WHICH of the two it is. "No core roles available" was
+                  // shown both when the read was refused and when it failed, and
+                  // an owner looking at it had no way to tell a permissions
+                  // problem from an outage.
+                  <p className="text-sm text-muted-foreground">
+                    Core roles could not be loaded. They are served by GET /core-roles, which needs the
+                    “View Roles” permission — if you hold it, the backend is unreachable right now.
+                  </p>
+                ) : (
+                  coreRoles.map((r) => (
+                    <Button key={`core-${r.role}`} variant="outline" size="sm" onClick={() => { openViewCoreRole(r); }}>
+                      {toTitleCase(r.role)} (core)
+                    </Button>
+                  ))
+                )}
+              </div>
             </div>
 
-            {roleDefinitions.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No custom roles created yet.</p>
-            ) : (
-              <div className="space-y-2">
-                {roleDefinitions.map((role) => (
+            <div>
+              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Custom roles
+              </p>
+              {roleDefinitions.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No custom roles created yet.</p>
+              ) : (
+                <div className="space-y-2">
+                  {roleDefinitions.map((role) => (
                       <div key={role.id} className="flex items-center justify-between rounded-md border p-2">
+                        {/* Clickable whether or not you may SAVE: a manager who can
+                            see the roles but not change them still needs to be able
+                            to look at what one grants, which is the same thing C6
+                            asks for on the core roles. The dialog turns itself
+                            read-only rather than disappearing. */}
                         <button type="button" onClick={() => { openEditRole(role); }} className="text-left">
                           <p className="font-medium">{toTitleCase(role.role_name)}</p>
+                          {/* NAMES, FROM THE SERVER'S OWN PROJECTION — and the
+                              ids it could not name are still COUNTED into this
+                              line rather than quietly dropped from it. A summary
+                              that is shorter than the grant is how a reviewer
+                              decides a role is safe when it is not. */}
                           <p className="text-xs text-muted-foreground break-words">
-                            {(Array.isArray(role.actions_performable) && role.actions_performable.length > 0)
-                              ? role.actions_performable.map((id) => actionInfoMap[id]?.name ?? id).join(', ')
-                              : 'No actions configured'}
+                            {permissionSummary(renderRolePermissions(role, actionCatalog)) || 'No actions configured'}
                           </p>
                         </button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="text-destructive"
-                          onClick={() => void handleDeleteCustomRole(role)}
-                        >
-                          <Trash2 className="mr-1 h-4 w-4" />
-                          Delete
-                        </Button>
+                        {canDeleteRoles ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-destructive"
+                            onClick={() => void handleDeleteCustomRole(role)}
+                          >
+                            <Trash2 className="mr-1 h-4 w-4" />
+                            Delete
+                          </Button>
+                        ) : null}
                       </div>
                     ))}
-              </div>
-            )}
+                </div>
+              )}
+            </div>
           </div>
         </CardContent>
       </Card>
+      ) : null}
     </div>
   );
 }

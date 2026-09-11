@@ -103,10 +103,7 @@ import {
 import {
     MAX_BILL_TENDERS,
     NON_CHARGEABLE_KINDS,
-    PERM_NON_CHARGEABLE,
     PERM_RECORD_PAYMENT,
-    PERM_SERVICE_CHARGE_WAIVER,
-    PERM_VOID_ORDER,
     SERVICE_CHARGE_WAIVER_KINDS,
     TENDER_METHODS,
     TIP_MODES,
@@ -134,6 +131,7 @@ import {
     type TenderDraft,
     type VocabularyOption,
 } from "@/lib/mis-capture"
+import { can } from "@/lib/session-scope"
 import { cn } from "@/lib/utils"
 
 /** The order this panel acts on, in the only shape it needs. */
@@ -285,10 +283,24 @@ export function CaptureActions({ restaurantId, order, onChanged }: {
     const [dialog, setDialog] = useState<Which>(null)
     const [busy, setBusy] = useState(false)
 
+    /*
+      THE SERVER'S ANSWER FOR THE THREE CONTROL ACTS, NOT A LOCAL UUID TEST.
+
+      Comp, void and waive each now have a flag in the session's `scope` block
+      (the backend's `sessionCapabilities`), for the reason that block exists:
+      the uuid that backs a control must be written down ONCE, beside the guard
+      on the route, or Dart and TypeScript drift from it independently. `can()`
+      reads the flag and only falls back to the action list for a session too old
+      to carry one.
+
+      Record Payment has no flag yet, so it still reads the SERVER's resolved
+      action list directly — the same list, one hop less direct. It should move
+      into the block when the backend publishes an answer for it.
+    */
     const actions = user?.actions_set
-    const canComp = hasPermission(actions, PERM_NON_CHARGEABLE)
-    const canVoid = hasPermission(actions, PERM_VOID_ORDER)
-    const canWaive = hasPermission(actions, PERM_SERVICE_CHARGE_WAIVER)
+    const canComp = can(user, "comp_item")
+    const canVoid = can(user, "void_order")
+    const canWaive = can(user, "waive_service_charge")
     const canTender = hasPermission(actions, PERM_RECORD_PAYMENT)
     const anyLocked = !canComp || !canVoid || !canWaive || !canTender
 

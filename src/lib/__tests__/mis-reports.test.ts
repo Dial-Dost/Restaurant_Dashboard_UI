@@ -522,3 +522,135 @@ describe('the export filename carries its own provenance', () => {
         expect(exportBaseName(nasty, d)).not.toMatch(/["/\\]/);
     });
 });
+
+// --- The Void KOT report's new columns --------------------------------------
+//
+// Migrations 034-039 gave the void ledger a REASON, a VOID_KIND and a
+// server-derived STAGE, and the backend added `reason` and `stage` to this
+// report's `columns` descriptor. The grid is driven entirely by that descriptor,
+// which is the whole reason the new columns need no client release — and is
+// exactly the property that breaks quietly if anyone ever hard-codes a column
+// list, a column COUNT or a column ORDER for a report on this side.
+//
+// THIS IS THE FOURTH TIME in this project that something was built and nothing
+// fed it, so these assertions are deliberately about the FEEDING: a report whose
+// server columns arrive and are not rendered fails here, and so does a blank
+// reason turned into a guess or used to drop the row.
+
+const VOID_KOT_COLUMNS: MisColumn[] = [
+    { key: 'placed_at', label: 'Placed', type: 'datetime' },
+    { key: 'voided_at', label: 'Voided', type: 'datetime' },
+    { key: 'order_id', label: 'KOT / Order', type: 'text' },
+    { key: 'table_name', label: 'Table', type: 'text' },
+    { key: 'order_type', label: 'Type', type: 'text' },
+    { key: 'item_count', label: 'Lines', type: 'int', total: true },
+    { key: 'qty', label: 'Qty', type: 'int', total: true },
+    { key: 'value', label: 'Value', type: 'money', total: true },
+    { key: 'voided_by', label: 'Voided by', type: 'text' },
+    { key: 'reason', label: 'Reason', type: 'text' },
+    { key: 'stage', label: 'Stage', type: 'text' },
+];
+
+// Three real shapes: a void through Controls (reason, kind and stage recorded),
+// a plain status-change cancel (the ledger has no row for it), and one from
+// before the ledger existed (the fields are absent rather than null).
+const VOID_ROWS: MisRow[] = [
+    {
+        placed_at: '2026-08-14T12:30:00.000Z', voided_at: '2026-08-14T12:41:00.000Z',
+        order_id: 'o-1', table_name: 'T1', order_type: 'Dine In',
+        item_count: 2, qty: 3, value: 640, voided_by: 'Asha',
+        reason: 'Guest changed their mind', void_kind: 'guest_request', stage: 'before_print',
+    },
+    {
+        placed_at: '2026-08-14T13:00:00.000Z', voided_at: '2026-08-14T13:02:00.000Z',
+        order_id: 'o-2', table_name: 'T4', order_type: 'Dine In',
+        item_count: 1, qty: 1, value: 220, voided_by: 'Ravi',
+        reason: null, void_kind: null, stage: null,
+    },
+    {
+        placed_at: '2026-08-10T19:00:00.000Z', voided_at: '2026-08-10T19:05:00.000Z',
+        order_id: 'o-3', table_name: 'T9', order_type: 'Takeaway',
+        item_count: 4, qty: 6, value: 1180, voided_by: null,
+    },
+];
+
+const VOID_TOTALS = { voids: 3, qty: 10, value: 2040, item_count: 7 };
+
+describe('the Void KOT report renders the columns the SERVER sends', () => {
+    it("renders every server column, in the server's order, with nothing added or dropped", () => {
+        // No stored prefs: the layout is the backend's, verbatim. `reason` and
+        // `stage` appear here purely because the payload carried them.
+        const shown = visibleColumns(VOID_KOT_COLUMNS, []);
+        expect(shown.map((c) => c.key)).toEqual(VOID_KOT_COLUMNS.map((c) => c.key));
+        expect(shown.map((c) => c.key)).toContain('reason');
+        expect(shown.map((c) => c.key)).toContain('stage');
+    });
+
+    it('never hides a column the backend has just added, even behind a stale pref', () => {
+        // A pref saved BEFORE this release lists the columns that existed then.
+        // Prefs store what is HIDDEN, not what is shown, so the two new columns
+        // reach everyone who already had a saved layout — the opposite
+        // convention would have shipped them invisible to every existing user.
+        const staleHidden = ['order_type'];
+        const shown = visibleColumns(VOID_KOT_COLUMNS, staleHidden).map((c) => c.key);
+        expect(shown).toContain('reason');
+        expect(shown).toContain('stage');
+        expect(shown).not.toContain('order_type');
+    });
+
+    it('renders a missing reason as a BLANK, never as a guess and never as a zero', () => {
+        expect(formatCell(VOID_ROWS[1]?.reason, 'text', FMT)).toBe('—');
+        expect(formatCell(VOID_ROWS[2]?.reason, 'text', FMT)).toBe('—');
+        expect(formatCell(VOID_ROWS[1]?.stage, 'text', FMT)).toBe('—');
+        // The one that WAS recorded shows exactly what was typed.
+        expect(formatCell(VOID_ROWS[0]?.reason, 'text', FMT)).toBe('Guest changed their mind');
+        expect(formatCell(VOID_ROWS[0]?.stage, 'text', FMT)).toBe('before_print');
+    });
+
+    it('keeps a row whose reason is blank — the row is the void, not the reason', () => {
+        // Dropping these rows would hide the voids with NO recorded reason,
+        // which are precisely the ones an auditor opened this document to find.
+        const matrix = buildExportMatrix(visibleColumns(VOID_KOT_COLUMNS, []), VOID_ROWS, VOID_TOTALS, 'Total');
+        expect(matrix.body).toHaveLength(3);
+        const reasonAt = matrix.columns.findIndex((c) => c.key === 'reason');
+        expect(reasonAt).toBeGreaterThan(-1);
+        expect(matrix.body[1]?.[reasonAt]).toBeNull();
+        expect(matrix.body[2]?.[reasonAt]).toBeNull();
+        expect(matrix.body[0]?.[reasonAt]).toBe('Guest changed their mind');
+    });
+
+    it('exports a blank reason as an EMPTY cell, not the word null', () => {
+        const matrix = buildExportMatrix(visibleColumns(VOID_KOT_COLUMNS, []), VOID_ROWS, VOID_TOTALS, 'Total');
+        const rows = toCsv(matrix).split(/\r?\n/);
+        const header = rows[0] ?? '';
+        expect(header).toContain('Reason');
+        expect(header).toContain('Stage');
+        expect(rows[2]).not.toMatch(/null|undefined|unknown/i);
+        expect(rows[1]).toContain('Guest changed their mind');
+    });
+
+    it('sorts the recorded reasons together and leaves the blanks at the bottom', () => {
+        // Both directions. A descending sort that floated the blanks to the top
+        // would bury every void that DOES name a reason.
+        const cols = visibleColumns(VOID_KOT_COLUMNS, []);
+        for (const dir of ['asc', 'desc'] as const) {
+            const sorted = sortRows(VOID_ROWS, { key: 'reason', dir }, cols);
+            expect(sorted).toHaveLength(3);
+            expect(sorted[0]?.order_id).toBe('o-1');
+        }
+    });
+
+    it('totals only the columns the backend totals — the new text columns total nothing', () => {
+        const matrix = buildExportMatrix(visibleColumns(VOID_KOT_COLUMNS, []), VOID_ROWS, VOID_TOTALS, 'Total');
+        const at = (key: string): number => matrix.columns.findIndex((c) => c.key === key);
+        expect(matrix.totals?.[at('value')]).toBe(2040);
+        expect(matrix.totals?.[at('reason')]).toBeNull();
+        expect(matrix.totals?.[at('stage')]).toBeNull();
+    });
+
+    it('still opens the ticket behind a row now that the row is wider', () => {
+        const d = reportDef('void_kot');
+        if (!d) {throw new Error('missing');}
+        expect(drillTarget(VOID_ROWS[1] ?? {}, d)).toEqual({ kind: 'kot', id: 'o-2' });
+    });
+});

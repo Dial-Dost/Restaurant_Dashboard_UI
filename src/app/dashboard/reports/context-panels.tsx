@@ -197,13 +197,14 @@ export function ContextPanel({ reportKey, payload, currencySymbol }: Ctx & { rep
                         />
                     </Tiles>
                     <Caveat>
-                        <b>This report is the ticket, not the reason.</b>{" "}It lists what was on each cancelled KOT
-                        and what it was worth. An order voided through <b>Controls → Void this order</b>{" "}also
-                        records a reason, a kind, an authoriser and a server-derived stage — those land on the
-                        audit trail and show up on the <b>Bill Edit</b>{" "}report; this report&apos;s columns are the
-                        ticket&apos;s own. An order cancelled by a plain status change carries none of them, which is
-                        why the reason is not a column here: it would be blank on exactly the rows an auditor is
-                        most interested in.
+                        <b>A BLANK REASON MEANS NONE WAS EVER RECORDED — it is never guessed, and the row is never
+                        hidden.</b>{" "}The <b>Reason</b>{" "}and <b>Stage</b>{" "}columns come from the void ledger,
+                        which only an order voided through <b>Controls → Void this order</b>{" "}writes: that path
+                        captures a reason, a kind, an authoriser, and a stage the SERVER derives (before print,
+                        after print, after bill) rather than one the till claims. An order cancelled by a plain
+                        status change, or voided before that ledger existed, has no row there — so those cells are
+                        blank. Blank is the honest answer; back-filling one would put a reason in an auditor&apos;s
+                        hands that nobody typed.
                     </Caveat>
                     <Caveat>
                         A KOT number cannot be recovered for a cancelled ticket — the KOT numbering keys off a

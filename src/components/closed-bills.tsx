@@ -23,6 +23,7 @@ import { useCurrency } from "@/hooks/use-currency"
 import { getClosedBills, getClosedBill, type ClosedBillSummary, type ClosedBillDetail } from "@/lib/db"
 import { formatDateTime } from "@/lib/tz"
 import { useTimezone } from "@/lib/use-timezone"
+import { elapsedToSettlement, formatDuration, readServiceClock } from "@/lib/service-clock"
 
 const PAGE_SIZE = 25
 
@@ -287,6 +288,17 @@ function BillDetailBody({ detail, money }: { detail: ClosedBillDetail; money: (n
   const { timezone } = useTimezone()
   const d = detail
   const discountLabel = d.discount_type === "percent" ? `Discount (${d.discount_value}%)` : "Discount"
+  /*
+    THE SERVICE DURATION, AS THE SERVER MEASURED IT.
+
+    A settled bill's clock is a FACT about a finished service, not a counter, so
+    there is no ticking here and no local delta — `elapsedToSettlement` on a
+    stopped clock ignores one. Null when the backend sent no clock at all, and
+    the Fact below is then not drawn: ABSENT IS NOT ZERO, and "0m" beside a real
+    waiter's name is a worse answer than nothing.
+  */
+  const closedClock = readServiceClock(d)
+  const serviceSpan = closedClock === null ? null : formatDuration(elapsedToSettlement(closedClock).ms)
 
   return (
     <div className="space-y-5">
@@ -369,6 +381,21 @@ function BillDetailBody({ detail, money }: { detail: ClosedBillDetail; money: (n
           <Fact label="Target APC" value={d.target_apc ? money(d.target_apc) : "—"} />
           <Fact label="Seated" value={dateTime(d.seated_at, timezone)} />
           <Fact label="Left" value={dateTime(d.left_at, timezone)} />
+          {/*
+            D2 ON A FINISHED SERVICE — how long this table was in service, from
+            the first order to the settle.
+
+            THE SERVER'S FIGURE, not a subtraction done here. The same clock the
+            live floor screen showed while the table was open, frozen at the
+            settle, which is the whole point of the backend owning it: History
+            and the floor cannot report two different durations for one table,
+            and a laptop whose own clock is wrong cannot invent a third.
+
+            Drawn only when the backend actually sent a clock. An older server,
+            or a bill whose orders the server could not date, gets no Fact at all
+            rather than a fabricated "0m" against a real waiter's table.
+          */}
+          {serviceSpan ? <Fact label="Service time" value={serviceSpan} /> : null}
           <Fact label="Customer" value={d.customer ?? "—"} />
           <Fact label="Orders" value={String(d.orders.length)} />
         </div>

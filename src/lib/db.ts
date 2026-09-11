@@ -15,8 +15,12 @@ import { type Order } from '@/app/dashboard/orders/page';
 import { type Table } from '@/app/dashboard/tables/data';
 import { type AuditLog } from '@/app/dashboard/audit-logs/page';
 import { serverBackendBase, serverBaseUrlFrom } from '@/lib/backend-url';
+import { readErrorMessage, refusalSentence, type RefusedAction } from '@/lib/error-message';
 import { SELECTED_OUTLET_KEY } from '@/lib/outlet';
 import type { BrandConfig } from '@/lib/brand-fonts';
+import type { RolePermission } from '@/lib/role-permissions';
+import type { ServiceClock } from '@/lib/service-clock';
+import type { SessionScope } from '@/lib/session-scope';
 import type {
     BillTenderState,
     BillingCounterRecord,
@@ -73,6 +77,20 @@ export interface RoleDefinition {
     id: string;
     role_name: string;
     actions_performable: string[];
+    /*
+      C6 — THE SAME IDS, ALREADY READABLE. GET /roles projects each id's name,
+      description and group beside `actions_performable`, in the SAME ORDER and
+      the SAME LENGTH, so a role screen renders without a second call to
+      GET /actions — which carries a DIFFERENT permission, and whose absence is
+      what made a role open to a column of raw uuids.
+
+      OPTIONAL because a backend older than the projection sends none;
+      `src/lib/role-permissions.ts` owns the fallback and is the only thing that
+      should read either field.
+    */
+    permissions?: RolePermission[];
+    /** The server's answer to "may this role be written". Custom roles: true. */
+    editable?: boolean;
 }
 
 export interface TableAssignmentDefinition {
@@ -708,34 +726,11 @@ export const requestReceptionBackend = async <T = unknown>(
     });
 };
 
-const readErrorMessage = async (response: Response): Promise<string> => {
-    if (response.status === 403) {
-        return 'Action forbidden';
-    }
-    if (response.status === 413) {
-        return 'Uploaded screenshot is too large. Please use a smaller image.';
-    }
-
-    try {
-        const payload = await response.json();
-        if (typeof payload?.error === 'string' && payload.error.trim().length > 0) {
-            return payload.error;
-        }
-    } catch {
-        // Ignore JSON parse issues and fall back to response text.
-    }
-
-    try {
-        const text = await response.text();
-        if (text.trim().length > 0) {
-            return text;
-        }
-    } catch {
-        // Ignore text parse issues and fall back to status code.
-    }
-
-    return `Request failed with status ${response.status}`;
-};
+// The shared refusal reader now lives in `@/lib/error-message` — it READS THE
+// BODY instead of answering "Action forbidden" before looking, so the server's
+// `details` sentence (the write-off value, who may reprint, which permission is
+// missing) reaches the person who was refused. A 403 with no body still reads
+// "Action forbidden", which is what this file used to say for all of them.
 
 const mapBooking = (timeZone: string) => (item: any): Booking => ({
     id: String(item.booking_id ?? item.id ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
@@ -891,7 +886,53 @@ const mapOrderItem = (item: any) => ({
     variation_name: typeof item.variation_name === 'string' && item.variation_name ? item.variation_name : null,
 });
 
-const mapOrder = (item: any): Order => ({
+/*
+  THREE READERS FOR THE FIELDS ADDED BELOW, TAKING `unknown` RATHER THAN `any`.
+
+  The wire row arrives untyped, and the rest of this mapper reads it straight off
+  an `any`. These take a typed VIEW of the same object instead, so the new fields
+  carry a declared shape and a declared "absent" case rather than whatever the
+  server happened to send. Nothing existing changes.
+*/
+
+/**
+ * The service-clock block, passed through WITHOUT interpretation.
+ *
+ * Deliberately not validated here: `src/lib/service-clock.ts` is the ONE place
+ * allowed to read this shape, and a second validator is the drift the clock
+ * exists to end. Absent or null becomes null, and every screen then draws no
+ * clock rather than a zero.
+ */
+const wireServiceClock = (value: unknown): ServiceClock | null =>
+    (value === undefined || value === null ? null : (value as ServiceClock));
+
+/**
+ * An optional timestamp where ABSENT and NULL mean different things.
+ *
+ * `undefined` = the backend never sent the field (an older server); `null` = it
+ * sent one and there is no instant. `barked_at` needs exactly that distinction:
+ * absent means "this server cannot tell us, assume barked", null means "waiting
+ * to be barked", and collapsing the two greys out every live ticket on a tenant
+ * running an older build.
+ */
+const wireTimestamp = (value: unknown): string | null | undefined =>
+    value === undefined ? undefined : (typeof value === 'string' ? value : null);
+
+/** An optional list of numbers; `undefined` for "the backend sent none". */
+const wireNumbers = (value: unknown): number[] | undefined => {
+    if (!Array.isArray(value)) { return undefined; }
+    const out: number[] = [];
+    for (const entry of value as unknown[]) {
+        const n = Number(entry);
+        if (Number.isFinite(n)) { out.push(n); }
+    }
+    return out;
+};
+
+const mapOrder = (item: any): Order => {
+  // A typed view of the SAME object, used only by the fields below.
+  const wire = item as Record<string, unknown>;
+  return ({
     id: String(item.id ?? `${Date.now()}`),
     table: String(item.table ?? ''),
     customer: String(item.customer ?? 'Guest'),
@@ -952,7 +993,43 @@ const mapOrder = (item: any): Order => ({
     // Pre-existing rows predate the columns and read null — hence the guards.
     created_at: typeof item.created_at === 'string' ? item.created_at : null,
     updated_at: typeof item.updated_at === 'string' ? item.updated_at : null,
-});
+    /*
+      THE "BARKED" STEP AND THE KOT NUMBERS, WHICH THIS MAPPER USED TO DROP ON
+      THE FLOOR.
+
+      GET /orders returns both. Neither was copied out here, so `barked_at`
+      arrived as `undefined` — which `isOrderBarked` reads as "already barked" —
+      and `kot_nos` as absent, which `kotLabel` reads as "this backend cannot
+      tell us". The result: the orders grid's "Not barked" badge could never
+      appear and the KOT chip beside a table name never drew, on a screen whose
+      code renders both. Two more server fields with no consumer, in the mapper
+      every consumer goes through.
+
+      The guards keep the two ABSENT meanings intact: a backend that genuinely
+      does not send `barked_at` still yields `undefined` (barked), and one that
+      cannot number KOTs still yields `undefined` (draw nothing) rather than an
+      empty chip.
+    */
+    barked_at: wireTimestamp(wire.barked_at),
+    kot_nos: wireNumbers(wire.kot_nos),
+    /*
+      D2 — THE SERVER'S SERVICE CLOCK, CARRIED VERBATIM.
+
+      `service_clock.ts` on the backend computes "how long has this table been in
+      service" ONCE, against the SERVER's clock, and ships it as a number of
+      milliseconds plus the instant it was measured at. It exists so the
+      dashboard and the owner app cannot report two different durations for the
+      same table, and so that a till whose own clock is ten minutes fast does not
+      turn a fresh ticket into a ten-minute wait.
+
+      PASSED THROUGH UNVALIDATED ON PURPOSE: `src/lib/service-clock.ts` is the
+      one place allowed to interpret this block, and validating it in two places
+      is the drift this whole exercise is about. Absent on an older backend, and
+      every screen then draws no clock — never a zero.
+    */
+    service: wireServiceClock(wire.service),
+  });
+};
 
 const readLocalField = async <T>(restaurantId: string, field: keyof RestaurantData): Promise<T> => {
     const restaurant = ensureLocalRestaurant(restaurantId);
@@ -1450,7 +1527,32 @@ export const updateTableCovers = async (restaurantId: string, tableName: string,
     throw new Error(response ? await readErrorMessage(response) : 'Unable to update table covers');
 };
 
-export const releaseTable = async (restaurantId: string, tableName: string) => {
+/**
+ * A REFUSAL THAT SURVIVES THE SERVER-ACTION BOUNDARY.
+ *
+ * This module is "use server", and Next REDACTS the message of an Error thrown
+ * across that boundary in production — the same fact that made `signInEmployee`
+ * return its failure instead of throwing it (see services/authService.ts). So a
+ * refusal reaching this file as a carefully worded sentence still arrives at the
+ * browser as "An unexpected response was received from the server."
+ *
+ * Reading the body in `readErrorMessage` is therefore only HALF of getting the
+ * sentence to a human: the route that can be refused has to RETURN it. These
+ * two acts are the ones a refusal can currently land on in this app — releasing
+ * a table that still owes money, and discounting an open bill — and they are
+ * the ones whose 403 bodies carry a figure or a permission name worth reading.
+ *
+ * The SHAPE and its type guard live in `@/lib/error-message` — a "use server"
+ * module may only export async functions, so a type guard cannot live here.
+ */
+export type ReleaseTableResult = { acknowledged: true } | RefusedAction;
+
+/**
+ * Release a table. A 403 comes back as a RefusedAction carrying the server's
+ * sentence (which names the rupee value the release would have written off),
+ * NOT as a thrown Error whose message production would strip.
+ */
+export const releaseTable = async (restaurantId: string, tableName: string): Promise<ReleaseTableResult> => {
     const response = await backendCall('/release-table', restaurantId, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1460,6 +1562,10 @@ export const releaseTable = async (restaurantId: string, tableName: string) => {
     if (response?.ok) {
         await getTables(restaurantId);
         return { acknowledged: true };
+    }
+
+    if (response && (response.status === 403 || response.status === 409)) {
+        return { refused: true, status: response.status, error: await readErrorMessage(response) };
     }
 
     throw new Error(response ? await readErrorMessage(response) : 'Unable to release table');
@@ -1652,6 +1758,13 @@ export interface ClosedBillDetail extends ClosedBillSummary {
     // false when the reconstructed line items don't add up to the stored total
     // (an item was edited after settlement, say) — the UI warns instead of lying.
     totals_reconciled: boolean;
+    /*
+      D2 ON A FINISHED SERVICE — the same clock the live table showed, frozen at
+      the settle and measured by the SERVER, so History and the floor report one
+      duration for one table instead of two. Optional: a backend older than
+      `service_clock.ts` sends none, and the fact is simply not drawn.
+    */
+    service?: ServiceClock | null;
 }
 
 export interface ClosedBillPage {
@@ -2438,6 +2551,45 @@ export const saveMenuItems = async (restaurantId: string, items: MenuItem[]) => 
     return { acknowledged: true };
 };
 
+/** What GET /auth/me answers with, in the fields this app re-hydrates from. */
+export interface RefreshedSession {
+    role?: string;
+    role_all?: string[];
+    actions_set?: string[];
+    action_names?: string[];
+    /*
+      The server's floor-scoping answer. See src/lib/session-scope.ts: it is
+      RECOMPUTED on every /auth/me rather than stored on the session, so a role
+      change takes effect on the next launch instead of the next login.
+    */
+    scope?: SessionScope;
+}
+
+/**
+ * Re-read what this session may do, from the verified session on the server.
+ *
+ * WHY: the action set, the role list and the `scope` block were frozen into
+ * localStorage at login, so a permission granted or revoked since then never
+ * reached the browser, and a session stored before `scope` existed carried none
+ * at all. The backend recomputes all of it on every call for exactly this
+ * reason.
+ *
+ * RETURNS NULL ON ANY FAILURE, AND THAT IS NOT A SIGN-OUT. /auth/ paths are
+ * exempt from the 401 redirect (`isAuthPath`), so an expired token, a 403, an
+ * outage or a laptop on a bad wifi all land here as null and the caller keeps
+ * the session it already had. A genuinely dead session is caught by the next
+ * real request, which is `enforceSessionAlive`'s job and should stay its alone —
+ * logging the floor out because a refresh call timed out is a worse outage than
+ * a stale permission list.
+ *
+ * The empty restaurantId is deliberate: the tenant is derived from the bearer
+ * token, and this call is made before any restaurant-scoped read.
+ */
+export const refreshSession = async (): Promise<RefreshedSession | null> => {
+    const data = await backendJson<RefreshedSession>('/auth/me', '', { method: 'GET' });
+    return data && typeof data === 'object' ? data : null;
+};
+
 export const getRoles = async (restaurantId: string): Promise<RoleDefinition[]> => {
     const data = await backendJson<RoleDefinition[]>(
         `/roles?restaurantId=${encodeURIComponent(restaurantId)}`,
@@ -2458,6 +2610,10 @@ export interface ActionRow {
 export interface CoreRoleRow {
     role: string;
     actions: string[]; // '*' indicates all actions
+    /** C6's projection — see RoleDefinition.permissions. */
+    permissions?: RolePermission[];
+    /** false for every core role: they are defined in code and have no write route. */
+    editable?: boolean;
 }
 
 export const getActions = async (
@@ -4172,8 +4328,31 @@ export interface BillDiscountResult {
     amount?: number;
     threshold?: number;
 }
-export const setBillDiscount = async (restaurantId: string, tableName: string, type: 'percent' | 'flat', value: number): Promise<BillDiscountResult> =>
-    postJson('/bills/discount', restaurantId, { table_name: tableName, type, value });
+/**
+ * Apply (or clear, with 0) a discount on a table's open bill.
+ *
+ * A 403 is RETURNED, not thrown, for the reason spelled out at `RefusedAction`:
+ * the server's refusal here names the permission a discount of this size needs,
+ * and a thrown message would be redacted in production before anyone read it.
+ */
+export const setBillDiscount = async (
+    restaurantId: string,
+    tableName: string,
+    type: 'percent' | 'flat',
+    value: number,
+): Promise<BillDiscountResult | RefusedAction> => {
+    const res = await backendCall('/bills/discount', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ table_name: tableName, type, value }),
+    });
+    if (!res) {throw new Error('Could not reach the server. The discount was not applied.');}
+    if (res.status === 403) {
+        return { refused: true, status: 403, error: await readErrorMessage(res) };
+    }
+    if (!res.ok) {throw new Error(await readErrorMessage(res));}
+    try { return (await res.json()) as BillDiscountResult; } catch { return {}; }
+};
 
 export interface DiscountRequest {
     id: string;
@@ -5031,10 +5210,12 @@ export const getMisKotDetail = async (
  */
 const captureErrorMessage = async (response: Response, fallback: string): Promise<string> => {
     try {
-        const payload = await response.json();
-        if (typeof payload?.error === 'string' && payload.error.trim().length > 0) {
-            return payload.error;
-        }
+        const payload: unknown = await response.json();
+        // Same picker the shared reader uses, so a capture route that answers in
+        // the `{ error: "Forbidden", details: "…" }` shape every other gate uses
+        // surfaces its sentence here too instead of the generic fallback.
+        const sentence = refusalSentence(payload);
+        if (sentence) {return sentence;}
     } catch { /* fall through to the generic sentence */ }
     return `${fallback} (${String(response.status)})`;
 };

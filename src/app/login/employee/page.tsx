@@ -149,6 +149,19 @@ function EmployeeLoginContent() {
         emp_Lname: user.emp_Lname ?? null as string | null,
         actions_set: user.actions_set as string[],
         action_names: (user.action_names ?? []) as string[],
+        /*
+          THE SERVER'S FLOOR-SCOPING ANSWER, CARRIED THROUGH RATHER THAN
+          RE-DERIVED. /auth/employee-login ships `scope.waiter_only` (see the
+          backend's role_scope.ts); dropping it here is what left this app
+          working the rule out for itself from the role strings, which is how a
+          waiter holding a custom role ended up seeing the takings.
+
+          Left UNDEFINED — never defaulted to a guess — on a backend that does
+          not send it. AuthContext then re-hydrates it from /auth/me, and
+          src/lib/session-scope.ts answers "not scoped" in the meantime, which is
+          the direction that keeps an owner's screen intact.
+        */
+        scope: (user as { scope?: { waiter_only: boolean } }).scope,
       };
       console.log("Login successful, user data:", authUser);
       login(authUser);

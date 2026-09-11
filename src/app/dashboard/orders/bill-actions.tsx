@@ -9,6 +9,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Percent } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { setBillDiscount, splitBill, mergeTables, refundBill, getLoyalty, redeemLoyalty, type SplitPart, type LoyaltyAccount } from "@/lib/db"
+import { isRefusedAction } from "@/lib/error-message"
 
 type Which = null | "discount" | "split" | "merge" | "refund" | "loyalty"
 
@@ -46,6 +47,16 @@ export function BillActions({
     setBusy(true)
     try {
       const r = await setBillDiscount(restaurantId, tableName, discountType, clear ? 0 : Number(discountValue) || 0)
+      // REFUSED, WITH THE REASON. The server can turn a discount down on its own
+      // terms (a size this role may not write off, a bill already settled) and
+      // it says which in `details`. That sentence arrives as a VALUE because an
+      // Error thrown out of a Server Action is redacted in production — see
+      // RefusedAction in lib/error-message.ts — so the person is told what to
+      // do next instead of reading "Failed".
+      if (isRefusedAction(r)) {
+        toast({ title: "Discount not applied", description: r.error, variant: "destructive" })
+        return
+      }
       if (r?.pending) {
         // Above the restaurant's approval threshold — parked for a manager.
         toast({ title: "Sent for approval", description: `This discount (≈${r.amount}) needs a manager's approval — it will apply once approved.` })

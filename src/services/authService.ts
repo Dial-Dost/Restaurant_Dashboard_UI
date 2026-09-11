@@ -3,6 +3,7 @@
 'use server';
 
 import { serverBackendBase } from '@/lib/backend-url';
+import { readErrorMessage } from '@/lib/error-message';
 import type { User} from '@/lib/db';
 import { findRestaurantByName, findUserInRestaurant, createRestaurant, addEmployee, removeEmployee } from '@/lib/db';
 
@@ -22,31 +23,14 @@ const getRestaurantId = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/
 // fallback had never pointed at the backend even when it did fire.
 const apiBaseUrl = (): string => serverBackendBase();
 
-const readErrorMessage = async (response: Response): Promise<string> => {
-    if (response.status === 403) {
-        return 'Action forbidden';
-    }
-
-    try {
-        const payload = await response.json();
-        if (typeof payload?.error === 'string' && payload.error.trim().length > 0) {
-            return payload.error;
-        }
-    } catch {
-        // Ignore parse errors and fall back to text.
-    }
-
-    try {
-        const text = await response.text();
-        if (text.trim().length > 0) {
-            return text;
-        }
-    } catch {
-        // Ignore text read errors and return generic message.
-    }
-
-    return 'Unable to sign in.';
-};
+// THE SECOND COPY OF THE 403 SHORTCUT, DELETED. This module had its own
+// `readErrorMessage` that also answered "Action forbidden" without reading the
+// body — so a login refused because the subscription expired, or because the
+// account was closed, told the owner nothing at all. It now shares the one
+// reader in `@/lib/error-message`, with this module's own wording kept as the
+// fallback for every status that has no sentence of its own.
+const readSignInError = async (response: Response): Promise<string> =>
+    readErrorMessage(response, 'Unable to sign in.');
 
 // Restaurant and Admin Sign Up
 export const signUpRestaurant = async ({ restaurantName, adminName, adminEmployeeId, password }: {
@@ -134,7 +118,7 @@ export const signInEmployee = async (restaurantName: string, employeeUsername: s
     }
 
     if (!response.ok) {
-        return { ok: false, error: await readErrorMessage(response) };
+        return { ok: false, error: await readSignInError(response) };
     }
 
     return { ok: true, user: await response.json() as Record<string, unknown> };

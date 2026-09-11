@@ -27,6 +27,7 @@ import {
   History,
   SlidersHorizontal,
   FileSpreadsheet,
+  LayoutGrid,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import Link from 'next/link';
@@ -47,6 +48,7 @@ import { SubscriptionBanner } from '@/components/subscription-banner';
 import { usePathname, useRouter } from 'next/navigation';
 import { useTranslation } from '@/context/LanguageContext';
 import { useAuth } from '@/context/AuthContext';
+import { canOpenEmployeesPage, canOpenFloorPlan, isWaiterOnly as sessionIsWaiterOnly } from '@/lib/session-scope';
 import { RealtimeProvider } from '@/context/RealtimeContext';
 import { TimezoneProvider } from '@/lib/use-timezone';
 import Dock, { type DockSectionData } from '@/components/ui/Dock';
@@ -79,13 +81,33 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
   };
 
   const isValet = hasRole('valet') && !hasRole('admin');
-  const isWaiterOnly = hasRole('waiter') && !hasRole('admin');
+  /*
+    THE SERVER DECIDES WHO IS A SCOPED WAITER, AND THIS FILE OBEYS.
+
+    This used to read `hasRole('waiter') && !hasRole('admin')` — one of three
+    copies of that rule in this app, and a test on the SPELLING of a role rather
+    than on authority. A waiter granted any custom role carries that role's UUID
+    in `role_all`, so on any tenant using granular RBAC the rule answered
+    differently here than it did on the phone in the same person's pocket.
+
+    `scope.waiter_only` is the backend's single answer (role_scope.ts), shipped
+    on the session payload. Nothing below re-derives it.
+  */
+  const isWaiterOnly = sessionIsWaiterOnly(user);
   const canAccessValet = hasRole('valet') || hasRole('admin');
 
   const actionNames = useMemo(
     () => new Set((user?.action_names ?? []).map(normalizeActionName).filter((name) => name.length > 0)),
     [user?.action_names],
   );
+
+  /*
+    D5 — the floor PLAN is a separate destination from the tables it draws.
+    Offered only to a session holding at least one of the three layout
+    permissions, because every control on that page rides on one of them and a
+    page where nothing works is worse than no page.
+  */
+  const canEditFloorPlan = canOpenFloorPlan(user);
 
   const hasAllActions = Array.isArray(user?.actions_set) && user.actions_set.includes('*');
   const canAccessByAction = (keywords: string[]) => {
@@ -117,6 +139,19 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
         { href: '/dashboard', label: t('dashboard'), icon: <Home className="h-6 w-6" />, exact: true, actionKeywords: [] },
         { href: '/dashboard/orders', label: t('orders'), icon: <ListOrdered className="h-6 w-6" />, actionKeywords: ['order', 'bill', 'payment'] },
         { href: '/dashboard/tables', label: t('tables'), icon: <Package className="h-6 w-6" />, actionKeywords: ['table'] },
+        /*
+          D5 — FLOOR PLAN IS ITS OWN DESTINATION, BESIDE TABLES AND NOT INSIDE IT.
+          Tables is the SERVICE screen (occupy, covers, release, take orders);
+          this is the LAYOUT screen (zones, add, move, re-seat, delete). They were
+          one card grid, which is precisely what D5 forbids.
+
+          Hidden — not merely disabled — for a session holding none of the three
+          layout permissions, and every control on the page is separately gated
+          by the permission its own route demands.
+        */
+        ...(canEditFloorPlan
+          ? [{ href: '/dashboard/floor-plan', label: 'Floor plan', icon: <LayoutGrid className="h-6 w-6" />, actionKeywords: [] as string[] }]
+          : []),
         { href: '/dashboard/waitlist', label: 'Waitlist', icon: <Hourglass className="h-6 w-6" />, actionKeywords: ['table', 'order', 'waitlist'] },
         { href: '/dashboard/bookings', label: t('bookings'), icon: <ShoppingCart className="h-6 w-6" />, actionKeywords: ['booking'] },
         { href: '/dashboard/menu', label: 'Menu', icon: <BookOpen className="h-6 w-6" />, actionKeywords: ['menu'] },
@@ -190,7 +225,25 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
 
   const navItems = useMemo(() => {
     if (isValet) {return [{ href: '/dashboard/valet', label: 'Valet Dashboard', icon: <Activity className="h-6 w-6" />, exact: true }];}
-    if (isWaiterOnly) {return [{ href: '/dashboard/orders', label: t('orders'), icon: <ListOrdered className="h-6 w-6" />, exact: true }];}
+    /*
+      A WAITER WORKS FROM TWO SCREENS, NOT ONE.
+
+      This used to pin a waiter to /dashboard/orders alone, which contradicted
+      C1 outright: a waiter is supposed to get "Add Order" and "Print Bill", and
+      both start from a table. The Tables screen is now the SERVICE screen (D5),
+      and every route it calls — /get-tables, /table-status, /occupy-table,
+      /release-table, /table-covers — rides on the same "Table Occupied"
+      permission the core waiter role already holds, so showing it grants
+      nothing the server was not already answering. The floor-plan screen, which
+      is where the layout acts moved to, is NOT on this list and its routes
+      refuse a waiter anyway.
+    */
+    if (isWaiterOnly) {
+      return [
+        { href: '/dashboard/tables', label: t('tables'), icon: <Package className="h-6 w-6" />, exact: true },
+        { href: '/dashboard/orders', label: t('orders'), icon: <ListOrdered className="h-6 w-6" />, exact: true },
+      ];
+    }
     return fullNavItems;
   }, [isValet, isWaiterOnly, fullNavItems, t]);
 
@@ -203,7 +256,11 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
     // in any non-admin allow-list (mirrors the backend enforceAdmin gate).
     const isAdmin = hasRole('admin');
     const valetAllowedPaths = new Set(['/dashboard/valet']);
-    const waiterAllowedPaths = new Set(['/dashboard/orders']);
+    // Kept in step with the waiter dock above: the two screens a waiter works
+    // from. Deep-linking one of them elsewhere still bounces here, and the
+    // floor-plan page is deliberately absent — its routes refuse a waiter, so
+    // landing there would be a screen of controls that all fail.
+    const waiterAllowedPaths = new Set(['/dashboard/orders', '/dashboard/tables']);
     const roleAwareAllowedPaths = new Set([
       ...navItems.map((item) => item.href),
       ...(isAdmin ? ['/dashboard/settings'] : []),
@@ -262,7 +319,21 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
     router.push('/login');
   }
 
-  const canViewEmployees = hasRole('admin') && canAccessByAction(['employee', 'role']);
+  /*
+    C5 + C6 — THE LINK TO THE ROLES SCREEN IS A PERMISSION, NOT A ROLE NAME.
+
+    This read `hasRole('admin')`, which is the other half of the defect the page
+    itself carried: the backend rewrites a primary role it cannot recognise (a
+    custom role's uuid, or a record whose primary was never set) to the literal
+    string "employee", and a manager the tenant has deliberately granted "View
+    Roles" was never an admin to begin with. Both were shown a menu with no way
+    into the screen the server would happily have served them.
+
+    `canOpenRoles` asks the resolved action set — the same list GET /roles and
+    GET /core-roles are gated on — so the menu entry appears exactly when the
+    route would answer.
+  */
+  const canViewEmployees = canOpenEmployeesPage(user);
   const canViewAuditLogs = hasRole('admin') && canAccessByAction(['audit', 'log']);
 
   return (

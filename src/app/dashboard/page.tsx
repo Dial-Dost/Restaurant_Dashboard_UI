@@ -23,6 +23,7 @@ import {
 } from '@/components/ui/dialog';
 import { ArrowUpRight, Activity, CircleUser, CreditCard, DollarSign, ChevronRight } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
+import { isWaiterOnly as sessionIsWaiterOnly } from '@/lib/session-scope';
 import { getBookings, getCustomers, getTables, getMonthlyApcInsight } from '@/lib/db';
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
@@ -164,11 +165,23 @@ export default function Dashboard() {
     return hasKeywordAction(actionNames, keywords);
   };
   const isValet = hasRole('valet') && !hasRole('admin');
-  const isWaiterOnly = hasRole('waiter') && !hasRole('admin');
+  /*
+    THE SERVER'S ANSWER, NOT A SECOND GUESS AT IT.
+
+    This read `hasRole('waiter') && !hasRole('admin')` — a test on the SPELLING
+    of a role rather than on authority. A waiter granted any custom role carries
+    that role's UUID in `role_all`, the test flipped, and every tile on this
+    overview opened up, money included. `scope.waiter_only` is the backend's one
+    answer (role_scope.ts); see src/lib/session-scope.ts.
+  */
+  const isWaiterOnly = sessionIsWaiterOnly(user);
   const canOpenSection = (href: string, keywords: string[]) => {
     if (!user) {return false;}
     if (isValet) {return false;}
-    if (isWaiterOnly) {return href === '/dashboard/orders';}
+    // The two screens a scoped waiter works from — kept in step with the
+    // dashboard layout's own allow-list, so a tile here never links somewhere
+    // the shell would immediately bounce them out of.
+    if (isWaiterOnly) {return href === '/dashboard/orders' || href === '/dashboard/tables';}
     return canAccessByAction(keywords);
   };
   const canOpenAnalytics = canOpenSection('/dashboard/analytics', ['analytics', 'apc', 'report']);
