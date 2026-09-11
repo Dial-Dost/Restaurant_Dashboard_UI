@@ -5148,6 +5148,31 @@ export const renameInventoryCategory = async (restaurantId: string, from: string
     postJson('/inventory-categories/rename', restaurantId, { from, to });
 
 export interface SplitPart { label: string; subtotal: number; total: number }
+/**
+ * F3 — print the split, one document per part.
+ *
+ * The parts are NOT sent: the server recomputes them from the bill as it stands
+ * at print time. Between the preview and the print somebody adds a round or a
+ * coupon lands, and printing the parts this screen is holding would hand a guest
+ * a bill that sums to a total nobody owes. So this posts the same INPUTS the
+ * preview used and the server derives the paper itself.
+ */
+export const printSplitBills = async (
+    restaurantId: string,
+    tableName: string,
+    input: { mode?: 'even' | 'item' | 'section'; parts?: number; groups?: unknown[]; axis?: string },
+): Promise<{ success: boolean; parts: number; jobs: { index: number; of: number; label: string; grandTotal: number; destination: string | null }[] }> => {
+    const response = await backendCall('/print/bill/split', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ table_name: tableName, ...input }),
+    });
+    if (!response?.ok) {
+        throw new Error(response ? await readErrorMessage(response) : 'Unable to print the split bills');
+    }
+    return (await response.json()) as { success: boolean; parts: number; jobs: { index: number; of: number; label: string; grandTotal: number; destination: string | null }[] };
+};
+
 export const splitBill = async (restaurantId: string, tableName: string, parts: number): Promise<{ grand_total: number; parts: SplitPart[] }> =>
     postJson('/bills/split', restaurantId, { table_name: tableName, mode: 'even', parts });
 export const mergeTables = async (restaurantId: string, fromTable: string, toTable: string) =>

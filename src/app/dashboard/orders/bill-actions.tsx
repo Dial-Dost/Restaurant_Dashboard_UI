@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Percent } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
-import { setBillDiscount, splitBill, mergeTables, refundBill, getLoyalty, redeemLoyalty, getBillForTable, setBillCustomerName, type SplitPart, type LoyaltyAccount } from "@/lib/db"
+import { setBillDiscount, splitBill, mergeTables, refundBill, getLoyalty, redeemLoyalty, getBillForTable, setBillCustomerName, printSplitBills, type SplitPart, type LoyaltyAccount } from "@/lib/db"
 import { isRefusedAction } from "@/lib/error-message"
 
 type Which = null | "discount" | "split" | "merge" | "refund" | "loyalty" | "customer"
@@ -132,6 +132,37 @@ export function BillActions({
     try { const r = await splitBill(restaurantId, tableName, Number(splitN) || 2); setSplitResult(r.parts ?? []) }
     catch (e) { fail(e) } finally { setBusy(false) }
   }
+  /**
+   * F3 — put the split on paper.
+   *
+   * Sends the same INPUTS the preview used rather than the parts on screen; the
+   * server derives them again from the bill as it stands. See printSplitBills.
+   */
+  const doPrintSplit = async () => {
+    setBusy(true)
+    try {
+      const r = await printSplitBills(restaurantId, tableName, { mode: "even", parts: Number(splitN) || 2 })
+      toast({
+        title: `Printing ${String(r.parts)} bill${r.parts === 1 ? "" : "s"}`,
+        description: r.jobs[0]?.destination
+          ? `Going to ${r.jobs[0].destination}, one after another.`
+          : "One document per part, one after another.",
+      })
+    } catch (e) {
+      const msg = String((e as Error)?.message ?? e)
+      // The web and the API deploy on separate pipelines, and the backend's can
+      // be held back by a pending migration — so a 404 here means one specific,
+      // fixable thing rather than a broken printer.
+      if (/cannot post|not found|404/i.test(msg)) {
+        toast({
+          title: "Not available yet",
+          description: "This server has not finished updating, so split bills cannot be printed from here yet. Ask your administrator to complete the update.",
+          variant: "destructive",
+        })
+      } else { fail(e) }
+    } finally { setBusy(false) }
+  }
+
   const doMerge = async () => {
     if (!mergeSrc.trim()) {return}
     setBusy(true)
@@ -237,13 +268,28 @@ export function BillActions({
                   <DialogFooter><Button onClick={doSplit} disabled={busy}>Split</Button></DialogFooter>
                 </>
               ) : (
-                <div className="space-y-1">
-                  {splitResult.map((p, i) => (
-                    <div key={i} className="flex justify-between rounded border p-2 text-sm">
-                      <span>{p.label}</span><span className="font-semibold">{p.total}</span>
-                    </div>
-                  ))}
-                </div>
+                <>
+                  <div className="space-y-1">
+                    {splitResult.map((p, i) => (
+                      <div key={i} className="flex justify-between rounded border p-2 text-sm">
+                        <span>{p.label}</span><span className="font-semibold">{p.total}</span>
+                      </div>
+                    ))}
+                  </div>
+                  {/* THE HALF THAT WAS MISSING. This screen has shown the parts
+                      since the split shipped; nothing ever printed them, so
+                      "split the bill" meant reading numbers off a monitor to a
+                      table of guests. */}
+                  <p className="text-xs text-muted-foreground">
+                    Each part prints as its own bill, one after another, with its own total.
+                  </p>
+                  <DialogFooter>
+                    <Button variant="ghost" onClick={() => { setSplitResult(null); }} disabled={busy}>Change</Button>
+                    <Button onClick={() => { void doPrintSplit() }} disabled={busy}>
+                      {busy ? "Printing…" : `Print ${String(splitResult.length)} bills`}
+                    </Button>
+                  </DialogFooter>
+                </>
               )}
             </>
           )}
