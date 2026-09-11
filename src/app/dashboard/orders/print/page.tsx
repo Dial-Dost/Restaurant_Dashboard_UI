@@ -5,7 +5,7 @@ import QRCode from 'qrcode';
 import { useSearchParams } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
 import type { BillPrintSettings, RestaurantProfile} from '@/lib/db';
-import { getBillPrintSettings, getRestaurantProfile, getRestaurantLogo, getBillByOrder, getBillForTable, requestBackend } from '@/lib/db';
+import { getBillPrintSettings, getRestaurantProfile, getRestaurantLogo, getBillByOrder, getBillForTable, getClosedBill, requestBackend } from '@/lib/db';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import Image from 'next/image';
@@ -29,10 +29,22 @@ interface Tax {
 
 interface Order {
   id: string;
+  /**
+   * The bill this order was attached to, when one has been generated. Null on
+   * every order of a table whose bill row names a DIFFERENT generating order
+   * ("Bills" is linked by `b.order_id = o.id`, one row per table session), which
+   * is why it can never be the only ownership test — see openBillOwnsOrder.
+   */
+  bill_id?: string | null;
   table: string;
   customer: string;
   items: OrderItem[];
   subtotal: number;
+  // THE BROWSER-COMPUTED MONEY FIELDS THE CALLER STILL PUTS IN THE PAYLOAD, AND
+  // WHICH NOTHING IN THIS FILE READS ANY MORE. `total` is the server-pinned
+  // PRE-TAX SUBTOTAL despite its name, and the charge/tax fields are computed in
+  // orders/page.tsx against the subtotal alone. Printing any of them is root
+  // cause 4; the money on this page comes from a server bill or the page refuses.
   serviceCharge?: number;
   serviceChargePercentage?: number;
   applyServiceCharge?: boolean;
@@ -85,28 +97,316 @@ function billHeaderLines(profile: RestaurantProfile | null, billPrint: BillPrint
     return lines;
 }
 
-// --- What the guest was actually charged --------------------------------------
-// The settled bill's OWN grand total wins over anything computed here.
+// --- What the guest is actually charged ---------------------------------------
+// THE SERVER'S LADDER, OR NOTHING THIS PAGE INVENTED.
 //
-// This page used to derive `Math.round(rawTotal) - rawTotal` and print the
-// whole-rupee result, because `order.roundOff` is declared but never populated.
-// A bill settled at ₹797.55 therefore printed ₹798.00 — while the backend
-// renderer (escpos.ts, which drives the thermal agent) prints `grand_total`
-// verbatim. Two print paths disagreeing about real money is worse than either
-// rounding rule; the settle layer is the single source of truth, so the round
-// off line is now the DIFFERENCE the tenant's own settle applied, not a
-// rounding this renderer invented.
-function resolveTotals(order: Order, bill: any | null): { rawTotal: number; roundOffVal: number; finalGrandTotal: number } {
-    const rawTotal = Number(order.total) || 0;
-    const settled = Number(bill?.grand_total);
-    if (Number.isFinite(settled) && settled > 0) {
-        return { rawTotal, roundOffVal: settled - rawTotal, finalGrandTotal: settled };
+// THE FAILURE THIS CLOSES (F2, and it was the worst of that bug's four causes).
+// The Grand Total printed here was `Math.round(order.total)` — and `order.total`
+// is the server-pinned PRE-TAX SUBTOTAL. AddOrder writes `total: pricedSubtotal`,
+// the very same figure it writes to `subtotal`; the service charge and the tax
+// lines fed only the display rows above the total and never entered it. Two
+// consequences, both of them live on EVERY tenant in EVERY tax shape:
+//
+//   * a web-printed bill WITH a service charge and one WITHOUT showed the SAME
+//     Grand Total — the client's report, reproduced in the browser; and
+//   * both of them were also short by the whole of the GST.
+//
+// The `bill.grand_total` preference that used to sit here could not save it:
+// `bill` comes from GET /bills/order/:orderId, whose projection (GetBillByOrder)
+// returns total_amt and tax_breakdown and carries NO grand_total key at all. So
+// `Number.isFinite(Number(undefined))` was always false and the Math.round
+// fallback was the only branch that ever ran.
+//
+// This page therefore no longer computes a total. It asks the server for the
+// bill and prints what comes back — the SETTLED bill when the order has been
+// paid, the open table bill otherwise. Both are built by the same
+// computeBillCharges ladder that /print/bill puts on thermal paper, which is
+// what makes a bill printed from the dashboard and a bill printed from the till
+// the same document rather than two documents carrying two totals.
+//
+// AND WHEN NEITHER SERVER DOCUMENT CAN BE PROVEN TO BE THIS ORDER'S, THIS PAGE
+// PRINTS NOTHING. There used to be a third branch that re-derived the ladder in
+// the browser; it printed `Math.round(order.total)` — the PRE-TAX SUBTOTAL —
+// as the Grand Total, so it was short by the whole of the GST and unmoved by
+// the service charge, on a receipt that looked exactly like a correct one. A
+// refusal an operator can read and act on is strictly better than a number no
+// one can tell is wrong.
+
+/** One line as this page prints it, whichever source supplied it. */
+interface PrintedLine { id: string; name: string; quantity: number; price: number }
+
+/** One printed bill, normalised — the ONLY thing either renderer below reads. */
+interface PrintedBill {
+    items: PrintedLine[];
+    subtotal: number;
+    totalQty: number;
+    discount: { label: string; amount: number } | null;
+    /** optedOut prints "Opted-out" in place of an amount, exactly as escpos.ts does. */
+    serviceCharge: { percent: number; amount: number; optedOut: boolean } | null;
+    taxes: { id: string; name: string; percentage: number; amount: number }[];
+    /**
+     * Null when the SERVER supplied the grand total. escpos.ts omits its round-off
+     * line in that case for the same reason: the billing layer has already decided
+     * the figure, so there is no rounding left for a renderer to disclose, and a
+     * round-off line here would be this page claiming an adjustment it never made.
+     */
+    roundOff: number | null;
+    grandTotal: number;
+    /** The bill number this document belongs to. '' when no bill row backs it. */
+    billNo: string;
+    /**
+     * Where the money came from. BOTH MEMBERS ARE SERVER LADDERS — the 'order'
+     * member is deliberately gone, because the browser-derived ladder it stood
+     * for printed the pre-tax subtotal as the Grand Total (root cause 4).
+     */
+    source: 'settled' | 'open';
+}
+
+/**
+ * Does this bill charge the guest for service — in EITHER shape?
+ *
+ * The mandatory disclaimer (G2) hangs off this, and asking only about the
+ * Service Charge ROW would repeat F2's root cause 3 in the browser: a tenant
+ * carrying the charge as a line in Outlets.default_tax has no such row, the
+ * charge arrives among the tax lines, and the sentence would never print on the
+ * bill that is actually collecting it. The name test mirrors
+ * SERVICE_CHARGE_NAME in billing_math.ts — the one matcher the server bills by.
+ */
+function billChargesForService(printed: PrintedBill): boolean {
+    if (printed.serviceCharge && !printed.serviceCharge.optedOut && printed.serviceCharge.amount > 0) {return true;}
+    return printed.taxes.some((t) => /service\s*charge/i.test(t.name) && t.amount > 0);
+}
+
+const lineQty = (it: { quantity: unknown }) => Math.max(1, Math.round(Number(it.quantity) || 1));
+
+/**
+ * What goes on the paper for one line: the dish, and the price point when there
+ * is one. Mirrors itemLabel() in escpos.ts, whose header states the reason — a
+ * docket that says "Half" beside a bill that says only "Paneer Tikka" is how a
+ * ₹150 line gets queried at the till. A line with no variation is unchanged.
+ */
+const lineLabel = (name: unknown, variation: unknown): string => {
+    const base = String(name ?? '');
+    const v = String(variation ?? '').trim();
+    return v ? `${base} (${v})` : base;
+};
+const sumQty = (items: readonly { quantity: unknown }[]) => items.reduce((s, it) => s + lineQty(it), 0);
+
+/**
+ * The Service Charge row, or none.
+ *
+ * A positive amount prints the charge; a zero amount against a non-zero percent
+ * prints "Opted-out", so the guest can see the charge was REMOVED rather than
+ * never applied. `waived` forces that reading where the percent handed in is the
+ * one a live waiver was priced at rather than a live config value — which is the
+ * only percent that is non-zero on a tenant carrying its service charge as a tax
+ * line. Mirrors the serviceCharge branch in routes/bills.ts and the `sc` guard in
+ * escpos.ts; all three must agree or the same bill reads differently on paper.
+ */
+function serviceChargeRow(amount: number, percent: number, waived: boolean): PrintedBill['serviceCharge'] {
+    if (amount > 0) {return { percent, amount, optedOut: false };}
+    if (waived || percent > 0) {return { percent, amount: 0, optedOut: true };}
+    return null;
+}
+
+/** Tax lines from any of the three sources, normalised and keyed for React. */
+function taxRows(raw: unknown): PrintedBill['taxes'] {
+    if (!Array.isArray(raw)) {return [];}
+    return raw
+        .map((t: any, i: number) => ({
+            id: String(t?.id ?? `t${i}`),
+            name: String(t?.name ?? ''),
+            percentage: Number(t?.percentage) || 0,
+            amount: Number(t?.amount) || 0,
+        }))
+        .filter((t) => t.name !== '');
+}
+
+/**
+ * Why a print refused, in words the person at the till can act on.
+ *
+ * REFUSING IS THE FEATURE, not the failure. An operator told "this order has no
+ * bill yet" reprints from the right place; an operator handed the NEXT party's
+ * running total has no way to tell — it is someone else's food and someone
+ * else's money on a document that looks entirely legitimate.
+ */
+interface PrintRefusal { headline: string; detail: string }
+
+type PrintResolution =
+    | { ok: true; printed: PrintedBill }
+    | { ok: false; refusal: PrintRefusal };
+
+/**
+ * IS THE TABLE'S OPEN BILL THE BILL THIS PRINT WAS ASKED FOR?
+ *
+ * THE FAILURE THIS CLOSES. There is ONE open "Bills" row per table at a time
+ * (GetBillForTable: `where table_id = $1 and status != 3 and closed_at is null
+ * ... limit 1`), and /bill-for-table is addressed by TABLE NAME, not by bill.
+ * So the moment the previous sitting is settled and the next party is seated,
+ * that same URL starts answering with the NEW party's running bill. A reprint
+ * of the previous party's order would then have been handed the next table
+ * sitting's items and the next table sitting's total. Nothing on the paper
+ * would have said so.
+ *
+ * The proof required is that the open bill DEMONSTRABLY CONTAINS THIS ORDER:
+ *
+ *   * `order_ids` is the list of active orders this bill is the sum of — the
+ *     very rows its grand total was computed from. Containment therefore says
+ *     the printed total includes this order's items, which is the exact claim
+ *     the receipt makes. It is also the only test that works before a bill row
+ *     exists: "Bills" is linked to ONE generating order (`b.order_id = o.id`),
+ *     so the other orders on a shared table legitimately carry bill_id null.
+ *     A previous party's orders are closed or cancelled by settle and by
+ *     release-table (status 4/5/7), so they drop out of this list — which is
+ *     what makes the next-party case refuse rather than print.
+ *
+ *   * matching bill ids are proof of the same thing where both are known, and
+ *     DIFFERING ones are proof of the opposite: the order names one bill, the
+ *     table is running another. That contradiction refuses outright, ahead of
+ *     any containment test, because it is precisely the next-sitting shape.
+ */
+function openBillOwnsOrder(order: Order, openBill: any): boolean {
+    const asId = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+    const orderId = asId(order.id);
+    const orderBillId = asId(order.bill_id);
+    const openBillId = asId(openBill?.bill_id);
+
+    if (orderBillId && openBillId) {return orderBillId === openBillId;}
+
+    const rawOrderIds: unknown = openBill?.order_ids;
+    const contributing: string[] = Array.isArray(rawOrderIds) ? rawOrderIds.map(asId) : [];
+    return orderId !== '' && contributing.includes(orderId);
+}
+
+/**
+ * The bill to print, or the reason there is none.
+ *
+ * PRIORITY IS "WHICHEVER SERVER DOCUMENT PROVABLY DESCRIBES THIS ORDER", and the
+ * items are taken from the SAME document as the total. They have to be: a
+ * table's bill is the sum of its orders, so pinning a table-scoped grand total
+ * onto one order's item list would print a receipt that does not add up — a
+ * different way of handing the guest a wrong number, not a fix for this one.
+ *
+ * There is no third branch. See the header block above: the browser-derived
+ * ladder that used to live here printed the pre-tax subtotal as the Grand Total.
+ */
+function resolvePrintedBill(order: Order, settled: any | null, openBill: any | null): PrintResolution {
+    const settledGrand = Number(settled?.grand_total);
+    // `closed_at` IS THE GUARD, AND IT IS LOAD-BEARING. GetClosedBill selects a
+    // bill by id with NO settled-ness filter, and an order on a running table
+    // carries the id of its OPEN bill — on which `total_amt` still holds the
+    // PRE-TAX SUBTOTAL (settle is what overwrites it with the grand total). So an
+    // unguarded read here would hand back a "grand_total" that is the subtotal
+    // and reinstate the exact defect this function exists to close. Only a bill
+    // that has actually been closed has a grand total to reprint.
+    // No table-name lookup is involved here: the settled read is addressed by
+    // the order's OWN bill id, so the document it returns is this order's bill
+    // by construction. That is why it needs no ownership test and the open read
+    // below does.
+    if (settled && settled.closed_at && Number.isFinite(settledGrand) && Array.isArray(settled.items)) {
+        const items: PrintedLine[] = settled.items.map((it: any, i: number) => ({
+            id: `s${i}`, name: lineLabel(it?.name, it?.variation), quantity: Number(it?.quantity) || 1, price: Number(it?.price) || 0,
+        }));
+        const discountAmt = Number(settled.discount_amount) || 0;
+        const printed: PrintedBill = {
+            items,
+            subtotal: Number(settled.items_subtotal) || 0,
+            totalQty: sumQty(items),
+            discount: discountAmt > 0
+                ? { label: settled.coupon_code ? `Coupon ${settled.coupon_code}` : 'Discount', amount: discountAmt }
+                : null,
+            // GetClosedBill lifts a "Service Charge" tax line out of the stored
+            // breakdown into service_charge, so this one field is the charge in
+            // BOTH tax shapes and `taxes` below never double-counts it.
+            serviceCharge: serviceChargeRow(
+                Number(settled.service_charge) || 0,
+                Number(settled.service_charge_percent) || 0,
+                false,
+            ),
+            taxes: taxRows(settled.taxes),
+            roundOff: null,
+            grandTotal: settledGrand,
+            billNo: String(settled.bill_no ?? ''),
+            source: 'settled',
+        };
+        return { ok: true, printed };
     }
-    // No settled bill row yet (printing a running bill before payment): fall
-    // back to the page's original behaviour rather than inventing a total.
-    const calculatedRoundOff = Math.round(rawTotal) - rawTotal;
-    const roundOffVal = order.roundOff !== undefined ? Number(order.roundOff) : calculatedRoundOff;
-    return { rawTotal, roundOffVal, finalGrandTotal: rawTotal + roundOffVal };
+
+    const openGrand = Number(openBill?.grand_total);
+    // ONE condition, tested once: the ownership gate and the branch that prints
+    // are the same `if`, so no later edit can widen one without the other and
+    // re-open a path to the paper that skips the check.
+    if (openBill && Number.isFinite(openGrand) && Array.isArray(openBill.items)) {
+        if (!openBillOwnsOrder(order, openBill)) {
+            // The table is running a bill that does not contain this order. See
+            // openBillOwnsOrder: on a table that has turned over this is the NEXT
+            // party's bill, and printing it is the worst outcome in this file.
+            return {
+                ok: false,
+                refusal: {
+                    headline: 'This table is running a different bill.',
+                    detail: `The open bill on ${order.table || 'this table'} does not include this order, so it belongs to a different table sitting. `
+                        + 'Printing it would hand this guest another party\'s items and another party\'s total. '
+                        + 'Reprint this order from its own bill — settle it first, or print from the bill the order actually belongs to.',
+                },
+            };
+        }
+        const items: PrintedLine[] = openBill.items.map((it: any, i: number) => ({
+            id: `o${i}`, name: lineLabel(it?.name, it?.variation), quantity: Number(it?.quantity) || 1, price: Number(it?.price) || 0,
+        }));
+        const discountAmt = Number(openBill.discount) || 0;
+        // A live waiver (migration 036) has already been taken out of
+        // service_charge AND of the tax lines by openBillChargeConfig, so the
+        // percent to show beside "Opted-out" is the one the waiver was priced at.
+        // Reading a config value here instead would print 0% on exactly the
+        // tenant whose charge lives in the tax config.
+        const waived = openBill.service_charge_waived === true;
+        const waivedPercent = Number(openBill.service_charge_waiver?.basis_percent) || 0;
+        const printed: PrintedBill = {
+            items,
+            subtotal: Number(openBill.subtotal) || 0,
+            totalQty: sumQty(items),
+            discount: discountAmt > 0
+                ? { label: openBill.coupon_code ? `Coupon ${openBill.coupon_code}` : 'Discount', amount: discountAmt }
+                : null,
+            serviceCharge: serviceChargeRow(
+                Number(openBill.service_charge) || 0,
+                waived ? waivedPercent : (Number(openBill.service_charge_percent) || 0),
+                waived,
+            ),
+            // On a tax-line tenant the service charge IS one of these rows, which
+            // is what the thermal bill prints for the same table. The two
+            // renderers show the tenant's own shape rather than a normalised one.
+            taxes: taxRows(openBill.taxes),
+            roundOff: null,
+            grandTotal: openGrand,
+            billNo: String(openBill.bill_no ?? ''),
+            source: 'open',
+        };
+        return { ok: true, printed };
+    }
+
+    // ROOT CAUSE 4, closed: no browser-derived ladder, and therefore no receipt.
+    //
+    // The branch that stood here printed `Math.round(order.total)` as the Grand
+    // Total, and `order.total` is the server-pinned PRE-TAX SUBTOTAL (AddOrder
+    // writes `total: pricedSubtotal`). So it was short by the whole of the GST,
+    // and identical whether or not the service charge applied — the F2 report,
+    // printed on a receipt indistinguishable from a correct one. There is no way
+    // to rebuild the server's ladder here: the tax shape, a live service-charge
+    // WAIVER (migration 036) and any discount all live server-side, and guessing
+    // at them is how this file came to disagree with the drawer in the first
+    // place. So it refuses, and says which of the two reads it needed.
+    return {
+        ok: false,
+        refusal: {
+            headline: 'No bill is available for this order yet.',
+            detail: 'The dashboard prints only the bill the server computed, and neither the settled bill nor this '
+                + 'table\'s open bill could be loaded for this order. Usually the order simply has no bill yet — place '
+                + 'or generate the bill, then print. Otherwise check that you have the View Bill permission and that '
+                + 'the backend is reachable, and print again.',
+        },
+    };
 }
 
 // The sentence above the feedback/valet QR: the tenant's own when they have set
@@ -129,6 +429,17 @@ function PrintPageContents() {
     const { user } = useAuth();
     const [logoBase64, setLogoBase64] = useState<string | null>(null);
     const [bill, setBill] = useState<any | null>(null);
+    // THE SERVER'S OWN BILL — the settled one if this order has been paid, the
+    // open table bill otherwise. Both carry a grand_total the billing layer
+    // computed; `bill` above does NOT (GetBillByOrder has no such key), which is
+    // how this page came to print a pre-tax subtotal as the Grand Total.
+    const [settledBill, setSettledBill] = useState<any | null>(null);
+    const [openBill, setOpenBill] = useState<any | null>(null);
+    // Have the two money reads finished (either way)? Until they have, BOTH are
+    // null and resolvePrintedBill would answer "no bill available" — the right
+    // answer to the wrong question. Without this the page would flash its
+    // refusal on every print while the fetches were still in flight.
+    const [billsResolved, setBillsResolved] = useState(false);
     const [profile, setProfile] = useState<RestaurantProfile | null>(null);
     const [billPrint, setBillPrint] = useState<BillPrintSettings | null>(null);
     const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
@@ -175,6 +486,43 @@ function PrintPageContents() {
                         const billResp = await getBillByOrder(restaurantId, parsed.id).catch(() => null);
                         setBill(billResp ?? null);
 
+                        // THE MONEY. Both reads swallow their errors, but a
+                        // failure is no longer survivable by inventing a total:
+                        // when neither comes back the page REFUSES and says so
+                        // (resolvePrintedBill's last branch). An operator without
+                        // the View Bill permission, or on an unreachable backend,
+                        // gets a sentence he can act on rather than a receipt
+                        // carrying a pre-tax subtotal as the amount due.
+                        //
+                        // SETTLED FIRST. Once a bill is closed its grand_total is
+                        // the figure money actually moved against, and a reprint
+                        // must reproduce it rather than re-derive a new one from
+                        // a menu that may have been repriced since.
+                        const settledResp = parsed.bill_id
+                            ? await getClosedBill(restaurantId, String(parsed.bill_id)).catch(() => null)
+                            : null;
+                        setSettledBill(settledResp ?? null);
+                        // Otherwise the OPEN table bill — literally the object
+                        // POST /print/bill renders to thermal paper for this
+                        // table, so the two printers put out the same document.
+                        //
+                        // ADDRESSED BY TABLE NAME, WHICH IS WHY IT IS NOT TRUSTED
+                        // ON ARRIVAL. The same table name answers with whatever
+                        // party is sitting there NOW, so resolvePrintedBill makes
+                        // this response prove it contains this order before a
+                        // single figure off it reaches the paper (openBillOwnsOrder).
+                        // Fetching it here is safe precisely because that gate is
+                        // the only door into the renderers.
+                        //
+                        // `closed_at`, not merely a non-null response: that read
+                        // resolves an OPEN bill by id too (see resolvePrintedBill),
+                        // and treating one as settled here would skip this fetch
+                        // and leave the page with nothing to print.
+                        const openResp = !settledResp?.closed_at && parsed.table
+                            ? await getBillForTable(restaurantId, String(parsed.table)).catch(() => null)
+                            : null;
+                        setOpenBill(openResp ?? null);
+
                         // Build feedback URL like settings and generate QR data URL client-side
                         // (the form lives inside this app at /feedback; env still overrides).
                         try {
@@ -197,6 +545,11 @@ function PrintPageContents() {
                 }
             } catch (err) {
                 // ignore
+            } finally {
+                // Both money reads are done (or were never possible, e.g. no
+                // restaurant id). Either way the page may now show the bill or
+                // its refusal; before this point it shows neither.
+                setBillsResolved(true);
             }
             // Do not auto-print. Let the user manually click Print.
         })();
@@ -218,14 +571,51 @@ function PrintPageContents() {
         );
     }
     
+    if (!billsResolved) {
+        return (
+            <div className="flex items-center justify-center h-screen">
+                <p>Loading bill...</p>
+            </div>
+        );
+    }
+
+    // The server's bill, not one derived here — see resolvePrintedBill.
+    const resolution = resolvePrintedBill(order, settledBill, openBill);
+
+    // NO BILL, NO PAPER. This is the whole of the refusal: no item lines, no
+    // ladder, no Print button — nothing that could be mistaken for a receipt or
+    // photographed as one. The operator is told which bill was wanted and what
+    // to do instead, which is the thing that makes refusing safe.
+    if (!resolution.ok) {
+        return (
+            <div className="p-4">
+                <Card className="mx-auto w-[420px] max-w-full">
+                    <CardHeader>
+                        <CardTitle className="text-lg">Bill not printed</CardTitle>
+                        <CardDescription>{resolution.refusal.headline}</CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-4 text-sm">
+                        <p>{resolution.refusal.detail}</p>
+                        <p className="text-xs text-muted-foreground">
+                            Order {order.id} &middot; Table {order.table || '-'}
+                        </p>
+                        <button
+                            onClick={() => { window.close(); }}
+                            className="px-3 py-1 border rounded text-sm"
+                        >Close</button>
+                    </CardContent>
+                </Card>
+            </div>
+        );
+    }
+
+    const printed = resolution.printed;
     const currencySymbol = order.currencySymbol || '₹';
     const cashierName = `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || '';
-    const billId = bill?.id ?? '';
-    const billNo = bill?.bill_no ?? '';
-    const totalQty = order.items.reduce((s, it) => s + (Number(it.quantity) || 0), 0);
-    
-    // The settled bill's own total wins — see resolveTotals.
-    const { rawTotal, roundOffVal, finalGrandTotal } = resolveTotals(order, bill);
+    const billId = bill?.id ?? settledBill?.id ?? openBill?.bill_id ?? '';
+    // The bill number off the SAME document the totals came from, so the header
+    // and the money on one receipt cannot name two different bills.
+    const billNo = printed.billNo || bill?.bill_no || '';
 
     return (
         <div className="p-4 bg-white text-black">
@@ -257,8 +647,16 @@ function PrintPageContents() {
                         <button
                                 onClick={async () => {
                                     // Passed logoBase64 to the encoder
-                                    const esc = await generateEscPos(user, profile, cashierName, bill, order, logoBase64, timezone, billPrint);
-                                    if (!esc) {return;}
+                                    const esc = await generateEscPos(user, profile, cashierName, bill, order, logoBase64, timezone, billPrint, printed);
+                                    // Never silent: an encoder that returned null
+                                    // printed nothing, and an operator who thinks
+                                    // he has sent a bill to the thermal printer
+                                    // will hand the guest a blank hand instead of
+                                    // reprinting.
+                                    if (!esc) {
+                                        alert('Could not build the bill for the thermal printer. Nothing was sent.');
+                                        return;
+                                    }
 
                                     // Convert ESC/POS > readable text preview
                                     const decoded = new TextDecoder().decode(esc);
@@ -350,7 +748,11 @@ function PrintPageContents() {
                             </TableRow>
                         </TableHeader>
                         <TableBody>
-                            {order.items.map(item => (
+                            {/* The lines of the bill the totals below belong to —
+                                the server's merged list when it supplied the
+                                money, this order's own list otherwise. Items and
+                                total always come from the same document. */}
+                            {printed.items.map(item => (
                                 <TableRow key={item.id}>
                                     <TableCell className="font-medium">{item.name}</TableCell>
                                     <TableCell className="text-center">{item.quantity}</TableCell>
@@ -361,21 +763,31 @@ function PrintPageContents() {
                         </TableBody>
                     </Table>
                     <div className="mt-6 space-y-2 text-sm ml-auto max-w-xs ">
+                        {/* The rungs in escpos.ts's order: Subtotal, Total Qty,
+                            Discount, Service Charge, taxes, Grand Total. Same
+                            ladder, same source, so the paper from either printer
+                            reads the same. */}
                         <div className="flex justify-between border-t border-black pt-2">
                             <span>Subtotal</span>
-                            <span>{order.subtotal.toFixed(2)}</span>
+                            <span>{printed.subtotal.toFixed(2)}</span>
                         </div>
                         <div className="flex justify-between">
                             <span>Total Qty</span>
-                            <span>{totalQty}</span>
+                            <span>{printed.totalQty}</span>
                         </div>
-                        {order.serviceChargePercentage && (
+                        {printed.discount && (
                             <div className="flex justify-between">
-                                <span>Service Charge ({order.serviceChargePercentage}%)</span>
-                                <span>{order.applyServiceCharge ? order.serviceCharge?.toFixed(2) : 'Opted-out'}</span>
+                                <span>{printed.discount.label}</span>
+                                <span>- {printed.discount.amount.toFixed(2)}</span>
                             </div>
                         )}
-                        {order.calculatedTaxes?.map(tax => (
+                        {printed.serviceCharge && (
+                            <div className="flex justify-between">
+                                <span>Service Charge ({printed.serviceCharge.percent}%)</span>
+                                <span>{printed.serviceCharge.optedOut ? 'Opted-out' : printed.serviceCharge.amount.toFixed(2)}</span>
+                            </div>
+                        )}
+                        {printed.taxes.map(tax => (
                              <div key={tax.id} className="flex justify-between">
                                 <span>{tax.name} ({tax.percentage}%)</span>
                                 <span>{tax.amount.toFixed(2)}</span>
@@ -384,22 +796,37 @@ function PrintPageContents() {
 
                         <hr className="border-t border-black my-2" />
 
-                        {/* Round off displayed BEFORE Grand Total */}
-                        <div className="flex justify-between text-sm mt-1">
-                            <span>Round off</span>
-                            <span>{(roundOffVal > 0 ? '+' : '') + roundOffVal.toFixed(2)}</span>
-                        </div>
-                        
-                        {/* Grand Total reflects raw total + round off */}
+                        {/* Round off is disclosed ONLY when this page did the
+                            rounding. A server-supplied grand total has none left
+                            to disclose — escpos.ts omits the line for the same
+                            reason. */}
+                        {printed.roundOff !== null && (
+                            <div className="flex justify-between text-sm mt-1">
+                                <span>Round off</span>
+                                <span>{(printed.roundOff > 0 ? '+' : '') + printed.roundOff.toFixed(2)}</span>
+                            </div>
+                        )}
+
                         <div className="flex justify-between font-bold text-lg pt-2 mt-2">
                             <span>Grand Total:</span>
-                            <span>{currencySymbol}{finalGrandTotal.toFixed(2)}</span>
+                            <span>{currencySymbol}{printed.grandTotal.toFixed(2)}</span>
                         </div>
                     </div>
                     <hr className="border-t border-black my-4" />
                      <div className="text-center mt-2 text-xs text-gray-600">
                         <p>Thanks</p>
                     </div>
+
+                    {/* G2's mandatory sentence, on the browser-printed bill as
+                        well as the ESC/POS one — the two are the same document.
+                        Printed only when the guest is actually being charged for
+                        service; see billChargesForService for why the row alone
+                        is not the right question. */}
+                    {billChargesForService(printed) ? (
+                        <p className="text-center mt-2 text-xs text-gray-600">
+                            A Voluntary Service Charge is included to support our staff. If you prefer not to contribute, please inform your server before payment and it will be removed.
+                        </p>
+                    ) : null}
 
                     <div className="text-center mt-4 text-xs text-gray-600">
                         {/* The tenant's own sentence when they have set one;
@@ -433,8 +860,32 @@ export default function PrintPage() {
     );
 }
 
-export async function generateEscPos(user: any, profile: any, cashierName: string, bill: any, orderArg?: any, logoBase64?: string | null, timeZone: string = DEFAULT_TIMEZONE, billPrint: BillPrintSettings | null = null): Promise<Uint8Array | null> {
+/**
+ * The ESC/POS twin of the bill rendered above.
+ *
+ * `printedArg` is the resolved document — items, ladder and grand total — and it
+ * is what this encoder prints. It is optional only so the exported signature
+ * stays callable as it was; WITHOUT IT THIS FUNCTION REFUSES. It used to resolve
+ * the document from the order alone, which was the browser-derived ladder that
+ * printed the pre-tax subtotal as the Grand Total (root cause 4), and it cannot
+ * do the server reads itself — it has no restaurant id, and no way to tell
+ * whether a table's open bill belongs to this order or to the next party sitting
+ * there. Callers inside this page always pass it; they have both.
+ */
+export async function generateEscPos(user: any, profile: any, cashierName: string, bill: any, orderArg?: any, logoBase64?: string | null, timeZone: string = DEFAULT_TIMEZONE, billPrint: BillPrintSettings | null = null, printedArg: PrintedBill | null = null): Promise<Uint8Array | null> {
     try {
+        // NO SERVER-RESOLVED BILL, NO PAPER — checked before anything is encoded
+        // or fetched. This is root cause 4's other half: the fallback that used
+        // to stand in for a missing document rebuilt the ladder in the browser
+        // and printed the PRE-TAX SUBTOTAL as the Grand Total. This function
+        // cannot do the server reads itself (no restaurant id, and no way to
+        // tell whether a table's open bill is this order's or the next party's),
+        // so it declines instead of inventing one. The caller alerts.
+        if (!printedArg) {
+            console.error('generateEscPos: refusing to encode — no server-resolved bill was supplied for this order.');
+            return null;
+        }
+
         let order = orderArg ?? null;
 
         if (!order) {
@@ -593,7 +1044,11 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
         const orderDate = formatDateTime(Date.now(), timeZone); 
         encoder.line(leftRight(`Date: ${orderDate}`, `Dine In: ${order.table || 'N/A'}`, MAX_CHARS));
         
-        const displayId = bill.bill_no || '';
+        // Resolved once, by the caller, so every figure below comes from one
+        // server-computed document. The refusal that guarantees it is at the top
+        // of this function, before a single byte is encoded.
+        const doc: PrintedBill = printedArg;
+        const displayId = doc.billNo || bill?.bill_no || '';
         // if (displayId.length > 18) {
         //     const parts = displayId.split('-');
         //     displayId = parts.length > 1 ? `${parts[0]}-${parts[1].substring(0, 1)}` : displayId.substring(0, 10);
@@ -611,8 +1066,9 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
         encoder.line('Item'.padEnd(COL_ITEM) + 'Qty'.padStart(COL_QTY) + 'Price'.padStart(COL_PRICE) + 'Total'.padStart(COL_TOTAL));
         encoder.line(lineSeparator);
 
-        // Items List
-        order.items.forEach((it: any) => {
+        // Items List — the document's lines, which are the lines the totals
+        // below are built from. Never `order.items` independently of them.
+        doc.items.forEach((it: any) => {
             const itemNameLines = wrapText(it.name, COL_ITEM - 1);
             const qtyStr = String(it.quantity).padStart(COL_QTY);
             const priceStr = Number(it.price).toFixed(2).padStart(COL_PRICE);
@@ -629,36 +1085,37 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
 
         encoder.line(lineSeparator);
 
-        // Totals
-        const totalQty = order.items.reduce((s: number, it: any) => s + Number(it.quantity), 0);
+        // Totals — the rungs in escpos.ts's order, off the resolved document.
+        encoder.line(leftRight('Subtotal', doc.subtotal.toFixed(2)));
+        encoder.line(leftRight('Total Qty', String(doc.totalQty)));
 
-        encoder.line(leftRight('Subtotal', Number(order.subtotal).toFixed(2)));
-        encoder.line(leftRight('Total Qty', String(totalQty)));
-
-        if (order.serviceChargePercentage) {
-            const scAmount = order.applyServiceCharge ? Number(order.serviceCharge) : 0;
-            encoder.line(leftRight(`Service Charge (${order.serviceChargePercentage}%)`, order.applyServiceCharge ? scAmount.toFixed(2) : 'Opted-out'));
+        if (doc.discount) {
+            encoder.line(leftRight(doc.discount.label, `- ${doc.discount.amount.toFixed(2)}`));
         }
 
-        if (order.calculatedTaxes) {
-            order.calculatedTaxes.forEach((t: any) => {
-                encoder.line(leftRight(`${t.name} (${t.percentage}%)`, Number(t.amount).toFixed(2)));
-            });
+        if (doc.serviceCharge) {
+            encoder.line(leftRight(
+                `Service Charge (${doc.serviceCharge.percent}%)`,
+                doc.serviceCharge.optedOut ? 'Opted-out' : doc.serviceCharge.amount.toFixed(2),
+            ));
         }
 
-        // Exact mathematical logic for round-off and grand total
-        const { rawTotal, roundOffVal, finalGrandTotal } = resolveTotals(order, bill);
+        doc.taxes.forEach((t) => {
+            encoder.line(leftRight(`${t.name} (${t.percentage}%)`, t.amount.toFixed(2)));
+        });
 
-        // Round off FIRST
-        const roundOffDisplay = (roundOffVal > 0 ? '+' : '') + roundOffVal.toFixed(2);
-        
         encoder.line(lineSeparator);
-        encoder.line(leftRight('Round off', roundOffDisplay));
+        // Round off is disclosed only when this page did the rounding. A
+        // server-supplied grand total has none left to disclose, and escpos.ts
+        // drops the line in exactly that case for exactly that reason.
+        if (doc.roundOff !== null) {
+            encoder.line(leftRight('Round off', (doc.roundOff > 0 ? '+' : '') + doc.roundOff.toFixed(2)));
+        }
 
         // Grand Total LAST
         encoder
             .bold(true)
-            .line(leftRight('Grand Total:', currencySymbol + finalGrandTotal.toFixed(2)))
+            .line(leftRight('Grand Total:', currencySymbol + doc.grandTotal.toFixed(2)))
             .bold(false);
             
         encoder.line(lineSeparator);
@@ -696,7 +1153,14 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
             encoder.qrcode(feedbackUrl, 2, 6, 'l');
         }
 
-        encoder.align('center').line('A Voluntary Service Charge is included to support our staff. If you prefer not to contribute, please inform your server before payment and it will be removed.');
+        // G2's sentence, and only when the guest is actually being charged for
+        // service. It used to print unconditionally, so a bill with the charge
+        // waived still told the guest a voluntary service charge was included —
+        // the paper contradicting its own Opted-out line. Same predicate as the
+        // on-screen bill and as routes/bills.ts's serviceChargeNote.
+        if (billChargesForService(doc)) {
+            encoder.align('center').line('A Voluntary Service Charge is included to support our staff. If you prefer not to contribute, please inform your server before payment and it will be removed.');
+        }
         encoder.cut();
 
         return encoder.encode();
