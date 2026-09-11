@@ -84,7 +84,23 @@ export function BillActions({
           : "The bill will print without a guest name.",
       })
       onChanged(); close()
-    } catch (e) { fail(e) } finally { setBusy(false) }
+    } catch (e) {
+      // A 404 here means one specific thing, and it is worth saying. The
+      // dashboard and the backend deploy on separate pipelines, and the
+      // backend's deploy gate refuses to ship any commit while a migration is
+      // pending — correctly, since code must never land ahead of its migration,
+      // but it means the WEB really can be a release ahead of the API.
+      // "Failed: Cannot POST /bills/customer-name" tells the person holding the
+      // phone nothing they can act on.
+      const msg = String((e as Error)?.message ?? e)
+      if (/cannot post|not found|404/i.test(msg)) {
+        toast({
+          title: "Not available yet",
+          description: "This server has not finished updating, so the name cannot be changed from here yet. Ask your administrator to complete the update.",
+          variant: "destructive",
+        })
+      } else { fail(e) }
+    } finally { setBusy(false) }
   }
   const fail = (e: unknown) => toast({ title: "Failed", description: String((e as Error)?.message ?? e), variant: "destructive" })
 

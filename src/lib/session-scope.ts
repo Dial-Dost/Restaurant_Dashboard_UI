@@ -224,6 +224,23 @@ const CAPABILITY_FALLBACK_ACTION: Record<Capability, string> = {
  * block from GET /auth/me on mount. A flag the server DID send is never
  * second-guessed, in either direction.
  */
+/**
+ * The server's answer, or `undefined` when it did not send one.
+ *
+ * Separate from `can()` because the two questions are genuinely different:
+ * `can()` asks "is this session allowed to", and falls back to the action set so
+ * a session stored by an older release still works. This asks "did the CURRENT
+ * backend tell us about this capability at all", which is the question you want
+ * when the control would 404 against a backend that predates it.
+ */
+export const answered = (
+    session: ScopedSession | null | undefined,
+    capability: Capability,
+): boolean | undefined => {
+    const value = session?.scope?.[capability];
+    return typeof value === 'boolean' ? value : undefined;
+};
+
 export const can = (session: ScopedSession | null | undefined, capability: Capability): boolean => {
     const answered = session?.scope?.[capability];
     if (typeof answered === 'boolean') { return answered; }
@@ -271,7 +288,25 @@ export const canOpenRoles = (session: ScopedSession | null | undefined): boolean
  * control; this is the courtesy, the route is the gate.
  */
 export const canEditDishAvailability = (session: ScopedSession | null | undefined): boolean =>
-    can(session, 'edit_menu');
+    // NO FALLBACK, and that is the whole point of using `answered` here.
+    //
+    // THE SITUATION THIS IS FOR. The dashboard and the backend deploy on
+    // separate pipelines, and the backend's can be held back: its deploy gate
+    // refuses to ship any commit while a migration is pending, which is correct
+    // (code must never land ahead of its migration) but means the WEB can be a
+    // release ahead of the API. It happened on the release this shipped in.
+    //
+    // `can()` would paper over that. Its fallback asks the ACTION SET, and an
+    // admin carries "*", so the button would appear on a backend that has never
+    // heard of PATCH /menu/:id/availability — and every tap would 404 in a live
+    // restaurant during service.
+    //
+    // `edit_menu` exists in `scope` only when the backend that serves the route
+    // is running, so asking for the flag EXPLICITLY makes the control appear at
+    // exactly the moment the route does, and vanish again if the backend is
+    // rolled back. Self-healing in both directions, with no version number to
+    // maintain anywhere.
+    answered(session, 'edit_menu') === true;
 
 /**
  * May this session reach the EMPLOYEES page?

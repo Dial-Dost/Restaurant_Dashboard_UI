@@ -53,6 +53,7 @@ import { DishAvailabilitySidebar } from '@/components/dish-availability-sidebar'
 import { RealtimeProvider } from '@/context/RealtimeContext';
 import { TimezoneProvider } from '@/lib/use-timezone';
 import Dock, { type DockSectionData } from '@/components/ui/Dock';
+import { MobileNav } from '@/components/mobile-nav';
 import '@/components/ui/Dock.css';
 
 const inter = Inter({ subsets: ['latin'] });
@@ -441,11 +442,19 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
             </DropdownMenuContent>
           </DropdownMenu>
         </header>
-        <main className="flex flex-1 flex-col gap-4 p-4 lg:gap-6 lg:p-6 pb-24">
+        {/* pb-24 clears the desktop dock; pb-20 the mobile bar. Both are needed:
+            the last card on a page must not sit under the navigation. */}
+        <main className="flex flex-1 flex-col gap-4 p-4 pb-20 lg:gap-6 lg:p-6 md:pb-24">
           <SubscriptionBanner />
           {children}
         </main>
-        <div className="fixed bottom-0 left-0 right-0 flex justify-center z-50">
+        {/* THE DOCK IS DESKTOP-ONLY, and that is the mobile fix.
+            It is `width: fit-content` and centred with a -50% transform, so an
+            admin's 22 icons in 7 titled sections come to about 1,200px and
+            simply overflow BOTH edges of a phone — and every label is
+            `opacity: 0` until `:hover`, which a touch screen never fires. The
+            pages were always responsive; this shell was the blocker. */}
+        <div className="fixed bottom-0 left-0 right-0 z-50 hidden justify-center md:flex">
            <Dock
               sections={dockSections}
               // Titled sections stack a small caption above each icon group,
@@ -455,6 +464,15 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
               baseItemSize={50}
             />
         </div>
+        <MobileNav sections={dockSections.map((section) => ({
+          title: section.title,
+          // The dock's items carry an onClick router.push; the mobile nav wants
+          // real <Link>s, so it is fed from the SAME source list rather than a
+          // second copy that could drift out of step with the permissions.
+          items: (isValet || isWaiterOnly ? navItems : fullNavItems)
+            .filter((n) => section.items.some((d) => d.label === n.label))
+            .map((n) => ({ href: n.href, label: n.label, icon: n.icon, exact: n.exact })),
+        }))} pathname={pathname} />
       </div>
   );
 }
