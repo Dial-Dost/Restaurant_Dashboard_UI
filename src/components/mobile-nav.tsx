@@ -29,12 +29,12 @@
  * divided five ways leaves 75px per target, and the text under the icon starts
  * truncating to nonsense.
  *
- * THE FOUR ARE CHOSEN, NOT TAKEN FROM THE TOP. `PRIMARY_ORDER` below is a list of
- * hrefs in the order a phone user wants them, and the bar takes the first four
- * that this session can actually reach. Slicing the nav's own first four would
- * give an admin Dashboard / Orders / Tables / Floor plan — and Floor plan is a
- * layout screen nobody opens mid-service, while Menu (86 a dish) is the one they
- * open constantly.
+ * THE FOUR ARE CHOSEN, NOT TAKEN FROM THE TOP, and that decision lives in
+ * src/lib/mobile-nav-layout.ts (`splitMobileNav`) rather than here, because the
+ * ways it goes wrong are invisible in a screenshot. Slicing the nav's own first
+ * four would give an admin Dashboard / Orders / Tables / Floor plan — and Floor
+ * plan is a layout screen nobody opens mid-service, while Menu (86 a dish) is
+ * the one they open constantly.
  *
  * A WAITER-ONLY OR VALET SESSION already has a two-item nav. It gets those two
  * and no More button, because a "More" that opens an empty sheet is worse than
@@ -45,6 +45,7 @@ import { useState } from "react"
 import Link from "next/link"
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
 import { MoreHorizontal } from "lucide-react"
+import { splitMobileNav } from "@/lib/mobile-nav-layout"
 
 export interface MobileNavItem {
   href: string
@@ -57,19 +58,6 @@ export interface MobileNavSection {
   title?: string
   items: MobileNavItem[]
 }
-
-/**
- * The order a phone user wants the bottom bar in.
- *
- * Orders first, not Dashboard: somebody holding a phone on the floor is taking
- * or checking an order, and the overview is what they open when they sit down.
- */
-const PRIMARY_ORDER = [
-  "/dashboard/orders",
-  "/dashboard/tables",
-  "/dashboard/menu",
-  "/dashboard",
-]
 
 const isActive = (pathname: string, item: MobileNavItem): boolean =>
   item.exact ? pathname === item.href : pathname === item.href || pathname.startsWith(`${item.href}/`)
@@ -86,21 +74,11 @@ export function MobileNav({
   const all = sections.flatMap((s) => s.items)
   if (all.length === 0) { return null }
 
-  // The first four of PRIMARY_ORDER this session can actually reach, then any
-  // remaining items in nav order until there are four. A session with only two
-  // destinations gets two buttons, not two buttons and two gaps.
-  const chosen: MobileNavItem[] = []
-  for (const href of PRIMARY_ORDER) {
-    const hit = all.find((i) => i.href === href)
-    if (hit && !chosen.includes(hit)) { chosen.push(hit) }
-    if (chosen.length === 4) { break }
-  }
-  for (const item of all) {
-    if (chosen.length === 4) { break }
-    if (!chosen.includes(item)) { chosen.push(item) }
-  }
-
-  const rest = all.filter((i) => !chosen.includes(i))
+  // The split is a DECISION, not markup, and lives in src/lib/mobile-nav-layout.ts
+  // where it can be argued with in a test: the ways it goes wrong — an admin
+  // getting Floor plan over Menu, a waiter getting two buttons and two gaps, a
+  // destination in neither list — are all invisible in a screenshot.
+  const { primary: chosen, rest } = splitMobileNav(all)
 
   return (
     <nav
