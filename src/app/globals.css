@@ -124,3 +124,87 @@
     font-size: 16px;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   H3 — A SCROLLBAR YOU CAN ACTUALLY GRAB.
+   V3: "Enlarge the scrollbar handle and track in the dashboard UI to make it
+   much easier to click and drag manually when standard scrolling is difficult."
+
+   WHO THIS IS FOR, because it changes what "reasonable" means here. The people
+   on this screen are standing at a counter with a mouse on a wet surface, or
+   working a cheap touch monitor where a fingertip covers about 9mm. A 6px
+   default handle is a target most of them miss on the first try, every time,
+   all shift.
+
+   SO: 14px (about 3.7mm) with a visible track and a 4px border acting as
+   padding, which keeps the handle from touching the content it sits beside.
+   Hover widens it rather than only recolouring it — the feedback that matters
+   when you are aiming is "am I on it", not "is it a different grey".
+
+   SCOPED TO THE DASHBOARD, deliberately. The guest-facing pages (the QR menu,
+   the feedback form, the queue) are phones, where the OS draws an overlay
+   scrollbar and these rules would put a permanent grey bar down the side of
+   somebody's ordering screen for no benefit at all.
+
+   Colours are the theme's own tokens, so this follows dark/light rather than
+   hardcoding a grey that vanishes in one of them.
+   --------------------------------------------------------------------------- */
+.dashboard-shell,
+.dashboard-shell * {
+  /* Firefox. `scrollbar-width: auto` is already its widest; the colours are the
+     half Firefox lets us set, and they are what makes the handle findable. */
+  scrollbar-width: auto;
+  scrollbar-color: hsl(var(--muted-foreground) / 0.55) hsl(var(--muted) / 0.6);
+}
+
+.dashboard-shell ::-webkit-scrollbar,
+.dashboard-shell::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+}
+
+.dashboard-shell ::-webkit-scrollbar-track,
+.dashboard-shell::-webkit-scrollbar-track {
+  background: hsl(var(--muted) / 0.6);
+  border-radius: 8px;
+}
+
+.dashboard-shell ::-webkit-scrollbar-thumb,
+.dashboard-shell::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted-foreground) / 0.55);
+  border-radius: 8px;
+  /* A transparent border clipped to the padding box is the only way to inset a
+     webkit thumb; plain padding does nothing on this pseudo-element. */
+  border: 4px solid transparent;
+  background-clip: padding-box;
+  /* Stops a long page collapsing the handle to a sliver you cannot hit. */
+  min-height: 48px;
+}
+
+.dashboard-shell ::-webkit-scrollbar-thumb:hover,
+.dashboard-shell::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.8);
+  /* Widens as well as darkens: when you are aiming, "am I on it" is the useful
+     signal and a colour change alone does not answer it. */
+  border-width: 2px;
+  background-clip: padding-box;
+}
+
+.dashboard-shell ::-webkit-scrollbar-corner,
+.dashboard-shell::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* A COARSE POINTER GETS MORE AGAIN — a fingertip is about 9mm and this is the
+   one control where being generous costs nothing but a few pixels of width. */
+@media (pointer: coarse) {
+  .dashboard-shell ::-webkit-scrollbar,
+  .dashboard-shell::-webkit-scrollbar {
+    width: 18px;
+    height: 18px;
+  }
+  .dashboard-shell ::-webkit-scrollbar-thumb,
+  .dashboard-shell::-webkit-scrollbar-thumb {
+    min-height: 64px;
+  }
+}

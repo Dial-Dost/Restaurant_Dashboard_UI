@@ -8,10 +8,10 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Percent } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
-import { setBillDiscount, splitBill, mergeTables, refundBill, getLoyalty, redeemLoyalty, type SplitPart, type LoyaltyAccount } from "@/lib/db"
+import { setBillDiscount, splitBill, mergeTables, refundBill, getLoyalty, redeemLoyalty, getBillForTable, setBillCustomerName, type SplitPart, type LoyaltyAccount } from "@/lib/db"
 import { isRefusedAction } from "@/lib/error-message"
 
-type Which = null | "discount" | "split" | "merge" | "refund" | "loyalty"
+type Which = null | "discount" | "split" | "merge" | "refund" | "loyalty" | "customer"
 
 // Per-table bill operations (discount / split / merge / refund). Self-contained so
 // it can be dropped into the orders table without touching the page's state.
@@ -39,8 +39,53 @@ export function BillActions({
   const [loyaltyPhone, setLoyaltyPhone] = useState("")
   const [loyaltyAccount, setLoyaltyAccount] = useState<LoyaltyAccount | null>(null)
   const [loyaltyPoints, setLoyaltyPoints] = useState("")
+  // H6 — the name printed on this table's bill.
+  const [customerName, setCustomerName] = useState("")
+  const [customerLoaded, setCustomerLoaded] = useState(false)
 
-  const close = () => { setDialog(null); setSplitResult(null); setLoyaltyAccount(null); setLoyaltyPoints("") }
+  const close = () => {
+    setDialog(null); setSplitResult(null); setLoyaltyAccount(null); setLoyaltyPoints("")
+    setCustomerName(""); setCustomerLoaded(false)
+  }
+
+  /**
+   * H6 — change the name on the bill.
+   *
+   * The field is SEEDED WITH THE CURRENT NAME rather than opening blank, because
+   * the common case is fixing a typo in a name somebody already typed, and an
+   * empty box invites retyping the whole thing (and so a second typo). The
+   * server treats "Guest" as the no-name placeholder, so it is not seeded back
+   * into the box — it is what the bill says when nobody has named it.
+   */
+  const openCustomer = async () => {
+    setDialog("customer")
+    setCustomerLoaded(false)
+    try {
+      const bill = await getBillForTable(restaurantId, tableName)
+      const current = String(bill?.customer ?? "").trim()
+      setCustomerName(/^(guest|qr guest)$/i.test(current) ? "" : current)
+    } catch {
+      // Seeding is a convenience, not a precondition — a failed read must not
+      // stop somebody correcting the name.
+      setCustomerName("")
+    } finally {
+      setCustomerLoaded(true)
+    }
+  }
+
+  const saveCustomer = async () => {
+    setBusy(true)
+    try {
+      const r = await setBillCustomerName(restaurantId, tableName, customerName)
+      toast({
+        title: r.customer ? "Name updated" : "Name cleared",
+        description: r.customer
+          ? `This table's bill now prints for ${r.customer}.`
+          : "The bill will print without a guest name.",
+      })
+      onChanged(); close()
+    } catch (e) { fail(e) } finally { setBusy(false) }
+  }
   const fail = (e: unknown) => toast({ title: "Failed", description: String((e as Error)?.message ?? e), variant: "destructive" })
 
   const applyDiscount = async (clear: boolean) => {
@@ -111,6 +156,10 @@ export function BillActions({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
+          {/* First, because it is the only one of these that is a CORRECTION
+              rather than a decision: somebody noticed the wrong name on a bill
+              they are about to hand over. */}
+          <DropdownMenuItem onClick={() => { void openCustomer(); }}>Change name on bill…</DropdownMenuItem>
           <DropdownMenuItem onClick={() => { setDialog("discount"); }}>Discount</DropdownMenuItem>
           <DropdownMenuItem onClick={() => { setDialog("loyalty"); }}>Loyalty</DropdownMenuItem>
           <DropdownMenuItem onClick={() => { setDialog("split"); }}>Split bill</DropdownMenuItem>
@@ -121,6 +170,33 @@ export function BillActions({
 
       <Dialog open={dialog !== null} onOpenChange={(v) => { if (!v) {close()} }}>
         <DialogContent>
+          {dialog === "customer" && (
+            <>
+              <DialogHeader><DialogTitle>Name on bill · Table {tableName}</DialogTitle></DialogHeader>
+              <Label htmlFor="bill-customer-name">Guest name</Label>
+              <Input
+                id="bill-customer-name"
+                placeholder={customerLoaded ? "e.g. Mr Sharma" : "Loading…"}
+                value={customerName}
+                onChange={(e) => { setCustomerName(e.target.value); }}
+                onKeyDown={(e) => { if (e.key === "Enter" && !busy) { void saveCustomer() } }}
+                maxLength={120}
+                autoFocus
+              />
+              <p className="text-xs text-muted-foreground">
+                {/* Said plainly because the behaviour is not obvious: the name is
+                    stored on the ORDERS, so this changes every round on the
+                    table rather than only the one you happen to be looking at. */}
+                This is the name printed at the top of the bill. It applies to the whole
+                table, and can be changed until the bill is settled. Leave it empty to
+                print no name.
+              </p>
+              <DialogFooter>
+                <Button variant="ghost" onClick={() => { setCustomerName(""); }} disabled={busy}>Clear</Button>
+                <Button onClick={() => { void saveCustomer() }} disabled={busy || !customerLoaded}>Save</Button>
+              </DialogFooter>
+            </>
+          )}
           {dialog === "discount" && (
             <>
               <DialogHeader><DialogTitle>Discount · Table {tableName}</DialogTitle></DialogHeader>

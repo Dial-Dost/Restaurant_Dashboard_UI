@@ -4,6 +4,7 @@
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { HeadlineStats } from '@/components/headline-stats';
 import {
   Table,
   TableBody,
@@ -373,6 +374,11 @@ export default function Dashboard() {
           <Link href="/dashboard/bookings">Create Booking</Link>
         </Button>
       </div>
+      {/* H1 — the six primary figures, in ONE distinct box, ABOVE everything
+          else on the overview. Deliberately the first thing on the page: it is
+          the set of numbers an owner opens this screen to see, and the cards
+          below it are the follow-up questions. */}
+      {user?.restaurantUsername ? <HeadlineStats rid={user.restaurantUsername} /> : null}
       <div className="grid gap-4 md:grid-cols-2 md:gap-8 lg:grid-cols-5">
         <ClickableCard label="Total revenue breakdown" onClick={() => { setDetail('revenue'); }}>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">

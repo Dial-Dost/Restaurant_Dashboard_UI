@@ -3472,6 +3472,56 @@ export const applyMenuItemPrice = async (
     return (await response.json()) as { success: boolean; id: string; name: string; price: number };
 };
 
+/**
+ * H4 — mark ONE dish available or unavailable, and change nothing else.
+ *
+ * Deliberately not `POST /menu`: that is a full upsert requiring name, category
+ * and a positive price, and it writes every field it is given. A control tapped
+ * forty times during a rush must be incapable of touching a recipe or an image —
+ * this codebase has already lost 56 items' images, sections and recipes to a
+ * bulk save that sent what the client happened to be holding.
+ */
+export const setMenuItemAvailability = async (
+    restaurantId: string,
+    menuItemId: string,
+    available: boolean,
+): Promise<{ success: boolean; id: string; name: string; available: boolean }> => {
+    const response = await backendCall(`/menu/${encodeURIComponent(menuItemId)}/availability`, restaurantId, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ available }),
+    });
+    if (!response?.ok) {
+        throw new Error(response ? await readErrorMessage(response) : 'Unable to change availability');
+    }
+    return (await response.json()) as { success: boolean; id: string; name: string; available: boolean };
+};
+
+/**
+ * H6 — change the name on a running table's bill.
+ *
+ * Writes EVERY still-owing order on the table, because there is no `customer`
+ * column: the name lives in each order's food blob and the bill takes the first
+ * non-placeholder one it finds. Correcting only the round you are looking at
+ * would appear to do nothing whenever an earlier round already carries a name.
+ * An empty string clears it.
+ */
+export const setBillCustomerName = async (
+    restaurantId: string,
+    tableName: string,
+    customer: string,
+): Promise<{ success: boolean; customer: string | null; orders_updated: number }> => {
+    const response = await backendCall('/bills/customer-name', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ table_name: tableName, customer }),
+    });
+    if (!response?.ok) {
+        throw new Error(response ? await readErrorMessage(response) : 'Unable to change the name on this bill');
+    }
+    return (await response.json()) as { success: boolean; customer: string | null; orders_updated: number };
+};
+
 export interface OperationsAnalytics {
     days: number;
     by_hour: { hour: number; orders: number; revenue: number }[];
@@ -3668,6 +3718,50 @@ export interface OverviewPreviousWindow {
     short: boolean;
     label: string;
 }
+/** One headline figure, with the sentence that says what it counts. */
+export interface HeadlineFigure {
+    value: number;
+    label: string;
+    /**
+     * The definition, written by the code that computes it.
+     *
+     * Rendered verbatim rather than restated here: "net" and "online" mean
+     * different things in different restaurants, and a card whose numbers the
+     * owner cannot reconcile with their own reports is worse than no card. One
+     * place to change a definition, and it is the place that computes it.
+     */
+    hint: string;
+}
+
+/** H1 — the six figures in the box at the top of the overview. */
+export interface OverviewHeadline {
+    /** The restaurant's own calendar day. */
+    today: string;
+    /** The 1st of the current month, in the restaurant's zone. */
+    month_from: string;
+    timezone: string;
+    today_net: HeadlineFigure;
+    today_gross: HeadlineFigure;
+    online_net: HeadlineFigure;
+    online_gross: HeadlineFigure;
+    cash_collection: HeadlineFigure;
+    month_to_date: HeadlineFigure;
+    /** Zero means NOTHING SETTLED YET, which is not the same as zero takings. */
+    today_bills: number;
+    month_bills: number;
+}
+
+/** null on an unreachable backend — never zeroes, which an owner would act on. */
+export const getOverviewHeadline = async (restaurantId: string): Promise<OverviewHeadline | null> => {
+    if (!restaurantId) {return null;}
+    const data = await backendJson<OverviewHeadline>(
+        `/analytics/headline?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+    return data && typeof data.today === 'string' ? data : null;
+};
+
 export interface OverviewDish { name: string; category: string; quantity: number; revenue: number; share_pct: number }
 export interface OverviewStaff {
     employee_id: string; employee_name: string; orders: number; revenue: number;

@@ -42,6 +42,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { LiveGrossBar } from "@/components/live-gross";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -556,6 +557,11 @@ export default function TablesPage() {
                     </Button>
                 ) : null}
             </div>
+
+            {/* H5 — the live gross, ABOVE the tables, which is where the
+                requirement puts it and also where it is read: a manager walking
+                the floor wants "what is out there" before "which table". */}
+            {user?.restaurantUsername ? <LiveGrossBar rid={user.restaurantUsername} /> : null}
 
             <Card>
                 <CardHeader>

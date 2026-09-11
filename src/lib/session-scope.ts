@@ -89,6 +89,8 @@ export interface SessionScope {
     view_roles?: boolean;
     /** POST /roles — C5: who may create and edit a custom role. */
     manage_roles?: boolean;
+    /** PATCH /menu/:id/availability — H4's "86 a dish" sidebar. */
+    edit_menu?: boolean;
 }
 
 /** One of the server's per-control answers. */
@@ -182,6 +184,8 @@ export const PERM_CLOSE_BILL = 'a953d044-31ba-4e31-b96f-99304fe43dfa';
 export const PERM_VOID_ORDER = 'c1f83b26-5a97-4e40-b8d3-7e02a9c4f156';
 /** DELETE /orders/:id — "Delete Orders". Destroys the row; records no reason. No flag yet. */
 export const PERM_ORDER_DELETE = '8c3f5b21-0e74-4a96-b2d8-6f1a9c4e7b53';
+/** "Edit Menu" — PATCH /menu/:id/price and /menu/:id/availability. Backs `edit_menu`. */
+export const PERM_EDIT_MENU = 'ed800655-b937-44ba-a7ca-7458295886c9';
 
 /**
  * The uuid each capability is gated on, used ONLY when the server did not send
@@ -196,6 +200,7 @@ const CAPABILITY_FALLBACK_ACTION: Record<Capability, string> = {
     manage_table_sections: PERM_MANAGE_SECTIONS,
     comp_item: PERM_NON_CHARGEABLE,
     waive_service_charge: PERM_SERVICE_CHARGE_WAIVER,
+    edit_menu: PERM_EDIT_MENU,
     void_order: PERM_VOID_ORDER,
     view_roles: PERM_VIEW_ROLES,
     manage_roles: PERM_EDIT_ROLES,
@@ -256,6 +261,17 @@ export const canOpenFloorPlan = (session: ScopedSession | null | undefined): boo
  */
 export const canOpenRoles = (session: ScopedSession | null | undefined): boolean =>
     can(session, 'view_roles');
+
+/**
+ * May this session take a dish off the menu? (H4)
+ *
+ * The SERVER's answer, obeyed — `PATCH /menu/:id/availability` is gated on the
+ * same "Edit Menu" permission, so a session that cannot do it does not get a
+ * button that 403s. A control whose only defence is being undrawn is not a
+ * control; this is the courtesy, the route is the gate.
+ */
+export const canEditDishAvailability = (session: ScopedSession | null | undefined): boolean =>
+    can(session, 'edit_menu');
 
 /**
  * May this session reach the EMPLOYEES page?

@@ -48,7 +48,8 @@ import { SubscriptionBanner } from '@/components/subscription-banner';
 import { usePathname, useRouter } from 'next/navigation';
 import { useTranslation } from '@/context/LanguageContext';
 import { useAuth } from '@/context/AuthContext';
-import { canOpenEmployeesPage, canOpenFloorPlan, isWaiterOnly as sessionIsWaiterOnly } from '@/lib/session-scope';
+import { canEditDishAvailability, canOpenEmployeesPage, canOpenFloorPlan, isWaiterOnly as sessionIsWaiterOnly } from '@/lib/session-scope';
+import { DishAvailabilitySidebar } from '@/components/dish-availability-sidebar';
 import { RealtimeProvider } from '@/context/RealtimeContext';
 import { TimezoneProvider } from '@/lib/use-timezone';
 import Dock, { type DockSectionData } from '@/components/ui/Dock';
@@ -337,7 +338,11 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
   const canViewAuditLogs = hasRole('admin') && canAccessByAction(['audit', 'log']);
 
   return (
-      <div className={`${inter.className} flex min-h-screen w-full flex-col`}>
+      /* `dashboard-shell` is the hook H3's scrollbar rules hang off (globals.css).
+         Scoped to this subtree on purpose: the guest-facing pages are phones,
+         where the OS draws an overlay scrollbar and a permanent grey bar down
+         the side of somebody's ordering screen would be a regression. */
+      <div className={`dashboard-shell ${inter.className} flex min-h-screen w-full flex-col`}>
         <header className="sticky top-0 flex h-14 items-center gap-4 border-b bg-background px-4 lg:h-[60px] lg:px-6 z-40">
         <Link href={isValet ? "/dashboard/valet" : isWaiterOnly ? "/dashboard/orders" : "/dashboard"} className="flex items-center gap-2 font-semibold">
                 <Package className="h-6 w-6" />
@@ -349,6 +354,13 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
           <OutletSwitcher />
           {/* Clicking one resolves its target server-side, then opens the exact
               record — or explains why it can't be opened from this outlet. */}
+          {/* H4 — in the HEADER, so it opens over whatever the person was doing
+              and closes back to it. Navigating to the menu page mid-rush loses
+              the order somebody was taking, which is the whole reason this is a
+              sheet and not a page. */}
+          {canEditDishAvailability(user) && user?.restaurantUsername
+            ? <DishAvailabilitySidebar rid={user.restaurantUsername} />
+            : null}
           <NotificationsBell />
           <ThemeToggle />
           <DropdownMenu>
