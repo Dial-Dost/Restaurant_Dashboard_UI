@@ -27,7 +27,7 @@ import { Input } from "@/components/ui/input"
 import { Download, Layers, Play, Plus, Store, Trash2 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import {
-  getReportSchedules, getReportDeliveries, createReportSchedule, updateReportSchedule,
+  getReportSchedules, getReportEmailAvailable, getReportDeliveries, createReportSchedule, updateReportSchedule,
   deleteReportSchedule, runReportScheduleNow, getReportDeliveryCsv,
   type ReportSchedule, type ReportDelivery, type ReportSchedulePatch,
 } from "@/lib/db"
@@ -49,9 +49,15 @@ const FREQUENCIES = [
   { value: "weekly", label: "Weekly" },
   { value: "monthly", label: "Monthly" },
 ]
-// v1 ships one channel. It stays a control rather than becoming static text
-// because the choice is real to the owner even while there is only one of it.
-const CHANNELS = [{ value: "inbox", label: "In-app inbox (notification bell)" }]
+// Both channels have a sender behind them: migration 044 widened 026's CHECK and
+// landed the SMTP transport in the same change, keeping 026's rule that nothing
+// is offerable before something can deliver it. Whether EMAIL works on this
+// particular deployment is a separate question, and the server answers it
+// (`email_available`) rather than this file guessing.
+const CHANNELS = [
+  { value: "inbox", label: "In-app inbox (notification bell)" },
+  { value: "email", label: "Email" },
+]
 
 // 0 = Sunday, matching the backend's weekday column.
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
@@ -118,7 +124,7 @@ const COMBINED_VIEW_NOTE = "Pick a single outlet before changing a schedule — 
 
 const BLANK_FORM: ScheduleFormState = {
   name: "", report_key: "sales", frequency: "daily", time: "08:00",
-  weekday: "1", day_of_month: "1", channel: "inbox",
+  weekday: "1", day_of_month: "1", channel: "inbox", recipients: "",
 }
 
 export function ScheduledReportsSection({ rid }: { rid: string }) {
@@ -152,15 +158,23 @@ export function ScheduledReportsSection({ rid }: { rid: string }) {
   // component cannot read; there the write reaches the backend and its refusal
   // reaches the toast verbatim, which is the second half of this fix.
   const [combinedView, setCombinedView] = useState(false)
+  /** null until asked, and null again whenever the answer could not be fetched. */
+  const [emailAvailable, setEmailAvailable] = useState<boolean | null>(null)
   useEffect(() => { setCombinedView(getSelectedOutletId() === ALL_OUTLETS) }, [])
 
   const load = useCallback(async () => {
     if (!rid) {return}
     setLoading(true)
-    const [s, d] = await Promise.all([
+    const [s, d, mail] = await Promise.all([
       getReportSchedules(rid),
       getReportDeliveries(rid, { limit: DELIVERY_LIMIT }),
+      getReportEmailAvailable(rid),
     ])
+    // THE SERVER'S ANSWER, OBEYED — never re-derived here. `null` means we could
+    // not ask (an unreachable backend), which is deliberately NOT the same as
+    // "no": a form that greys out email because one request failed would tell an
+    // owner their server cannot send mail when it can.
+    setEmailAvailable(mail)
     if (!s) {
       setFailed(true)
       setHistoryFailed(true)
@@ -194,6 +208,7 @@ export function ScheduledReportsSection({ rid }: { rid: string }) {
       weekday: String(s.weekday ?? 1),
       day_of_month: String(s.day_of_month ?? 1),
       channel: s.channel,
+      recipients: (s.recipients ?? []).join(", "),
     })
   }
 
@@ -316,12 +331,47 @@ export function ScheduledReportsSection({ rid }: { rid: string }) {
           onChange={(e) => { setForm((f) => ({ ...f, time: e.target.value })); }}
         />
         <select
-          className={SELECT_CLASS} value={form.channel} title="Where the finished report is announced"
+          className={SELECT_CLASS} value={form.channel} title="Where the finished report is sent"
           onChange={(e) => { setForm((f) => ({ ...f, channel: e.target.value })); }}
         >
-          {CHANNELS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          {CHANNELS.map((o) => (
+            // DISABLED RATHER THAN HIDDEN when this deployment cannot send mail.
+            // Hiding it would leave an owner who was told the feature exists
+            // hunting for a control that is not there; the disabled option plus
+            // the line below says what is actually wrong and who can fix it.
+            <option
+              key={o.value}
+              value={o.value}
+              disabled={o.value === "email" && emailAvailable === false}
+            >
+              {o.value === "email" && emailAvailable === false ? `${o.label} (not set up on this server)` : o.label}
+            </option>
+          ))}
         </select>
       </div>
+      {form.channel === "email" && (
+        <div className="mt-2">
+          <Input
+            value={form.recipients}
+            placeholder="owner@restaurant.com, accountant@firm.com"
+            title="Who receives this report. Separate addresses with commas."
+            onChange={(e) => { setForm((f) => ({ ...f, recipients: e.target.value })); }}
+          />
+          <p className="mt-1 text-xs text-muted-foreground">
+            {/* Named plainly because the list is NOT the staff list and nobody
+                should have to discover that: a restaurant's GST report usually
+                goes to an accountant who has no login here at all. */}
+            Separate addresses with commas. Anyone here receives the full report —
+            they do not need a login. Up to 10 addresses.
+          </p>
+          {emailAvailable === false && (
+            <p className="mt-1 text-xs text-red-600 dark:text-red-400">
+              Email is not set up on this server, so this schedule would not be delivered.
+              Ask your administrator to configure the mail settings, or choose the in-app inbox.
+            </p>
+          )}
+        </div>
+      )}
       <p className="mt-2 text-xs text-muted-foreground">
         {coverage(form.frequency)} Runs in restaurant time · {timezoneCaption(timezone)}.
       </p>
@@ -389,7 +439,12 @@ export function ScheduledReportsSection({ rid }: { rid: string }) {
                       <span className="text-xs font-normal text-muted-foreground"> · {labelFor(REPORT_KEYS, s.report_key)} · {s.format.toUpperCase()}</span>
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      {cadence(s, timezone)} · {labelFor(CHANNELS, s.channel)}
+                      {cadence(s, timezone)} · {s.channel === "email" && (s.recipients ?? []).length > 0
+                        // The ADDRESSES, not just the word "Email". The one thing
+                        // an owner scanning this list needs to be able to spot is
+                        // a report going somewhere it should not.
+                        ? `Email to ${s.recipients.join(", ")}`
+                        : labelFor(CHANNELS, s.channel)}
                       {s.last_run_at ? ` · last run ${formatDateTime(s.last_run_at, timezone)}` : ""}
                     </p>
                   </div>

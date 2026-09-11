@@ -168,6 +168,7 @@ describe("buildSchedulePatch — the save handler's validation", () => {
     time: "08:00",
     weekday: "1",
     day_of_month: "1",
+    recipients: "",
     channel: "inbox",
     ...over,
   });

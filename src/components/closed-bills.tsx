@@ -14,13 +14,14 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { useToast } from "@/hooks/use-toast"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
-import { Receipt } from "lucide-react"
+import { Printer, Receipt } from "lucide-react"
 import { useCurrency } from "@/hooks/use-currency"
-import { getClosedBills, getClosedBill, type ClosedBillSummary, type ClosedBillDetail } from "@/lib/db"
+import { getClosedBills, getClosedBill, reprintSettledBill, type ClosedBillSummary, type ClosedBillDetail } from "@/lib/db"
 import { formatDateTime } from "@/lib/tz"
 import { useTimezone } from "@/lib/use-timezone"
 import { elapsedToSettlement, formatDuration, readServiceClock } from "@/lib/service-clock"
@@ -50,7 +51,10 @@ interface Props {
 }
 
 export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, description }: Props) {
+  const { toast } = useToast()
   const { timezone } = useTimezone()
+  /** The bill currently being sent to a printer, so the button can say so. */
+  const [reprinting, setReprinting] = useState<string | null>(null)
   const { currencySymbol } = useCurrency()
   const money = (n: number | null | undefined) =>
     `${currencySymbol}${Number(n ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -259,6 +263,45 @@ export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, descr
             <p className="py-10 text-center text-sm text-muted-foreground">Couldn&apos;t load this bill.</p>
           ) : (
             <BillDetailBody detail={detail} money={money} />
+          )}
+
+          {detail && (
+            <DialogFooter className="flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between">
+              {/* SAID BEFORE IT IS PRESSED, not after. The paper carries a
+                  REPRINT banner in the largest type the printer has, because a
+                  second copy that looks like an original gets paid twice or
+                  filed as a second sale — and somebody about to hand it to a
+                  guest should know that is what comes out. */}
+              <p className="text-xs text-muted-foreground">
+                Prints a second copy, marked <span className="font-semibold">REPRINT</span>, with the
+                figures exactly as this bill was settled.
+              </p>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={reprinting === detail.id}
+                onClick={() => {
+                  const id = detail.id
+                  setReprinting(id)
+                  void reprintSettledBill(rid, id)
+                    .then((r) => {
+                      toast(r.ok
+                        ? {
+                          title: "Sent to the printer",
+                          description: r.destination ? `Printing at ${r.destination}.` : "The reprint is on its way.",
+                        }
+                        // The SERVER'S sentence, verbatim. "Couldn't reprint"
+                        // sends an owner hunting; "no printer is online for
+                        // bills" tells them what to do.
+                        : { title: "Could not reprint", description: r.message, variant: "destructive" })
+                    })
+                    .finally(() => { setReprinting((cur) => (cur === id ? null : cur)) })
+                }}
+              >
+                <Printer className="mr-2 h-4 w-4" />
+                {reprinting === detail.id ? "Sending…" : "Reprint bill"}
+              </Button>
+            </DialogFooter>
           )}
         </DialogContent>
       </Dialog>

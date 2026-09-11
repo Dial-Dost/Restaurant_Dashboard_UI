@@ -3650,6 +3650,24 @@ export interface OverviewMetric {
     direction: 'up' | 'down' | 'flat';
     compared_to: string;
 }
+/**
+ * The period the headline figures are measured against.
+ *
+ * Explicit dates, not a span, because the period is no longer derivable from the
+ * window's length: a window lying inside one calendar month compares against the
+ * SAME DATES of the previous month (V3), so 1-9 September is measured against
+ * 1-9 August rather than 23-31 August. `label` is the sentence the cards print;
+ * the from/to are here so an export can carry the period as data.
+ */
+export interface OverviewPreviousWindow {
+    from: string;
+    to: string;
+    days: number;
+    basis: 'months' | 'same_dates_prev_month' | 'days';
+    /** The previous month was shorter, so the two periods differ in length. */
+    short: boolean;
+    label: string;
+}
 export interface OverviewDish { name: string; category: string; quantity: number; revenue: number; share_pct: number }
 export interface OverviewStaff {
     employee_id: string; employee_name: string; orders: number; revenue: number;
@@ -3695,6 +3713,8 @@ export interface OverviewInsights {
     window_days: number;
     timezone: string;
     generated_at: string;
+    /** What every headline figure is compared against. See the interface. */
+    previous_window?: OverviewPreviousWindow;
     headline: {
         revenue: OverviewMetric; bills: OverviewMetric; covers: OverviewMetric; apc: OverviewMetric;
         today_revenue: number; yesterday_revenue: number;
@@ -3810,6 +3830,38 @@ export interface BalanceSheet {
 export const getBalanceSheet = async (restaurantId: string, asOf?: string) =>
     backendJson<BalanceSheet>(`/reports/balance-sheet?restaurantId=${encodeURIComponent(restaurantId)}${asOf ? `&as_of=${encodeURIComponent(asOf)}` : ''}`, restaurantId, { method: 'GET' });
 
+/**
+ * E5 — REPRINT A SETTLED BILL from the accounting module.
+ *
+ * The server prints WHAT WAS RECORDED and recomputes nothing: between the
+ * settlement and the reprint an owner may have changed the tax lines or the
+ * service-charge percentage, and a second copy of a tax document with a
+ * different total from the one the guest paid is worse than no reprint at all.
+ * See POST /print/bill/settled for the whole argument.
+ *
+ * Returns a message on failure rather than throwing, because the caller is a
+ * button in a dialog and "Couldn't reprint" with no reason is the thing this
+ * product keeps getting wrong.
+ */
+export const reprintSettledBill = async (
+    restaurantId: string,
+    billId: string,
+): Promise<{ ok: true; jobId: string | null; destination: string | null } | { ok: false; message: string }> => {
+    try {
+        const data = await backendJson<{ success?: boolean; jobId?: string; destination?: string; error?: string }>(
+            `/print/bill/settled?restaurantId=${encodeURIComponent(restaurantId)}`,
+            restaurantId,
+            { method: 'POST', body: JSON.stringify({ bill_id: billId }) },
+        );
+        if (data?.success) {
+            return { ok: true, jobId: data.jobId ?? null, destination: data.destination ?? null };
+        }
+        return { ok: false, message: data?.error ?? 'The bill could not be sent to a printer.' };
+    } catch (e) {
+        return { ok: false, message: e instanceof Error ? e.message : 'The bill could not be sent to a printer.' };
+    }
+};
+
 // --- Bank / settlement reconciliation -----------------------------------------
 export interface ReconciliationRow {
     method: string;
@@ -3896,7 +3948,10 @@ export interface ReportSchedule {
     weekday: number | null;
     /** Monthly only, 1–28 so "the 31st" can never silently skip February. */
     day_of_month: number | null;
+    /** 'inbox' | 'email' */
     channel: string;
+    /** Email only. Empty on an inbox schedule. */
+    recipients: string[];
     format: string;
     enabled: boolean;
     last_occurrence_key: string | null;
@@ -3924,6 +3979,8 @@ export interface ReportDelivery {
     status: string;
     attempts: number;
     channel: string | null;
+    /** Where an email delivery actually went — the addresses the server accepted. */
+    delivered_to: string[] | null;
     artifact_name: string | null;
     artifact_bytes: number | null;
     artifact_truncated: boolean;
@@ -3944,6 +4001,8 @@ export interface ReportSchedulePatch {
     weekday?: number | null;
     day_of_month?: number | null;
     channel?: string;
+    /** Required when channel is 'email'; the backend refuses an empty list. */
+    recipients?: string[];
     format?: string;
     enabled?: boolean;
 }
@@ -3957,6 +4016,27 @@ export const getReportSchedules = async (restaurantId: string): Promise<ReportSc
         { method: 'GET' },
     );
     return Array.isArray(data?.schedules) ? data.schedules : null;
+};
+
+/**
+ * Can THIS deployment send email at all?
+ *
+ * The server decides and says so on the same response as the list; the form
+ * obeys rather than assuming. A capability a client has to guess at is the
+ * recurring shape of this project's bugs — and the specific cost of guessing
+ * wrong here is an owner saving a daily 8am email schedule that renders a report
+ * every morning, fails to deliver it, and disables itself after five days.
+ *
+ * `null` on an unreachable backend, so "we could not ask" stays distinguishable
+ * from "the answer is no" — the same contract getReportSchedules uses.
+ */
+export const getReportEmailAvailable = async (restaurantId: string): Promise<boolean | null> => {
+    const data = await backendJson<{ email_available?: boolean }>(
+        `/reports/schedules?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+    return typeof data?.email_available === 'boolean' ? data.email_available : null;
 };
 
 export const getReportDeliveries = async (

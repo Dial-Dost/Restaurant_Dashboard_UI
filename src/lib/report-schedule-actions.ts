@@ -91,6 +91,8 @@ export interface ScheduleFormState {
   weekday: string;
   day_of_month: string;
   channel: string;
+  /** Raw as typed — one field, comma / semicolon / newline separated. */
+  recipients: string;
 }
 
 /** The fields this form sends. Structurally a `ReportSchedulePatch` (src/lib/db.ts),
@@ -104,6 +106,7 @@ export interface ScheduleFormPatch {
   weekday: number | null;
   day_of_month: number | null;
   channel: string;
+  recipients: string[];
 }
 
 export type ScheduleFormResult =
@@ -122,6 +125,21 @@ export function buildSchedulePatch(form: ScheduleFormState): ScheduleFormResult 
   if (!name) {return { ok: false, message: "Give the schedule a name" };}
   const at = /^(\d{1,2}):(\d{2})$/.exec(form.time);
   if (!at) {return { ok: false, message: "Pick a time of day" };}
+  // The SAME cleaning the server applies, so what the owner sees saved is what
+  // will be used — and so the refusal below is about the list that will actually
+  // be stored rather than the raw text.
+  const recipients = parseRecipients(form.recipients);
+  if (form.channel === "email" && recipients.length === 0) {
+    return {
+      ok: false,
+      message: form.recipients.trim().length > 0
+        // Naming the problem as "none of these look like addresses" rather than
+        // "add an address" matters when somebody has clearly typed some: the
+        // useful information is that what they typed was not usable.
+        ? "None of those look like email addresses. Check for a missing @ or a typo."
+        : "Add at least one email address, or choose the in-app inbox instead.",
+    };
+  }
   return {
     ok: true,
     patch: {
@@ -135,6 +153,55 @@ export function buildSchedulePatch(form: ScheduleFormState): ScheduleFormResult 
       weekday: form.frequency === "weekly" ? Number(form.weekday) : null,
       day_of_month: form.frequency === "monthly" ? Number(form.day_of_month) : null,
       channel: form.channel,
+      // Only ever sent for the channel that uses them. Sending a stale list on an
+      // inbox schedule would leave addresses stored against a schedule that does
+      // not email, which is a surprise waiting for whoever switches it later.
+      recipients: form.channel === "email" ? recipients : [],
     },
   };
+}
+
+/**
+ * The recipient list, cleaned exactly the way mailer.ts cleans it server-side:
+ * split on commas / semicolons / newlines, trimmed, implausible entries dropped,
+ * de-duplicated case-insensitively, capped at ten.
+ *
+ * Duplicated rather than imported because this module is deliberately free of
+ * the server graph — and kept honest by a test that pins the two lists against
+ * the same inputs. The cap is not a performance limit: a report carrying a
+ * restaurant's takings to forty addresses is a mistake somebody makes once.
+ */
+export function parseRecipients(raw: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const entry of String(raw ?? "").split(/[,;\n]/)) {
+    const s = entry.trim();
+    if (!isPlausibleEmail(s)) {continue;}
+    const key = s.toLowerCase();
+    if (seen.has(key)) {continue;}
+    seen.add(key);
+    out.push(s);
+    if (out.length >= 10) {break;}
+  }
+  return out;
+}
+
+/**
+ * A syntactically plausible address — deliberately permissive.
+ *
+ * The only thing worth refusing in a form is a value that CANNOT be an address.
+ * Whether a mailbox exists behind it is not knowable here, and a bounce is the
+ * honest way to find out; anything stricter than this reliably refuses somebody's
+ * real address with a plus tag or a long TLD.
+ */
+export function isPlausibleEmail(raw: string): boolean {
+  const s = String(raw ?? "").trim();
+  if (s.length === 0 || s.length > 254) {return false;}
+  if (/\s/.test(s)) {return false;}
+  const at = s.indexOf("@");
+  if (at <= 0 || at !== s.lastIndexOf("@")) {return false;}
+  const domain = s.slice(at + 1);
+  if (domain.length < 3 || !domain.includes(".")) {return false;}
+  if (domain.startsWith(".") || domain.endsWith(".") || domain.includes("..")) {return false;}
+  return true;
 }

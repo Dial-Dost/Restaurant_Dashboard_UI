@@ -3,6 +3,7 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis, Line, LineChart, Pie, PieChart, Cell, Tooltip, ResponsiveContainer, LabelList } from "recharts"
 import { InteractiveChart, type IvPoint } from "./interactive-chart"
+import { SettlementBreakdownCard } from "./settlement-breakdown"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import Link from "next/link"
@@ -2313,7 +2314,13 @@ function PerformanceTrends({ view, onOpenView }: { view: ViewId; onOpenView: (v:
 
   const showRevenue = inView(view, "sales", true); // headline chart on Overview
   const showApc = inView(view, "sales");
-  if (!showRevenue && !showApc) {return null;}
+  // V3: "add a dedicated row showing the breakdown of the total amount paid by
+  // all available payment methods". It belongs with the revenue charts because
+  // it answers the second half of the same question — how much came in, and in
+  // what form — and it honours the page's own date window rather than inventing
+  // one, so the total under it always reconciles with the revenue above it.
+  const showSettlement = inView(view, "sales", true);
+  if (!showRevenue && !showApc && !showSettlement) {return null;}
 
   const series = data ?? [];
   const hasData = series.some((p) => p.total_revenue > 0 || p.bills > 0);
@@ -2463,6 +2470,9 @@ function PerformanceTrends({ view, onOpenView }: { view: ViewId; onOpenView: (v:
           )}
         </CardContent>
       </Card>
+      )}
+      {showSettlement && user?.restaurantUsername && (
+        <SettlementBreakdownCard rid={user.restaurantUsername} range={win.query} />
       )}
       {showApc && (
       <Card>
@@ -3620,8 +3630,15 @@ function OverviewInsightsStrip({ view, onOpenView }: { view: ViewId; onOpenView:
             id="overview-insights"
             label="At a glance"
             build={() => [
-              ["Metric", "Value", "Previous", "Change %", "Compared to"],
-              ...headline.map((h) => [h.label, h.m.value, h.m.previous, h.m.pct_change ?? "", h.m.compared_to]),
+              // The comparison PERIOD as data, not only as the sentence on the
+              // card. An accountant pasting this into a spreadsheet has to be
+              // able to tell 1-9 August from 23-31 August, and since V3 the two
+              // are no longer distinguishable from the window's length alone.
+              ["Metric", "Value", "Previous", "Change %", "Compared to", "Comparison from", "Comparison to"],
+              ...headline.map((h) => [
+                h.label, h.m.value, h.m.previous, h.m.pct_change ?? "", h.m.compared_to,
+                ins.previous_window?.from ?? "", ins.previous_window?.to ?? "",
+              ]),
               [],
               ["Top dish", "Qty", "Revenue", "Share %"],
               ...dishes.map((d) => [d.name, d.quantity, d.revenue, d.share_pct]),
