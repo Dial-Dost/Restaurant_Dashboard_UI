@@ -82,7 +82,7 @@ export function MobileNav({
 
   return (
     <nav
-      className="fixed inset-x-0 bottom-0 z-50 border-t border-border bg-background/95 backdrop-blur md:hidden"
+      className="fixed inset-x-0 bottom-0 z-50 border-t border-border bg-background/95 backdrop-blur 2xl:hidden"
       // The home indicator on a modern phone sits over the bottom ~34px; without
       // this the last row of a nav bar is under the user's own gesture area.
       style={{ paddingBottom: "env(safe-area-inset-bottom)" }}

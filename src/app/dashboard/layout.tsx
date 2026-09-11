@@ -442,19 +442,46 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
             </DropdownMenuContent>
           </DropdownMenu>
         </header>
-        {/* pb-24 clears the desktop dock; pb-20 the mobile bar. Both are needed:
-            the last card on a page must not sit under the navigation. */}
-        <main className="flex flex-1 flex-col gap-4 p-4 pb-20 lg:gap-6 lg:p-6 md:pb-24">
+        {/* NO `p-` SHORTHAND HERE, and that is not a style preference.
+            `p-4 pb-20 lg:p-6` looks like "16px all round, 80px at the bottom,
+            24px all round from lg" — and at 1280px it renders 24px at the
+            bottom, because `lg:p-6` lives in a media query that comes AFTER the
+            base `pb-20` in the generated stylesheet whatever order the classes
+            are written in. Measured in the browser: the nav bar is 57px and the
+            last card on every page was sitting underneath it.
+
+            Axis utilities have no such collision, so the bottom padding is
+            stated once and only ever overridden by another bottom padding:
+            80px to clear the mobile bar, 96px from 2xl to clear the dock. */}
+        <main className="flex flex-1 flex-col gap-4 px-4 pt-4 pb-20 lg:gap-6 lg:px-6 lg:pt-6 2xl:pb-24">
           <SubscriptionBanner />
           {children}
         </main>
-        {/* THE DOCK IS DESKTOP-ONLY, and that is the mobile fix.
-            It is `width: fit-content` and centred with a -50% transform, so an
-            admin's 22 icons in 7 titled sections come to about 1,200px and
-            simply overflow BOTH edges of a phone — and every label is
-            `opacity: 0` until `:hover`, which a touch screen never fires. The
-            pages were always responsive; this shell was the blocker. */}
-        <div className="fixed bottom-0 left-0 right-0 z-50 hidden justify-center md:flex">
+        {/* THE DOCK ONLY APPEARS WHERE IT ACTUALLY FITS, and the threshold is
+            MEASURED rather than guessed.
+
+            It is `width: fit-content`, centred with a -50% transform, and an
+            admin's 22 icons across 7 titled sections with dividers measure
+            1,364px in the browser. So it does not merely break on a phone — it
+            overflows a 1,280px LAPTOP by 42px a side, and a 1,024px screen by
+            170px a side, which is three destinations hidden off each end. There
+            is no scrollbar and no visual cut: the icons are simply not there,
+            and nothing tells the person they are missing anything.
+
+            The centred transform is also why the document reports no horizontal
+            overflow — the panel hangs off both sides of the viewport rather than
+            widening the page — so this was invisible to every check that asks
+            "does the page scroll sideways".
+
+            2xl (1536px) is the first Tailwind breakpoint with room for 1,364px
+            plus its margins. Below it the mobile bar takes over, and it is a
+            COMPLETE navigation with visible labels rather than a degraded one —
+            which is why widening the range it covers is an improvement for a
+            1,280px laptop too, not a compromise.
+
+            (The other half of the phone problem: every dock label is
+            `opacity: 0` until `:hover`, and a touch screen never fires hover.) */}
+        <div className="fixed bottom-0 left-0 right-0 z-50 hidden justify-center 2xl:flex">
            <Dock
               sections={dockSections}
               // Titled sections stack a small caption above each icon group,
