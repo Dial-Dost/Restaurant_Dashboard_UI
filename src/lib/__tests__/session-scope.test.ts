@@ -35,6 +35,7 @@ import {
     PERM_DELETE_ROLES,
     PERM_EDIT_ROLES,
     PERM_MANAGE_SECTIONS,
+    PERM_ORDER_ADD,
     PERM_ORDER_DELETE,
     PERM_REMOVE_ROLE,
     PERM_TABLE_DELETE,
@@ -44,11 +45,14 @@ import {
     PERM_VIEW_ROLES,
     PERM_VOID_ORDER,
     can,
+    canMoveOrderToTable,
+    canMoveTableParty,
     canOpenEmployeesPage,
     canOpenFloorPlan,
     canOpenRoles,
     hasPermission,
     isWaiterOnly,
+    showsMoney,
     type ScopedSession,
 } from '../session-scope';
 
@@ -251,5 +255,87 @@ describe('the fallback uuids are the backend\'s own', () => {
         expect(PERM_CLOSE_BILL).toBe('a953d044-31ba-4e31-b96f-99304fe43dfa');
         expect(PERM_VOID_ORDER).toBe('c1f83b26-5a97-4e40-b8d3-7e02a9c4f156');
         expect(PERM_ORDER_DELETE).toBe('8c3f5b21-0e74-4a96-b2d8-6f1a9c4e7b53');
+    });
+});
+
+describe('showsMoney — C4\'s gate, and it is the SAME predicate the phone uses', () => {
+    // `RoleScope.showsMoney` in the Flutter app is literally `!isWaiterOnly`.
+    // Anything else here — a capability, a role string, "is the order open" —
+    // would be a fourth answer to a question that already has one, and it would
+    // show up as a waiter seeing prices on the web that the phone hides.
+    it('hides money from a waiter the server scoped', () => {
+        expect(showsMoney({ scope: { waiter_only: true } })).toBe(false);
+    });
+
+    it('shows money to everyone else', () => {
+        expect(showsMoney({ scope: { waiter_only: false } })).toBe(true);
+    });
+
+    it('shows money to a session the server never scoped — the fix must not blank the owner', () => {
+        // The failure worth fearing is not "a waiter saw a figure", it is "the
+        // fix took the till away from the person who runs the restaurant".
+        expect(showsMoney(stale([]))).toBe(true);
+        expect(showsMoney({ scope: null })).toBe(true);
+        expect(showsMoney(null)).toBe(true);
+        expect(showsMoney(undefined)).toBe(true);
+    });
+
+    it('is exactly the inverse of isWaiterOnly for every input', () => {
+        for (const session of [
+            { scope: { waiter_only: true } },
+            { scope: { waiter_only: false } },
+            stale([PERM_CLOSE_BILL]),
+            null,
+            undefined,
+        ] as (ScopedSession | null | undefined)[]) {
+            expect(showsMoney(session)).toBe(!isWaiterOnly(session));
+        }
+    });
+
+    it('ignores the role strings that broke the old client rule', () => {
+        const waiterWithCustomRole = {
+            scope: { waiter_only: true },
+            role: 'waiter',
+            role_all: ['waiter', 'd2b1f0c4-1e62-4b0a-9f77-2a3c5e8d90ab'],
+        } as unknown as ScopedSession;
+        expect(showsMoney(waiterWithCustomRole)).toBe(false);
+    });
+});
+
+describe('D3 / D4 — the two move gates, which are genuinely two grants', () => {
+    // POST /tables/move rides on "Table Occupied" (the SERVICE permission a core
+    // waiter holds — the backend's own comment: "service, not administration").
+    // POST /tables/move-order rides on "Add Orders", the same id that gates the
+    // KOT reprint, because moving a ticket is the same class of act as
+    // reprinting one. A tenant can hold either without the other, so the two
+    // must be asked separately.
+    it('reads the SERVER\'s resolved action list for each route\'s own uuid', () => {
+        expect(canMoveTableParty(stale([PERM_TABLE_SERVICE]))).toBe(true);
+        expect(canMoveTableParty(stale([PERM_ORDER_ADD]))).toBe(false);
+        expect(canMoveOrderToTable(stale([PERM_ORDER_ADD]))).toBe(true);
+        expect(canMoveOrderToTable(stale([PERM_TABLE_SERVICE]))).toBe(false);
+    });
+
+    it('an admin holds both, off the wildcard, with no special case anywhere', () => {
+        expect(canMoveTableParty(stale(['*']))).toBe(true);
+        expect(canMoveOrderToTable(stale(['*']))).toBe(true);
+    });
+
+    it('refuses a session carrying no action list at all', () => {
+        expect(canMoveTableParty({})).toBe(false);
+        expect(canMoveOrderToTable(null)).toBe(false);
+    });
+
+    it('does not gate either on waiter_only — a waiter moves the party they seated', () => {
+        // The requirement says "staff", and the permission the backend chose is
+        // the one the core waiter role holds. Adding a role test on top would
+        // hide a control from exactly the person it was gated for.
+        const scopedWaiter = { scope: { waiter_only: true }, actions_set: [PERM_TABLE_SERVICE, PERM_ORDER_ADD] };
+        expect(canMoveTableParty(scopedWaiter)).toBe(true);
+        expect(canMoveOrderToTable(scopedWaiter)).toBe(true);
+    });
+
+    it('PERM_ORDER_ADD is routes/tables.ts\'s own id, verbatim', () => {
+        expect(PERM_ORDER_ADD).toBe('4ad474d4-5230-449c-874f-6a238b833bca');
     });
 });

@@ -38,17 +38,26 @@
   here. Rearranging them is the other page.
 */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { LiveGrossBar } from "@/components/live-gross";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
-import { Users, Link2, LayoutGrid, Clock, Timer } from "lucide-react";
+import { Users, Link2, LayoutGrid, Clock, Timer, ArrowRightLeft } from "lucide-react";
 import { type Table } from "./data";
 import { applyServerSections, isUnassignedSection } from "./sections";
 import { seatingLeftTableUnattended } from "@/lib/table-assignment";
@@ -58,11 +67,20 @@ import {
     releaseTable,
     updateTableCovers,
     getOrders,
+    moveTableParty,
+    moveOrderToTable,
 } from "@/lib/db";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import { useFloorTables, type CombinedInfo, type TableOccupancy } from "@/hooks/use-floor-tables";
-import { canOpenFloorPlan } from "@/lib/session-scope";
+import { canMoveOrderToTable, canMoveTableParty, canOpenFloorPlan } from "@/lib/session-scope";
+import {
+    kotTicketLabel,
+    movedOrderSentence,
+    movedPartySentence,
+    orderMoveDestinations,
+    partyMoveDestinations,
+} from "@/lib/table-move";
 import {
     elapsedSincePlaced,
     elapsedToSettlement,
@@ -86,6 +104,18 @@ import {
 interface TableOrder extends ServiceClockCarrier {
     table: string;
     status: string;
+    /*
+      D4 — the two fields a KOT reassignment needs, and no more.
+
+      `id` is what POST /tables/move-order is addressed by. `kot_nos` is the
+      handle the pass quotes, drawn beside each order in the move dialog so the
+      person pressing the button is looking at the same number the kitchen is —
+      moving "the 19:42 one" is how the wrong ticket gets moved. Absent on a
+      backend older than the field, which `kotTicketLabel` reads as "draw
+      nothing".
+    */
+    id: string;
+    kot_nos?: number[] | null;
 }
 
 /** The two clocks a table card shows, already reduced from its orders. */
@@ -104,6 +134,247 @@ const TONE_CLASS: Record<ReturnType<typeof waitTone>, string> = {
 };
 
 /*
+  D3 + D4 — MOVING A LIVE PARTY, AND MOVING ONE MIS-KEYED TICKET.
+
+  ============================================================================
+  WHY BOTH OF THESE ARE ON THE TABLES PAGE AND NOT ON THE FLOOR PLAN
+  ============================================================================
+  This page's header states the split D5 asks for: /dashboard/floor-plan is the
+  LAYOUT screen (add, rename, delete, rearrange, zone), /dashboard/tables is the
+  SERVICE screen (seat, correct the covers, release, open the orders). The test
+  that decides which side a control belongs on is NOT "does it involve tables" —
+  every control on both pages involves tables. It is the one the header already
+  gives and the one the SERVER draws:
+
+      LAYOUT acts ride on "Table Added" / "Table Deleted" / "Manage Table
+      Sections". SERVICE acts ride on "Table Occupied".
+
+  POST /tables/move is gated on 090ea8d4 — "Table Occupied", the SERVICE
+  permission, the one the core waiter role holds and the same id behind Occupy,
+  Release and Covers on the cards above. The backend's own comment above that
+  route says why in as many words: "service, not administration; the person who
+  sat them down is the person who moves them." Putting it on the floor plan would
+  contradict the permission it actually rides on and would hide it from the
+  waiter it was gated for.
+
+  And it does not change the floor: after a move there are exactly as many
+  tables, in the same zones, in the same places. WHAT MOVED IS THE PARTY — their
+  covers, their orders, their bill, their waiter, their booking. That is a
+  service act performed on a room whose layout is untouched, which is precisely
+  the line D5 draws. A floor plan with a table missing out of it is not a floor
+  plan; a floor plan whose guests have walked to another table is the same floor
+  plan.
+
+  D4's order move is on the same page for the mirror reason: it rides on "Add
+  Orders" (4ad474d4), the everyday floor permission, it is a correction to a
+  TICKET rather than to the room, and it is reached from the very order list this
+  page already opens.
+
+  ============================================================================
+  TWO ACTS, ONE DIALOG, AND THEY ARE NOT INTERCHANGEABLE
+  ============================================================================
+  Moving the PARTY takes everything with them and frees the source table.
+  Moving an ORDER takes one ticket and leaves the party exactly where they are.
+  Confusing the two costs money in opposite directions, so each half names its
+  own consequences before it runs — the same wording the owner app uses, because
+  a restaurant running both must not be taught two different things about one
+  act.
+
+  THE CONFIRMATION IS THE INTERACTION. Neither call is idempotent and neither is
+  queueable offline (routes/tables.ts argues both at length), so there is no undo
+  and no retry: the sentence in front of the button is the last point at which a
+  mistake is cheap.
+*/
+function MoveTableDialog({
+    open,
+    onOpenChange,
+    table,
+    covers,
+    allTables,
+    isSeated,
+    orders,
+    mayMoveParty,
+    mayMoveOrder,
+    busy,
+    onMoveParty,
+    onMoveOrder,
+}: {
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
+    table: Table | null;
+    covers: number;
+    allTables: Table[];
+    isSeated: (tableName: string) => boolean;
+    orders: TableOrder[];
+    mayMoveParty: boolean;
+    mayMoveOrder: boolean;
+    busy: boolean;
+    onMoveParty: (toTable: string) => void;
+    onMoveOrder: (orderId: string, toTable: string) => void;
+}): ReactElement | null {
+    const [partyDestination, setPartyDestination] = useState("");
+    const [orderDestinations, setOrderDestinations] = useState<Record<string, string>>({});
+
+    // Reopening on a different table must not carry the previous table's
+    // destination across — the commonest way a confirmed move lands somewhere
+    // nobody chose.
+    useEffect(() => {
+        setPartyDestination("");
+        setOrderDestinations({});
+    }, [table?.name, open]);
+
+    const sourceName = table?.name ?? "";
+    const partyOptions = useMemo(
+        () => partyMoveDestinations(allTables, isSeated, sourceName, covers),
+        [allTables, isSeated, sourceName, covers],
+    );
+    const orderOptions = useMemo(
+        () => orderMoveDestinations(allTables, sourceName),
+        [allTables, sourceName],
+    );
+
+    if (!table) { return null; }
+
+    return (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <DialogContent className="sm:max-w-lg">
+                <DialogHeader>
+                    <DialogTitle>Move from {table.name}</DialogTitle>
+                    <DialogDescription>
+                        Move the whole party to another table, or send one mis-keyed order to the table it
+                        should have been rung in on.
+                    </DialogDescription>
+                </DialogHeader>
+
+                {mayMoveParty ? (
+                    <div className="space-y-2 border-b pb-4">
+                        <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                            Move the whole party
+                        </Label>
+                        {partyOptions.length === 0 ? (
+                            /* The server refuses an occupied destination by name (it answers
+                               400 and the message names Merge) and refuses one too small for
+                               the covers, so offering either here and then explaining the
+                               refusal would be a worse way to teach the same thing than not
+                               offering it. When nothing fits, say what would fix it. */
+                            <p className="text-xs text-muted-foreground">
+                                No free table seats {covers} right now. Free one up, or raise its max seats on the
+                                floor plan.
+                            </p>
+                        ) : (
+                            <>
+                                <Select value={partyDestination} onValueChange={setPartyDestination}>
+                                    <SelectTrigger><SelectValue placeholder="Move the party to…" /></SelectTrigger>
+                                    <SelectContent>
+                                        {partyOptions.map((option) => (
+                                            <SelectItem key={option.name} value={option.name}>
+                                                {option.name} — seats {option.max_capacity}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                                {/* NAMED CONSEQUENCES, because this moves money as well as
+                                    people. One transaction on the server: a party half-moved
+                                    would split the bill, make the floor lie about who is
+                                    sitting where, and count the covers behind APC against a
+                                    table nobody is at. */}
+                                <p className="text-xs text-muted-foreground">
+                                    The guests, their {covers} cover{covers === 1 ? "" : "s"}, every order and the
+                                    running bill move together. {table.name} becomes free.
+                                </p>
+                                <Button
+                                    className="w-full"
+                                    disabled={busy || partyDestination === ""}
+                                    onClick={() => { onMoveParty(partyDestination); }}
+                                >
+                                    Move everything to {partyDestination || "…"}
+                                </Button>
+                            </>
+                        )}
+                    </div>
+                ) : null}
+
+                {mayMoveOrder ? (
+                    <div className="space-y-3">
+                        <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                            Move one order to the right table
+                        </Label>
+                        {orders.length === 0 ? (
+                            <p className="text-xs text-muted-foreground">
+                                There are no live orders on {table.name} to move.
+                            </p>
+                        ) : orderOptions.length === 0 ? (
+                            <p className="text-xs text-muted-foreground">There is no other table to move it to.</p>
+                        ) : (
+                            orders.map((order) => {
+                                const kot = kotTicketLabel(order.kot_nos);
+                                const destination = orderDestinations[order.id] ?? "";
+                                return (
+                                    <div key={order.id} className="space-y-1.5 rounded-md border p-2">
+                                        <div className="flex items-center justify-between gap-2 text-xs">
+                                            {/* The KOT number, where there is one. This is the handle
+                                                the pass quotes; picking an order by its position in a
+                                                list is how the wrong ticket gets moved. */}
+                                            <span className="font-medium">{kot || `Order ${order.id}`}</span>
+                                            <Badge variant="outline" className="text-[10px]">{order.status}</Badge>
+                                        </div>
+                                        <Select
+                                            value={destination}
+                                            onValueChange={(value) => {
+                                                setOrderDestinations((prev) => ({ ...prev, [order.id]: value }));
+                                            }}
+                                        >
+                                            <SelectTrigger className="h-8 text-xs">
+                                                <SelectValue placeholder="Move this order to…" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {/* EVERY other table, occupied included — a mis-keyed
+                                                    ticket usually belongs to a table that already has
+                                                    guests on it, and the party at THIS table stays
+                                                    seated either way. */}
+                                                {orderOptions.map((option) => (
+                                                    <SelectItem key={option.name} value={option.name}>
+                                                        {option.name} — {isSeated(option.name) ? "seated" : "free, this will seat it"}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                        {/* WHAT THE KITCHEN SEES is the half that makes this safe, so
+                                            it is said before anything happens. If the docket is
+                                            already on the pass it is paper for the wrong table, and
+                                            the server prints a correction carrying the SAME KOT
+                                            number so the two can be paired. If it was never printed
+                                            there is nothing to correct and nothing prints. */}
+                                        <p className="text-[11px] leading-snug text-muted-foreground">
+                                            {kot
+                                                ? `The kitchen already has ${kot} for ${table.name}, so a correction docket prints at the new table with the same number. ${table.name} keeps its guests and its other orders.`
+                                                : `The kitchen has not been sent this order yet, so nothing prints now — it will print at the new table when it is sent.`}
+                                        </p>
+                                        <Button
+                                            size="sm"
+                                            variant="outline"
+                                            className="w-full h-8 text-xs"
+                                            disabled={busy || destination === ""}
+                                            onClick={() => { onMoveOrder(order.id, destination); }}
+                                        >
+                                            Move this order to {destination || "…"}
+                                        </Button>
+                                    </div>
+                                );
+                            })
+                        )}
+                    </div>
+                ) : null}
+
+                <DialogFooter>
+                    <Button variant="ghost" onClick={() => { onOpenChange(false); }}>Close</Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+    );
+}
+
+/*
   ONE TABLE, AS A PLACE PEOPLE ARE SITTING.
 
   Everything on it is a SERVICE act. The props it does not take are as much the
@@ -118,6 +389,8 @@ function ServiceTable({
     onOccupy,
     onRelease,
     onUpdateCovers,
+    onMove,
+    canMove,
     busyTableName,
 }: {
     table: Table;
@@ -128,6 +401,15 @@ function ServiceTable({
     onOccupy: (tableName: string, numCovers: number) => void;
     onRelease: (tableName: string) => void;
     onUpdateCovers: (tableName: string, numCovers: number) => void;
+    /** D3/D4 — opens the move dialog for THIS table. Occupied tables only. */
+    onMove: (tableName: string) => void;
+    /**
+     * Does this session hold either move permission? Drawn per-card rather than
+     * per-page because the card is where the act starts; the dialog asks each
+     * half's own question again, and both routes refuse independently — a
+     * control whose only defence is being undrawn is not a control.
+     */
+    canMove: boolean;
     busyTableName: string | null;
 }) {
     const [coverCount, setCoverCount] = useState(String(occupancy?.num_covers ?? table.capacity));
@@ -286,6 +568,20 @@ function ServiceTable({
                         {occupancy?.linkedOrderId ? "View Order" : "Take Orders"}
                     </Button>
                 ) : null}
+                {/* D3/D4 — offered only on an OCCUPIED table, because both acts are
+                    about a party or a ticket that exists. There is nothing to move
+                    off an empty table, and a Move button on one would be a control
+                    whose every press the server refuses. */}
+                {isOccupied && canMove ? (
+                    <Button
+                        variant="ghost"
+                        className="w-full h-8 text-xs"
+                        disabled={isBusy}
+                        onClick={() => { onMove(table.name); }}
+                    >
+                        <ArrowRightLeft className="mr-1 h-3 w-3" /> Move
+                    </Button>
+                ) : null}
             </div>
         </Card>
     );
@@ -343,6 +639,22 @@ export default function TablesPage() {
     // Whoever may edit the floor gets a way to it from here; everyone else is not
     // told about a page whose every control would refuse them.
     const showFloorPlanLink = canOpenFloorPlan(user);
+
+    /*
+      D3 / D4 — the two move permissions, asked separately.
+
+      They are genuinely different grants: POST /tables/move rides on "Table
+      Occupied" (the service permission a waiter holds) and POST
+      /tables/move-order on "Add Orders" (the same id that gates the KOT
+      reprint). A tenant can hold one and not the other, so the dialog draws only
+      the halves this session can actually use, and the Move button appears when
+      EITHER is held — holding neither means every control inside would refuse,
+      which is not a dialog worth opening.
+    */
+    const mayMoveParty = canMoveTableParty(user);
+    const mayMoveOrder = canMoveOrderToTable(user);
+    const mayMoveAnything = mayMoveParty || mayMoveOrder;
+    const [moveTableName, setMoveTableName] = useState<string | null>(null);
 
     /*
       THE ORDERS BEHIND THE CLOCKS.
@@ -445,6 +757,129 @@ export default function TablesPage() {
         const occupancy: TableOccupancy | undefined = occupancyByName[table.name.toLowerCase()];
         return !occupancy?.is_occupied && (table.status === "Reserved" || table.status === "Booked");
     }).length;
+
+    /*
+      D3/D4 — the party move and the order move, both of them ONE call.
+
+      NEITHER IS RETRIED AND NEITHER IS QUEUED. routes/tables.ts declines
+      idempotent() and the offline outbox for both, and argues it: a replay
+      bounces off the precondition the first execution consumed ("T1 is not
+      seated") having changed nothing, and a move held on a till for twenty
+      minutes and replayed against a floor that has moved on lands on a
+      destination somebody else has since seated — by which time whoever pressed
+      it is long gone and believes the guests were moved. So a failure here is
+      reported and stops; it is never silently re-attempted.
+
+      A REFUSAL IS A RESULT, NOT AN EXCEPTION, for the reason handleReleaseTable
+      gives: an Error thrown out of a Server Action has its message redacted in
+      production, and the server's sentence ("T7 is occupied — use Merge…") is
+      the entire value of the response.
+    */
+    const moveTable = useMemo(
+        () => tablesData.find((table) => table.name === moveTableName) ?? null,
+        [tablesData, moveTableName],
+    );
+
+    /*
+      WHO IS SITTING WHERE, AND HOW MANY OF THEM — reduced once for the move
+      dialog rather than indexed per candidate table.
+
+      Reduced rather than read through `occupancyByName[...]` at each call site
+      because the destination filter asks the question ONCE PER TABLE ON THE
+      FLOOR every time the dialog re-renders, and because one derivation is one
+      place for "seated" to be defined. `partyMoveDestinations` takes the
+      predicate rather than the map for exactly that reason.
+    */
+    const seating = useMemo(() => {
+        const seated = new Set<string>();
+        const covers = new Map<string, number>();
+        for (const [name, occupancy] of Object.entries(occupancyByName)) {
+            if (occupancy.is_occupied) { seated.add(name); }
+            covers.set(name, occupancy.num_covers);
+        }
+        return { seated, covers };
+    }, [occupancyByName]);
+
+    /*
+      HOW MANY PEOPLE ARE ACTUALLY BEING MOVED.
+
+      The seated cover count, which is the figure the server measures the
+      destination against (assertCoversFitTable) and the figure the confirmation
+      quotes back. Falls back to the table's laid-up capacity only when the
+      occupancy read has not arrived — never to 1, which would offer the whole
+      floor to a party of eight.
+    */
+    const moveCovers = useMemo((): number => {
+        if (!moveTable) { return 1; }
+        return seating.covers.get(moveTable.name.toLowerCase()) ?? moveTable.capacity;
+    }, [moveTable, seating]);
+
+    const isTableSeated = (tableName: string): boolean => seating.seated.has(tableName.toLowerCase());
+
+    /** The live tickets on one table — what D4's per-order picker lists. */
+    const ordersForTable = (tableName: string): TableOrder[] =>
+        orders.filter(
+            (order) =>
+                (order.table || "").toLowerCase() === tableName.toLowerCase()
+                // A cancelled or closed ticket is not something that can be
+                // moved: the first is terminal (the server refuses every
+                // modification) and the second belongs to a settled bill.
+                && order.status !== "Cancelled"
+                && order.status !== "Closed",
+        );
+
+    const handleMoveParty = async (toTable: string): Promise<void> => {
+        if (!user?.restaurantUsername || !moveTableName) { return; }
+        const fromTable = moveTableName;
+        setBusyTableName(fromTable);
+        try {
+            const result = await moveTableParty(user.restaurantUsername, fromTable, toTable);
+            if (isRefusedAction(result)) {
+                toast({ title: "Party not moved", description: result.error, variant: "destructive" });
+                return;
+            }
+            toast({
+                title: "Party moved",
+                description: movedPartySentence(result.from_table, result.to_table, result.moved_orders),
+            });
+            setMoveTableName(null);
+            await loadTables();
+        } catch (error: unknown) {
+            toast({
+                title: "Unable to move the party",
+                description: error instanceof Error ? error.message : "The move did not go through.",
+                variant: "destructive",
+            });
+        } finally {
+            setBusyTableName(null);
+        }
+    };
+
+    const handleMoveOrder = async (orderId: string, toTable: string): Promise<void> => {
+        if (!user?.restaurantUsername || !moveTableName) { return; }
+        setBusyTableName(moveTableName);
+        try {
+            const result = await moveOrderToTable(user.restaurantUsername, orderId, toTable);
+            if (isRefusedAction(result)) {
+                toast({ title: "Order not moved", description: result.error, variant: "destructive" });
+                return;
+            }
+            // The correction docket's outcome is the SERVER's and it is not a
+            // detail: "KOT-26 is printing, tell the pass" and "nothing was on the
+            // pass for it" are two different things for staff to go and do.
+            toast({ title: "Order moved", description: movedOrderSentence(result.to_table, result.print) });
+            setMoveTableName(null);
+            await loadTables();
+        } catch (error: unknown) {
+            toast({
+                title: "Unable to move that order",
+                description: error instanceof Error ? error.message : "The move did not go through.",
+                variant: "destructive",
+            });
+        } finally {
+            setBusyTableName(null);
+        }
+    };
 
     const openOrdersForTable = (tableName: string, linkedOrderId?: string | null) => {
         const params = new URLSearchParams();
@@ -616,6 +1051,8 @@ export default function TablesPage() {
                                                     onOccupy={(name, covers) => { void handleOccupyTable(name, covers); }}
                                                     onRelease={(name) => { void handleReleaseTable(name); }}
                                                     onUpdateCovers={(name, covers) => { void handleUpdateTableCovers(name, covers); }}
+                                                    onMove={(name) => { setMoveTableName(name); }}
+                                                    canMove={mayMoveAnything}
                                                     busyTableName={busyTableName}
                                                 />
                                             ))}
@@ -639,6 +1076,25 @@ export default function TablesPage() {
                     )}
                 </CardContent>
             </Card>
+
+            {/* D3/D4. One dialog for the whole page rather than one per card —
+                thirty cards each mounting a Dialog is thirty Radix portals on a
+                laptop that is also driving the floor, for a control that can only
+                ever be open on one table at a time. */}
+            <MoveTableDialog
+                open={moveTableName !== null}
+                onOpenChange={(next) => { if (!next) { setMoveTableName(null); } }}
+                table={moveTable}
+                covers={moveCovers}
+                allTables={tablesData}
+                isSeated={isTableSeated}
+                orders={moveTableName ? ordersForTable(moveTableName) : []}
+                mayMoveParty={mayMoveParty}
+                mayMoveOrder={mayMoveOrder}
+                busy={busyTableName !== null}
+                onMoveParty={(toTable) => { void handleMoveParty(toTable); }}
+                onMoveOrder={(orderId, toTable) => { void handleMoveOrder(orderId, toTable); }}
+            />
         </div>
     );
 }
