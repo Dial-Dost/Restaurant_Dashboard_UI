@@ -186,6 +186,15 @@ export const PERM_VOID_ORDER = 'c1f83b26-5a97-4e40-b8d3-7e02a9c4f156';
 export const PERM_ORDER_DELETE = '8c3f5b21-0e74-4a96-b2d8-6f1a9c4e7b53';
 /** "Edit Menu" — PATCH /menu/:id/price and /menu/:id/availability. Backs `edit_menu`. */
 export const PERM_EDIT_MENU = 'ed800655-b937-44ba-a7ca-7458295886c9';
+/**
+ * "Add Orders" — the everyday floor action, and the gate on POST /print/bill,
+ * POST /print/kot/order/:id and D4's POST /tables/move-order. Quoted from those
+ * routes; NOT a new id (migration 025's rule), and the backend deliberately put
+ * the KOT move on the SAME gate as the KOT reprint because moving a ticket is
+ * the same class of act as reprinting one. No capability flag yet, so the
+ * helpers below read the server's resolved `actions_set` for it directly.
+ */
+export const PERM_ORDER_ADD = '4ad474d4-5230-449c-874f-6a238b833bca';
 
 /**
  * The uuid each capability is gated on, used ONLY when the server did not send
@@ -322,3 +331,69 @@ export const canEditDishAvailability = (session: ScopedSession | null | undefine
  */
 export const canOpenEmployeesPage = (session: ScopedSession | null | undefined): boolean =>
     hasPermission(session?.actions_set, PERM_VIEW_EMPLOYEES) || canOpenRoles(session);
+
+/**
+ * MAY THIS SESSION SEE MONEY? (C4)
+ *
+ * V3: "When a waiter is taking an order at a table, remove the prices from the
+ * list of ordered dishes displayed on the right side. Only the dish name and
+ * quantity should remain visible."
+ *
+ * ONE PREDICATE, THREE CLIENTS. This is `!isWaiterOnly` and nothing else —
+ * literally what the Flutter app's `RoleScope.showsMoney` is
+ * (`models/role_scope.dart`), and what the backend's own redaction keys off. A
+ * money gate that asked a different question here (a `can()` capability, a role
+ * name, "is the order still open") would be a fourth answer to a question that
+ * already has one, and the drift would show up as a waiter seeing prices on the
+ * web that the phone hides — which is the csrorganics failure with a new
+ * surface.
+ *
+ * NAMED FOR WHAT IT DECIDES, not for who it excludes, so a reader at the call
+ * site does not have to hold "not waiter-only" in their head while reading a
+ * JSX condition. The inversion lives here once.
+ *
+ * AN UNKNOWN IDENTITY KEEPS THE FIGURES. `isWaiterOnly` answers false for
+ * anyone the server has not positively scoped, including a session too old to
+ * carry the field, so the failure direction is "an owner whose browser has not
+ * re-logged-in still sees the till" rather than "the screen silently loses half
+ * of itself". The money it guards is DISPLAY only — nothing here is a control.
+ */
+export const showsMoney = (session: ScopedSession | null | undefined): boolean =>
+    !isWaiterOnly(session);
+
+// --- D3 / D4: moving a live party, and moving one mis-keyed ticket ----------
+//
+// Both are fully implemented, atomic and tested server-side; the dashboard
+// simply had no UI. Neither has a capability flag in the `scope` block yet, so
+// both read the server's own resolved `actions_set` for the uuid its route is
+// gated on — the same list `can()` falls back to, one hop less direct. They
+// should move into `scope` the moment the backend publishes them, for the drift
+// reason in this file's header.
+//
+// NO FALLBACK TO A ROLE, AND NO WILDCARD OF OUR OWN: `hasPermission` already
+// satisfies `"*"`, so an admin holds both without a special case.
+
+/**
+ * May this session move a whole party from one table to another?
+ *
+ * POST /tables/move, gated on "Table Occupied" — the SERVICE permission the
+ * core waiter role holds. That is the backend's judgement and this app obeys
+ * it: moving a live party is service, not administration, and the person who
+ * sat them down is the person who moves them (routes/tables.ts says so in as
+ * many words above the route).
+ */
+export const canMoveTableParty = (session: ScopedSession | null | undefined): boolean =>
+    hasPermission(session?.actions_set, PERM_TABLE_SERVICE);
+
+/**
+ * May this session move ONE order/KOT to the table it should have been rung in
+ * on?
+ *
+ * POST /tables/move-order, gated on "Add Orders" — the same id that gates the
+ * KOT reprint, because the route PRINTS: it reissues a correction docket
+ * carrying the same KOT number so the pass can pair it with the paper it
+ * replaces. Reusing that gate is the backend's decision, quoted, not a
+ * judgement made here.
+ */
+export const canMoveOrderToTable = (session: ScopedSession | null | undefined): boolean =>
+    hasPermission(session?.actions_set, PERM_ORDER_ADD);

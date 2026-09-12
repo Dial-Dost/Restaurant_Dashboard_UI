@@ -72,6 +72,7 @@ import {
   getKitchenSections,
   getMenuVariations,
   getOrdersScope,
+  claimBillPrint,
   // addAuditLogEntry,
   type MonthlyApcInsight,
   type PaymentMethod,
@@ -99,6 +100,13 @@ import {
   isWaiterOnly as sessionIsWaiterOnly,
   PERM_ORDER_DELETE,
 } from "@/lib/session-scope";
+import {
+  billPrintScope,
+  billPrintStateFields,
+  serverSaysBillPrinted,
+  type BillPrintState,
+} from "@/lib/bill-print-state";
+import { visibleAmount, visibleLineAmount, visibleMoneyText, visibleSubtotal } from "@/lib/order-prices";
 /*
   THE PREP TIMERS STAY LOCAL; THE SERVICE CLOCK DOES NOT.
 
@@ -191,6 +199,17 @@ export interface Order {
   id: string;
   table: string;
   customer: string;
+  /*
+    C3 / REPRINT FORMATTING — the SERVER's print ledger for this table's seating
+    as it stood BEFORE this print was claimed, stamped on by `triggerPrint` and
+    read by the print page to decide whether the paper carries "** REPRINT **".
+
+    Present only on a print payload; it is never sent to the backend and is not
+    part of what /orders returns. It carries the server's own three field names
+    rather than a boolean, because a boolean computed here would be the
+    device-remembered answer bill-print-state.ts exists to keep out.
+  */
+  bill_print_state?: BillPrintState | null;
   // Order channel: dine_in (default) / takeaway / delivery / swiggy / zomato.
   order_type?: string | null;
   taken_by_employee_id?: string | null;
@@ -622,7 +641,18 @@ function OrdersDashboard() {
   // order form can offer them. A tenant that has configured none gets an empty
   // map, no picker anywhere, and an order payload byte-identical to before.
   const [variations, setVariations] = useState<MenuVariationRecord[]>([]);
-  const [tables, setTables] = useState<{ id: number; name: string; capacity: number; qr_token?: string | null }[]>([]);
+  /*
+    C3 — `bill_print` RIDES ALONG, AND IT IS WHY THIS LIST IS READ AT ALL HERE.
+
+    The /get-tables row carries `print_count` / `bill_printed_at` / `printed_at`
+    for the CURRENT seating (the backend's `bill_print_state.ts` puts them on the
+    table list as well as on /bill-for-table precisely so a client needs no
+    second read and no per-device memory). `mapTable` lifts them through
+    verbatim, so this list — which this page already loaded for the table
+    selector — is also the answer to "has this table's bill been printed", for
+    every table on the floor, off one poll.
+  */
+  const [tables, setTables] = useState<{ id: number; name: string; capacity: number; qr_token?: string | null; bill_print?: BillPrintState | null }[]>([]);
   const [monthlyApcInsight, setMonthlyApcInsight] = useState<MonthlyApcInsight | null>(null);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
@@ -662,6 +692,63 @@ function OrdersDashboard() {
   }, [selectedTableName, tables]);
 
   const displayOrders = useMemo(() => dedupeOrdersById(orders), [orders]);
+
+  /*
+    C3 — THE SERVER'S PRINT LEDGER, KEYED THE WAY EVERY TABLE IS LOOKED UP.
+
+    One map off the table list, so no row rendering has to go hunting through an
+    array of forty tables. `null` in here is a table whose row carried NONE of
+    the print-state keys — a backend older than the fields — which is NOT the
+    same as "not printed"; `serverSaysBillPrinted` is what resolves that to the
+    safe answer, in one place, rather than every call site picking a default.
+  */
+  const billPrintByTable = useMemo(() => {
+    const map = new Map<string, BillPrintState | null>();
+    for (const table of tables) {
+      map.set((table.name || "").toLowerCase(), table.bill_print ?? null);
+    }
+    return map;
+  }, [tables]);
+
+  /*
+    WHAT THIS SESSION MAY DO ABOUT ONE ORDER'S BILL. One object per row, asked by
+    the button AND by the "clear from their view" filter below, so the control
+    and the list cannot end up answering two slightly different questions — the
+    reason the Flutter app has a single `BillPrintScope` rather than two role
+    tests at two call sites.
+
+    For every identity that is not waiter-only this is `{ print: true,
+    reprintNeedsSenior: false, retiresTable: false }` whatever the ledger says:
+    C3 narrows a waiter's reprint, it does not put a new ceiling on the people
+    who run the floor.
+  */
+  const printScopeForTable = useCallback(
+    (tableName: string) =>
+      billPrintScope(user, serverSaysBillPrinted(billPrintByTable.get((tableName || "").toLowerCase()) ?? null)),
+    [user, billPrintByTable],
+  );
+
+  /*
+    C3's SECOND HALF — "the table should clear/reset from their view".
+
+    READ AS EXACTLY WHAT IT SAYS: THEIR VIEW. Nothing is written. The table stays
+    occupied, the bill stays owing, and it is still on every manager's screen and
+    on the floor plan; what changes is that this waiter's orders list no longer
+    carries it, because for them the job at that table is finished and a manager
+    settles it. It CANNOT mean more than that: C2 forbids this same waiter from
+    settling, so "clear the table" would be asking the requirement to contradict
+    itself.
+
+    THE KITCHEN DISPLAY IS DELIBERATELY NOT FILTERED (it still renders
+    `displayOrders`). The pass is not anybody's view of the floor — food still
+    has to be cooked and called for a table whose bill has been printed, and
+    dropping a live ticket off the kitchen screen to enforce a rule about a
+    waiter's reprint would be the most expensive possible reading of C3.
+  */
+  const visibleOrders = useMemo(
+    () => displayOrders.filter((order) => !printScopeForTable(order.table).retiresTable),
+    [displayOrders, printScopeForTable],
+  );
   // ACTIVE sizes only, grouped by dish. A retired size must never be offerable
   // again — it stays resolvable on every order line that already named it, which
   // is a different question from whether it can be sold today.
@@ -864,7 +951,120 @@ function OrdersDashboard() {
     return () => { window.removeEventListener('realtime:event', handler as EventListener); };
   }, [user]);
 
-  const triggerPrint = (order: Order) => {
+  /*
+    C3 — PRINT BILL NOW TELLS THE SERVER BEFORE IT OPENS ANY PAPER.
+
+    WHAT THIS REPLACES, AND WHY IT WAS THE WHOLE BUG. This handler used to stash
+    a payload in localStorage and open /dashboard/orders/print, which calls
+    window.print(). It never told the backend anything. So C3 — "a waiter may
+    execute Print Bill once" — was enforced on the thermal path (POST /print/bill
+    403s a waiter's second print, pinned by the backend's
+    print_once_authority.test.ts) and completely unenforced here: the same
+    waiter, at the same table, printed unlimited copies off the laptop. A
+    restriction with a hole that size is worse than none, because it is visible
+    and is therefore trusted.
+
+    THE CLAIM IS THE CONTROL AND IT GOES FIRST. Nothing is rendered until the
+    server has recorded the print, so a refusal cannot arrive after the guest is
+    holding paper. `claimBillPrint` refuses ONLY on an explicit 403 — a backend
+    that does not have the route yet (the web can ship a release ahead of the
+    API) answers `unavailable`, and the print proceeds, which is the direction
+    bill_print_state.ts itself chooses: a guest waiting with no way to get a bill
+    is a worse outage than a second copy of one.
+
+    AND THE SENTENCE IS THE SERVER'S, VERBATIM. The 403 body's `details` already
+    names who may reprint instead, built from `ROLES_OUTRANKING_WAITER` — a
+    server-side list a tenant's configuration can outlive. Writing our own
+    wording here would send the refused waiter to fetch the wrong person the
+    first time that list changes.
+  */
+  const triggerPrint = async (order: Order): Promise<void> => {
+    const restaurantId = user?.restaurantUsername;
+    const tableName = (order.table || "").trim();
+
+    /*
+      THE TAB IS CLAIMED SYNCHRONOUSLY, BEFORE THE AWAIT. THIS IS NOT A STYLE
+      CHOICE.
+
+      Every browser blocks a `window.open()` that is not in the same task as the
+      click that caused it, and the claim below is an `await`. Moving the open
+      after it would mean Print Bill silently did NOTHING on a default Chrome
+      during service — the worst possible way for this change to fail, because
+      the waiter would press it again, and again, burning a server-recorded
+      attempt every time.
+
+      So the tab is taken while the gesture is still live and left EMPTY. Nothing
+      is rendered in it until the claim has come back, which is the property that
+      actually matters: on a refusal it is closed and the server's sentence goes
+      in front of the person who pressed the button, and no bill is ever drawn.
+      A popup blocker that refused even this leaves `printWindow` null, and the
+      fallback open at the end is the old behaviour — worth having, because a
+      blocked print is still a table that cannot be billed.
+    */
+    const printWindow = typeof window !== "undefined" ? window.open("", "_blank") : null;
+    if (printWindow) {
+      // A word in the empty tab, so it does not read as a browser that hung.
+      // Wrapped because a hardened browser refusing to let us touch about:blank
+      // is not worth failing the print over.
+      try {
+        printWindow.document.title = "Preparing the bill…";
+        const note = printWindow.document.createElement("p");
+        note.textContent = "Preparing the bill…";
+        printWindow.document.body.appendChild(note);
+      } catch { /* the tab stays blank until it navigates, which is harmless */ }
+    }
+
+    /*
+      THE STAMP THAT ANSWERS "IS THIS A REPRINT", TAKEN BEFORE THE CLAIM.
+
+      The claim INCREMENTS the durable ledger, so a print page that re-read the
+      count after its own claim would see 1 on a FIRST print and stamp REPRINT
+      across an original bill. What the reprint marker is asking about is the
+      state the bill was in when the operator pressed the button, so that is the
+      figure that travels — the server's own `print_count` / `bill_printed_at`,
+      read fresh off GET /bill-for-table and falling back to the polled table
+      row when that read is unavailable. Never a client-side "have I printed
+      this before" flag; see bill-print-state.ts's header for what that costs.
+    */
+    let priorPrintState: BillPrintState | null =
+      billPrintByTable.get(tableName.toLowerCase()) ?? null;
+    if (restaurantId && tableName) {
+      const fresh: unknown = await getBillForTable(restaurantId, tableName).catch(() => null);
+      priorPrintState = billPrintStateFields(fresh) ?? priorPrintState;
+
+      const claim = await claimBillPrint(restaurantId, tableName, order.id);
+      if (claim.outcome === "refused") {
+        // Nothing was ever drawn in it. Closing an empty tab is the whole of
+        // "only render the print page if the claim succeeded".
+        printWindow?.close();
+        toast({
+          // The TITLE is ours because a toast needs one; the SENTENCE is the
+          // server's, unaltered.
+          title: "Bill not printed",
+          description: claim.message,
+          variant: "destructive",
+        });
+        // Re-read the floor rather than remembering the refusal here: the
+        // refusal means the server's ledger says printed, so the button and the
+        // row should both go — and they go because the SERVER said so on the
+        // next read, not because this component wrote itself a note.
+        try {
+          const refreshed = await getTables(restaurantId);
+          setTables(Array.isArray(refreshed) ? refreshed : []);
+        } catch { /* the poll will catch up */ }
+        return;
+      }
+      if (claim.outcome === "claimed") {
+        // The ledger moved, so the floor this page is painting is now stale for
+        // every waiter looking at it — including this one, whose Print Bill
+        // button must disappear now and not in twenty seconds' time.
+        try {
+          const refreshed = await getTables(restaurantId);
+          setTables(Array.isArray(refreshed) ? refreshed : []);
+        } catch { /* the poll will catch up */ }
+      }
+    }
+
     const flattenedItems = (order as any).items_flattened?.length ? (order as any).items_flattened : order.items;
     let calculatedTaxes = calculateTaxes(order.subtotal, order.taxes);
     if ((!calculatedTaxes || calculatedTaxes.length === 0) && defaultTax) {
@@ -878,9 +1078,15 @@ function OrdersDashboard() {
       calculatedTaxes,
       currencySymbol,
     };
-      const storageKey = storePrintBillPayload(orderWithCalculatedCharges);
+      const storageKey = storePrintBillPayload({
+        ...orderWithCalculatedCharges,
+        // The server's own fields, carried across verbatim under the same three
+        // spellings they arrived in, so the print page reads the SERVER's answer
+        // rather than deciding for itself whether this is a reprint.
+        bill_print_state: priorPrintState,
+      });
       const url = `/dashboard/orders/print?orderKey=${encodeURIComponent(storageKey)}`;
-    window.open(url, '_blank');
+      if (printWindow) { printWindow.location.href = url; } else { window.open(url, '_blank'); }
   }
   
   const handleAddOrder = async (newOrderData: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null; course_hold?: boolean; variation_id?: string }[]; covers?: number }) => {
@@ -1548,7 +1754,11 @@ function OrdersDashboard() {
       {/* Names the outlet this grid is scoped to, and when it is empty explains
           whether the orders are on another outlet or have aged into History —
           instead of leaving a bare table that reads as data loss. */}
-      <OrdersScopeNotice scope={ordersScope} visibleCount={displayOrders.length} canSwitchOutlet={canSwitchOutlet} />
+      {/* Counted off the list actually on screen, so the notice can never say
+          "showing 12" over a table of 11 — C3 retires a printed table from a
+          waiter's list, and a count taken before that filter would disagree
+          with the rows underneath it. */}
+      <OrdersScopeNotice scope={ordersScope} visibleCount={visibleOrders.length} canSwitchOutlet={canSwitchOutlet} />
       {isAdmin && discountRequests.length > 0 ? (
         <Card className="border-amber-300">
           <CardHeader>
@@ -1693,7 +1903,7 @@ function OrdersDashboard() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {displayOrders.map((order) => {
+              {visibleOrders.map((order) => {
                 const apcInsight = orderApcByOrderId.get(String(order.id));
                 // The handle staff quote when they reprint, cancel or move this
                 // ticket. "" on a backend that does not send `kot_nos`.
@@ -1917,16 +2127,49 @@ function OrdersDashboard() {
                     <div className="flex items-center justify-end gap-1" onClick={(e) => { e.stopPropagation(); }}>
                     {isWaiterOnly ? (
                       <>
+                      {/*
+                        C3 — THE ONE PRINT, AND WHAT IT COSTS THE WAITER.
+
+                        "Waiters can only execute the 'Print Bill' action once.
+                        After clicking it, the button must disappear."
+
+                        THE BUTTON IS DRAWN FROM THE SERVER'S LEDGER AND FROM
+                        NOTHING ELSE. `print_count` / `bill_printed_at` ride on
+                        the /get-tables row for this table, so the answer is the
+                        same on this laptop, on the tablet by the pass and on a
+                        browser that has never seen this table before. The
+                        Flutter app got this wrong first — it remembered the
+                        press in the DEVICE, which survives a back-navigation and
+                        an app restart and survives neither a reinstall nor a
+                        second tablet — and bill_print_state.ts's header is the
+                        write-up of that defect. This is not a place to have it
+                        again.
+
+                        AND THE SPACE IS NOT LEFT BLANK. A waiter handed nothing
+                        where a control was presses it again on the next device
+                        they find; a waiter told the bill is printed and with a
+                        senior walks to the pass. The row itself also leaves this
+                        waiter's list (see `visibleOrders`) — their job at that
+                        table is done — but the sentence has to be here for the
+                        moment between the press and the reload, and for a row
+                        still on screen from the last poll.
+                      */}
+                      {printScopeForTable(order.table).print ? (
                       <Button
                         variant="ghost"
                         size="sm"
                         className="h-7 px-2 text-xs"
                         title="Print this table's bill"
-                        onClick={() => { triggerPrint(order); }}
+                        onClick={() => { void triggerPrint(order); }}
                         disabled={cancelled}
                       >
                         <Printer className="mr-1 h-3.5 w-3.5" /> Print Bill
                       </Button>
+                      ) : (
+                        <span className="px-2 text-[11px] leading-tight text-muted-foreground">
+                          Bill printed — a reprint has to be made by a senior.
+                        </span>
+                      )}
                       {/*
                         THE SERVER'S GRANT OUTRANKS THE ROLE.
 
@@ -2207,7 +2450,13 @@ function OrdersDashboard() {
                             Delete Order
                           </DropdownMenuItem>
                         ) : null}
-                        <DropdownMenuItem onClick={() => { triggerPrint(order); }} disabled={order.status !== 'Bill Verification' && order.status !== 'Payment Pending Approval' && order.status !== 'Paid' && order.status !== 'Closed'}>
+                        {/* Unchanged for every senior identity: `billPrintScope`
+                            answers `print: true` for anyone the server has not
+                            scoped as waiter-only, however many times the bill has
+                            been printed. C3 names "Super Admins" as who a WAITER
+                            escalates to, not as a new ceiling on the people who
+                            run the floor. */}
+                        <DropdownMenuItem onClick={() => { void triggerPrint(order); }} disabled={order.status !== 'Bill Verification' && order.status !== 'Payment Pending Approval' && order.status !== 'Paid' && order.status !== 'Closed'}>
                             <Printer className="mr-2 h-4 w-4" />
                             Print Bill
                         </DropdownMenuItem>
@@ -3176,8 +3425,36 @@ function KitchenKioskDisplay({ station }: { station: string }) {
   );
 }
 
+/*
+  C4 — THE ORDER CART A WAITER SEES HAS NO MONEY ON IT.
+
+  "When a waiter is taking an order at a table, remove the prices from the list
+  of ordered dishes displayed on the right side. Only the dish name and quantity
+  should remain visible."
+
+  WHAT IS HIDDEN HERE: the per-line amount down the right of the cart, and the
+  Subtotal underneath it. WHAT SURVIVES, because the requirement says so and
+  because it is the ticket: the dish, its size, its HOLD flag, its kitchen note
+  and its quantity. That is the same cut the Flutter app makes
+  (`widgets/table_bill.dart`, `_items` and `_totals` both gated on
+  `RoleScope.showsMoney`), and making it differently on the web is how one
+  restaurant ends up with two answers to one requirement.
+
+  IT IS ASKED THROUGH `visibleLineAmount` / `visibleSubtotal`, NOT THROUGH AN
+  `if` ON THE ROLE, because the role is only half of it: the backend is
+  redacting the price out of the payload for a waiter-only session, so a price
+  can also arrive ABSENT. `Number(undefined || 0).toFixed(2)` is "0.00" — a
+  confident figure printed where a hidden one belongs, and on a cart that means
+  a dish that reads as free. Those helpers answer `null` for both causes and the
+  JSX draws nothing at all; see `order-prices.ts` for why they do not
+  distinguish the two.
+*/
 function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSelectedTable, variationsByMenuId }: { onSubmit: (data: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null; course_hold?: boolean; variation_id?: string }[]; covers?: number }) => Promise<void> | void; menuItems: MenuItem[]; tables: { id: number; name: string; capacity: number }[]; selectedTableName?: string; onClearSelectedTable?: () => void; variationsByMenuId?: Map<string, MenuVariationRecord[]> }) {
   const { currencySymbol } = useCurrency();
+  // C4's gate, from the session and therefore from the server. Read here rather
+  // than passed in as a prop: a prop could be forgotten at one of the call
+  // sites, and there is no correct default for "may this person see money".
+  const { user } = useAuth();
   const [selectedTableId, setSelectedTableId] = useState<string>(() => {
     if (selectedTableName) {
       const matched = tables.find((table) => table.name.toLowerCase() === selectedTableName.toLowerCase());
@@ -3229,7 +3506,10 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
     if (!selectedMenuItem) {return;}
     // The size's price when one was picked. It is a PREVIEW: the server floors
     // this line at the same variation's stored price, so a stale price here is
-    // corrected rather than billed.
+    // corrected rather than billed — which is also what makes C4 safe to
+    // implement by hiding. A waiter whose payload has had its prices redacted
+    // sends 0 here and the line is still billed at the menu's price, because
+    // applyMenuPriceFloor never trusts a client-supplied figure.
     const price = chosenSize ? Number(chosenSize.price || 0) : Number(selectedMenuItem.price || 0);
     const note = selectedNote.trim();
     const hold = selectedHold;
@@ -3258,6 +3538,12 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
     setSelectedVariationId("");
   };
 
+  /** "Half — ₹150" where the money shows, plain "Half" where it does not. */
+  const sizeOptionLabel = (label: string, price: unknown): string => {
+    const money = visibleMoneyText(currencySymbol, visibleAmount(user, price));
+    return money === null ? label : `${label} — ${money}`;
+  };
+
   const removeItem = (name: string, note?: string | null, variationId?: string) => {
     setItemsList(prev => prev.filter(p => !(
       p.name === name
@@ -3266,7 +3552,13 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
     )));
   };
 
-  const subtotal = itemsList.reduce((acc, it) => acc + it.price * it.quantity, 0);
+  /*
+    Null for a scoped waiter, and null again if ANY line's price was redacted out
+    of the payload — see `visibleSubtotal` for why a partial total is worse than
+    none. `null * qty === 0` in JavaScript, which is exactly how a redacted cart
+    would otherwise have added up to a confident ₹0.00.
+  */
+  const subtotal = visibleSubtotal(user, itemsList);
 
   const handleSubmit = () => {
     const tableIdNum = Number(selectedTableId);
@@ -3341,10 +3633,18 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
         <div className="col-span-3">
           <Select value={selectedVariationId || "__base__"} onValueChange={(v) => { setSelectedVariationId(v === "__base__" ? "" : v); }}>
             <SelectTrigger id="item-size"><SelectValue /></SelectTrigger>
+            {/* The size picker is the MENU, not the order — C4 is about the
+                list of ordered dishes — but it is read off the same payload the
+                backend redacts for a waiter-only session, so it goes through the
+                same gate. Without it this row was `Number(undefined ?? 0)`, i.e.
+                every size priced "₹0.00" on a waiter's screen: not a hidden
+                price, a wrong one. Falling back to the bare size NAME is what
+                the picker is actually for — Half and Full are different lines
+                whether or not their prices are on show. */}
             <SelectContent>
-              <SelectItem value="__base__">Standard — {currencySymbol}{Number(selectedMenuItemForSize?.price ?? 0).toFixed(2)}</SelectItem>
+              <SelectItem value="__base__">{sizeOptionLabel('Standard', selectedMenuItemForSize?.price)}</SelectItem>
               {sizesForSelected.map((v) => (
-                <SelectItem key={v.id} value={v.id}>{v.name} — {currencySymbol}{v.price.toFixed(2)}</SelectItem>
+                <SelectItem key={v.id} value={v.id}>{sizeOptionLabel(v.name, v.price)}</SelectItem>
               ))}
             </SelectContent>
           </Select>
@@ -3393,7 +3693,13 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
                 {it.note ? <div className="text-xs text-muted-foreground">Note: {it.note}</div> : null}
               </div>
               <div className="flex items-center gap-2">
-                <div>{currencySymbol}{(it.price * it.quantity).toFixed(2)}</div>
+                {/* C4 — the element GOES, it is not blanked. A "—" or a "₹0.00"
+                    in this column is a price as far as the person reading the
+                    cart is concerned. */}
+                {(() => {
+                  const amount = visibleMoneyText(currencySymbol, visibleLineAmount(user, it.price, it.quantity));
+                  return amount === null ? null : <div>{amount}</div>;
+                })()}
                 <Button variant="ghost" size="icon" onClick={() => { removeItem(it.name, it.note, it.variation_id); }}><X className="h-4 w-4"/></Button>
               </div>
             </div>
@@ -3402,10 +3708,16 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
       )}
       </div>
 
+      {/* C4 — the Subtotal is the same money in one line instead of many, so it
+          goes with them. The whole row disappears rather than the figure alone:
+          a label reading "Subtotal" with nothing after it is a gap a waiter will
+          read as a loading state and wait on. */}
+      {subtotal === null ? null : (
       <div className="flex justify-between text-sm border-t pt-2">
         <div>Subtotal</div>
         <div>{currencySymbol}{subtotal.toFixed(2)}</div>
       </div>
+      )}
 
       <DialogFooter>
       <Button onClick={handleSubmit}>Save Order</Button>

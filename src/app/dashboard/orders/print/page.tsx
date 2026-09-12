@@ -11,6 +11,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import Image from 'next/image';
 import { DEFAULT_TIMEZONE, formatDateTime } from '@/lib/tz';
 import { useTimezone } from '@/lib/use-timezone';
+import { isReprintOfPrintedBill, REPRINT_MARKER, type BillPrintState } from '@/lib/bill-print-state';
 
 interface OrderItem {
     id: string;
@@ -53,6 +54,23 @@ interface Order {
   roundOff?: number;
   status: string;
   currencySymbol: string;
+  /*
+    "REPRINT FORMATTING: format reprint bills to clearly display the word
+    'Reprint' at the top."
+
+    THE SERVER'S `print_count` / `bill_printed_at` FOR THIS SEATING AS THEY STOOD
+    BEFORE THIS PRINT WAS CLAIMED, stamped on by the orders page. Not a boolean
+    and not a client-side "have I printed this already" flag: the whole reason
+    those fields exist is that a per-device memory of "once" means something
+    different on every device in the building (bill-print-state.ts's header).
+
+    WHY *BEFORE*. POST /print/bill/claim increments the durable ledger and
+    answers with the NEW count — its own test asserts `print_count: 1` after the
+    first claim — so a page that read the count after its own claim would stamp
+    REPRINT across every original bill. The question the marker asks is what
+    state the bill was in when the operator pressed the button.
+  */
+  bill_print_state?: BillPrintState | null;
 }
 
 // --- Printed-bill header identity -------------------------------------------
@@ -610,6 +628,36 @@ function PrintPageContents() {
     }
 
     const printed = resolution.printed;
+    /*
+      IS THIS PIECE OF PAPER A REPRINT?
+
+      TWO CONDITIONS, AND BOTH ARE THE SERVER'S.
+
+      1. The stamp says this seating's bill had ALREADY been printed when the
+         operator pressed Print — `print_count` / `bill_printed_at` off
+         /bill-for-table, read before the claim incremented them.
+
+      2. The document this page actually resolved is that same OPEN table bill.
+         `/bill-for-table` is addressed by TABLE NAME, so the moment a sitting is
+         settled and the next party is seated that URL starts answering about
+         somebody else's bill — the exact hazard `openBillOwnsOrder` exists for.
+         `source === 'open'` means the resolver PROVED the open bill contains
+         this order, so the stamp and the paper describe one bill rather than two.
+
+      A SETTLED BILL IS DELIBERATELY NOT MARKED, and this is a known gap rather
+      than an oversight. GetClosedBill's projection carries no print state at
+      all, so there is no server fact here to answer the question with — and the
+      alternative, "a closed bill is always a reprint", is a guess made in the
+      browser, which is the one thing this file is not allowed to do. It should
+      become a marker the moment the backend ships `print_count` on the closed-
+      bill payload the way it did on /get-tables.
+
+      THE FAILURE DIRECTION. No answer means no banner. An unmarked reprint is a
+      bookkeeping annoyance; a REPRINT banner across a genuine first bill is a
+      document the guest is entitled to query, on the slip that is the record of
+      what they owe.
+    */
+    const isReprint = printed.source === 'open' && isReprintOfPrintedBill(order.bill_print_state);
     const currencySymbol = order.currencySymbol || '₹';
     const cashierName = `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || '';
     const billId = bill?.id ?? settledBill?.id ?? openBill?.bill_id ?? '';
@@ -647,7 +695,7 @@ function PrintPageContents() {
                         <button
                                 onClick={async () => {
                                     // Passed logoBase64 to the encoder
-                                    const esc = await generateEscPos(user, profile, cashierName, bill, order, logoBase64, timezone, billPrint, printed);
+                                    const esc = await generateEscPos(user, profile, cashierName, bill, order, logoBase64, timezone, billPrint, printed, isReprint);
                                     // Never silent: an encoder that returned null
                                     // printed nothing, and an operator who thinks
                                     // he has sent a bill to the thermal printer
@@ -707,6 +755,23 @@ function PrintPageContents() {
                         </button>
                     </div>
                 </div>
+                {/*
+                    THE FIRST THING ON A REPRINTED SLIP IS THAT IT IS A REPRINT.
+
+                    ABOVE THE LOGO, NOT UNDER IT — the same placement escpos.ts
+                    chose and for the same reason it gives: a bill carrying a tall
+                    logo would otherwise put the word several centimetres down a
+                    slip that gets glanced at and dropped in a till drawer. The
+                    text is `REPRINT_MARKER`, which is the backend's own constant,
+                    because the SAME bill can be printed through either path and
+                    two spellings would mean a guest comparing two slips has no
+                    way to tell they are the same document.
+                */}
+                {isReprint ? (
+                    <div className="border-b-2 border-black py-2 text-center text-2xl font-extrabold tracking-widest">
+                        {REPRINT_MARKER}
+                    </div>
+                ) : null}
                 <CardHeader className="text-center border-b border-black pb-4">
                     {logoBase64 ? (
                         <Image src={`data:image/png;base64,${logoBase64}`} alt="logo" className="mx-auto h-16 object-contain" width={64} height={64} />
@@ -861,6 +926,23 @@ export default function PrintPage() {
 }
 
 /**
+ * The four encoder calls the REPRINT banner makes, named.
+ *
+ * `@point-of-sale/receipt-printer-encoder` is loaded through a dynamic import
+ * and resolves to `any` here, so every call on it is unchecked. Giving the
+ * banner's own four methods a shape means a typo in this block is a build error
+ * rather than a silently missing marker on a bill — which is exactly the kind of
+ * failure a reprint banner cannot afford, because nobody notices the word that
+ * did not print.
+ */
+interface BannerEncoder {
+    bold: (on: boolean) => BannerEncoder;
+    width: (multiplier: number) => BannerEncoder;
+    height: (multiplier: number) => BannerEncoder;
+    line: (text: string) => BannerEncoder;
+}
+
+/**
  * The ESC/POS twin of the bill rendered above.
  *
  * `printedArg` is the resolved document — items, ladder and grand total — and it
@@ -871,8 +953,13 @@ export default function PrintPage() {
  * do the server reads itself — it has no restaurant id, and no way to tell
  * whether a table's open bill belongs to this order or to the next party sitting
  * there. Callers inside this page always pass it; they have both.
+ *
+ * `reprint` is decided by the caller for the same reason, and off the SERVER's
+ * print state — see `isReprint` in PrintPageContents. It defaults to false so
+ * the exported signature stays callable as it was, and because an unmarked
+ * reprint is a smaller failure than a REPRINT banner across an original bill.
  */
-export async function generateEscPos(user: any, profile: any, cashierName: string, bill: any, orderArg?: any, logoBase64?: string | null, timeZone: string = DEFAULT_TIMEZONE, billPrint: BillPrintSettings | null = null, printedArg: PrintedBill | null = null): Promise<Uint8Array | null> {
+export async function generateEscPos(user: any, profile: any, cashierName: string, bill: any, orderArg?: any, logoBase64?: string | null, timeZone: string = DEFAULT_TIMEZONE, billPrint: BillPrintSettings | null = null, printedArg: PrintedBill | null = null, reprint = false): Promise<Uint8Array | null> {
     try {
         // NO SERVER-RESOLVED BILL, NO PAPER — checked before anything is encoded
         // or fetched. This is root cause 4's other half: the fallback that used
@@ -973,6 +1060,31 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
         // Receipt Generation
         // ----------------------------------------------------
         encoder.align('center');
+
+        /*
+          ** REPRINT **, FIRST AND BIGGEST — the ESC/POS twin of the banner the
+          preview draws, in the same place for the same reason.
+
+          ABOVE THE LOGO. escpos.ts puts it there rather than under it because a
+          tenant with a tall raster logo would otherwise push the one word that
+          has to be unmissable several centimetres down a slip that gets glanced
+          at and filed. This encoder must agree with it: the same bill can be
+          printed through either path, and a reprint marked one way off the till
+          and another way off the dashboard is two documents as far as anyone
+          holding both is concerned.
+
+          THE TEXT IS THE BACKEND'S CONSTANT, NOT A STRING TYPED HERE. Thirteen
+          characters is also load-bearing there — it survives double width on
+          58mm paper (26 of 32 cells) instead of wrapping mid-word — so the
+          length is not ours to tidy either.
+
+          Double width AND height plus bold is the largest type the printer has,
+          which is what escpos.ts's `big()` emits (ESC ! 0x30 + ESC E 1).
+        */
+        if (reprint) {
+            const banner = encoder as BannerEncoder;
+            banner.bold(true).width(2).height(2).line(REPRINT_MARKER).width(1).height(1).bold(false);
+        }
 
         // Dynamically process and insert the Logo if available
         if (logoBase64 && typeof window !== 'undefined') {

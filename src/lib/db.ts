@@ -16,6 +16,10 @@ import { type Table } from '@/app/dashboard/tables/data';
 import { type AuditLog } from '@/app/dashboard/audit-logs/page';
 import { serverBackendBase, serverBaseUrlFrom } from '@/lib/backend-url';
 import { readErrorMessage, refusalSentence, type RefusedAction } from '@/lib/error-message';
+// C3. The two readers are pure and live beside the rule they implement, so this
+// module holds no second opinion about what "already printed" means — it only
+// carries the bytes between the route and the screens.
+import { billPrintRefusal, billPrintStateFields, type BillPrintState } from '@/lib/bill-print-state';
 import { SELECTED_OUTLET_KEY } from '@/lib/outlet';
 import type { BrandConfig } from '@/lib/brand-fonts';
 import type { RolePermission } from '@/lib/role-permissions';
@@ -788,6 +792,12 @@ const mapTable = (item: any, index: number): Table => {
         // Restaurant-level OTP gate (`require_table_otp`). Older cached snapshots
         // predate the flag, so absent means "off" and the chip stays hidden.
         otp_required: item.otp_required === true,
+        // C3 — the SERVER's print ledger for this seating, carried through
+        // VERBATIM. `billPrintStateFields` answers null when the row carried
+        // none of the keys, which is "this backend was never asked" and is NOT
+        // the same as "not printed"; every reader downstream depends on being
+        // able to tell those two apart, so nothing is defaulted here.
+        bill_print: billPrintStateFields(item),
     };
 };
 
@@ -1569,6 +1579,247 @@ export const releaseTable = async (restaurantId: string, tableName: string): Pro
     }
 
     throw new Error(response ? await readErrorMessage(response) : 'Unable to release table');
+};
+
+// --- C3: claiming the ONE print a waiter gets -------------------------------
+//
+// THE HOLE THIS CLOSES. The dashboard's Print Bill stored a payload in
+// localStorage and opened /dashboard/orders/print, which calls window.print().
+// It told the SERVER NOTHING. So C3 — "a waiter may print the bill once" — was
+// enforced on the thermal path (POST /print/bill 403s a waiter's second print)
+// and completely unenforced here: the same waiter, on the same floor, printed
+// unlimited copies from the laptop. A rule with a hole this size in it is worse
+// than no rule, because the restriction is visible and is therefore trusted.
+//
+// So the print is CLAIMED SERVER-SIDE FIRST and the print page is opened only if
+// the claim succeeded. The claim is the control; hiding the button is the
+// courtesy in front of it.
+//
+// IT IS CLAIMED FOR EVERY ROLE, NOT ONLY FOR WAITERS. POST /print/bill counts
+// every print regardless of who made it, and the count is what the whole rule
+// reads; claiming only for waiters would mean a manager's print left no trace
+// and the next waiter's first copy was treated as the first copy of the bill. A
+// senior identity is not REFUSED by the claim — that is the backend's job and it
+// refuses nobody but a waiter-only session with a printed bill — so "non-waiter
+// roles are completely unaffected" still holds: same control, same presses, no
+// new failure mode.
+
+/** What POST /print/bill/claim answered. `unavailable` is not a refusal — see below. */
+export type BillPrintClaimResult =
+    | { outcome: 'claimed'; state: BillPrintState | null }
+    | { outcome: 'unavailable'; reason: string }
+    | { outcome: 'refused'; status: number; message: string; reprintNeedsSenior: boolean; state: BillPrintState | null };
+
+/**
+ * Claim this table's one bill print.
+ *
+ * WHY THE RESULT IS RETURNED AND NOT THROWN: this module is "use server", and
+ * Next REDACTS the message of an Error thrown across that boundary in a
+ * production build. The refusal's whole value is its sentence — the backend's
+ * `details` already names who may reprint instead — so it has to come back as a
+ * value, exactly as `releaseTable`'s does.
+ *
+ * WHICH WAY IT FAILS, AND WHY THAT IS THE SAFE WAY.
+ *
+ *   * 403 with `reprint_needs_senior` → REFUSED. The print page is not opened
+ *     and the server's sentence goes in front of the person who pressed it.
+ *   * 404, or the backend unreachable → `unavailable`, and the caller PRINTS
+ *     ANYWAY. The dashboard and the API deploy on separate pipelines and the
+ *     API's can be held back (its deploy gate refuses to ship any commit while a
+ *     migration is pending, which is correct but means the WEB can be a release
+ *     ahead of the route). Refusing every print on a backend that has not got
+ *     the route yet would take billing away from an entire restaurant to enforce
+ *     a rule that backend does not have; and the button-hiding half still works
+ *     there, because it reads `print_count` off /get-tables, which that backend
+ *     does send.
+ *   * 400 "Nothing to print for this table" → `unavailable` as well, and this
+ *     is the SETTLED-BILL path rather than an error. The route reads the table's
+ *     OPEN bill; once a sitting is settled there is none, so a senior reprinting
+ *     a closed bill from the orders list gets this 400 every time. The print
+ *     page resolves that document from GetClosedBill by the order's own bill id
+ *     and prints it, which is what should happen — a settled bill is a tax
+ *     document that is reprinted from what was recorded, not re-claimed.
+ *   * any other failure → `unavailable` for the same reason. ONLY AN EXPLICIT
+ *     403 REFUSES. This mirrors the backend's own stated direction in
+ *     bill_print_state.ts: a guest waiting with no way to get a bill is a worse
+ *     outage than a second copy of one.
+ *
+ * MIGRATION 027 MAY NOT BE APPLIED, and the route says so itself: it answers
+ * `recorded: false` with the counts UNCHANGED rather than optimistically
+ * incremented. That arrives here as a perfectly ordinary `claimed`, with a state
+ * whose `print_count` has not moved — so the button stays, which is exactly
+ * right: reporting a count the ledger does not hold is how a client disables a
+ * control the server would still allow.
+ */
+export const claimBillPrint = async (
+    restaurantId: string,
+    tableName: string,
+    orderId?: string | null,
+): Promise<BillPrintClaimResult> => {
+    const payload: Record<string, unknown> = { table_name: tableName, kind: 'bill' };
+    if (typeof orderId === 'string' && orderId.trim().length > 0) { payload.order_id = orderId.trim(); }
+
+    const response = await backendCall('/print/bill/claim', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+
+    if (!response) {
+        return { outcome: 'unavailable', reason: 'The backend could not be reached to record the print.' };
+    }
+
+    // Read the body ONCE — a Response body can only be consumed once, and the
+    // refusal needs both the sentence and the print-state fields off the same
+    // object (see error-message.ts for the "body stream already read" bug this
+    // avoids repeating).
+    let text = '';
+    try { text = await response.text(); } catch { text = ''; }
+    let body: unknown = null;
+    try { body = text.trim() ? JSON.parse(text) : null; } catch { body = null; }
+
+    if (response.ok) {
+        return { outcome: 'claimed', state: billPrintStateFields(body) };
+    }
+
+    const refusal = billPrintRefusal(body);
+    if (refusal) {
+        return {
+            outcome: 'refused',
+            status: response.status,
+            message: refusal.message,
+            reprintNeedsSenior: true,
+            state: refusal.state,
+        };
+    }
+
+    // A 403 that is NOT the print-once refusal is still a refusal — an identity
+    // without the print action at all. Surfaced with the server's own sentence.
+    if (response.status === 403) {
+        return {
+            outcome: 'refused',
+            status: 403,
+            message: refusalSentence(body) ?? 'Action forbidden',
+            reprintNeedsSenior: false,
+            state: null,
+        };
+    }
+
+    // 404 (route not deployed yet), 5xx, or anything else: see the docblock.
+    return {
+        outcome: 'unavailable',
+        reason: refusalSentence(body) ?? `The print could not be recorded (status ${String(response.status)}).`,
+    };
+};
+
+// --- D3 / D4: moving a live party, and moving one mis-keyed ticket ----------
+//
+// Both routes are atomic, permission-gated and tested server-side; the whole of
+// what was missing was a way to reach them from the web. Neither is idempotent()
+// and neither is queueable offline, deliberately — routes/tables.ts argues both
+// at length — so these are plain online calls with no retry of their own. A
+// replay would bounce off "T1 is not seated" having changed nothing, which is
+// the safety property that makes a dedup key unnecessary rather than a nicety
+// worth adding.
+
+/** What POST /tables/move answered. Shapes quoted from MoveTableParty. */
+export interface MoveTablePartyResult {
+    from_table: string;
+    to_table: string;
+    covers: number;
+    moved_orders: number;
+    moved_bill: boolean;
+}
+
+/**
+ * Move the WHOLE party — guests, covers, every order, the running bill, the
+ * waiter and the booking — from one table to another, in one server
+ * transaction.
+ *
+ * ONE CALL, NEVER A SEQUENCE. A party half-moved is worse than a party not
+ * moved: their orders on one table and their seating on another means the bill
+ * splits, the floor lies about who is sitting where, and the covers behind APC
+ * are counted against a table nobody is at. The server does the whole thing
+ * atomically and this client never issues a partial sequence of its own.
+ *
+ * A REFUSAL COMES BACK AS A VALUE for the Server-Action redaction reason
+ * `releaseTable` documents. The server answers 400 with a sentence naming what
+ * stopped it ("T7 is occupied — use Merge to put two parties on one bill"), and
+ * that sentence is the entire value of the response.
+ */
+export const moveTableParty = async (
+    restaurantId: string,
+    fromTable: string,
+    toTable: string,
+): Promise<MoveTablePartyResult | RefusedAction> => {
+    const response = await backendCall('/tables/move', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from_table: fromTable, to_table: toTable }),
+    });
+
+    if (response?.ok) {
+        const moved = (await response.json()) as MoveTablePartyResult;
+        // BOTH tables changed, so the cached roster has to. No `tables:changed`
+        // event from here: the only caller is a client component that reloads
+        // the floor AND the orders behind the service clocks itself, which is
+        // more direct than a DOM event fired out of a "use server" module.
+        await getTables(restaurantId);
+        return moved;
+    }
+
+    if (response) {
+        return { refused: true, status: response.status, error: await readErrorMessage(response, 'Unable to move the party.') };
+    }
+    throw new Error('Unable to move the party');
+};
+
+/** What POST /tables/move-order answered, including what the KITCHEN was told. */
+export interface MoveOrderToTableResult {
+    order_id: string;
+    from_table: string;
+    to_table: string;
+    /**
+     * The correction docket. `printed: false` is NOT a failure — it means the
+     * kitchen never had a ticket for this order, so there is no paper on the
+     * pass to correct and the ordinary trigger will print it at the right table
+     * later. The distinction has to reach the screen: "KOT-26 reprinted for T7"
+     * and "nothing was printed" are different things to go and tell the pass.
+     */
+    print?: { printed?: boolean; kot_no?: number | string | null } | null;
+}
+
+/**
+ * Move ONE order (and its KOT) to the table it should have been rung in on.
+ *
+ * THIS IS NOT A PARTY MOVE. The party at the source table stays exactly where
+ * they are; only the ticket leaves. The server preserves the KOT NUMBER and
+ * reprints a table-change docket carrying it, so the pass can pair the
+ * correction with the paper it replaces — the half that cannot be skipped,
+ * because a move that leaves stale paper on the pass makes the system and the
+ * paper disagree about where food is going, and now nobody is looking for it.
+ */
+export const moveOrderToTable = async (
+    restaurantId: string,
+    orderId: string,
+    toTable: string,
+): Promise<MoveOrderToTableResult | RefusedAction> => {
+    const response = await backendCall('/tables/move-order', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order_id: orderId, to_table: toTable }),
+    });
+
+    if (response?.ok) {
+        const moved = (await response.json()) as MoveOrderToTableResult;
+        await getTables(restaurantId);
+        return moved;
+    }
+
+    if (response) {
+        return { refused: true, status: response.status, error: await readErrorMessage(response, 'Unable to move that order.') };
+    }
+    throw new Error('Unable to move that order');
 };
 
 // --- Seating: per-table max, and the club-two-tables suggester ---------------
