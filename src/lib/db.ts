@@ -2136,6 +2136,13 @@ export interface OpenBillPage {
     has_more: boolean;
     // Across EVERY open bill, not just this page — the figure an owner reacts to.
     outstanding_total: number;
+    // 6.4 — tables with an open bill OR still-owing orders (a table with sent
+    // KOTs and no bill yet is running), and what they owe. NULL when the server
+    // did not send it: a backend older than the field, or `running_total` for a
+    // waiter-only session, whose money the server withholds. Never coerced to 0 —
+    // see live-gross.ts.
+    running_tables: number | null;
+    running_total: number | null;
     timezone: string;
 }
 
@@ -2160,6 +2167,8 @@ export const getOpenBills = async (
         offset,
         has_more: data.has_more === true,
         outstanding_total: Number(data.outstanding_total ?? 0),
+        running_tables: typeof data.running_tables === 'number' ? data.running_tables : null,
+        running_total: typeof data.running_total === 'number' ? data.running_total : null,
         timezone: String(data.timezone ?? ''),
     };
 };

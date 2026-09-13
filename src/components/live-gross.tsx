@@ -20,11 +20,18 @@
  * ============================================================================
  * THE FIGURE IS THE SERVER'S, AND IT IS TAX-INCLUSIVE
  * ============================================================================
- * `outstanding_total` is the sum of every open bill's `grand_total` across the
- * WHOLE floor — not just the page the list happens to be showing — computed by
- * the same pricing the bill screen uses. Summing the visible rows here would
- * quietly under-report a busy night, which is precisely the night somebody looks
- * at this.
+ * `running_total` is what every RUNNING table owes across the WHOLE floor — not
+ * just the page the list happens to be showing — computed by the same pricing
+ * the bill screen uses. Summing the visible rows here would quietly under-report
+ * a busy night, which is precisely the night somebody looks at this.
+ *
+ * 6.4 — RUNNING MEANS ORDERS, NOT BILLS. This box used to read
+ * `outstanding_total`, which only counts tables somebody has generated a bill
+ * for; three tables eating off sent KOTs read "₹0 · No tables are running". The
+ * server's `running_*` figures count those tables too. `readLiveGross` is the
+ * one place that decides what this box may say — including for a waiter, whose
+ * amount the server withholds: they see how many tables are running, not what
+ * the floor is worth.
  *
  * An unreachable backend renders as "unavailable", never as ₹0.00: zero is a
  * number an owner would act on, and "the floor is clear" is the most
@@ -34,6 +41,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { useCurrency } from "@/hooks/use-currency"
 import { getOpenBills } from "@/lib/db"
+import { readLiveGross, type LiveGrossView } from "@/lib/live-gross"
 
 const REFRESH_MS = 30_000
 
@@ -42,22 +50,16 @@ export function LiveGrossBar({ rid }: { rid: string }) {
   const money = (n: number) =>
     `${currencySymbol}${Number(n ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
-  const [total, setTotal] = useState<number | null>(null)
-  const [tables, setTables] = useState(0)
+  const [view, setView] = useState<LiveGrossView>({ kind: "unavailable" })
   const [loading, setLoading] = useState(true)
 
   const load = useCallback(async () => {
     if (!rid) { return }
-    // limit: 1 — only the TOTALS are wanted, and outstanding_total already spans
-    // every open bill regardless of the page size. Asking for 200 rows to read
-    // one number is the kind of thing that makes a floor screen slow.
+    // limit: 1 — only the TOTALS are wanted, and running_total already spans
+    // every running table regardless of the page size. Asking for 200 rows to
+    // read one number is the kind of thing that makes a floor screen slow.
     const page = await getOpenBills(rid, { limit: 1 })
-    if (page) {
-      setTotal(page.outstanding_total)
-      setTables(page.total)
-    } else {
-      setTotal(null)
-    }
+    setView(readLiveGross(page))
     setLoading(false)
   }, [rid])
 
@@ -73,20 +75,25 @@ export function LiveGrossBar({ rid }: { rid: string }) {
         <div className="min-w-0">
           <p className="text-xs font-medium text-muted-foreground">On the floor now</p>
           <p className="mt-0.5 break-words text-2xl font-bold tabular-nums">
-            {loading && total === null
+            {loading && view.kind === "unavailable"
               ? "…"
-              : total === null
+              : view.kind === "unavailable"
                 // Never ₹0.00 on a failure: "the floor is clear" is the most
                 // consequential thing this could wrongly say.
                 ? <span className="text-base font-medium text-muted-foreground">Unavailable just now</span>
-                : money(total)}
+                : view.total === null
+                  // Withheld by the server for this role — not zero, not a number.
+                  ? `${String(view.tables)} running`
+                  : money(view.total)}
           </p>
         </div>
-        {total !== null && (
+        {view.kind === "floor" && (
           <p className="text-xs text-muted-foreground">
-            {tables === 0
+            {view.tables === 0
               ? "No tables are running."
-              : `Across ${tables} running table${tables === 1 ? "" : "s"} · not yet paid, and before any discount at settlement.`}
+              : view.total === null
+                ? `${view.tables === 1 ? "table" : "tables"} with orders on them · amounts are not shown for your role.`
+                : `Across ${view.tables} running table${view.tables === 1 ? "" : "s"} · not yet paid, and before any discount at settlement.`}
           </p>
         )}
       </div>

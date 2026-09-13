@@ -171,3 +171,37 @@ export const movedPartySentence = (
     const n = Number.isFinite(movedOrders) && movedOrders > 0 ? Math.round(movedOrders) : 0;
     return `Moved ${fromTable} to ${toTable} — ${String(n)} order${n === 1 ? '' : 's'} came with them.`;
 };
+
+// ============================================================================
+// AFTER A MOVE, THE CLOCKS MOVE TOO
+// ============================================================================
+// The D1/D2 badges on a table card are NOT read off the table grid. They are
+// reduced from the ORDERS feed (GET /orders, each ticket's server clock, grouped
+// by `order.table`), because the grid does not carry clocks. A move rewrites
+// both halves on the server in one transaction — the table's seating and every
+// moved ticket's table — but the page refreshed only the grid. So the party
+// showed up on its new table with no "since order" clock (or, on an order move,
+// the destination kept its own older reading) while the ticket feed still filed
+// the order under the table it had left, until the next poll or a reload.
+//
+// Refreshing BOTH is the rule, for this device's own move and for one made
+// anywhere else (the till app, a second browser) — which the server announces
+// on the socket as `table:moved` / `table:order_moved`.
+
+/** The realtime events after which a table card's clocks may be filed under the wrong table. */
+export const TABLE_MOVE_EVENTS: readonly string[] = ['table:moved', 'table:order_moved'];
+
+export const isTableMoveEvent = (event: unknown): boolean =>
+    typeof event === 'string' && TABLE_MOVE_EVENTS.includes(event);
+
+/**
+ * Re-read the two feeds a move rewrote: the grid (seating, covers) and the
+ * orders behind the clocks. Together, never one without the other. An orders
+ * failure is the caller's to swallow — the grid still repaints.
+ */
+export const refreshAfterTableMove = async (reload: {
+    tables: () => Promise<void>;
+    orders: () => Promise<void> | void;
+}): Promise<void> => {
+    await Promise.all([reload.tables(), reload.orders()]);
+};
