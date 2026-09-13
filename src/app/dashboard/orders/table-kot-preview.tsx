@@ -34,8 +34,10 @@
   be updated." The very top of the card names who the bill is for and the
   corporate party's GSTIN, off the server's open bill, with the one shared
   name/GSTIN dialog beside them. Drawn only when the table has orders (there is
-  no bill to name before that) and only for a session the page lets use the 6.5
-  Bill menu — the same people, the same route.
+  no bill to name before that). EVERYONE READS IT — neither field is money, so C4
+  does not touch it, and the owner app shows a waiter the same line read-only.
+  Only a session the page lets use the 6.5 Bill menu gets the Edit button: the
+  same people, the same route.
 */
 
 import { useEffect, useState, type ReactElement, type ReactNode } from "react";
@@ -104,9 +106,10 @@ export function TableKotPreview({
    */
   cancelLocked?: boolean;
   /**
-   * R2 item 1 — may this session see and edit the name/GSTIN on the table's
-   * bill? The page passes the SAME answer that draws the 6.5 Bill menu in the
-   * grid, so the preview never offers a route the grid withholds.
+   * R2 item 1 — may this session EDIT the name/GSTIN on the table's bill? The
+   * page passes the SAME answer that draws the 6.5 Bill menu in the grid, so the
+   * preview never offers a route the grid withholds. Reading the line needs no
+   * permission: it is shown to every session, as the owner app does.
    */
   canEditCustomer?: boolean;
 }): ReactElement {
@@ -115,7 +118,7 @@ export function TableKotPreview({
   const { timezone } = useTimezone();
   const blocks = groupItemsByKot(orders, tableName);
   const numberedCount = blocks.filter((block) => block.numbered).length;
-  const showCustomer = canEditCustomer && blocks.length > 0;
+  const showCustomer = blocks.length > 0;
   // Re-read when the table's tickets change, so a name set on another device
   // shows up with the round that follows it rather than never.
   const liveKey = blocks.map((block) => block.key).join("|");
@@ -192,6 +195,10 @@ export function TableKotPreview({
                 </span>
               ) : null}
             </div>
+            {/* Read-only for a scoped waiter, exactly like the owner app: the
+                line, and no button. */}
+            {canEditCustomer ? (
+            <>
             <Button variant="outline" size="sm" onClick={() => { setCustomerOpen(true); }}>
               <Pencil className="h-3.5 w-3.5" /> Edit name / GSTIN
             </Button>
@@ -213,6 +220,8 @@ export function TableKotPreview({
                 onChanged();
               }}
             />
+            </>
+            ) : null}
           </div>
         ) : null}
 

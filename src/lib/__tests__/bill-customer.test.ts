@@ -245,9 +245,11 @@ describe('where the edit is offered, and to whom', () => {
         expect(closed).toMatch(/target=\{\{ kind: "bill", billId: detail\.id, billNo: detail\.bill_no \}\}/);
     });
 
-    it('a live table: at the top of the preview card, only with orders, gated like the 6.5 Bill menu', () => {
+    it('a live table: the line at the top of the preview card for everyone with orders; Edit only as the 6.5 Bill menu', () => {
         const preview = code(readSource('src/app/dashboard/orders/table-kot-preview.tsx'));
-        expect(preview).toContain('const showCustomer = canEditCustomer && blocks.length > 0;');
+        // Read-only for a waiter, as in the owner app: neither field is money.
+        expect(preview).toContain('const showCustomer = blocks.length > 0;');
+        expect(preview).toMatch(/\{canEditCustomer \? \(\s*<>\s*<Button[\s\S]{0,200}Edit name \/ GSTIN[\s\S]*?<BillCustomerDialog/);
         const strip = preview.indexOf('data-testid="table-bill-customer"');
         const controls = preview.indexOf('<PlusCircle /> Add Order');
         expect(strip).toBeGreaterThan(-1);
