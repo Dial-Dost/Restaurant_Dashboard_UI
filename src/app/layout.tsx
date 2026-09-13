@@ -58,6 +58,21 @@ export default function RootLayout({
               + "catch(e){document.documentElement.setAttribute('data-palette','rustic');}})();",
           }}
         />
+        {/*
+          6.6 — THE LIGHT-MODE TONE (white / beige / grey), same reasoning as
+          above: before first paint, or a beige user sees a white flash. Its own
+          try so a failure here can never cost the palette its attribute.
+          Literals duplicated from src/lib/light-tone.ts; pinned by its test.
+        */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              "(function(){try{var t=localStorage.getItem('cuisineflow-light-tone');"
+              + "if(t!=='white'&&t!=='beige'&&t!=='grey'){t='white';}"
+              + "document.documentElement.setAttribute('data-light-tone',t);}"
+              + "catch(e){document.documentElement.setAttribute('data-light-tone','white');}})();",
+          }}
+        />
       </head>
       <body className="font-sans antialiased">
         {/*

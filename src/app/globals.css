@@ -114,6 +114,105 @@
 }
 
 /* ---------------------------------------------------------------------------
+   6.6 — LIGHT-MODE COLOUR OPTIONS: white, beige, soft grey.
+   V3: "For the light mode, add different color options like white, beige, etc."
+
+   WHITE HAS NO BLOCK. It is the `:root` tokens above, unchanged — so an
+   existing user, and any `data-light-tone` value this build does not know,
+   renders exactly what light mode always did.
+
+   GROUND TOKENS ONLY. `data-palette` (palette.css) owns the ACCENT in light
+   mode — primary, ring, accent-foreground, charts — and these blocks never set
+   those, so Rustic/Gaia and white/beige/grey compose instead of fighting.
+   One exception, below: Rustic's copper, which would fall under WCAG AA on a
+   tinted ground.
+
+   `:not(.dark)` because `next-themes` owns `.dark`: a stored beige is inert in
+   dark mode and returns when somebody switches back to light.
+
+   SCREEN ONLY. A tinted ground must never reach paper — `@media print` falls
+   straight back to the white `:root` tokens, whatever the tone.
+
+   Contrast (WCAG 2.x ratio), pinned by src/lib/__tests__/light-tone.test.ts:
+     beige  text on ground 13.6, on card 14.6; muted text on ground 5.7, on
+            muted surface 5.1
+     grey   text on ground 14.2, on card 15.5; muted text on ground 5.8, on
+            muted surface 5.3
+   --------------------------------------------------------------------------- */
+@media screen {
+  /* BEIGE — warm cream. Hexes are the source; each triple is its conversion. */
+  [data-light-tone="beige"]:not(.dark) {
+    --background: 40 47.4% 92.5%;         /* #F5EFE3 ground */
+    --foreground: 30 26.5% 13.3%;         /* #2B2219 warm near-black */
+    --card: 40 60% 96.1%;                 /* #FBF7EF */
+    --card-foreground: 30 26.5% 13.3%;
+    --popover: 40 60% 96.1%;
+    --popover-foreground: 30 26.5% 13.3%;
+    --secondary: 39 40.6% 87.5%;          /* #ECE3D2 */
+    --secondary-foreground: 30 26.5% 13.3%;
+    --muted: 39 40.6% 87.5%;              /* #ECE3D2 */
+    --muted-foreground: 31 17.1% 35.5%;   /* #6A5B4B warm brown-grey */
+    --accent: 39 36.7% 84.5%;             /* #E6DCC9 hover surface */
+    --destructive: 0 70% 45%;             /* #C32222 — AA as text on cream */
+    --destructive-foreground: 0 0% 100%;
+    --border: 37 35.4% 81.2%;             /* #E0D3BE */
+    --input: 37 32.8% 74.9%;              /* #D4C4AA */
+    --sidebar-background: 40 47.4% 92.5%;
+    --sidebar-foreground: 30 26.5% 13.3%;
+    --sidebar-accent: 39 36.7% 84.5%;
+    --sidebar-accent-foreground: 30 26.5% 13.3%;
+    --sidebar-border: 37 35.4% 81.2%;
+  }
+
+  /* SOFT GREY — a neutral with less glare than white. */
+  [data-light-tone="grey"]:not(.dark) {
+    --background: 220 9.7% 93.9%;         /* #EEEFF1 */
+    --foreground: 218 12.1% 12.9%;        /* #1D2025 */
+    --card: 210 16.7% 97.6%;              /* #F8F9FA */
+    --card-foreground: 218 12.1% 12.9%;
+    --popover: 210 16.7% 97.6%;
+    --popover-foreground: 218 12.1% 12.9%;
+    --secondary: 216 9.8% 90%;            /* #E3E5E8 */
+    --secondary-foreground: 218 12.1% 12.9%;
+    --muted: 216 9.8% 90%;                /* #E3E5E8 */
+    --muted-foreground: 216 7.9% 37.1%;   /* #575D66 */
+    --accent: 225 9.5% 91.8%;             /* #E8E9EC */
+    --destructive: 0 70% 45%;             /* #C32222 */
+    --destructive-foreground: 0 0% 100%;
+    --border: 217 11.8% 86.7%;            /* #D9DCE1 */
+    --input: 218 11.3% 81%;               /* #C9CDD4 */
+    --sidebar-background: 220 9.7% 93.9%;
+    --sidebar-foreground: 218 12.1% 12.9%;
+    --sidebar-accent: 225 9.5% 91.8%;
+    --sidebar-accent-foreground: 218 12.1% 12.9%;
+    --sidebar-border: 217 11.8% 86.7%;
+  }
+
+  /* RUSTIC'S LIGHT COPPER (24 38% 42%) is 5.1:1 on white but 4.0:1 on the
+     beige/grey muted surface — under AA for `text-primary` links and labels.
+     Four points darker clears it (4.7:1) and still carries white button text
+     at 5.6:1. Gaia's champagne (34%) already passes on both, so it is untouched. */
+  [data-palette="rustic"][data-light-tone="beige"]:not(.dark),
+  [data-palette="rustic"][data-light-tone="grey"]:not(.dark) {
+    --primary: 24 38% 38%;
+    --ring: 24 38% 38%;
+  }
+
+  /* THE BILL PREVIEW STAYS WHITE ON SCREEN TOO (dashboard/orders/print).
+     It is a picture of a paper receipt; a cream receipt on screen would not be
+     what comes out of the printer. Resetting the tokens on `.receipt-card`
+     itself wins over <html> by inheritance, whatever the tone. */
+  [data-light-tone]:not(.dark) .receipt-card {
+    --card: 0 0% 100%;
+    --card-foreground: 224 71.4% 4.1%;
+    --foreground: 224 71.4% 4.1%;
+    --muted: 220 14.3% 95.9%;
+    --muted-foreground: 220 8.9% 46.1%;
+    --border: 220 13% 91%;
+  }
+}
+
+/* ---------------------------------------------------------------------------
    Mobile: stop iOS Safari auto-zooming when a field gains focus.
    Safari zooms into any focused control whose font-size is under 16px, and it
    does NOT zoom back out afterwards — the guest is left pinched in and has to
