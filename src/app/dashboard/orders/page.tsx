@@ -107,6 +107,7 @@ import {
   type BillPrintState,
 } from "@/lib/bill-print-state";
 import { visibleAmount, visibleLineAmount, visibleMoneyText, visibleSubtotal } from "@/lib/order-prices";
+import { canBarkFromBoard, cancelKotRoute, ordersGridColumns, showsTableApcSummary } from "@/lib/orders-grid";
 /*
   THE PREP TIMERS STAY LOCAL; THE SERVICE CLOCK DOES NOT.
 
@@ -143,7 +144,8 @@ import { useTimezone } from "@/lib/use-timezone";
 import type { MenuItem } from "../menu/data";
 import { type MenuVariationRecord } from "@/lib/mis-capture";
 import { BillActions } from "./bill-actions";
-import { CaptureActions } from "./capture-actions";
+import { CancelKotButton, CaptureActions } from "./capture-actions";
+import { TableKotPreview } from "./table-kot-preview";
 import { OrdersScopeNotice } from "./orders-scope-notice";
 
 
@@ -808,8 +810,12 @@ function OrdersDashboard() {
   useEffect(() => {
     // Only open the Add Order dialog when a table param is present and
     // no highlightOrder parameter is provided (View Order should not open add dialog).
+    // 1.8 — nor when the Tables page opened the table to PREVIEW it (`preview=1`):
+    // the preview card carries its own Add Order, and a dialog over it would hide
+    // the very KOT list the table was opened to look at.
     const highlightParam = searchParams.get('highlightOrder')?.trim() ?? '';
-    setIsAddDialogOpen(Boolean(selectedTableName) && !highlightParam);
+    const previewParam = searchParams.get('preview')?.trim() ?? '';
+    setIsAddDialogOpen(Boolean(selectedTableName) && !highlightParam && !previewParam);
   }, [selectedTableName, searchParams]);
 
   useEffect(() => {
@@ -1739,6 +1745,45 @@ function OrdersDashboard() {
     }
   };
 
+  /*
+    6.7 — PRINT BILL IN THE TABLE PREVIEW, full size beside Add Order.
+
+    It is the SAME `triggerPrint` the row uses, so the C3 claim still goes to the
+    server before any paper, and the same `printScopeForTable` decides whether a
+    waiter who has already printed gets the button or the sentence. The print
+    page resolves the TABLE's running bill from whichever of its orders it is
+    handed, so the anchor is simply the newest live ticket on the table; with
+    none there is no bill to print, and the button says so by being disabled.
+  */
+  const previewPrintAnchor: Order | null = selectedTableName
+    ? visibleOrders
+        .filter((order) => (order.table || "").toLowerCase() === selectedTableName.toLowerCase() && !isOrderCancelled(order) && order.status !== "Closed")
+        .reduce<Order | null>((newest, order) => (
+          newest === null || Date.parse(order.created_at ?? "") > Date.parse(newest.created_at ?? "") ? order : newest
+        ), null)
+    : null;
+  const previewPrintControl = !selectedTableName ? null : !printScopeForTable(selectedTableName).print ? (
+    <div className="flex min-h-14 items-center rounded-md border px-3 text-sm text-muted-foreground">
+      Bill printed — a reprint has to be made by a senior.
+    </div>
+  ) : (
+    <Button
+      size="lg"
+      variant="outline"
+      className="h-14 w-full text-base [&_svg]:size-5"
+      disabled={previewPrintAnchor === null}
+      title={previewPrintAnchor === null ? "Nothing has been ordered on this table yet" : "Print this table's bill"}
+      onClick={() => { if (previewPrintAnchor) { void triggerPrint(previewPrintAnchor); } }}
+    >
+      <Printer /> Print Bill
+    </Button>
+  );
+
+  // The waiter-view money cuts — see src/lib/orders-grid.ts for all three.
+  const gridColumns = ordersGridColumns(user);
+  const showsTotalColumn = gridColumns.includes("total");
+  const showsApcZoneColumn = gridColumns.includes("apc_zone");
+
   const getApcBadgeClass = (zone?: "red" | "yellow" | "green") => {
     if (zone === "green") {return "bg-green-100 text-green-800 border-green-200";}
     if (zone === "yellow") {return "bg-yellow-100 text-yellow-900 border-yellow-200";}
@@ -1771,6 +1816,24 @@ function OrdersDashboard() {
           waiter's list, and a count taken before that filter would disagree
           with the rows underneath it. */}
       <OrdersScopeNotice scope={ordersScope} visibleCount={visibleOrders.length} canSwitchOutlet={canSwitchOutlet} />
+      {/* 1.8 / 1.3 / 6.7 — the selected table's preview, first thing under the
+          header whenever the Tables page (or a link) has named a table. */}
+      {selectedTableName ? (
+        <TableKotPreview
+          restaurantId={user?.restaurantUsername ?? ""}
+          tableName={selectedTable?.name ?? selectedTableName}
+          // displayOrders, not visibleOrders: C3 retires a printed table from a
+          // waiter's LIST, but the preview names that table explicitly, and
+          // reading the filtered list made a table with live KOTs say "No live
+          // orders on this table yet". Cancel is locked instead (see prop).
+          orders={displayOrders}
+          cancelLocked={printScopeForTable(selectedTable?.name ?? selectedTableName).retiresTable}
+          onAddOrder={() => { setIsAddDialogOpen(true); }}
+          printControl={previewPrintControl}
+          onChanged={() => { void refreshOrders(); }}
+          onClose={() => { router.push("/dashboard/orders"); }}
+        />
+      ) : null}
       {isAdmin && discountRequests.length > 0 ? (
         <Card className="border-amber-300">
           <CardHeader>
@@ -1813,7 +1876,10 @@ function OrdersDashboard() {
         initialStation={stationParam || undefined}
       />
       <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
-        <DialogContent className="sm:max-w-2xl w-full">
+        {/* 6.8 — the dialog scrolls inside the viewport, so the Send order bar
+            pinned to the top of the form stays on screen however long the
+            order grows. */}
+        <DialogContent className="sm:max-w-2xl w-full max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Add New Order</DialogTitle>
             <DialogDescription>
@@ -1830,6 +1896,9 @@ function OrdersDashboard() {
           />
         </DialogContent>
       </Dialog>
+      {/* Money analytics — hidden from a waiter-only session exactly as the
+          Monthly APC / Revenue / Covers cards below already are. */}
+      {showsTableApcSummary(user) ? (
       <Card>
         <CardHeader>
           <CardTitle>Table APC Summary</CardTitle>
@@ -1859,6 +1928,7 @@ function OrdersDashboard() {
           )}
         </CardContent>
       </Card>
+      ) : null}
       <Card>
         <CardHeader>
           <CardTitle>Current Orders</CardTitle>
@@ -1906,8 +1976,10 @@ function OrdersDashboard() {
                     nothing. */}
                 <TableHead className="whitespace-nowrap">Placed</TableHead>
                 <TableHead>Order Details</TableHead>
-                <TableHead className="hidden md:table-cell text-right">Total</TableHead>
-                <TableHead className="hidden md:table-cell">APC Zone</TableHead>
+                {/* C4 — a waiter-only session's payload has no prices, and this
+                    column used to read ₹0.00 on every row. The column goes. */}
+                {showsTotalColumn ? <TableHead className="hidden md:table-cell text-right">Total</TableHead> : null}
+                {showsApcZoneColumn ? <TableHead className="hidden md:table-cell">APC Zone</TableHead> : null}
                 <TableHead>Status</TableHead>
                 <TableHead>
                   <span className="sr-only">Actions</span>
@@ -2083,7 +2155,10 @@ function OrdersDashboard() {
                       </button>
                     ) : null}
                   </TableCell>
+                  {showsTotalColumn ? (
                   <TableCell className="hidden md:table-cell text-right">{currencySymbol}{order.total.toFixed(2)}</TableCell>
+                  ) : null}
+                  {showsApcZoneColumn ? (
                   <TableCell className="hidden md:table-cell">
                     {apcInsight ? (
                       <Badge variant="outline" className={getApcBadgeClass(apcInsight.zone)}>
@@ -2093,6 +2168,7 @@ function OrdersDashboard() {
                       <span className="text-xs text-muted-foreground">No APC data</span>
                     )}
                   </TableCell>
+                  ) : null}
                   <TableCell>
                     {order.status === "Preparing" && !isOrderBarked(order) ? (
                       <Badge variant="outline" className="border-dashed text-muted-foreground">Not barked</Badge>
@@ -2773,6 +2849,12 @@ const SourceBadge = ({ source }: { source?: string | null }) => {
 
 function KitchenDisplay({ orders, restaurantId, onRefresh, managedSections = [], initialStation }: { orders: Order[]; restaurantId: string; onRefresh: () => Promise<void>; managedSections?: string[]; initialStation?: string }) {
   const { toast } = useToast();
+  const { user } = useAuth();
+  // "Bark to kitchen" is this product's name for announcing a ticket to the
+  // kitchen, not a typo. The Current Orders row already hid it from a scoped
+  // waiter, whom POST /orders/:id/bark refuses; this board now asks the same
+  // question (src/lib/orders-grid.ts).
+  const mayBark = canBarkFromBoard(user);
   // A placed-at clock on a kitchen board must be the RESTAURANT's time, not the
   // browser's — this board is read next to printed dockets, which carry the
   // house clock, and a laptop on the wrong zone would silently disagree.
@@ -3020,6 +3102,32 @@ function KitchenDisplay({ orders, restaurantId, onRefresh, managedSections = [],
                                 <span className="tabular-nums">Placed {placed}</span>
                               </span>
                             ) : null}
+                            {/* 1.3 — Cancel KOT on the numbered ticket itself, through
+                                one of the two existing cancel routes, so the reason
+                                (1.2) and the CANCELLED slip (1.1) come with it.
+                                Drawn only when `cancelKotRoute` offers a route. */}
+                            {kot && cancelKotRoute(user, order.status) !== null ? (
+                            <CancelKotButton
+                              className="ml-auto h-7"
+                              restaurantId={restaurantId}
+                              kotLabel={kot}
+                              onChanged={() => { void onRefresh(); }}
+                              order={{
+                                id: order.id,
+                                table: order.table,
+                                status: order.status,
+                                items: (order.items_flattened ?? order.items).map((i) => ({
+                                  id: i.id,
+                                  name: i.name,
+                                  quantity: i.quantity,
+                                  price: i.price,
+                                  nc: i.nc === true,
+                                  nc_id: i.nc_id ?? null,
+                                  nc_kind: i.nc_kind ?? null,
+                                })),
+                              }}
+                            />
+                            ) : null}
                           </div>
                         ) : null}
                       </CardHeader>
@@ -3068,7 +3176,7 @@ function KitchenDisplay({ orders, restaurantId, onRefresh, managedSections = [],
                             </div>
                           );
                         })}
-                        {!barked ? (
+                        {!barked && mayBark ? (
                           <Button size="sm" className="mt-2 w-full" disabled={busyItem === order.id} onClick={() => { void handleBark(order.id); }}>
                             <Megaphone className="mr-1.5 h-4 w-4" /> Bark to kitchen
                           </Button>
@@ -3583,8 +3691,30 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
     void onSubmit({ tableId: tableIdNum, items, covers });
   };
 
+  /*
+    6.8 — SEND ORDER IS AT THE TOP, AND IT STAYS THERE.
+
+    "While sending an order to the kitchen, move the Send Order button higher up
+    in placement instead of having it at the very bottom of the page."
+
+    It used to be a footer under the item list, so every dish added pushed it
+    further down until the dialog ran off the screen. It is now pinned to the top
+    of the (scrolling) dialog, full width and full size, and it says what it is
+    about to send. Disabled until there is a table and a line to send — the
+    handler already refused both silently, which read as a button that did
+    nothing. The count is lines-by-quantity, like the owner app's bar; the money
+    stays off it (C4), because a waiter-only session has none to show.
+  */
+  const itemCount = itemsList.reduce((sum, it) => sum + it.quantity, 0);
+  const canSend = Boolean(selectedTableId) && itemsList.length > 0;
+
   return (
     <div className="grid gap-4 py-4">
+      <div className="sticky -top-6 z-10 -mx-6 -mt-4 border-b bg-background px-6 pb-3 pt-4">
+        <Button size="lg" className="h-12 w-full text-base" onClick={handleSubmit} disabled={!canSend}>
+          {itemCount > 0 ? `Send order · ${String(itemCount)} item${itemCount === 1 ? "" : "s"}` : "Send order"}
+        </Button>
+      </div>
       <div className="grid grid-cols-4 items-center gap-4">
       <Label htmlFor="table" className="text-right">Table</Label>
       <div className="col-span-3">
@@ -3730,10 +3860,6 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
         <div>{currencySymbol}{subtotal.toFixed(2)}</div>
       </div>
       )}
-
-      <DialogFooter>
-      <Button onClick={handleSubmit}>Save Order</Button>
-      </DialogFooter>
     </div>
   )
 }
@@ -4202,6 +4328,9 @@ const OrderViewDialog = React.memo(({ order, open, onOpenChange, onRefreshOrders
   const { user } = useAuth();
   // Read before the early return — this component already calls useState below it.
   const { timezone } = useTimezone();
+  // C4 — opening a row as a waiter-only session drew a Price column and a
+  // Subtotal / Total of ₹0.00 off the redacted payload. Same cut as the grid.
+  const moneyVisible = ordersGridColumns(user).includes("total");
   if (!order) {return null;}
 
   const calculatedTaxes = calculateTaxes(order.subtotal, order.taxes);
@@ -4305,7 +4434,9 @@ const OrderViewDialog = React.memo(({ order, open, onOpenChange, onRefreshOrders
             {formatOrderedAt(item.orderedAt, timezone)}
           </div>
         </TableCell>
-        <TableCell className="text-right">{currencySymbol}{(item.price * item.quantity).toFixed(2)}</TableCell>
+        {moneyVisible ? (
+          <TableCell className="text-right">{visibleMoneyText(currencySymbol, visibleLineAmount(user, item.price, item.quantity))}</TableCell>
+        ) : null}
       </TableRow>
     );
   };
@@ -4337,7 +4468,7 @@ const OrderViewDialog = React.memo(({ order, open, onOpenChange, onRefreshOrders
                       <TableHead>Item</TableHead>
                       <TableHead className="text-center">Qty</TableHead>
                       <TableHead className="text-center">Time</TableHead>
-                      <TableHead className="text-right">Price</TableHead>
+                      {moneyVisible ? <TableHead className="text-right">Price</TableHead> : null}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -4353,7 +4484,7 @@ const OrderViewDialog = React.memo(({ order, open, onOpenChange, onRefreshOrders
                       <TableHead>Item</TableHead>
                       <TableHead className="text-center">Qty</TableHead>
                       <TableHead className="text-center">Time</TableHead>
-                      <TableHead className="text-right">Price</TableHead>
+                      {moneyVisible ? <TableHead className="text-right">Price</TableHead> : null}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -4362,6 +4493,7 @@ const OrderViewDialog = React.memo(({ order, open, onOpenChange, onRefreshOrders
                 </Table>
               </div>
             </div>
+          {moneyVisible ? (
           <div className="space-y-2 text-sm">
             <div className="flex justify-between border-t pt-2">
               <span>Subtotal</span>
@@ -4384,6 +4516,7 @@ const OrderViewDialog = React.memo(({ order, open, onOpenChange, onRefreshOrders
               <span>{currencySymbol}{total.toFixed(2)}</span>
             </div>
           </div>
+          ) : null}
         </div>
         <DialogFooter>
           {isDirty && dndEnabled ? (
