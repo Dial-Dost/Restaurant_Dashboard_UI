@@ -25,12 +25,17 @@
 // suite; the calls themselves are `db.ts`'s, and the server's transactions are
 // pinned in the backend's tests. This is the half in between.
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
+    TABLE_MOVE_EVENTS,
+    isTableMoveEvent,
     kotTicketLabel,
     movedOrderSentence,
     movedPartySentence,
     orderMoveDestinations,
     partyMoveDestinations,
+    refreshAfterTableMove,
     type MoveCandidateTable,
 } from '../table-move';
 
@@ -160,5 +165,57 @@ describe('the sentences staff are given afterwards', () => {
         expect(movedPartySentence('T1', 'T7', 1)).toBe('Moved T1 to T7 — 1 order came with them.');
         expect(movedPartySentence('T1', 'T7', 3)).toBe('Moved T1 to T7 — 3 orders came with them.');
         expect(movedPartySentence('T1', 'T7', 0)).toBe('Moved T1 to T7 — 0 orders came with them.');
+    });
+});
+
+// THE STALE CLOCK AFTER A MOVE. The D1/D2 badges are reduced from the ORDERS
+// feed grouped by each ticket's table, not from the table grid, and the move
+// handlers used to re-read only the grid — so a moved party's clock stayed filed
+// under the table it had left until the next poll or a reload.
+describe('after a move, the clocks are re-read along with the grid', () => {
+    it('reloads BOTH feeds, not the grid alone', async () => {
+        const calls: string[] = [];
+        await refreshAfterTableMove({
+            tables: () => { calls.push('tables'); return Promise.resolve(); },
+            orders: () => { calls.push('orders'); return Promise.resolve(); },
+        });
+        expect(calls.sort()).toEqual(['orders', 'tables']);
+    });
+
+    it('recognises the server\'s two move events and nothing else', () => {
+        // The exact names routes/tables.ts emits for POST /tables/move and
+        // POST /tables/move-order.
+        expect([...TABLE_MOVE_EVENTS].sort()).toEqual(['table:moved', 'table:order_moved']);
+        expect(isTableMoveEvent('table:moved')).toBe(true);
+        expect(isTableMoveEvent('table:order_moved')).toBe(true);
+        expect(isTableMoveEvent('table:updated')).toBe(false);
+        expect(isTableMoveEvent(undefined)).toBe(false);
+    });
+
+    // Fixed paths under src/, named in this file — not user input.
+    // eslint-disable-next-line security/detect-non-literal-fs-filename
+    const src = (rel: string): string => readFileSync(join(__dirname, '..', '..', rel), 'utf8');
+
+    it('both move handlers on the tables page use it — a grid-only reload is the bug', () => {
+        const page = src('app/dashboard/tables/page.tsx');
+        const handler = (name: string): string => {
+            const start = page.indexOf(`const ${name} = async`);
+            expect(start).toBeGreaterThan(-1);
+            return page.slice(start, page.indexOf('\n    };', start));
+        };
+        for (const name of ['handleMoveParty', 'handleMoveOrder']) {
+            const body = handler(name);
+            expect([name, body.includes('refreshAfterTableMove({ tables: loadTables, orders: reloadOrders })')]).toEqual([name, true]);
+            expect([name, body.includes('await loadTables();')]).toEqual([name, false]);
+        }
+        // …and a move made on another device reaches the same refresh.
+        expect(page).toMatch(/isTableMoveEvent\(/);
+    });
+
+    it('the realtime bridge actually forwards the move events to the page', () => {
+        const ctx = src('context/RealtimeContext.tsx');
+        for (const event of TABLE_MOVE_EVENTS) {
+            expect([event, ctx.includes(`"${event}"`)]).toEqual([event, true]);
+        }
     });
 });

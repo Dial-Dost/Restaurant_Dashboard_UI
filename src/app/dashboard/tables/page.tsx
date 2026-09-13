@@ -38,7 +38,7 @@
   here. Rearranging them is the other page.
 */
 
-import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -75,11 +75,13 @@ import { useToast } from "@/hooks/use-toast";
 import { useFloorTables, type CombinedInfo, type TableOccupancy } from "@/hooks/use-floor-tables";
 import { canMoveOrderToTable, canMoveTableParty, canOpenFloorPlan } from "@/lib/session-scope";
 import {
+    isTableMoveEvent,
     kotTicketLabel,
     movedOrderSentence,
     movedPartySentence,
     orderMoveDestinations,
     partyMoveDestinations,
+    refreshAfterTableMove,
 } from "@/lib/table-move";
 import {
     elapsedSincePlaced,
@@ -666,24 +668,47 @@ export default function TablesPage() {
       Polled on the same 20s beat the orders page uses, and refreshed on the
       `tables:changed` broadcast, so seating a party or taking an order updates
       the clock without a reload.
+
+      D3/D4 — and after a MOVE, here or anywhere else. The clocks are grouped by
+      each ticket's table, so a grid-only refresh left a moved party's clock on
+      the table it had left until the next poll. `reloadOrders` is what the move
+      handlers call (through refreshAfterTableMove), and the server's
+      `table:moved` / `table:order_moved` socket events do the same for a move
+      made on another device.
     */
+    const ordersActiveRef = useRef(true);
+    const reloadOrders = useCallback(async (): Promise<void> => {
+        if (!user?.restaurantUsername) { return; }
+        try {
+            const rows = await getOrders(user.restaurantUsername);
+            if (ordersActiveRef.current) { setOrders(Array.isArray(rows) ? rows : []); }
+        } catch (error: unknown) {
+            console.warn("Failed to load orders for the table clocks", error);
+        }
+    }, [user?.restaurantUsername]);
     useEffect(() => {
         if (!user?.restaurantUsername) { return; }
-        let isActive = true;
-        const pull = (): void => {
-            getOrders(user.restaurantUsername)
-                .then((rows) => { if (isActive) { setOrders(Array.isArray(rows) ? rows : []); } })
-                .catch((error: unknown) => { console.warn("Failed to load orders for the table clocks", error); });
+        ordersActiveRef.current = true;
+        const pull = (): void => { void reloadOrders(); };
+        const onRealtime = (event: Event): void => {
+            if (!isTableMoveEvent((event as Event & { detail?: { event?: unknown } }).detail?.event)) { return; }
+            void refreshAfterTableMove({ tables: loadTables, orders: reloadOrders });
         };
         pull();
         const id = setInterval(pull, 20000);
-        if (typeof window !== "undefined") { window.addEventListener("tables:changed", pull); }
+        if (typeof window !== "undefined") {
+            window.addEventListener("tables:changed", pull);
+            window.addEventListener("realtime:event", onRealtime);
+        }
         return () => {
-            isActive = false;
+            ordersActiveRef.current = false;
             clearInterval(id);
-            if (typeof window !== "undefined") { window.removeEventListener("tables:changed", pull); }
+            if (typeof window !== "undefined") {
+                window.removeEventListener("tables:changed", pull);
+                window.removeEventListener("realtime:event", onRealtime);
+            }
         };
-    }, [user?.restaurantUsername]);
+    }, [user?.restaurantUsername, reloadOrders, loadTables]);
 
     /*
       D1 + D2 per table, FROM THE SERVER'S CLOCKS.
@@ -843,7 +868,7 @@ export default function TablesPage() {
                 description: movedPartySentence(result.from_table, result.to_table, result.moved_orders),
             });
             setMoveTableName(null);
-            await loadTables();
+            await refreshAfterTableMove({ tables: loadTables, orders: reloadOrders });
         } catch (error: unknown) {
             toast({
                 title: "Unable to move the party",
@@ -869,7 +894,7 @@ export default function TablesPage() {
             // pass for it" are two different things for staff to go and do.
             toast({ title: "Order moved", description: movedOrderSentence(result.to_table, result.print) });
             setMoveTableName(null);
-            await loadTables();
+            await refreshAfterTableMove({ tables: loadTables, orders: reloadOrders });
         } catch (error: unknown) {
             toast({
                 title: "Unable to move that order",

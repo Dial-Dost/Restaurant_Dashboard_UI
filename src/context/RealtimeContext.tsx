@@ -42,6 +42,10 @@ export function RealtimeProvider({ children, restaurantId }: { children: ReactNo
       "table:added",
       "table:deleted",
       "table:updated",
+      // D3/D4 — a party or a ticket changed tables. The tables page re-reads
+      // both the grid and the orders behind its clocks on these.
+      "table:moved",
+      "table:order_moved",
       // Orders/KDS listen for these on the `realtime:event` bridge below; without
       // them here a new or changed order only appeared on the next 10s poll.
       "order:updated",
