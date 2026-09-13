@@ -1810,7 +1810,12 @@ function OrdersDashboard() {
         <TableKotPreview
           restaurantId={user?.restaurantUsername ?? ""}
           tableName={selectedTable?.name ?? selectedTableName}
-          orders={visibleOrders}
+          // displayOrders, not visibleOrders: C3 retires a printed table from a
+          // waiter's LIST, but the preview names that table explicitly, and
+          // reading the filtered list made a table with live KOTs say "No live
+          // orders on this table yet". Cancel is locked instead (see prop).
+          orders={displayOrders}
+          cancelLocked={printScopeForTable(selectedTable?.name ?? selectedTableName).retiresTable}
           onAddOrder={() => { setIsAddDialogOpen(true); }}
           printControl={previewPrintControl}
           onChanged={() => { void refreshOrders(); }}

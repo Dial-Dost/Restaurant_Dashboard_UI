@@ -75,6 +75,7 @@ export function TableKotPreview({
   printControl,
   onChanged,
   onClose,
+  cancelLocked = false,
 }: {
   restaurantId: string;
   tableName: string;
@@ -85,6 +86,12 @@ export function TableKotPreview({
   printControl: ReactNode;
   onChanged: () => void;
   onClose: () => void;
+  /**
+   * C3 — this session's print of the bill has already happened, so the paper in
+   * the guest's hand is final for it. The tickets stay readable; cancelling one
+   * would make that paper wrong, so it is a senior's call and no button shows.
+   */
+  cancelLocked?: boolean;
 }): ReactElement {
   const { user } = useAuth();
   const { currencySymbol } = useCurrency();
@@ -141,7 +148,7 @@ export function TableKotPreview({
                     </div>
                     {/* 1.3 — numbered tickets only. The trailing block is several
                         orders and not a placed ticket, so it never offers one. */}
-                    {order && block.numbered ? (
+                    {order && block.numbered && !cancelLocked ? (
                     <CancelKotButton
                       restaurantId={restaurantId}
                       kotLabel={block.label}
