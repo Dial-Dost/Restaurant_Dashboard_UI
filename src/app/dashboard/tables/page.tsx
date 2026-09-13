@@ -397,7 +397,7 @@ function ServiceTable({
     occupancy: TableOccupancy | null;
     combined?: CombinedInfo | null;
     clocks: TableClocks | null;
-    onOpenOrders: (tableName: string, linkedOrderId?: string | null) => void;
+    onOpenOrders: (tableName: string, linkedOrderId?: string | null, preview?: boolean) => void;
     onOccupy: (tableName: string, numCovers: number) => void;
     onRelease: (tableName: string) => void;
     onUpdateCovers: (tableName: string, numCovers: number) => void;
@@ -441,7 +441,17 @@ function ServiceTable({
         >
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2 p-3">
                 <CardTitle className="text-xs font-medium sm:text-sm flex items-center gap-2 min-w-0">
-                    <button type="button" className="truncate text-left hover:underline" title={table.name} onClick={() => { onOpenOrders(table.name); }}>
+                    {/* 1.8 — selecting an OCCUPIED table opens its preview (its KOTs,
+                        one block each, with Add Order and Print Bill on top)
+                        rather than dropping a new-order dialog over them. A free
+                        table has nothing to preview, so it still goes straight
+                        to taking the order. */}
+                    <button
+                        type="button"
+                        className="truncate text-left hover:underline"
+                        title={isOccupied ? `Preview ${table.name}'s KOTs` : table.name}
+                        onClick={() => { onOpenOrders(table.name, null, isOccupied); }}
+                    >
                         {table.name}
                     </button>
                 </CardTitle>
@@ -881,10 +891,13 @@ export default function TablesPage() {
         }
     };
 
-    const openOrdersForTable = (tableName: string, linkedOrderId?: string | null) => {
+    const openOrdersForTable = (tableName: string, linkedOrderId?: string | null, preview?: boolean): void => {
         const params = new URLSearchParams();
         params.set("table", tableName);
         if (linkedOrderId) { params.set("highlightOrder", linkedOrderId); }
+        // 1.8 — the orders screen draws this table's preview whenever `table` is
+        // set; `preview` only stops it opening the new-order dialog on top.
+        if (preview) { params.set("preview", "1"); }
         router.push(`/dashboard/orders?${params.toString()}`);
     };
 

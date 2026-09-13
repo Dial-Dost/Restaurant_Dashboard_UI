@@ -5801,6 +5801,31 @@ export const voidOrderWithReason = async (
         'Unable to void that order',
     );
 
+/**
+ * 1.3 — THE EVERYDAY CANCEL, WITH ITS REASON.
+ *
+ * PATCH /orders/:id/status {status: 'Cancelled', reason}, gated on "Add Orders".
+ * The route records the reason self-authorised in the same "OrderVoids" ledger
+ * the void report reads and prints the CANCELLED slip (1.1). The route does not
+ * refuse a missing reason (shipped tills), so the prompt in front of this call
+ * is what makes it mandatory (1.2) — never call this with an empty one.
+ *
+ * The response's `cancel_kot_*` fields say whether the slip printed; they are
+ * passed through untouched.
+ */
+export const cancelOrderWithReason = async (
+    restaurantId: string,
+    orderId: string,
+    reason: string,
+): Promise<{ success?: boolean; unchanged?: boolean; cancel_kot_printed?: boolean; cancel_kot_no?: number | null }> =>
+    captureWrite<{ success?: boolean; unchanged?: boolean; cancel_kot_printed?: boolean; cancel_kot_no?: number | null }>(
+        `/orders/${encodeURIComponent(orderId)}/status`,
+        restaurantId,
+        'PATCH',
+        { status: 'Cancelled', reason },
+        'Unable to cancel that order',
+    );
+
 // --- 036: SERVICE CHARGE WAIVER ----------------------------------------------
 
 export interface WaiveServiceChargeResult {

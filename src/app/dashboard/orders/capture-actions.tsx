@@ -97,6 +97,7 @@ import {
     reverseServiceChargeWaiver,
     setBillCounter,
     voidBillTender,
+    cancelOrderWithReason,
     voidOrderWithReason,
     waiveServiceCharge,
 } from "@/lib/db"
@@ -131,6 +132,7 @@ import {
     type TenderDraft,
     type VocabularyOption,
 } from "@/lib/mis-capture"
+import { cancelKotRoute } from "@/lib/orders-grid"
 import { can } from "@/lib/session-scope"
 import { cn } from "@/lib/utils"
 
@@ -661,8 +663,18 @@ function CompDialog({
 // ---------------------------------------------------------------------------
 
 function VoidDialog({
-    restaurantId, order, money, busy, setBusy, onClose, onChanged, fail,
-}: DialogShell & { order: CaptureOrder; money: (v: unknown) => string }) {
+    restaurantId, order, money, busy, setBusy, onClose, onChanged, fail, kotLabel,
+}: DialogShell & {
+    order: CaptureOrder
+    money: (v: unknown) => string
+    /**
+     * 1.3 — set when this dialog was opened as "Cancel KOT" from a KOT block or
+     * a kitchen ticket. It changes the WORDS and nothing else: the same kind,
+     * reason and authoriser are demanded (1.2) and the same route prints the
+     * CANCELLED slip (1.1). "" when the server sent no KOT number.
+     */
+    kotLabel?: string
+}) {
     const [kind, setKind] = useState("")
     const [reason, setReason] = useState("")
     const [authorisedBy, setAuthorisedBy] = useState("")
@@ -687,7 +699,11 @@ function VoidDialog({
         <Dialog open onOpenChange={(v) => { if (!v && !busy) {onClose()} }}>
             <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto">
                 <DialogHeader>
-                    <DialogTitle>Void order · Table {order.table}</DialogTitle>
+                    <DialogTitle>
+                        {kotLabel === undefined
+                            ? <>Void order · Table {order.table}</>
+                            : <>Cancel {kotLabel || "KOT"} · Table {order.table}</>}
+                    </DialogTitle>
                     <DialogDescription>
                         Cancel this ticket and record why, in one step. The reason is what turns a cancelled
                         order from a number into something an owner can act on.
@@ -742,13 +758,148 @@ function VoidDialog({
                                 disabled={busy || !kind || reason.trim().length === 0 || authorisedBy.trim().length === 0}
                             >
                                 {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Ban className="mr-2 h-4 w-4" />}
-                                Void this order
+                                {kotLabel === undefined ? "Void this order" : `Cancel ${kotLabel || "KOT"}`}
                             </Button>
                         </DialogFooter>
                     </>
                 )}
             </DialogContent>
         </Dialog>
+    )
+}
+
+/**
+ * 1.2 — the reason prompt in front of the everyday cancel. The Cancel button
+ * stays disabled until a reason is typed; closing the dialog cancels nothing.
+ */
+function CancelKotReasonDialog({
+    restaurantId, order, kotLabel, busy, setBusy, onClose, onChanged, fail, toast,
+}: DialogShell & { order: CaptureOrder; kotLabel: string; toast: Toast }): React.ReactElement {
+    const [reason, setReason] = useState("")
+
+    const submit = async (): Promise<void> => {
+        const trimmed = reason.trim()
+        if (!trimmed) {return}
+        setBusy(true)
+        try {
+            const r = await cancelOrderWithReason(restaurantId, order.id, trimmed)
+            // Say what reached the kitchen: the slip is the half of a cancel the
+            // pass acts on, and "nothing printed" sends someone to tell them.
+            toast({
+                title: `${kotLabel} cancelled`,
+                description: r.cancel_kot_printed === false
+                    ? `Table ${order.table}. No cancellation slip printed — tell the kitchen.`
+                    : `Table ${order.table}. A CANCELLED slip is going to the kitchen.`,
+            })
+            onChanged()
+            onClose()
+        } catch (e) { fail(e) } finally { setBusy(false) }
+    }
+
+    return (
+        <Dialog open onOpenChange={(v) => { if (!v && !busy) {onClose()} }}>
+            <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto">
+                <DialogHeader>
+                    <DialogTitle>Cancel {kotLabel} · Table {order.table}</DialogTitle>
+                    <DialogDescription>
+                        The kitchen gets a CANCELLED slip for this ticket, and the reason is recorded against it.
+                    </DialogDescription>
+                </DialogHeader>
+                <Note tone="warn">
+                    This cancels the whole ticket — every line on {kotLabel}. Cancelled orders are final; only the Audit Log can reverse one.
+                </Note>
+                <ReasonField value={reason} onChange={setReason} placeholder="e.g. Guest left before it was served" />
+                <DialogFooter>
+                    <Button variant="ghost" onClick={onClose} disabled={busy}>Keep the KOT</Button>
+                    <Button
+                        variant="destructive"
+                        onClick={() => void submit()}
+                        disabled={busy || reason.trim().length === 0}
+                    >
+                        {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Ban className="mr-2 h-4 w-4" />}
+                        Cancel {kotLabel}
+                    </Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+    )
+}
+
+/*
+  1.3 — CANCEL KOT, WHERE THE KOT IS.
+
+  "Add a dedicated option to cancel a KOT for an order that has already been
+  placed, and ensure this functionality is accessible directly within the KOT
+  section."
+
+  NOT A NEW PATH. A KOT on this system is an order's kitchen docket, and the
+  server already has two ways to cancel an order, both of which print the
+  CANCELLED slip carrying the KOT number and table (1.1):
+
+    * a session that may VOID gets the recorded void — this file's VoidDialog,
+      POST /orders/:id/void, which refuses to run without a controlled kind, a
+      reason and an authoriser;
+    * anybody else holding "Add Orders" (the stock waiter) gets the everyday
+      cancel — PATCH /orders/:id/status — behind a reason prompt that will not
+      submit empty (1.2), because that route records a reason but, for the sake
+      of shipped tills, does not refuse a missing one.
+
+  `cancelKotRoute` makes that choice, and it is the same two-route rule the owner
+  app's table sheet uses, so a waiter is offered the same control on both. A
+  session that can take neither route is shown nothing. DELETE /orders/:id is
+  never used: it records no reason.
+
+  ONLY ON A NUMBERED TICKET. With no KOT number there is no placed ticket to
+  cancel from the KOT section (the trailing "No KOT number" block gathers several
+  orders); those orders are still cancellable from the Orders grid.
+*/
+export function CancelKotButton({ restaurantId, order, kotLabel, onChanged, className }: {
+    restaurantId: string
+    order: CaptureOrder
+    /** "KOT 5" / "KOTs 1, 2". An empty label draws nothing. */
+    kotLabel: string
+    onChanged: () => void
+    className?: string
+}): React.ReactElement | null {
+    const { user } = useAuth()
+    const { currencySymbol } = useCurrency()
+    const { toast } = useToast()
+    const [open, setOpen] = useState(false)
+    const [busy, setBusy] = useState(false)
+    const money = useCallback((v: unknown) => formatAmount(v, currencySymbol), [currencySymbol])
+    const fail = useCallback((e: unknown) => {
+        toast({ title: "KOT not cancelled", description: e instanceof Error ? e.message : String(e), variant: "destructive" })
+    }, [toast])
+    const close = useCallback(() => { setOpen(false) }, [])
+
+    const route = cancelKotRoute(user, order.status)
+    if (route === null || kotLabel.trim() === "") {return null}
+
+    return (
+        <>
+            <Button
+                variant="outline"
+                size="sm"
+                className={cn("h-8 gap-1 border-destructive/50 px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive", className)}
+                title={`Cancel ${kotLabel} — asks for a reason and prints a CANCELLED slip for the kitchen`}
+                onClick={(e) => { e.stopPropagation(); setOpen(true) }}
+            >
+                <Ban className="h-3.5 w-3.5" /> Cancel KOT
+            </Button>
+            {open && route === "void" ? (
+                <VoidDialog
+                    restaurantId={restaurantId} order={order} money={money} kotLabel={kotLabel}
+                    busy={busy} setBusy={setBusy} onClose={close} onChanged={onChanged} fail={fail}
+                />
+            ) : null}
+            {open && route === "status" ? (
+                <CancelKotReasonDialog
+                    restaurantId={restaurantId} order={order} kotLabel={kotLabel}
+                    busy={busy} setBusy={setBusy} onClose={close} onChanged={onChanged} fail={fail}
+                    toast={toast}
+                />
+            ) : null}
+        </>
     )
 }
 
