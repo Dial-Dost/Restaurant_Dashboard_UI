@@ -11,7 +11,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import Image from 'next/image';
 import { DEFAULT_TIMEZONE, formatDateTime } from '@/lib/tz';
 import { useTimezone } from '@/lib/use-timezone';
-import { isReprintOfPrintedBill, REPRINT_MARKER, type BillPrintState } from '@/lib/bill-print-state';
+import { billReceiptIsReprint, REPRINT_MARKER, type BillPrintState } from '@/lib/bill-print-state';
+import { billCustomerLines } from '@/lib/bill-customer';
 
 interface OrderItem {
     id: string;
@@ -181,6 +182,30 @@ interface PrintedBill {
      * for printed the pre-tax subtotal as the Grand Total (root cause 4).
      */
     source: 'settled' | 'open';
+    /**
+     * R2 item 1 — the name and GSTIN off the SAME server document as the money,
+     * so a name corrected after the order was placed is the name on the paper.
+     * `undefined` when that document carries no such key (an older backend), in
+     * which case the renderers fall back to the order's own `customer`.
+     */
+    customer: string | null | undefined;
+    customerGstin: string | null | undefined;
+}
+
+/** A field off a server document: the value when the key is there, `undefined` when it is not. */
+const docField = (doc: Record<string, unknown> | null | undefined, key: string): string | null | undefined => {
+    if (!doc || !(key in doc)) {return undefined;}
+    const v = doc[key];
+    return typeof v === 'string' ? v : null;
+};
+
+/**
+ * The customer slot for this receipt — `Customer Name: …` and, when set,
+ * `Customer GSTIN: …` — shared by the on-screen bill and the ESC/POS twin so
+ * they cannot drift. See billCustomerLines for why it sits under the header.
+ */
+function receiptCustomerLines(printed: PrintedBill, order: { customer?: unknown }): string[] {
+    return billCustomerLines(printed.customer === undefined ? order.customer : printed.customer, printed.customerGstin);
 }
 
 /**
@@ -349,6 +374,8 @@ function resolvePrintedBill(order: Order, settled: any | null, openBill: any | n
             grandTotal: settledGrand,
             billNo: String(settled.bill_no ?? ''),
             source: 'settled',
+            customer: docField(settled as Record<string, unknown>, 'customer'),
+            customerGstin: docField(settled as Record<string, unknown>, 'customer_gstin'),
         };
         return { ok: true, printed };
     }
@@ -403,6 +430,8 @@ function resolvePrintedBill(order: Order, settled: any | null, openBill: any | n
             grandTotal: openGrand,
             billNo: String(openBill.bill_no ?? ''),
             source: 'open',
+            customer: docField(openBill as Record<string, unknown>, 'customer'),
+            customerGstin: docField(openBill as Record<string, unknown>, 'customer_gstin'),
         };
         return { ok: true, printed };
     }
@@ -686,7 +715,7 @@ function PrintPageContents() {
       document the guest is entitled to query, on the slip that is the record of
       what they owe.
     */
-    const isReprint = printed.source === 'open' && isReprintOfPrintedBill(order.bill_print_state);
+    const isReprint = billReceiptIsReprint(printed.source, order.bill_print_state);
     const currencySymbol = order.currencySymbol || '₹';
     const cashierName = `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || '';
     const billId = bill?.id ?? settledBill?.id ?? openBill?.bill_id ?? '';
@@ -829,8 +858,21 @@ function PrintPageContents() {
                 </CardHeader>
                 <CardContent className="p-6">
                     <div className="mb-4 text-sm" > 
-                        <div className="w-full">
-                            <p><strong>Customer Name:</strong> {order.customer}</p>
+                        {/* R2 item 1 — the customer's own slot, directly under the
+                            restaurant header and above the Date / Bill No. block,
+                            as on the client's printed bill: "Customer Name:"
+                            (Guest when nobody named it) and, for a corporate
+                            party, "Customer GSTIN:". The thermal bill prints the
+                            same lines in the same place. */}
+                        <div className="w-full" data-testid="receipt-customer-slot">
+                            {receiptCustomerLines(printed, order).map((l) => {
+                                const [label, ...rest] = l.split(': ');
+                                return (
+                                    <p key={label}>
+                                        <strong>{label}:</strong> {rest.join(': ')}
+                                    </p>
+                                );
+                            })}
                         </div>
                         <div className="border-t border-black pt-2 w-full text-center flex justify-between">
                             <p><strong>Date:</strong> {formatDateTime(Date.now(), timezone)}</p>
@@ -1187,9 +1229,14 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
             .line(lineSeparator)
             .align('left');
 
-        // Meta info
-        encoder.line(`Customer Name: ${order.customer || 'Guest'}`);
-
+        // R2 item 1 — the customer slot, between the header's rule and the next
+        // one, above Date / Bill No., exactly where the client's paper and the
+        // thermal bill have it. Same helper as the preview above.
+        for (const customerLine of receiptCustomerLines(printedArg, order as { customer?: unknown })) {
+            for (const wrapped of wrapText(customerLine, MAX_CHARS)) {
+                encoder.line(wrapped);
+            }
+        }
         encoder.line(lineSeparator);
 
         const orderDate = formatDateTime(Date.now(), timeZone); 

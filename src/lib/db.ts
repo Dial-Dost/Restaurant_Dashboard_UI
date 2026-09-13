@@ -20,6 +20,7 @@ import { readErrorMessage, refusalSentence, type RefusedAction } from '@/lib/err
 // module holds no second opinion about what "already printed" means — it only
 // carries the bytes between the route and the screens.
 import { billPrintRefusal, billPrintStateFields, type BillPrintState } from '@/lib/bill-print-state';
+import { UNREACHABLE_MESSAGE, billCustomerPayload, billCustomerSaveOutcome, type BillCustomerRequest, type BillCustomerSaveOutcome } from '@/lib/bill-customer';
 import { SELECTED_OUTLET_KEY } from '@/lib/outlet';
 import type { BrandConfig } from '@/lib/brand-fonts';
 import type { RolePermission } from '@/lib/role-permissions';
@@ -2010,6 +2011,12 @@ export interface ClosedBillDetail extends ClosedBillSummary {
     taxes: BillTaxLine[];
     target_apc: number;
     customer: string | null;
+    /**
+     * R2 item 1 — the corporate party's GSTIN. Optional because a backend older
+     * than the field sends no key at all, which the UI reads as "not supported
+     * here" rather than as "no GSTIN".
+     */
+    customer_gstin?: string | null;
     seated_at: string | null;
     left_at: string | null;
     waiter_confirmed_at: string | null;
@@ -3785,6 +3792,20 @@ export const setMenuItemAvailability = async (
     return (await response.json()) as { success: boolean; id: string; name: string; available: boolean };
 };
 
+// Not exported: a "use server" module's exports are Server Actions.
+async function sendBillCustomer(restaurantId: string, request: BillCustomerRequest): Promise<BillCustomerSaveOutcome> {
+    const response = await backendCall(request.path, restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request.body),
+    });
+    if (!response) {
+        return { ok: false, outdated: false, message: UNREACHABLE_MESSAGE, status: 0 };
+    }
+    const text = await response.text().catch(() => '');
+    return billCustomerSaveOutcome(response.status, text, 'customer_gstin' in request.body);
+}
+
 /**
  * H6 — change the name on a running table's bill.
  *
@@ -3793,22 +3814,40 @@ export const setMenuItemAvailability = async (
  * non-placeholder one it finds. Correcting only the round you are looking at
  * would appear to do nothing whenever an earlier round already carries a name.
  * An empty string clears it.
+ *
+ * R2 item 1 — and the customer's GSTIN, for a corporate party. `customerGstin`
+ * `undefined` leaves it off the body, which the route reads as "unchanged"; see
+ * billCustomerPayload for why a dialog that does not know the current GSTIN must
+ * not send `null`.
+ *
+ * RETURNS its failure rather than throwing it: Next redacts the message of an
+ * Error thrown out of a Server Action in production, so the server's sentence
+ * ("GSTIN must be 15 characters…") would never reach the person who typed it,
+ * and the old /404/ test on that message could never match either.
  */
 export const setBillCustomerName = async (
     restaurantId: string,
     tableName: string,
     customer: string,
-): Promise<{ success: boolean; customer: string | null; orders_updated: number }> => {
-    const response = await backendCall('/bills/customer-name', restaurantId, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ table_name: tableName, customer }),
-    });
-    if (!response?.ok) {
-        throw new Error(response ? await readErrorMessage(response) : 'Unable to change the name on this bill');
-    }
-    return (await response.json()) as { success: boolean; customer: string | null; orders_updated: number };
-};
+    customerGstin?: string,
+): Promise<BillCustomerSaveOutcome> =>
+    sendBillCustomer(restaurantId, billCustomerPayload({ kind: 'table', tableName }, customer, customerGstin));
+
+/**
+ * R2 item 1 — change the name and GSTIN on a SETTLED bill, from Accounting's
+ * past bills. Addressed by bill id, never by table name: the table name answers
+ * with whoever is sitting there now. The route changes only those two fields —
+ * no money, no status, no timestamps — and is gated on the permission the E5
+ * settled reprint uses.
+ */
+export const setSettledBillCustomerDetails = async (
+    restaurantId: string,
+    billId: string,
+    customer: string,
+    customerGstin?: string,
+): Promise<BillCustomerSaveOutcome> =>
+    sendBillCustomer(restaurantId, billCustomerPayload({ kind: 'bill', billId }, customer, customerGstin));
+
 
 export interface OperationsAnalytics {
     days: number;

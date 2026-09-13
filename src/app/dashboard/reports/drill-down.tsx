@@ -130,6 +130,7 @@ export function DrillDownDialog({ request, onClose, restaurantId, outletId, time
                             <Field label="Payment" value={bill.payment_method ?? "—"} />
                             <Field label="Waiter / closed by" value={bill.closed_by ?? "—"} />
                             <Field label="Customer" value={bill.customer ?? "—"} />
+                            {"customer_gstin" in bill ? <Field label="Customer GSTIN" value={bill.customer_gstin?.trim() ? bill.customer_gstin.trim() : "—"} /> : null}
                             <Field label="Seated" value={when(bill.seated_at)} />
                             <Field label="Opened" value={when(bill.created_at)} />
                         </div>

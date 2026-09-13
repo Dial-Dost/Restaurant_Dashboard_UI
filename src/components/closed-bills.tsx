@@ -19,8 +19,11 @@ import { useToast } from "@/hooks/use-toast"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
-import { Printer, Receipt } from "lucide-react"
+import { Pencil, Printer, Receipt } from "lucide-react"
 import { useCurrency } from "@/hooks/use-currency"
+import { useAuth } from "@/context/AuthContext"
+import { BillCustomerDialog } from "@/components/bill-customer-dialog"
+import { canEditSettledBillCustomer } from "@/lib/bill-customer"
 import { getClosedBills, getClosedBill, reprintSettledBill, type ClosedBillSummary, type ClosedBillDetail } from "@/lib/db"
 import { formatDateTime } from "@/lib/tz"
 import { useTimezone } from "@/lib/use-timezone"
@@ -56,6 +59,15 @@ export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, descr
   /** The bill currently being sent to a printer, so the button can say so. */
   const [reprinting, setReprinting] = useState<string | null>(null)
   const { currencySymbol } = useCurrency()
+  const { user } = useAuth()
+  /*
+    R2 ITEM 1 — "This option has to come in the past bills section in accounting."
+    Gated on the permission the Reprint button's route (E5, POST
+    /print/bill/settled) is gated on, which is also the new route's gate. Hidden,
+    not greyed, for everyone else: the route would refuse them.
+  */
+  const canEditCustomer = canEditSettledBillCustomer(user)
+  const [customerOpen, setCustomerOpen] = useState(false)
   const money = (n: number | null | undefined) =>
     `${currencySymbol}${Number(n ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
@@ -276,6 +288,13 @@ export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, descr
                 Prints a second copy, marked <span className="font-semibold">REPRINT</span>, with the
                 figures exactly as this bill was settled.
               </p>
+              <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+              {canEditCustomer ? (
+                <Button size="sm" variant="outline" onClick={() => { setCustomerOpen(true) }}>
+                  <Pencil className="mr-2 h-4 w-4" />
+                  Edit name / GSTIN
+                </Button>
+              ) : null}
               <Button
                 size="sm"
                 variant="outline"
@@ -301,10 +320,31 @@ export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, descr
                 <Printer className="mr-2 h-4 w-4" />
                 {reprinting === detail.id ? "Sending…" : "Reprint bill"}
               </Button>
+              </div>
             </DialogFooter>
           )}
         </DialogContent>
       </Dialog>
+
+      {detail && canEditCustomer ? (
+        <BillCustomerDialog
+          open={customerOpen}
+          onOpenChange={setCustomerOpen}
+          restaurantId={rid}
+          target={{ kind: "bill", billId: detail.id, billNo: detail.bill_no }}
+          initial={detail}
+          onSaved={(saved) => {
+            const id = detail.id
+            // THE ROW REFRESHES FROM THE SERVER'S ANSWER at once, then from a
+            // fresh read — the read is the truth, and the answer is what keeps
+            // the old name from sitting on screen while it is in flight.
+            setDetail((cur) => (cur?.id === id ? { ...cur, customer: saved.customer, customer_gstin: saved.customer_gstin } : cur))
+            void getClosedBill(rid, id)
+              .then((fresh) => { if (fresh) { setDetail((cur) => (cur?.id === id ? fresh : cur)) } })
+              .catch(() => { /* the answer above already stands */ })
+          }}
+        />
+      ) : null}
     </Card>
   )
 }
@@ -440,6 +480,9 @@ function BillDetailBody({ detail, money }: { detail: ClosedBillDetail; money: (n
           */}
           {serviceSpan ? <Fact label="Service time" value={serviceSpan} /> : null}
           <Fact label="Customer" value={d.customer ?? "—"} />
+          {/* R2 item 1 — drawn only when the server sends the field at all; an
+              older backend's silence is not "no GSTIN". */}
+          {"customer_gstin" in d ? <Fact label="Customer GSTIN" value={d.customer_gstin?.trim() ? d.customer_gstin.trim() : "—"} /> : null}
           <Fact label="Orders" value={String(d.orders.length)} />
         </div>
       </div>

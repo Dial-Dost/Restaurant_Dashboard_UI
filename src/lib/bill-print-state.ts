@@ -303,3 +303,28 @@ export const REPRINT_MARKER = '** REPRINT **';
  * bookkeeping annoyance, the second undermines the bill itself.
  */
 export const isReprintOfPrintedBill = (stamp: unknown): boolean => serverSaysBillPrinted(stamp);
+
+/**
+ * R2 ITEM 4 — DOES THIS RECEIPT PREVIEW CARRY THE REPRINT BANNER?
+ *
+ * "Reprint has to mention reprint on top once the bill has been reprinted and it
+ * should show the same on the preview as well." The web print page IS the
+ * preview (and, through Ctrl+P, the paper), so this is the one decision both of
+ * those read.
+ *
+ * `stamp` is `bill_print_state` as the orders page captured it BEFORE POST
+ * /print/bill/claim — `priorPrintState` in triggerPrint. Never the claim's own
+ * answer and never the claimed `printable_bill`'s figures: the claim increments
+ * the ledger, so anything read after it says 1 on a first print (see
+ * {@link isReprintOfPrintedBill}).
+ *
+ * `source` is which server document the page resolved. Only the OPEN table bill
+ * is marked, because the stamp was read off /bill-for-table, which is addressed
+ * by table name and describes the open seating. A SETTLED bill on this page has
+ * no before-the-claim print state of its own (GetClosedBill's projection carries
+ * none), and "a closed bill is always a reprint" would be a guess made in the
+ * browser. The accounting reprint of a settled bill goes through POST
+ * /print/bill/settled, which the server always marks.
+ */
+export const billReceiptIsReprint = (source: 'open' | 'settled', stamp: unknown): boolean =>
+    source === 'open' && isReprintOfPrintedBill(stamp);
