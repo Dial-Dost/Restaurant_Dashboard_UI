@@ -200,8 +200,9 @@ const docField = (doc: Record<string, unknown> | null | undefined, key: string):
 };
 
 /**
- * CONTRACT D's two lines for this receipt — `Customer: …` / `Customer GSTIN: …` —
- * shared by the on-screen bill and the ESC/POS twin so they cannot drift.
+ * The customer slot for this receipt — `Customer Name: …` and, when set,
+ * `Customer GSTIN: …` — shared by the on-screen bill and the ESC/POS twin so
+ * they cannot drift. See billCustomerLines for why it sits under the header.
  */
 function receiptCustomerLines(printed: PrintedBill, order: { customer?: unknown }): string[] {
     return billCustomerLines(printed.customer === undefined ? order.customer : printed.customer, printed.customerGstin);
@@ -857,7 +858,23 @@ function PrintPageContents() {
                 </CardHeader>
                 <CardContent className="p-6">
                     <div className="mb-4 text-sm" > 
-                        <div className="w-full text-center flex justify-between">
+                        {/* R2 item 1 — the customer's own slot, directly under the
+                            restaurant header and above the Date / Bill No. block,
+                            as on the client's printed bill: "Customer Name:"
+                            (Guest when nobody named it) and, for a corporate
+                            party, "Customer GSTIN:". The thermal bill prints the
+                            same lines in the same place. */}
+                        <div className="w-full" data-testid="receipt-customer-slot">
+                            {receiptCustomerLines(printed, order).map((l) => {
+                                const [label, ...rest] = l.split(': ');
+                                return (
+                                    <p key={label}>
+                                        <strong>{label}:</strong> {rest.join(': ')}
+                                    </p>
+                                );
+                            })}
+                        </div>
+                        <div className="border-t border-black pt-2 w-full text-center flex justify-between">
                             <p><strong>Date:</strong> {formatDateTime(Date.now(), timezone)}</p>
                             <p><strong>Dine In:</strong> {order.table}</p>
                            
@@ -866,19 +883,6 @@ function PrintPageContents() {
                              <p><strong>Bill No.:</strong> {billNo}</p>
                             <p><strong>Cashier:</strong> {cashierName}</p>
                         </div>
-                        {/* R2 item 1 / contract D — under the bill no., date and
-                            table: "Customer: <name>" (never for Guest / QR Guest
-                            / no name) and "Customer GSTIN: <gstin>" for a
-                            corporate party. The thermal bill prints the same two
-                            lines in the same place. */}
-                        {receiptCustomerLines(printed, order).map((l) => {
-                            const [label, ...rest] = l.split(': ');
-                            return (
-                                <p key={label} className="w-full" data-testid="receipt-customer-line">
-                                    <strong>{label}:</strong> {rest.join(': ')}
-                                </p>
-                            );
-                        })}
                     </div>
                     <Table className="border-t border-black">
                         <TableHeader>
@@ -1225,6 +1229,16 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
             .line(lineSeparator)
             .align('left');
 
+        // R2 item 1 — the customer slot, between the header's rule and the next
+        // one, above Date / Bill No., exactly where the client's paper and the
+        // thermal bill have it. Same helper as the preview above.
+        for (const customerLine of receiptCustomerLines(printedArg, order as { customer?: unknown })) {
+            for (const wrapped of wrapText(customerLine, MAX_CHARS)) {
+                encoder.line(wrapped);
+            }
+        }
+        encoder.line(lineSeparator);
+
         const orderDate = formatDateTime(Date.now(), timeZone); 
         encoder.line(leftRight(`Date: ${orderDate}`, `Dine In: ${order.table || 'N/A'}`, MAX_CHARS));
         
@@ -1239,13 +1253,6 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
         // }
 
         encoder.line(leftRight(`Bill No.: ${displayId}`, `Cashier: ${cashierName}`, MAX_CHARS));
-        // R2 item 1 / contract D — the same two lines the preview draws, from the
-        // same helper, under the bill no./date/table block.
-        for (const customerLine of receiptCustomerLines(doc, order as { customer?: unknown })) {
-            for (const wrapped of wrapText(customerLine, MAX_CHARS)) {
-                encoder.line(wrapped);
-            }
-        }
         encoder.line(lineSeparator);
 
         // Items Header 

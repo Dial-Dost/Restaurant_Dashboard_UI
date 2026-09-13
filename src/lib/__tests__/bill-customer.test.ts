@@ -175,45 +175,69 @@ describe('what came back — the server\'s sentence verbatim, and old backends d
     });
 });
 
-describe('contract D — the customer lines on the bill', () => {
-    it('prints the name and the GSTIN, in that order', () => {
+describe('the customer slot on the printed bill — as on the client\'s own receipt', () => {
+    it('prints Customer Name, then Customer GSTIN when one is set', () => {
         expect(billCustomerLines('Acme Pvt Ltd', '29ABCDE1234F1Z5')).toEqual([
-            'Customer: Acme Pvt Ltd',
+            'Customer Name: Acme Pvt Ltd',
             'Customer GSTIN: 29ABCDE1234F1Z5',
         ]);
     });
 
-    it('skips the name for Guest, QR Guest and empty — but still prints a GSTIN', () => {
-        for (const placeholder of ['Guest', 'guest', 'QR Guest', 'qr guest', '', '   ', null, undefined, 'null']) {
-            expect(isPlaceholderCustomer(placeholder)).toBe(true);
-            expect(billCustomerLines(placeholder, null)).toEqual([]);
+    it('always has the name slot: an empty name prints Guest, as the thermal bill does', () => {
+        for (const empty of ['', '   ', null, undefined, 'null']) {
+            expect(billCustomerLines(empty, null)).toEqual(['Customer Name: Guest']);
         }
-        expect(billCustomerLines('Guest', '29ABCDE1234F1Z5')).toEqual(['Customer GSTIN: 29ABCDE1234F1Z5']);
+        expect(billCustomerLines('Guest', null)).toEqual(['Customer Name: Guest']);
+        expect(billCustomerLines('', '29ABCDE1234F1Z5')).toEqual(['Customer Name: Guest', 'Customer GSTIN: 29ABCDE1234F1Z5']);
     });
 
     it('prints no GSTIN line when there is none', () => {
-        expect(billCustomerLines('Mr Rao', null)).toEqual(['Customer: Mr Rao']);
-        expect(billCustomerLines('Mr Rao', '')).toEqual(['Customer: Mr Rao']);
-        expect(billCustomerLines('Mr Rao', 'null')).toEqual(['Customer: Mr Rao']);
-        expect(billCustomerLines('Mr Rao', undefined)).toEqual(['Customer: Mr Rao']);
+        expect(billCustomerLines('Mr Rao', null)).toEqual(['Customer Name: Mr Rao']);
+        expect(billCustomerLines('Mr Rao', '')).toEqual(['Customer Name: Mr Rao']);
+        expect(billCustomerLines('Mr Rao', 'null')).toEqual(['Customer Name: Mr Rao']);
+        expect(billCustomerLines('Mr Rao', undefined)).toEqual(['Customer Name: Mr Rao']);
     });
 
-    it('the web print page draws them under Bill No./Cashier, and its ESC/POS twin prints the same lines', () => {
-        const print = code(readSource('src/app/dashboard/orders/print/page.tsx'));
-        expect(print).not.toContain('Customer Name');
-        const billNoRow = print.indexOf('<strong>Bill No.:</strong>');
-        const lines = print.indexOf('receiptCustomerLines(printed, order).map(');
-        const itemsTable = print.indexOf('<Table className="border-t border-black">');
-        expect(billNoRow).toBeGreaterThan(-1);
-        expect(lines).toBeGreaterThan(billNoRow);
-        expect(itemsTable).toBeGreaterThan(lines);
+    it('Guest / QR Guest are still placeholders for the dialog and the table preview', () => {
+        for (const placeholder of ['Guest', 'guest', 'QR Guest', 'qr guest', '', '   ', null, undefined, 'null']) {
+            expect(isPlaceholderCustomer(placeholder)).toBe(true);
+        }
+        expect(isPlaceholderCustomer('Mr Rao')).toBe(false);
+    });
 
+    it('the web print page draws the slot under the restaurant header and ABOVE Date / Bill No., with a rule after it', () => {
+        const print = code(readSource('src/app/dashboard/orders/print/page.tsx'));
+        const banner = print.indexOf('{REPRINT_MARKER}');
+        const header = print.indexOf('billHeaderLines(profile, billPrint).map(');
+        const slot = print.indexOf('receiptCustomerLines(printed, order).map(');
+        const dateRow = print.indexOf('<strong>Date:</strong>');
+        const billNoRow = print.indexOf('<strong>Bill No.:</strong>');
+        expect(banner).toBeGreaterThan(-1);
+        expect(header).toBeGreaterThan(banner);
+        expect(slot).toBeGreaterThan(header);
+        expect(dateRow).toBeGreaterThan(slot);
+        expect(billNoRow).toBeGreaterThan(dateRow);
+        // The rule between the customer slot and the Date row.
+        expect(print.slice(slot, dateRow)).toMatch(/border-t border-black/);
+        // Exactly one place draws it — nothing left under Bill No./Cashier.
+        expect(print.split('receiptCustomerLines(printed, order)').length - 1).toBe(1);
+    });
+
+    it('its ESC/POS twin prints the same slot in the same place: after the header rule, before Date', () => {
+        const print = code(readSource('src/app/dashboard/orders/print/page.tsx'));
         const esc = print.slice(print.indexOf('export async function generateEscPos('));
+        const reprint = esc.indexOf('.line(REPRINT_MARKER)');
+        const headerLines = esc.indexOf('billHeaderLines(profile, billPrint)');
+        const escSlot = esc.indexOf('receiptCustomerLines(printedArg, order');
+        const escDate = esc.indexOf('`Date: ${orderDate}`');
         const escBillNo = esc.indexOf('`Bill No.: ${displayId}`');
-        const escLines = esc.indexOf('receiptCustomerLines(doc, order');
-        expect(escBillNo).toBeGreaterThan(-1);
-        expect(escLines).toBeGreaterThan(escBillNo);
-        expect(esc.indexOf("'Item'.padEnd(COL_ITEM)")).toBeGreaterThan(escLines);
+        expect(reprint).toBeGreaterThan(-1);
+        expect(headerLines).toBeGreaterThan(reprint);
+        expect(escSlot).toBeGreaterThan(headerLines);
+        expect(esc.slice(escSlot, escDate)).toContain('encoder.line(lineSeparator)');
+        expect(escDate).toBeGreaterThan(escSlot);
+        expect(escBillNo).toBeGreaterThan(escDate);
+        expect(esc.split('receiptCustomerLines(').length - 1).toBe(1);
     });
 
     it('the print page takes the name and GSTIN off the server document, not the stale order payload', () => {

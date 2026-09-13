@@ -61,8 +61,8 @@ export const gstinError = (raw: unknown): string | null => {
 
 /**
  * "Guest" and "QR Guest" are what the server writes when nobody named the bill.
- * They are placeholders, not names: never seeded back into the box, never
- * printed as "Customer: Guest".
+ * They are placeholders, not names: never seeded back into the box, and never
+ * shown on the table preview as though somebody had typed them.
  */
 export const isPlaceholderCustomer = (name: unknown): boolean => {
     const value = typeof name === 'string' ? name.trim() : '';
@@ -76,17 +76,23 @@ const present = (value: unknown): string => {
 };
 
 /**
- * CONTRACT D — the two lines under the bill header, when there is anything to say.
+ * THE CUSTOMER SLOT ON THE PRINTED BILL — the client's own receipt, reproduced.
  *
- *     Customer: <name>          (skipped for Guest / QR Guest / empty)
- *     Customer GSTIN: <gstin>   (skipped when there is none)
+ * The real bill the client sent (req_images/line3088_1.jpeg) gives the name a
+ * slot of its own DIRECTLY UNDER the restaurant header (logo, name, legal
+ * entity, address, GSTN), between two rules and ABOVE the Date / Cashier /
+ * Bill No. block. The thermal bill keeps that slot, so this does too:
  *
- * The same two lines the thermal renderer prints, in the same order, so a bill
- * off the dashboard and a bill off the till are one document.
+ *     Customer Name: <name, or Guest>   (always — the paper always has the slot)
+ *     Customer GSTIN: <gstin>           (only when one is set)
+ *
+ * "Guest" for an empty name is what the thermal renderer prints
+ * (`present(opts.customer) || "Guest"` in escpos.ts); a name the server stored
+ * is printed as stored. The web preview and its ESC/POS twin both read this, so
+ * a bill off the dashboard and a bill off the till are one document.
  */
 export const billCustomerLines = (customer: unknown, customerGstin: unknown): string[] => {
-    const lines: string[] = [];
-    if (!isPlaceholderCustomer(customer)) { lines.push(`Customer: ${present(customer)}`); }
+    const lines = [`Customer Name: ${present(customer) || 'Guest'}`];
     const gstin = present(customerGstin);
     if (gstin) { lines.push(`Customer GSTIN: ${gstin}`); }
     return lines;
