@@ -29,16 +29,26 @@
 
   C4 STILL HOLDS. Line amounts go through `visibleLineAmount`, so a waiter-only
   session sees dish and quantity and no figure — not a dash, not ₹0.00.
+
+  R2 ITEM 1 — "…in live tables where on top of a clicked table these details can
+  be updated." The very top of the card names who the bill is for and the
+  corporate party's GSTIN, off the server's open bill, with the one shared
+  name/GSTIN dialog beside them. Drawn only when the table has orders (there is
+  no bill to name before that) and only for a session the page lets use the 6.5
+  Bill menu — the same people, the same route.
 */
 
-import type { ReactElement, ReactNode } from "react";
-import { Clock, PlusCircle, ReceiptText, X } from "lucide-react";
+import { useEffect, useState, type ReactElement, type ReactNode } from "react";
+import { Clock, Pencil, PlusCircle, ReceiptText, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { BillCustomerDialog, type BillCustomerInitial } from "@/components/bill-customer-dialog";
 import { useAuth } from "@/context/AuthContext";
 import { useCurrency } from "@/hooks/use-currency";
 import { cn } from "@/lib/utils";
+import { isPlaceholderCustomer } from "@/lib/bill-customer";
+import { getBillForTable } from "@/lib/db";
 import { groupItemsByKot, type KotGroupOrder } from "@/lib/kot-groups";
 import { visibleLineAmount, visibleMoneyText } from "@/lib/order-prices";
 import { formatFullDateTime, formatTime } from "@/lib/tz";
@@ -76,6 +86,7 @@ export function TableKotPreview({
   onChanged,
   onClose,
   cancelLocked = false,
+  canEditCustomer = false,
 }: {
   restaurantId: string;
   tableName: string;
@@ -92,12 +103,53 @@ export function TableKotPreview({
    * would make that paper wrong, so it is a senior's call and no button shows.
    */
   cancelLocked?: boolean;
+  /**
+   * R2 item 1 — may this session see and edit the name/GSTIN on the table's
+   * bill? The page passes the SAME answer that draws the 6.5 Bill menu in the
+   * grid, so the preview never offers a route the grid withholds.
+   */
+  canEditCustomer?: boolean;
 }): ReactElement {
   const { user } = useAuth();
   const { currencySymbol } = useCurrency();
   const { timezone } = useTimezone();
   const blocks = groupItemsByKot(orders, tableName);
   const numberedCount = blocks.filter((block) => block.numbered).length;
+  const showCustomer = canEditCustomer && blocks.length > 0;
+  // Re-read when the table's tickets change, so a name set on another device
+  // shows up with the round that follows it rather than never.
+  const liveKey = blocks.map((block) => block.key).join("|");
+  const [billCustomer, setBillCustomer] = useState<BillCustomerInitial | null>(null);
+  const [customerLoading, setCustomerLoading] = useState(false);
+  const [customerOpen, setCustomerOpen] = useState(false);
+
+  // A different table is a different bill: never show the last one's name under it.
+  useEffect(() => { setBillCustomer(null); }, [tableName]);
+  useEffect(() => {
+    if (!showCustomer || !restaurantId) { setBillCustomer(null); return; }
+    let active = true;
+    setCustomerLoading(true);
+    getBillForTable(restaurantId, tableName)
+      .then((bill: unknown) => {
+        if (!active) { return; }
+        const row = bill && typeof bill === "object" ? (bill as Record<string, unknown>) : null;
+        setBillCustomer(row
+          ? {
+            customer: typeof row.customer === "string" ? row.customer : null,
+            // Only when the server SENT the key: an older backend's silence is not
+            // "no GSTIN", and the dialog treats the two differently.
+            ...("customer_gstin" in row ? { customer_gstin: typeof row.customer_gstin === "string" ? row.customer_gstin : null } : {}),
+          }
+          : null);
+      })
+      .catch(() => { if (active) { setBillCustomer(null); } })
+      .finally(() => { if (active) { setCustomerLoading(false); } });
+    return () => { active = false; };
+  }, [showCustomer, restaurantId, tableName, liveKey]);
+
+  const customerName = billCustomer && !isPlaceholderCustomer(billCustomer.customer) ? String(billCustomer.customer).trim() : "";
+  const gstinSupported = billCustomer !== null && "customer_gstin" in billCustomer;
+  const customerGstin = (billCustomer?.customer_gstin ?? "").trim();
 
   return (
     <Card id="table-preview" className="border-primary/40">
@@ -115,6 +167,55 @@ export function TableKotPreview({
         </Button>
       </CardHeader>
       <CardContent className="space-y-5">
+        {/* R2 item 1 — who the bill is for, on top of the clicked table. One
+            compact line, so 6.7's two big controls stay directly under it. */}
+        {showCustomer ? (
+          <div
+            className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/30 px-3 py-2 text-sm"
+            data-testid="table-bill-customer"
+          >
+            <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1">
+              <span>
+                <span className="text-muted-foreground">Guest: </span>
+                {customerLoading && !billCustomer
+                  ? <span className="text-muted-foreground">Loading…</span>
+                  : customerName
+                    ? <span className="font-semibold">{customerName}</span>
+                    : <span className="text-muted-foreground">No name</span>}
+              </span>
+              {gstinSupported ? (
+                <span>
+                  <span className="text-muted-foreground">GSTIN: </span>
+                  {customerGstin
+                    ? <span className="font-mono font-semibold">{customerGstin}</span>
+                    : <span className="text-muted-foreground">None</span>}
+                </span>
+              ) : null}
+            </div>
+            <Button variant="outline" size="sm" onClick={() => { setCustomerOpen(true); }}>
+              <Pencil className="h-3.5 w-3.5" /> Edit name / GSTIN
+            </Button>
+            <BillCustomerDialog
+              open={customerOpen}
+              onOpenChange={setCustomerOpen}
+              restaurantId={restaurantId}
+              target={{ kind: "table", tableName }}
+              // The payload this strip already read; null makes the dialog read
+              // the bill itself, which is what 6.5's dialog always did.
+              initial={billCustomer}
+              onSaved={(saved) => {
+                setBillCustomer((prev) => ({
+                  customer: saved.customer,
+                  // Keep "not supported here" if the server still sends no key.
+                  ...(prev && "customer_gstin" in prev ? { customer_gstin: saved.customer_gstin } : {}),
+                  ...(saved.customer_gstin ? { customer_gstin: saved.customer_gstin } : {}),
+                }));
+                onChanged();
+              }}
+            />
+          </div>
+        ) : null}
+
         {/* 6.7 — the two controls, first and full size. */}
         <div className="grid gap-3 sm:grid-cols-2">
           <Button size="lg" className="h-14 w-full text-base [&_svg]:size-5" onClick={onAddOrder}>

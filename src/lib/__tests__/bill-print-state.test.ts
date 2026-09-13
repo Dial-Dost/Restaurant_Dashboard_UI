@@ -38,6 +38,7 @@ import {
     billPrintRefusal,
     billPrintScope,
     billPrintStateFields,
+    billReceiptIsReprint,
     isReprintOfPrintedBill,
     serverBillPrintState,
     serverSaysBillPrinted,
@@ -284,5 +285,40 @@ describe('the REPRINT marker — one spelling, shared with the thermal path', ()
         const claimResponseAfterFirstPrint = { print_count: 1, bill_printed_at: '2026-09-11T14:05:00.000Z', printed_at: '2026-09-11T14:05:00.000Z' };
         expect(isReprintOfPrintedBill(beforeFirstPrint)).toBe(false);
         expect(isReprintOfPrintedBill(claimResponseAfterFirstPrint)).toBe(true);
+    });
+});
+
+describe('billReceiptIsReprint — R2 item 4, the banner on the web preview and its paper', () => {
+    it('a FIRST print shows no banner', () => {
+        expect(billReceiptIsReprint('open', payload(0))).toBe(false);
+        expect(billReceiptIsReprint('open', { bill_printed_at: null })).toBe(false);
+    });
+
+    it('a REPRINT shows it — the bill had been printed at least once before this press', () => {
+        expect(billReceiptIsReprint('open', payload(1))).toBe(true);
+        expect(billReceiptIsReprint('open', payload(3))).toBe(true);
+        expect(billReceiptIsReprint('open', { print_count: 0, printed_at: '2026-09-11T13:40:00.000Z' })).toBe(true);
+    });
+
+    it('C3 claim flow: the stamp is priorPrintState, captured before the claim — the claim\'s own count is never it', () => {
+        // What triggerPrint does, in order: read /bill-for-table, keep its state,
+        // THEN claim. The claim answers with the incremented count.
+        const priorPrintState = billPrintStateFields(payload(0));
+        const claimAnswer = { print_count: 1, bill_printed_at: '2026-09-11T14:05:00.000Z', printed_at: '2026-09-11T14:05:00.000Z' };
+        const printPayload = { bill_print_state: priorPrintState, printable_bill: { ...claimAnswer, grand_total: 590 } };
+        expect(billReceiptIsReprint('open', printPayload.bill_print_state)).toBe(false);
+
+        // The second press: the state before THAT claim already says printed once.
+        const secondPrior = billPrintStateFields(claimAnswer);
+        expect(billReceiptIsReprint('open', secondPrior)).toBe(true);
+    });
+
+    it('no stamp (a legacy ?order= link, a failed read) means no banner', () => {
+        expect(billReceiptIsReprint('open', null)).toBe(false);
+        expect(billReceiptIsReprint('open', undefined)).toBe(false);
+    });
+
+    it('a SETTLED document is not marked off a stamp that describes the open seating', () => {
+        expect(billReceiptIsReprint('settled', payload(2))).toBe(false);
     });
 });

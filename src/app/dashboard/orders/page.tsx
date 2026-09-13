@@ -1828,6 +1828,9 @@ function OrdersDashboard() {
           // orders on this table yet". Cancel is locked instead (see prop).
           orders={displayOrders}
           cancelLocked={printScopeForTable(selectedTable?.name ?? selectedTableName).retiresTable}
+          // R2 item 1 — the same gate as the grid's 6.5 Bill menu: every session
+          // except a scoped waiter, whose bill operations are hidden there too.
+          canEditCustomer={!isWaiterOnly}
           onAddOrder={() => { setIsAddDialogOpen(true); }}
           printControl={previewPrintControl}
           onChanged={() => { void refreshOrders(); }}
