@@ -36,7 +36,6 @@
 
 import { useCallback, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
     Dialog,
@@ -66,7 +65,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
-import { Users, PlusCircle, MoreVertical, Trash2, GripVertical, Pencil, Link2, LayoutGrid, ShieldAlert } from "lucide-react";
+import { Users, PlusCircle, MoreVertical, Trash2, GripVertical, Pencil, LayoutGrid, ShieldAlert } from "lucide-react";
 import { type Table } from "../tables/data";
 import {
     SECTION_NAME_MAX,
@@ -83,7 +82,7 @@ import {
 import { requestBackend, updateTableSeating } from "@/lib/db";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/hooks/use-toast";
-import { useFloorTables, type CombinedInfo, type TableOccupancy } from "@/hooks/use-floor-tables";
+import { useFloorTables, type TableOccupancy } from "@/hooks/use-floor-tables";
 import { can } from "@/lib/session-scope";
 import type { CollisionDetection, DragEndEvent, DragStartEvent } from "@dnd-kit/core";
 import { DndContext, closestCenter, pointerWithin, useSensor, useSensors, PointerSensor, DragOverlay, useDroppable } from "@dnd-kit/core";
@@ -114,20 +113,25 @@ const collisionDetection: CollisionDetection = (args) => {
 
   Deliberately NOT a service card: no covers box, no Occupy, no Release, no Take
   Orders, and — C7/H8 — no Delete. It shows what a floor plan needs to show, which
-  is where the table is, how many it seats, and whether it is in use right now
-  (because that is what decides whether you can safely move or re-seat it).
+  is where the table is and how many it seats.
+
+  2.1 — "MAKE SURE WHAT IS SEEN IN TABLES IS NOT SHOWN IN THE FLOOR PLAN." This
+  card used to carry the live floor as well: the In use / Reserved / Free badge,
+  the red and blue occupancy tints the Tables screen paints (2.2), the clubbed-
+  booking badge with the guest's name and time, and a "party is seated" note.
+  That is the Tables screen, drawn a second time on the layout editor. It is all
+  gone: the props are not taken, so it cannot creep back through a caller. The
+  one place this page still asks who is sitting where is the Delete dialog, which
+  refuses an occupied table before the server has to — a guard on the act, not
+  a view of the floor.
 */
 function PlanTable({
     table,
-    occupancy,
-    combined,
     canDrag,
     canEditSeating,
     onEdit,
 }: {
     table: Table;
-    occupancy: TableOccupancy | null;
-    combined?: CombinedInfo | null;
     canDrag: boolean;
     canEditSeating: boolean;
     onEdit: (table: Table) => void;
@@ -142,16 +146,15 @@ function PlanTable({
         transition,
     };
 
-    const isOccupied = Boolean(occupancy?.is_occupied);
-    const isReserved = !isOccupied && (table.status === "Reserved" || table.status === "Booked");
-
     return (
         <Card
             ref={setNodeRef}
             style={style}
             className={cn(
                 "transition-all touch-none min-w-0",
-                isOccupied ? "bg-red-950/40 border-red-900" : isReserved ? "bg-blue-950/30 border-blue-800" : "bg-slate-800/50 border-slate-700",
+                // One neutral surface for every table: occupancy colour is the
+                // Tables screen's language (2.2), not the layout editor's.
+                "bg-slate-800/50 border-slate-700",
                 isDragging ? "opacity-50 shadow-2xl z-10" : "hover:shadow-lg hover:border-slate-600",
             )}
         >
@@ -189,44 +192,12 @@ function PlanTable({
                 ) : null}
             </CardHeader>
             <CardContent className="p-3 pt-0">
-                <div className="space-y-2">
-                    <div className="flex flex-wrap items-center gap-2">
-                        <Badge
-                            variant={isOccupied ? "destructive" : "default"}
-                            className={cn(
-                                "text-[10px] sm:text-xs",
-                                isOccupied && "bg-red-600 text-white",
-                                !isOccupied && isReserved && "bg-blue-600 text-white",
-                            )}
-                        >
-                            {isOccupied ? "In use" : isReserved ? "Reserved" : "Free"}
-                        </Badge>
-                        {combined ? (
-                            <Badge
-                                variant="outline"
-                                className="text-[10px] sm:text-xs border-amber-600 text-amber-400"
-                                title={`Clubbed with ${combined.partners.join(", ")} for ${combined.customer} at ${combined.time}`}
-                            >
-                                <Link2 className="mr-1 h-3 w-3" />
-                                + {combined.partners.join(" + ")}
-                            </Badge>
-                        ) : null}
-                    </div>
-                    <div className="flex items-center text-muted-foreground text-xs">
-                        <Users className="h-3 w-3 mr-1" />
-                        <span>
-                            Seats: {table.capacity}
-                            {table.max_capacity > table.capacity ? ` · max ${String(table.max_capacity)}` : ""}
-                        </span>
-                    </div>
-                    {isOccupied ? (
-                        // Said here rather than discovered at the drop: the seating and
-                        // delete routes both refuse an occupied table, and finding that
-                        // out from a red toast mid-drag is not a design.
-                        <p className="text-[10px] leading-snug text-red-300/90">
-                            A party is seated — release it from Tables before re-seating or deleting it.
-                        </p>
-                    ) : null}
+                <div className="flex items-center text-muted-foreground text-xs">
+                    <Users className="h-3 w-3 mr-1" />
+                    <span>
+                        Seats: {table.capacity}
+                        {table.max_capacity > table.capacity ? ` · max ${String(table.max_capacity)}` : ""}
+                    </span>
                 </div>
             </CardContent>
         </Card>
@@ -425,7 +396,6 @@ export default function FloorPlanPage() {
     const {
         tables: tablesData,
         occupancyByName,
-        combinedByName,
         serverZones,
         layout,
         commitLayout,
@@ -1081,8 +1051,6 @@ export default function FloorPlanPage() {
                                                             <PlanTable
                                                                 key={table.id}
                                                                 table={table}
-                                                                occupancy={occupancyByName[table.name.toLowerCase()] ?? null}
-                                                                combined={combinedByName[table.name.toLowerCase()] ?? null}
                                                                 canDrag={canEditLayout}
                                                                 canEditSeating={canEditLayout}
                                                                 onEdit={openEditTable}
@@ -1270,8 +1238,6 @@ export default function FloorPlanPage() {
                 {activeTable ? (
                     <PlanTable
                         table={activeTable}
-                        occupancy={occupancyByName[activeTable.name.toLowerCase()] ?? null}
-                        combined={combinedByName[activeTable.name.toLowerCase()] ?? null}
                         canDrag={false}
                         canEditSeating={false}
                         onEdit={() => { /* the drag ghost is not interactive */ }}
