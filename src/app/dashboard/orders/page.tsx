@@ -210,6 +210,9 @@ export interface Order {
     device-remembered answer bill-print-state.ts exists to keep out.
   */
   bill_print_state?: BillPrintState | null;
+  /** The server's PRICED bill from the print claim. Preferred by the print page
+   *  over its own /bill-for-table read, which C4 redacts for a waiter. */
+  printable_bill?: Record<string, unknown> | null;
   // Order channel: dine_in (default) / takeaway / delivery / swiggy / zomato.
   order_type?: string | null;
   taken_by_employee_id?: string | null;
@@ -1026,6 +1029,10 @@ function OrdersDashboard() {
       row when that read is unavailable. Never a client-side "have I printed
       this before" flag; see bill-print-state.ts's header for what that costs.
     */
+    // The server's PRICED bill, captured from the claim. See db.ts claimBillPrint:
+    // a waiter's own /bill-for-table read is redacted, so the print page needs
+    // this or it has no amounts to put on the guest's receipt.
+    let printableBill: Record<string, unknown> | null = null;
     let priorPrintState: BillPrintState | null =
       billPrintByTable.get(tableName.toLowerCase()) ?? null;
     if (restaurantId && tableName) {
@@ -1055,6 +1062,7 @@ function OrdersDashboard() {
         return;
       }
       if (claim.outcome === "claimed") {
+        printableBill = claim.printableBill;
         // The ledger moved, so the floor this page is painting is now stale for
         // every waiter looking at it — including this one, whose Print Bill
         // button must disappear now and not in twenty seconds' time.
@@ -1084,6 +1092,10 @@ function OrdersDashboard() {
         // spellings they arrived in, so the print page reads the SERVER's answer
         // rather than deciding for itself whether this is a reprint.
         bill_print_state: priorPrintState,
+        // Carried across verbatim, like the print state above. The print page
+        // prefers it over its own /bill-for-table read, which for a waiter comes
+        // back with every amount removed.
+        printable_bill: printableBill,
       });
       const url = `/dashboard/orders/print?orderKey=${encodeURIComponent(storageKey)}`;
       if (printWindow) { printWindow.location.href = url; } else { window.open(url, '_blank'); }

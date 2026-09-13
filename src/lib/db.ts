@@ -1606,7 +1606,10 @@ export const releaseTable = async (restaurantId: string, tableName: string): Pro
 
 /** What POST /print/bill/claim answered. `unavailable` is not a refusal — see below. */
 export type BillPrintClaimResult =
-    | { outcome: 'claimed'; state: BillPrintState | null }
+    // `printableBill` is the SERVER'S PRICED BILL for this seating. A waiter's own
+    // read of /bill-for-table is redacted by C4, so without this the print page has
+    // no amounts and refuses — which is how no waiter on the web could ever print.
+    | { outcome: 'claimed'; state: BillPrintState | null; printableBill: Record<string, unknown> | null }
     | { outcome: 'unavailable'; reason: string }
     | { outcome: 'refused'; status: number; message: string; reprintNeedsSenior: boolean; state: BillPrintState | null };
 
@@ -1679,7 +1682,18 @@ export const claimBillPrint = async (
     try { body = text.trim() ? JSON.parse(text) : null; } catch { body = null; }
 
     if (response.ok) {
-        return { outcome: 'claimed', state: billPrintStateFields(body) };
+        const printable = (body as { printable_bill?: unknown } | null)?.printable_bill;
+        return {
+            outcome: 'claimed',
+            state: billPrintStateFields(body),
+            // Only an object is a bill. A backend older than this change sends
+            // nothing, which lands as null and the print page falls back to its
+            // own read exactly as before — correct for a senior, and for a waiter
+            // no worse than the refusal they already got.
+            printableBill: printable && typeof printable === 'object' && !Array.isArray(printable)
+                ? (printable as Record<string, unknown>)
+                : null,
+        };
     }
 
     const refusal = billPrintRefusal(body);
