@@ -5,7 +5,7 @@ import QRCode from 'qrcode';
 import { useSearchParams } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
 import type { BillPrintSettings, RestaurantProfile} from '@/lib/db';
-import { getBillPrintSettings, getRestaurantProfile, getRestaurantLogo, getBillByOrder, getBillForTable, getClosedBill, requestBackend } from '@/lib/db';
+import { getBillLogo, getBillPrintSettings, getRestaurantProfile, getRestaurantLogo, getBillByOrder, getBillForTable, getClosedBill, requestBackend } from '@/lib/db';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import Image from 'next/image';
@@ -496,7 +496,11 @@ function PrintPageContents() {
                 if (restaurantId) {
                         const prof = await getRestaurantProfile(restaurantId, user?.employeeId ?? '').catch(() => null);
                         setProfile(prof ?? null);
-                        const logo = await getRestaurantLogo(restaurantId).catch(() => null);
+                        // 5.1 — the logo the roll prints (bill SVG first, fitted to
+                        // the paper), falling back to the branding logo on a
+                        // backend that has no /restaurant/logo/bill yet.
+                        const logo = (await getBillLogo(restaurantId).catch(() => null))
+                            ?? (await getRestaurantLogo(restaurantId).catch(() => null));
                         setLogoBase64(logo ?? null);
                         // Legal entity / GSTIN / the tenant's QR sentence. A
                         // failure here must not stop the bill printing — the
@@ -705,7 +709,12 @@ function PrintPageContents() {
                 }
             `}</style>
             
-            <Card className="mx-auto w-[420px] max-w-full shadow-none border-black receipt-card">
+            {/* 5.1 — PAPER, WHATEVER THE DASHBOARD THEME. The Card primitive paints
+                bg-card / text-card-foreground, which under the default dark theme is
+                a near-black card with near-white ink — and a browser prints no
+                background, so the name came out white-on-white and the address and
+                GSTIN in pale grey. The receipt is forced to black ink on white. */}
+            <Card className="mx-auto w-[420px] max-w-full shadow-none border-black receipt-card bg-white text-black">
                 <div className="mb-3 no-print">
                     <p className="mb-2 text-left text-xs text-gray-500">Bill preview — review the receipt below, then click Print when you&apos;re ready. Nothing prints automatically.</p>
                     <div className="flex gap-2 justify-end">
@@ -798,16 +807,21 @@ function PrintPageContents() {
                     </div>
                 ) : null}
                 <CardHeader className="text-center border-b border-black pb-4">
+                    {/* 5.1 — THE LOGO, AT A SIZE THAT READS. It was a 64px box, so a
+                        wordmark (the usual restaurant logo is ~4:1) drew about 16px
+                        tall. Now it takes up to 80% of the slip's width and 7rem of
+                        height, like the logo across the top of the roll. A tenant
+                        with no logo gets no logo line: the old "Loading Logo ..."
+                        placeholder never went away for them, and printed. */}
                     {logoBase64 ? (
-                        <Image src={`data:image/png;base64,${logoBase64}`} alt="logo" className="mx-auto h-16 object-contain" width={64} height={64} />
-                    ) : (
-                        <p> Loading Logo ... </p>
-                    )}
-                    <CardTitle className="text-2xl font-bold">{profile?.outlet_name ?? 'Not found'}</CardTitle>
+                        <Image src={`data:image/png;base64,${logoBase64}`} alt="Restaurant logo" className="mx-auto h-auto max-h-28 w-auto max-w-[80%] object-contain" width={576} height={240} unoptimized />
+                    ) : null}
+                    <CardTitle className="text-2xl font-bold text-black">{profile?.outlet_name ?? 'Not found'}</CardTitle>
                     {/* Legal entity, address lines, GSTIN — each rendered only
                         when the tenant has one, so a restaurant without them
-                        gets a clean receipt instead of empty labels. */}
-                    <CardDescription className="text-sm">
+                        gets a clean receipt instead of empty labels. Black ink,
+                        not the muted description grey (5.1: clearly visible). */}
+                    <CardDescription className="text-sm leading-snug text-black">
                         {billHeaderLines(profile, billPrint).map((l, i) => (
                             <span key={i} className="block">{l}</span>
                         ))}

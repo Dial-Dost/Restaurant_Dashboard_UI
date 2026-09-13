@@ -2574,6 +2574,20 @@ export const getRestaurantLogo = async (restaurantId: string): Promise<string | 
     try { const data = await response.json(); return data?.logo_base64 ?? null; } catch { return null; }
 };
 
+// 5.1 — the logo the BILL prints, not the branding logo. The thermal renderer
+// prefers the tenant's SVG bill logo and fits + thresholds it to the roll; this
+// is a PNG of exactly that raster (GET /restaurant/logo/bill), so the print
+// preview shows the paper's own logo. null when the tenant has none, or on a
+// backend that predates the route — callers fall back to getRestaurantLogo.
+export const getBillLogo = async (restaurantId: string): Promise<string | null> => {
+    const response = await backendCall('/restaurant/logo/bill', restaurantId, { method: 'GET' });
+    if (!response?.ok) {return null;}
+    try {
+        const data = (await response.json()) as { logo_base64?: unknown } | null;
+        return typeof data?.logo_base64 === 'string' && data.logo_base64 ? data.logo_base64 : null;
+    } catch { return null; }
+};
+
 export const getOutletDefaultTax = async (restaurantId: string): Promise<Record<string, number> | null> => {
     const response = await backendCall('/outlets/default-tax', restaurantId, { method: 'GET' });
     if (!response?.ok) {return null;}
