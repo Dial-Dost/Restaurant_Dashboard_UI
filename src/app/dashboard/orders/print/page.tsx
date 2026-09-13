@@ -71,6 +71,9 @@ interface Order {
     state the bill was in when the operator pressed the button.
   */
   bill_print_state?: BillPrintState | null;
+  /** The server's PRICED bill from the print claim. Preferred by the print page
+   *  over its own /bill-for-table read, which C4 redacts for a waiter. */
+  printable_bill?: Record<string, unknown> | null;
 }
 
 // --- Printed-bill header identity -------------------------------------------
@@ -536,8 +539,30 @@ function PrintPageContents() {
                         // resolves an OPEN bill by id too (see resolvePrintedBill),
                         // and treating one as settled here would skip this fetch
                         // and leave the page with nothing to print.
+                        // THE CLAIM'S PRICED BILL FIRST, then this page's own read.
+                        //
+                        // Found clicking through as a waiter: that read goes out AS
+                        // THE SIGNED-IN USER, and C4 redacts it for a waiter — every
+                        // amount removed. `grand_total` then fails the Number.isFinite
+                        // gate in resolvePrintedBill and the page refuses with "No bill
+                        // is available", so no waiter could ever print, having already
+                        // spent their one attempt on the claim that brought them here.
+                        //
+                        // The claim returns the server's unredacted bill for exactly
+                        // this purpose. It is NOT trusted any more than the fetch was:
+                        // it goes through the same resolvePrintedBill, so it still has
+                        // to prove it contains this order (openBillOwnsOrder) before a
+                        // single figure off it reaches the paper. Same door, better key.
+                        //
+                        // Falls back to the read when absent — a backend older than
+                        // this change, or a senior's print, both of which the read
+                        // already served correctly.
+                        const claimed = parsed.printable_bill;
+                        const claimedBill = claimed && typeof claimed === 'object' && !Array.isArray(claimed)
+                            ? claimed
+                            : null;
                         const openResp = !settledResp?.closed_at && parsed.table
-                            ? await getBillForTable(restaurantId, String(parsed.table)).catch(() => null)
+                            ? (claimedBill ?? await getBillForTable(restaurantId, String(parsed.table)).catch(() => null))
                             : null;
                         setOpenBill(openResp ?? null);
 

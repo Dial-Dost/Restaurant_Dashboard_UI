@@ -263,7 +263,23 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
     // from. Deep-linking one of them elsewhere still bounces here, and the
     // floor-plan page is deliberately absent — its routes refuse a waiter, so
     // landing there would be a screen of controls that all fail.
-    const waiterAllowedPaths = new Set(['/dashboard/orders', '/dashboard/tables']);
+    //
+    // PLUS THE PRINT PAGE, and the bug its absence caused. This set is matched
+    // EXACTLY (`.has(pathname)`), so `/dashboard/orders/print` — which is not
+    // `/dashboard/orders` — was bounced for every waiter. On its own that was a
+    // print that silently did nothing. Together with C3 it was destructive: Print
+    // Bill claims the waiter's single print on the server FIRST, then opens this
+    // page, and the redirect below threw them back to Orders with no bill and
+    // their one attempt already spent. Only a manager could print the table
+    // after that. Found clicking through as a waiter; no unit test covered it.
+    //
+    // Named explicitly rather than switched to prefix matching like the branch
+    // further down. `/orders/print` is the only sub-route today, so prefix
+    // matching would work — and would also hand a waiter whatever
+    // `/dashboard/orders/<anything>` somebody adds next, a refunds screen
+    // included, without anyone deciding that. An allow-list should say what it
+    // allows.
+    const waiterAllowedPaths = new Set(['/dashboard/orders', '/dashboard/orders/print', '/dashboard/tables']);
     const roleAwareAllowedPaths = new Set([
       ...navItems.map((item) => item.href),
       ...(isAdmin ? ['/dashboard/settings'] : []),
