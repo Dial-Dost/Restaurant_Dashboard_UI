@@ -67,6 +67,14 @@ describe("reading today's modes off the headline", () => {
     it('shapes every mode, largest first, keeping the server share and refund', () => {
         const b = readHeadlineByMethod(headline())!;
         expect(b.modes.map((m) => m.method)).toEqual(['Upi', 'Cash', 'Card']);
+        // A server label wins over the id (the Overview shows what Accounting shows).
+        {
+            const h = headline();
+            const rows = (h.today_by_method as { method: string; label?: string }[]);
+            const i = rows.findIndex((r) => r.method === 'Upi');
+            rows[i] = { ...rows[i], label: 'UPI' };
+            expect(readHeadlineByMethod(h)!.modes.find((m) => m.method === 'Upi')?.label).toBe('UPI');
+        }
         // No label from the server: the id stands in for it (settlement-breakdown.ts).
         expect(b.modes[1]).toEqual({ method: 'Cash', label: 'Cash', bills: 6, amount: 8430.5, share_pct: 37.17, refund: 120, net_amount: 8310.5 });
         expect(modeSharePct(b.modes[0], b.total_amount)).toBe(48.5);
@@ -210,6 +218,15 @@ describe('the Overview card draws it', () => {
     it('reads the block through the shared helper, not off the raw payload', () => {
         expect(src).toMatch(/readHeadlineByMethod\(h\)/);
         expect(src).not.toMatch(/\.today_by_method/);
+    });
+
+    it('names each mode by the owner label, keyed and matched on the stored id', () => {
+        expect(src).toMatch(/title=\{m\.label\}/);
+        expect(src).toMatch(/\{m\.label\}/);
+        expect(src).not.toMatch(/title=\{m\.method\}/);
+        expect(src).not.toMatch(/^\s*\{m\.method\}\s*$/m);
+        expect(src).toMatch(/key=\{m\.method\}/);
+        expect(src).toMatch(/m\.method === UNALLOCATED_METHOD/);
     });
 
     it('renders it inside the loaded card, under the tiles', () => {

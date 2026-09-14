@@ -132,8 +132,10 @@ export function HeadlineStats({ rid }: { rid: string }) {
               <li key={m.method} className="min-w-0">
                 <div className="flex items-baseline justify-between gap-3">
                   <span className={`truncate text-sm font-medium ${unallocated ? "text-amber-600 dark:text-amber-400" : ""}`}
-                    title={m.method}>
-                    {m.method}
+                    title={m.label}>
+                    {/* The owner's name for the mode (Settings > Payments); rows
+                        still key and match Unallocated on the stored id. */}
+                    {m.label}
                   </span>
                   <span className="shrink-0 text-sm font-semibold tabular-nums">{money(m.amount)}</span>
                 </div>
