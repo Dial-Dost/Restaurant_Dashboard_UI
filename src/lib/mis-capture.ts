@@ -367,10 +367,12 @@ export const UNSPLITTABLE_TENDER_METHODS: readonly string[] = ['razorpay', 'spli
 export const isUnsplittableMethod = (method: string): boolean =>
     UNSPLITTABLE_TENDER_METHODS.includes(method.trim().toLowerCase());
 
-/** The methods a till offers. `Split` is the mirror's own word and is never one. */
-export const TENDER_METHODS: readonly string[] = [
-    'Cash', 'Card', 'UPI', 'Wallet', 'Bank Transfer', 'Voucher', 'Razorpay', 'Other',
-] as const;
+// The methods a till offers are the RESTAURANT'S OWN modes that are switched
+// on — tenderPaymentOptions in src/lib/payment-methods.ts, read from settings.
+// The fixed list that lived here offered Wallet, Bank Transfer, Voucher and
+// Other, every one of which RecordBillTenders refused, and left out Dineout,
+// Zomato, EasyDiner and District. `Split` is the mirror's own word and is never
+// one.
 
 /** One row of the settle form, as it is typed. Strings — an empty box is not 0. */
 export interface TenderDraft {

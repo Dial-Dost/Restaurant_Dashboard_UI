@@ -101,12 +101,13 @@ import {
     voidOrderWithReason,
     waiveServiceCharge,
 } from "@/lib/db"
+import { usePaymentMethods } from "@/hooks/use-payment-methods"
+import { paymentMethodLabel, tenderPaymentOptions } from "@/lib/payment-methods"
 import {
     MAX_BILL_TENDERS,
     NON_CHARGEABLE_KINDS,
     PERM_RECORD_PAYMENT,
     SERVICE_CHARGE_WAIVER_KINDS,
-    TENDER_METHODS,
     TIP_MODES,
     VOID_KINDS,
     VOID_STAGE_LABELS,
@@ -1099,6 +1100,10 @@ function TenderDialog({
 }: DialogShell & { order: CaptureOrder; money: (v: unknown) => string; toast: Toast }) {
     const [state, setState] = useState<BillTenderState | null>(null)
     const [loading, setLoading] = useState(true)
+    // The restaurant's own modes that are on (Settings > Payment modes). The id
+    // is what is recorded; the label is what the cashier reads.
+    const { methods: paymentMethods } = usePaymentMethods(restaurantId)
+    const tenderOptions = useMemo(() => tenderPaymentOptions(paymentMethods), [paymentMethods])
     const [rows, setRows] = useState<TenderDraft[]>([emptyTenderDraft()])
 
     const load = useCallback(() => {
@@ -1206,7 +1211,7 @@ function TenderDialog({
                                 {live.map((t) => (
                                     <div key={t.id} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-sm">
                                         <div className="min-w-0">
-                                            <span className="font-medium">{t.method}</span>
+                                            <span className="font-medium">{paymentMethodLabel(t.method, paymentMethods)}</span>
                                             <span className="ml-2 font-mono tabular-nums">{money(t.amount)}</span>
                                             {t.tip_amount > 0 ? (
                                                 <Badge variant="outline" className="ml-2 text-[10px]">
@@ -1236,16 +1241,16 @@ function TenderDialog({
                                             <Select value={r.method} onValueChange={(v) => { patch(i, { method: v }) }}>
                                                 <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
                                                 <SelectContent>
-                                                    {TENDER_METHODS.map((m) => (
+                                                    {tenderOptions.map((m) => (
                                                         <SelectItem
-                                                            key={m}
-                                                            value={m}
+                                                            key={m.value}
+                                                            value={m.value}
                                                             // Refused before it can be typed rather than after it is
                                                             // sent: this method settles a bill on its own, and a
                                                             // mixed set records fine and then cannot be settled.
-                                                            disabled={isUnsplittableMethod(m) && (live.length + rows.length) > 1}
+                                                            disabled={isUnsplittableMethod(m.value) && (live.length + rows.length) > 1}
                                                         >
-                                                            {m}
+                                                            {m.label}
                                                         </SelectItem>
                                                     ))}
                                                 </SelectContent>

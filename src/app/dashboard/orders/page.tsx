@@ -94,6 +94,15 @@ import {
 } from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/context/AuthContext";
+import { usePaymentMethods } from "@/hooks/use-payment-methods";
+import {
+  MAX_SPLIT_PARTS,
+  methodNeedsScreenshot,
+  nextSplitMethod,
+  paymentMethodLabel,
+  splitDefaultRows,
+  tillPaymentOptions,
+} from "@/lib/payment-methods";
 import {
   can,
   hasPermission,
@@ -314,18 +323,10 @@ const kotLabel = (o: Order): string => {
 };
 const CANCELLED_LOCK_REASON = "Cancelled orders are final — reverse from the Audit Log";
 
-const PAYMENT_METHOD_OPTIONS: PaymentMethod[] = [
-  "Swiggy",
-  "Dine Out",
-  "Zomato Pay",
-  "Eazydiner",
-  "Cash",
-  "Upi",
-  "Card",
-  "Online Transfer",
-];
-
-const PROOF_REQUIRED_METHODS = new Set<PaymentMethod>(["Swiggy", "Zomato Pay"]);
+// The payment modes offered here — and which of them need a screenshot — are
+// the restaurant's own (usePaymentMethods, src/lib/payment-methods.ts). The list
+// that used to live here offered "Swiggy" and "Online Transfer", which the server
+// always refused, and asked for a screenshot on the wrong modes.
 const MAX_PROOF_UPLOAD_BYTES = 400 * 1024;
 
 const normalizeProofPreviewUrl = (value?: string | null): string | null => {
@@ -506,6 +507,10 @@ function OrdersDashboard() {
   const searchParams = useSearchParams();
   const { currencySymbol } = useCurrency();
   const { user } = useAuth();
+  // The modes a bill may be settled with at this till: the owner's config, on
+  // and not the online gateway. Defaults until (and if) the read answers.
+  const { methods: paymentMethods } = usePaymentMethods(user?.restaurantUsername);
+  const tillOptions = useMemo(() => tillPaymentOptions(paymentMethods), [paymentMethods]);
   const { toast } = useToast();
   // Every instant on this screen renders in the restaurant's zone, not the browser's.
   const { timezone } = useTimezone();
@@ -1514,19 +1519,22 @@ function OrdersDashboard() {
       return;
     }
 
+    // Shown by the owner's label, sent by the mode's id; the screenshot rule is
+    // the config's, the same one the server enforces on this settle.
+    const methodName = paymentMethodLabel(paymentMethod, paymentMethods);
     let proofScreenshotUrl: string | null = null;
-    if (PROOF_REQUIRED_METHODS.has(paymentMethod)) {
-      alert(`Please upload the payment screenshot for ${paymentMethod}.`);
+    if (methodNeedsScreenshot(paymentMethod, paymentMethods)) {
+      alert(`Please upload the payment screenshot for ${methodName}.`);
       proofScreenshotUrl = await pickPaymentProofScreenshot();
       if (!proofScreenshotUrl) {
-        alert(`Payment screenshot is required for ${paymentMethod}.`);
+        alert(`Payment screenshot is required for ${methodName}.`);
         return;
       }
     }
 
     const payable = await fetchTablePayable(order.table);
     const confirmed = window.confirm(
-      `${payableLine(payable)}Confirm payment by ${paymentMethod}? This sends the bill for admin approval.`,
+      `${payableLine(payable)}Confirm payment by ${methodName}? This sends the bill for admin approval.`,
     );
     if (!confirmed) {return;}
 
@@ -1566,7 +1574,7 @@ function OrdersDashboard() {
       return;
     }
 
-    if (PROOF_REQUIRED_METHODS.has(order.payment_method ?? "Cash")) {
+    if (methodNeedsScreenshot(order.payment_method ?? "Cash", paymentMethods)) {
       const proofUrl = normalizeProofPreviewUrl(order.payment_proof_screenshot_url);
       if (!proofUrl) {
         alert("Payment screenshot is missing for this order.");
@@ -1686,10 +1694,7 @@ function OrdersDashboard() {
       if (Number.isFinite(g) && g > 0) {total = Math.round(g * 100) / 100;}
     } catch { /* leave null — user fills amounts manually */ }
     setSplitPayTotal(total);
-    setSplitRows([
-      { method: "Cash", amount: total != null ? total.toFixed(2) : "" },
-      { method: "Card", amount: "0.00" },
-    ]);
+    setSplitRows(splitDefaultRows(tillOptions, total));
     setSplitPayOrder(order);
   };
 
@@ -2438,16 +2443,16 @@ function OrdersDashboard() {
                             Confirm Payment (Waiter)
                           </DropdownMenuSubTrigger>
                           <DropdownMenuSubContent>
-                            {PAYMENT_METHOD_OPTIONS.map((method) => (
+                            {tillOptions.map((option) => (
                               <DropdownMenuItem
-                                key={method}
+                                key={option.value}
                                 onClick={() => {
-                                  void handleWaiterConfirmPayment(order, method);
+                                  void handleWaiterConfirmPayment(order, option.value);
                                 }}
                                 disabled={order.status !== "Bill Verification"}
                                 className="data-[disabled]:opacity-50 data-[disabled]:cursor-not-allowed"
                               >
-                                {method}
+                                {option.label}
                               </DropdownMenuItem>
                             ))}
                             <DropdownMenuSeparator />
@@ -2650,8 +2655,8 @@ function OrdersDashboard() {
                 <Select value={row.method} onValueChange={(v) => { updateSplitRow(idx, { method: v }); }}>
                   <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {["Cash", "Upi", "Card"].map((m) => (
-                      <SelectItem key={m} value={m}>{m}</SelectItem>
+                    {tillOptions.map((o) => (
+                      <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
@@ -2669,8 +2674,9 @@ function OrdersDashboard() {
                 ) : null}
               </div>
             ))}
-            {splitRows.length < 4 ? (
-              <Button variant="outline" size="sm" onClick={() => { setSplitRows((rows) => [...rows, { method: "Upi", amount: "0.00" }]); }}>
+            {/* Six, the server's own ceiling for split parts (was four here). */}
+            {splitRows.length < MAX_SPLIT_PARTS ? (
+              <Button variant="outline" size="sm" onClick={() => { setSplitRows((rows) => [...rows, { method: nextSplitMethod(tillOptions, rows), amount: "0.00" }]); }}>
                 Add payment mode
               </Button>
             ) : null}
