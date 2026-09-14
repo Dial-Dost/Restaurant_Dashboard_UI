@@ -4200,7 +4200,8 @@ export interface SalesReport {
     from: string; to: string;
     total_sales: number; total_tax: number; total_refund: number; net_sales: number; bill_count: number;
     by_day: { date: string; sales: number; tax: number; refund: number; bills: number }[];
-    by_method: { method: string; sales: number; bills: number }[];
+    // `label` is the owner's name for the mode (display only; rows group by `method`).
+    by_method: { method: string; label?: string; sales: number; bills: number }[];
 }
 export interface GstReport {
     from: string; to: string; total_taxable: number; total_tax: number;
@@ -4282,6 +4283,8 @@ export const reprintSettledBill = async (
 // --- Bank / settlement reconciliation -----------------------------------------
 export interface ReconciliationRow {
     method: string;
+    /** The owner's name for the mode. Display only — saves key on `method`. */
+    label?: string;
     expected: number;
     actual: number | null;
     status: 'matched' | 'variance' | null;

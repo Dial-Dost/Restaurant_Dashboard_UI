@@ -101,6 +101,7 @@ import {
   nextSplitMethod,
   paymentMethodLabel,
   splitDefaultRows,
+  splitScreenshotLabels,
   tillPaymentOptions,
 } from "@/lib/payment-methods";
 import {
@@ -1720,9 +1721,21 @@ function OrdersDashboard() {
       toast({ title: "A split payment needs at least two parts", variant: "destructive" });
       return;
     }
+    // A part in a mode that needs a screenshot needs it here too — the same rule
+    // as a single-mode settle, and the one the server enforces on the split.
+    const needShot = splitScreenshotLabels(splits, paymentMethods);
+    let splitProofUrl: string | null = null;
+    if (needShot.length > 0) {
+      alert(`Please upload the payment screenshot for ${needShot.join(", ")}.`);
+      splitProofUrl = await pickPaymentProofScreenshot();
+      if (!splitProofUrl) {
+        toast({ title: "Payment screenshot required", description: `A screenshot is required for ${needShot.join(", ")}.`, variant: "destructive" });
+        return;
+      }
+    }
     setSplitBusy(true);
     try {
-      await confirmBillPaymentByWaiter(user.restaurantUsername, user.employeeId, splitPayOrder.id, "Split", null, splits);
+      await confirmBillPaymentByWaiter(user.restaurantUsername, user.employeeId, splitPayOrder.id, "Split", splitProofUrl, splits);
       toast({ title: "Split payment recorded", description: "Awaiting admin approval." });
       setSplitPayOrder(null);
       await refreshOrders();

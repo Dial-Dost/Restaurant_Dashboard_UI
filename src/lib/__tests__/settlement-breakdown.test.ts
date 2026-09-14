@@ -40,6 +40,18 @@ describe("reading the settlement report", () => {
     expect(b.modes.map((m) => m.method)).toEqual(["Cash", "Card"]);
   });
 
+  it("names each mode by the owner's label, keeping the id it groups by", () => {
+    // A renamed or owner-added mode must read on this card the way the till's
+    // pill reads it; a server that sent no label (older backend) shows the id.
+    const b = readSettlementBreakdown(payload({
+      rows: [
+        { method: "Dineout", label: "Swiggy Dineout", bills: 2, amount: 900, share_pct: 90, refund: 0, net_amount: 900 },
+        { method: "Cash", bills: 1, amount: 100, share_pct: 10, refund: 0, net_amount: 100 },
+      ],
+    }))!;
+    expect(b.modes.map((m) => [m.method, m.label])).toEqual([["Dineout", "Swiggy Dineout"], ["Cash", "Cash"]]);
+  });
+
   it("takes the whole-window figures from TOTALS, not from the payload root", () => {
     // The trap this pins: `split_bills` and `unallocated` live inside `totals`.
     // Reading them off the root yields a silent zero on both, and a permanent
@@ -86,16 +98,16 @@ describe("reading the settlement report", () => {
 
 describe("a mode's share", () => {
   it("uses the server's figure when there is one", () => {
-    expect(modeSharePct({ method: "Cash", bills: 1, amount: 14500, refund: 0, net_amount: 14500, share_pct: 58 }, 25000)).toBe(58);
+    expect(modeSharePct({ method: "Cash", label: "Cash", bills: 1, amount: 14500, refund: 0, net_amount: 14500, share_pct: 58 }, 25000)).toBe(58);
   });
 
   it("computes it when the server did not", () => {
-    expect(modeSharePct({ method: "Cash", bills: 1, amount: 12500, refund: 0, net_amount: 12500, share_pct: null }, 25000)).toBe(50);
+    expect(modeSharePct({ method: "Cash", label: "Cash", bills: 1, amount: 12500, refund: 0, net_amount: 12500, share_pct: null }, 25000)).toBe(50);
   });
 
   it("is NULL, never zero, when there is nothing to divide by", () => {
     // A card printing "0%" beside ₹14,500 of cash is worse than printing nothing.
-    expect(modeSharePct({ method: "Cash", bills: 1, amount: 14500, refund: 0, net_amount: 14500, share_pct: null }, 0)).toBeNull();
+    expect(modeSharePct({ method: "Cash", label: "Cash", bills: 1, amount: 14500, refund: 0, net_amount: 14500, share_pct: null }, 0)).toBeNull();
   });
 });
 

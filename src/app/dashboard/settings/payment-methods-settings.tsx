@@ -24,6 +24,13 @@
 //
 // SAVES THE WHOLE LIST, and the server merges: a mode missing from a save — an
 // older app that has never heard of it — is kept, never erased.
+//
+// EVERY BUTTON HERE IS type="button". This card is mounted INSIDE Settings'
+// restaurant-profile <form>, and a <button> with no type in a form submits it:
+// "Save changes", "Add payment mode" and "Try again" each also fired the profile
+// save (a second, unrelated write, and an "Access denied" toast for a settings
+// holder who is not an admin), and Enter in the new-mode name saved the profile
+// instead of adding the mode.
 
 import { useCallback, useEffect, useState, type ReactElement } from "react"
 import { Loader2, Plus, Save } from "lucide-react"
@@ -127,7 +134,7 @@ export function PaymentMethodsCard({ restaurantId, canEdit }: { restaurantId: st
                 {failed ? (
                     <div className="flex items-center justify-between gap-3 rounded-lg border p-4 text-sm">
                         <span className="text-muted-foreground">Couldn&apos;t load this restaurant&apos;s payment modes.</span>
-                        <Button variant="outline" size="sm" onClick={load}>Try again</Button>
+                        <Button type="button" variant="outline" size="sm" onClick={load}>Try again</Button>
                     </div>
                 ) : methods === null ? (
                     <p className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Loading…</p>
@@ -191,6 +198,7 @@ export function PaymentMethodsCard({ restaurantId, canEdit }: { restaurantId: st
 
                         <div className="flex justify-end">
                             <Button
+                                type="button"
                                 size="sm" className="gap-1"
                                 disabled={!canEdit || busy || !dirty || labelRefusals.length > 0}
                                 onClick={() => { void save(list, "Every till picks up the change on its next load.") }}
@@ -208,6 +216,12 @@ export function PaymentMethodsCard({ restaurantId, canEdit }: { restaurantId: st
                                 maxLength={PAYMENT_MODE_ID_MAX}
                                 disabled={!canEdit || busy}
                                 onChange={(e) => { setName(e.target.value) }}
+                                onKeyDown={(e) => {
+                                    // Enter adds the mode — it must not submit the surrounding profile form.
+                                    if (e.key !== "Enter") {return}
+                                    e.preventDefault()
+                                    if (canEdit && !busy && name.trim() && addRefusal === null && !dirty) {void add()}
+                                }}
                             />
                             {addRefusal ? <p className="text-xs text-red-600">{addRefusal}</p> : null}
                             <div className="flex flex-wrap gap-4 text-sm">
@@ -227,6 +241,7 @@ export function PaymentMethodsCard({ restaurantId, canEdit }: { restaurantId: st
                             </p>
                             <div className="flex justify-end">
                                 <Button
+                                    type="button"
                                     size="sm" variant="outline" className="gap-1"
                                     disabled={!canEdit || busy || !name.trim() || addRefusal !== null || dirty}
                                     title={dirty ? "Save or reload your other changes first" : undefined}

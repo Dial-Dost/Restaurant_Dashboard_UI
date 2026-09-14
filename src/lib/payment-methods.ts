@@ -137,11 +137,53 @@ export const paymentMethodLabel = (method: string | null | undefined, config: re
     return findMethod(s, config)?.label ?? s;
 };
 
+/**
+ * What a REPORT row calls its mode: the owner's label the server attached
+ * (Settings > Payments), else the stored id. Reports group — and reconciliation
+ * saves key — on `method`; this is display only, so a renamed mode reads the
+ * same in Accounting as on the till's pill.
+ */
+export const reportModeName = (row: { method: string; label?: string | null }): string => {
+    const label = typeof row.label === 'string' ? row.label.trim() : '';
+    return label || row.method;
+};
+
 // --- naming a new mode (courtesy copy of the server's rules) -----------------
 
-const COMP_KEYS = new Set(['complimentary', 'comp', 'nc', 'non chargeable', 'non-chargeable', 'staff meal'].map(paymentNameKey));
-const CREDIT_KEYS = new Set(['credit', 'on account', 'due', 'pay later'].map(paymentNameKey));
+const NOT_MONEY_COMP = ['complimentary', 'comp', 'comps', 'nc', 'foc', 'non chargeable', 'nonchargeable', 'staff meal', 'staff meals'];
+const NOT_MONEY_CREDIT = ['credit', 'on account', 'due', 'pay later', 'paylater'];
+const COMP_KEYS = new Set(NOT_MONEY_COMP.map(paymentNameKey));
+const CREDIT_KEYS = new Set(NOT_MONEY_CREDIT.map(paymentNameKey));
 const BUCKET_KEYS = new Set(['split', 'other', 'unallocated'].map(paymentNameKey));
+
+const nameWords = (raw: string): string[] => raw.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+const phraseAt = (words: readonly string[], phrase: string, i: number): boolean =>
+    nameWords(phrase).every((w, j) => words[i + j] === w);
+
+/**
+ * Whether a name says it is NOT money collected — the server's notMoneyKind,
+ * word for word. Whole words anywhere in the name ("Staff Meals", "Due Payment",
+ * "Credit/Due" are refused, "Company Card" and "Duet Pay" are not), plus the
+ * whole-name key ("N/C"). "credit" followed later by "card" is a credit CARD,
+ * which is money the acquirer pays out.
+ */
+export const notMoneyKind = (name: string): 'comp' | 'credit' | null => {
+    const key = paymentNameKey(name);
+    if (COMP_KEYS.has(key)) {return 'comp';}
+    if (CREDIT_KEYS.has(key)) {return 'credit';}
+    const words = nameWords(name);
+    for (let i = 0; i < words.length; i++) {
+        if (NOT_MONEY_COMP.some((p) => phraseAt(words, p, i))) {return 'comp';}
+    }
+    for (let i = 0; i < words.length; i++) {
+        for (const p of NOT_MONEY_CREDIT) {
+            if (!phraseAt(words, p, i)) {continue;}
+            if (p === 'credit' && words.slice(i + 1).some((w) => w === 'card' || w === 'cards')) {continue;}
+            return 'credit';
+        }
+    }
+    return null;
+};
 const ID_CHARSET = /^[A-Za-z0-9 &+.\-/()']+$/;
 
 /** Collapse whitespace and trim — the spelling a name is stored in. */
@@ -156,10 +198,11 @@ export const newPaymentModeRefusal = (rawName: string, config: readonly PaymentM
     if (!name) {return 'Give the payment mode a name.';}
     const key = paymentNameKey(name);
     if (!key) {return `"${name}" needs at least one letter or number.`;}
-    if (COMP_KEYS.has(key)) {
+    const notMoney = notMoneyKind(name);
+    if (notMoney === 'comp') {
         return `"${name}" can't be a payment mode: a free meal is not money collected, and settling it as paid books it as sales and tax. Use "Mark as non-chargeable" on the bill instead.`;
     }
-    if (CREDIT_KEYS.has(key)) {return `"${name}" can't be a payment mode: it would close the bill as paid while no money has arrived.`;}
+    if (notMoney === 'credit') {return `"${name}" can't be a payment mode: it would close the bill as paid while no money has arrived.`;}
     if (BUCKET_KEYS.has(key)) {return `"${name}" can't be a payment mode: reports already use that name for their own rows.`;}
     const builtin = BUILTIN_ALIAS_KEYS.get(key);
     if (builtin) {
@@ -189,8 +232,9 @@ export const paymentLabelRefusal = (rawLabel: string, id: string, config: readon
     if (!label) {return null;} // empty = back to the default name
     if (label.length > PAYMENT_MODE_LABEL_MAX) {return `A label can be at most ${String(PAYMENT_MODE_LABEL_MAX)} characters.`;}
     const key = paymentNameKey(label);
-    if (COMP_KEYS.has(key)) {return `"${label}" can't be used as a label: a free meal is not money collected — use "Mark as non-chargeable" on the bill instead.`;}
-    if (CREDIT_KEYS.has(key)) {return `"${label}" can't be used as a label: it would close the bill as paid while no money has arrived.`;}
+    const notMoney = notMoneyKind(label);
+    if (notMoney === 'comp') {return `"${label}" can't be used as a label: a free meal is not money collected — use "Mark as non-chargeable" on the bill instead.`;}
+    if (notMoney === 'credit') {return `"${label}" can't be used as a label: it would close the bill as paid while no money has arrived.`;}
     if (BUCKET_KEYS.has(key)) {return `"${label}" can't be used as a label: reports already use that name for their own rows.`;}
     const aliasOf = BUILTIN_ALIAS_KEYS.get(key);
     if (aliasOf && paymentNameKey(aliasOf) !== paymentNameKey(id)) {return `"${label}" can't label ${id}: that is the name of the built-in ${aliasOf} mode.`;}
@@ -232,6 +276,28 @@ export const splitDefaultRows = (
         { method: first, amount: total !== null ? total.toFixed(2) : '' },
         { method: second, amount: '0.00' },
     ];
+};
+
+/**
+ * The labels of the split rows whose mode needs a payment screenshot, each once,
+ * in row order — empty when none does. A split is stored as 'Split', which needs
+ * no screenshot of its own, so the rule lives on its parts: without this the
+ * dialog could take Zomato money with no proof just by splitting the bill. The
+ * server refuses such a split too (ConfirmBillPaymentByWaiter); asking here is
+ * what lets the cashier attach the screenshot instead of reading a refusal.
+ */
+export const splitScreenshotLabels = (
+    rows: readonly { method: string; amount?: string | number }[],
+    config: readonly PaymentMethodConfig[],
+): string[] => {
+    const labels: string[] = [];
+    for (const r of rows) {
+        if (r.amount !== undefined && !(Number(r.amount) > 0)) {continue;}
+        if (!methodNeedsScreenshot(r.method, config)) {continue;}
+        const label = paymentMethodLabel(r.method, config);
+        if (!labels.includes(label)) {labels.push(label);}
+    }
+    return labels;
 };
 
 /** The method a newly added split row starts on: the first mode not yet used, else the first mode. */

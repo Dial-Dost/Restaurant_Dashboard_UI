@@ -21,10 +21,13 @@ import {
     methodNeedsScreenshot,
     newPaymentModeRefusal,
     nextSplitMethod,
+    notMoneyKind,
     paymentLabelRefusal,
     paymentMethodLabel,
     readPaymentMethods,
+    reportModeName,
     splitDefaultRows,
+    splitScreenshotLabels,
     tenderPaymentOptions,
     tillPaymentOptions,
     withCustomPaymentMode,
@@ -124,6 +127,29 @@ describe('the split dialog', () => {
     test('six parts, the server ceiling', () => {
         expect(MAX_SPLIT_PARTS).toBe(6);
     });
+
+    test('a part in a mode that needs a screenshot is named, so the dialog asks for one', () => {
+        const config = readPaymentMethods(SETTINGS_AFTER_ADD.payment_methods);
+        expect(splitScreenshotLabels([{ method: 'Cash', amount: '1.00' }, { method: 'Zomato', amount: '999.00' }], config)).toEqual(['Zomato']);
+        expect(splitScreenshotLabels([
+            { method: 'Swiggy Dineout', amount: 5 }, { method: 'zomato', amount: 3 }, { method: 'Zomato', amount: 2 },
+        ], config)).toEqual(['Swiggy (Dineout)', 'Zomato']);
+        expect(splitScreenshotLabels([{ method: 'Cash', amount: '1.00' }, { method: 'Upi', amount: '9.00' }], config)).toEqual([]);
+        // A row left at 0.00 is dropped before the split is sent, so it asks for nothing.
+        expect(splitScreenshotLabels([{ method: 'Cash', amount: '10.00' }, { method: 'Zomato', amount: '0.00' }], config)).toEqual([]);
+        // The owner's switch decides.
+        const off = readPaymentMethods(DEFAULT_PAYMENT_METHODS.map((m) => (m.id === 'Zomato' ? { ...m, requires_screenshot: false } : m)));
+        expect(splitScreenshotLabels([{ method: 'Cash', amount: 1 }, { method: 'Zomato', amount: 9 }], off)).toEqual([]);
+    });
+});
+
+describe('reports read the owner\'s label, and keep keying on the id', () => {
+    test('label when the server sent one, the stored id otherwise', () => {
+        expect(reportModeName({ method: 'Dineout', label: 'Swiggy Dineout' })).toBe('Swiggy Dineout');
+        expect(reportModeName({ method: 'Upi' })).toBe('Upi');
+        expect(reportModeName({ method: 'Other', label: '  ' })).toBe('Other');
+        expect(reportModeName({ method: 'Cash', label: null })).toBe('Cash');
+    });
 });
 
 describe('naming a new mode — the editor says what the server will say', () => {
@@ -134,6 +160,26 @@ describe('naming a new mode — the editor says what the server will say', () =>
     });
     test.each(['Credit', 'On account', 'Due', 'Pay later'])('%s would close a bill as paid with no money', (n) => {
         expect(newPaymentModeRefusal(n, config)).toMatch(/no money has arrived/);
+    });
+    // The same whole-word cases the server's suite pins (jest-tests/payment_methods.test.ts).
+    test.each(['Staff Meals', 'Complimentary Meal', 'Comps', 'FOC', 'Non Chargeable Bill', 'Guest (Comp)', 'Staff-Meal Friday', 'NonChargeable'])(
+        '%s is still a comp', (n) => {
+            expect(notMoneyKind(n)).toBe('comp');
+            expect(newPaymentModeRefusal(n, config)).toMatch(/Mark as non-chargeable/);
+        });
+    test.each(['On Credit', 'Due Payment', 'Credit/Due', 'Customer Credit', 'Pay Later - Regulars', 'PayLater', 'On Account (Corporate)'])(
+        '%s is still money that has not arrived', (n) => {
+            expect(notMoneyKind(n)).toBe('credit');
+            expect(newPaymentModeRefusal(n, config)).toMatch(/no money has arrived/);
+        });
+    test('whole words, not letters — and a credit CARD is money', () => {
+        for (const n of ['Credit Card', 'HDFC Credit/Debit Card', 'Credit Cards (Visa)', 'Company Card', 'Compass Pay', 'Duet Pay', 'NCB Bank', 'Focus Wallet', 'Staffing Co']) {
+            expect(notMoneyKind(n)).toBeNull();
+            expect(newPaymentModeRefusal(n, config)).toBeNull();
+        }
+        expect(notMoneyKind('Card Credit')).toBe('credit');
+        expect(paymentLabelRefusal('Staff Meals', 'Swiggy Dineout', config)).toMatch(/non-chargeable/);
+        expect(paymentLabelRefusal('Card on Credit', 'Card', config)).toMatch(/no money has arrived/);
     });
     test.each(['Split', 'Other', 'Unallocated'])('%s is a report row', (n) => {
         expect(newPaymentModeRefusal(n, config)).toMatch(/reports already use/);
@@ -208,6 +254,42 @@ describe('WIRED: the pickers read the config and keep no list of their own', () 
         expect(settings).toContain('<PaymentMethodsCard');
         expect(card).toContain('savePaymentMethods(restaurantId');
         expect(card).toContain('withCustomPaymentMode(');
+    });
+
+    test('the split dialog asks for the screenshot a part needs, and sends it', () => {
+        const start = orders.indexOf('const submitSplitPayment = async');
+        const body = orders.slice(start, orders.indexOf('const refreshOrders = async', start));
+        expect(body).toContain('splitScreenshotLabels(splits, paymentMethods)');
+        expect(body).toContain('pickPaymentProofScreenshot()');
+        expect(body).toContain('"Split", splitProofUrl, splits)');
+        expect(body).not.toContain('"Split", null, splits)');
+    });
+
+    test('Accounting and the settlement card show the label the server attached', () => {
+        const accounting = source('src/app/dashboard/accounting/page.tsx');
+        expect(accounting).toContain('{reportModeName(m)}');
+        expect(accounting).toContain('{reportModeName(r)}');
+        expect(accounting).not.toMatch(/font-medium">\{m\.method\}/);
+        expect(accounting).not.toMatch(/font-medium">\{r\.method\}/);
+        // …while the reconciliation save still keys on the id.
+        expect(accounting).toContain('void save(r.method)');
+        const card = source('src/app/dashboard/analytics/settlement-breakdown.tsx');
+        expect(card).toContain('{m.label}');
+        expect(db).toMatch(/by_method: \{ method: string; label\?: string; sales: number; bills: number \}\[\]/);
+    });
+
+    test('the Payment modes card never submits the profile form it sits inside', () => {
+        // It is mounted inside SettingsForm's <form>; a <button> with no type submits it.
+        expect(settings.indexOf('<PaymentMethodsCard')).toBeGreaterThan(settings.indexOf('<form'));
+        expect(settings.indexOf('<PaymentMethodsCard')).toBeLessThan(settings.indexOf('</form>'));
+        const buttons = card.match(/<Button\b[^>]*>/g) ?? [];
+        expect(buttons.length).toBeGreaterThanOrEqual(3);
+        for (const b of buttons) {expect(b).toContain('type="button"');}
+        // Enter in the new-mode name adds the mode instead of submitting the form.
+        const nameInput = card.slice(card.indexOf('id="new-payment-mode"'), card.indexOf('{addRefusal ?'));
+        expect(nameInput).toContain('onKeyDown');
+        expect(nameInput).toContain('e.preventDefault()');
+        expect(nameInput).toContain('void add()');
     });
 
     test('the save posts ONLY payment_methods (settings POST is merge-on-omit)', () => {
