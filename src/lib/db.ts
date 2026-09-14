@@ -26,6 +26,7 @@ import type { BrandConfig } from '@/lib/brand-fonts';
 import type { RolePermission } from '@/lib/role-permissions';
 import type { ServiceClock } from '@/lib/service-clock';
 import type { SessionScope } from '@/lib/session-scope';
+import type { SettlementMode } from '@/lib/settlement-breakdown';
 import type {
     BillTenderState,
     BillingCounterRecord,
@@ -4076,6 +4077,23 @@ export interface OverviewHeadline {
     /** Zero means NOTHING SETTLED YET, which is not the same as zero takings. */
     today_bills: number;
     month_bills: number;
+    /**
+     * Today's takings by payment mode — the Settlement Summary's rows for today,
+     * adding up to `today_gross`, with a released ₹0 table left out. OPTIONAL:
+     * an older backend does not send it, and then the block renders nothing.
+     * Read through readHeadlineByMethod (settlement-breakdown.ts), never raw.
+     */
+    today_by_method?: SettlementMode[];
+    /**
+     * Today's bills paid by more than one REAL mode. Not the Settlement Summary's
+     * split_bills: a split whose only other part is the Unallocated residual was
+     * paid one way, and the server leaves it out of this count.
+     */
+    today_split_bills?: number;
+    /** Today's money whose split parts did not add back to the bill. Should be 0. */
+    today_unallocated?: number;
+    /** The block's label and definition, written by the code that computes it. */
+    by_method?: { label: string; hint: string };
 }
 
 /** null on an unreachable backend — never zeroes, which an owner would act on. */
