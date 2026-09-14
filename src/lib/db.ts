@@ -4084,7 +4084,11 @@ export interface OverviewHeadline {
      * Read through readHeadlineByMethod (settlement-breakdown.ts), never raw.
      */
     today_by_method?: SettlementMode[];
-    /** Today's bills paid across more than one mode. */
+    /**
+     * Today's bills paid by more than one REAL mode. Not the Settlement Summary's
+     * split_bills: a split whose only other part is the Unallocated residual was
+     * paid one way, and the server leaves it out of this count.
+     */
     today_split_bills?: number;
     /** Today's money whose split parts did not add back to the bill. Should be 0. */
     today_unallocated?: number;

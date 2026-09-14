@@ -107,6 +107,25 @@ describe("reading today's modes off the headline", () => {
         expect(b.unallocated).toBe(250);
     });
 
+    it('a one-tender split with a residual is NOT a split-note bill — the server count is taken as sent', () => {
+        // ₹100 UPI on a ₹300 'Split' bill: two parts, one real mode. The server's
+        // today_split_bills leaves it out (multi_method_bills), so the card must
+        // not re-derive a count from the rows — Upi + Unallocated each carrying
+        // that bill would read as "paid across more than one method", which is
+        // false. The warning is the true sentence about it.
+        const b = readHeadlineByMethod(headline({
+            today_by_method: [
+                { method: UNALLOCATED_METHOD, bills: 1, amount: 200, share_pct: 66.67, refund: 0, net_amount: 200 },
+                { method: 'Upi', bills: 1, amount: 100, share_pct: 33.33, refund: 0, net_amount: 100 },
+            ],
+            today_gross: fig(300, "Today's gross sale"),
+            today_split_bills: 0,
+            today_unallocated: 200,
+        }))!;
+        expect(b.split_bills).toBe(0);
+        expect(unallocatedWarning(b, (n) => `₹${n.toFixed(2)}`)).toMatch(/^₹200\.00 could not be put under a payment method/);
+    });
+
     it("counts the Unallocated row's bills, and 0 without one", () => {
         expect(readHeadlineByMethod(headline())!.unallocated_bills).toBe(0);
         const b = readHeadlineByMethod(headline({
