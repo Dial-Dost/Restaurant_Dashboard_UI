@@ -25,6 +25,8 @@ import { useAuth } from "@/context/AuthContext"
 import { BillCustomerDialog } from "@/components/bill-customer-dialog"
 import { canEditSettledBillCustomer } from "@/lib/bill-customer"
 import { getClosedBills, getClosedBill, reprintSettledBill, type ClosedBillSummary, type ClosedBillDetail } from "@/lib/db"
+import { DateRangePicker, RangeNote } from "@/components/date-range-picker"
+import type { DateRange } from "@/lib/date-range"
 import { formatDateTime } from "@/lib/tz"
 import { useTimezone } from "@/lib/use-timezone"
 import { elapsedToSettlement, formatDuration, readServiceClock } from "@/lib/service-clock"
@@ -43,17 +45,28 @@ interface Props {
   rid: string
   /**
    * Date range. With `ownDateFilter` off (Accounting) it is the page's range and
-   * the section has no date inputs of its own. With it on (History) these SEED
+   * the section keeps no dates of its own (see `range`). With it on (History) these SEED
    * the section's own inputs — a month drill-down re-seeds them — and the user
    * can then edit them freely.
    */
   from?: string
   to?: string
   ownDateFilter?: boolean
+  /**
+   * Host-owned window (ignored with `ownDateFilter`). "In Accounting in settled
+   * bills the date frame is not selectable": the only picker was the page
+   * toolbar, a long scroll above this card, and the card did not even say which
+   * days it listed. With `onRangeChange` the header carries the SAME picker,
+   * bound to the SAME window — one window, two controls, so the list and the
+   * totals above it can never describe different days. `range` alone renders a
+   * read-only note instead.
+   */
+  range?: DateRange
+  onRangeChange?: (range: DateRange) => void
   description?: string
 }
 
-export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, description }: Props) {
+export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, range, onRangeChange, description }: Props) {
   const { toast } = useToast()
   const { timezone } = useTimezone()
   /** The bill currently being sent to a printer, so the button can say so. */
@@ -182,13 +195,17 @@ export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, descr
               {description ?? "Every settled bill — open one to see its line items, taxes, service charge, discount, payment and who settled it."}
             </CardDescription>
           </div>
-          {ownDateFilter && (
+          {ownDateFilter ? (
             <div className="flex items-center gap-2">
               <Input type="date" value={ownFrom} onChange={(e) => { setOwnFrom(e.target.value) }} className="w-auto" aria-label="Settled from" />
               <span className="text-muted-foreground">→</span>
               <Input type="date" value={ownTo} onChange={(e) => { setOwnTo(e.target.value) }} className="w-auto" aria-label="Settled to" />
             </div>
-          )}
+          ) : range && onRangeChange ? (
+            <DateRangePicker value={range} onChange={onRangeChange} timezone={timezone} align="end" />
+          ) : range ? (
+            <RangeNote range={range} timezone={timezone} />
+          ) : null}
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
