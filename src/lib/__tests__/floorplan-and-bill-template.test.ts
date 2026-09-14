@@ -108,7 +108,17 @@ describe("5.1 — the print preview shows the logo, address and GSTIN clearly", 
     expect(img).not.toBe("");
     expect(img).not.toMatch(/\bh-16\b/);
     expect(img).not.toMatch(/width=\{64\}/);
-    expect(img).toMatch(/max-w-\[80%\]/);
+    // At the width the ROLL prints it — the client's bill carries its wordmark
+    // at about two thirds of the paper with white either side, and bill_logo.ts
+    // rasterises to that. Two thirds of the paper is 384 of the 528 dots between
+    // the margins (72.73%): the cap before the image loads, and billLogoFit's
+    // exact never-enlarged width once it has.
+    expect(img).toMatch(/max-w-\[72\.73%\]/);
+    expect(img).not.toMatch(/max-w-\[80%\]/);
+    expect(img).toContain("onLoad={onLogoLoad}");
+    expect(img).toContain("style={{ width: logoWidth }}");
+    expect(print).toMatch(/setLogoFit\(billLogoFit\(e\.currentTarget\.naturalWidth, e\.currentTarget\.naturalHeight\)\)/);
+    expect(print).toContain("(logoFit.width / BILL_PRINT_AREA_DOTS) * 100");
   });
 
   it("a tenant without a logo gets no placeholder printed on the bill", () => {

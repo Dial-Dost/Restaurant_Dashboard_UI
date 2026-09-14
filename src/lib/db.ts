@@ -5100,12 +5100,17 @@ export interface BillPrintSettings {
     // so neither the editor nor the print page hardcodes the valet sentence.
     qrNoteDefault: string;
     qrNoteMax: number;
+    // Whether the customer bill prints the feedback/valet QR at all (migration
+    // 047). The backend reads an unset column as ON, and so does this: a server
+    // that predates the key has only ever printed the QR, so a missing key is
+    // `true`, never `false`.
+    showQr: boolean;
 }
 
 const BILL_QR_NOTE_MAX_FALLBACK = 120;
 
 export const getBillPrintSettings = async (restaurantId: string): Promise<BillPrintSettings> => {
-    const empty: BillPrintSettings = { legalName: '', gstin: '', qrNote: '', qrNoteDefault: '', qrNoteMax: BILL_QR_NOTE_MAX_FALLBACK };
+    const empty: BillPrintSettings = { legalName: '', gstin: '', qrNote: '', qrNoteDefault: '', qrNoteMax: BILL_QR_NOTE_MAX_FALLBACK, showQr: true };
     const res = await backendCall('/restaurant/settings', restaurantId, { method: 'GET' });
     if (!res?.ok) {return empty;}
     try {
@@ -5116,6 +5121,7 @@ export const getBillPrintSettings = async (restaurantId: string): Promise<BillPr
             qrNote: typeof j?.bill_qr_note === 'string' ? j.bill_qr_note : '',
             qrNoteDefault: typeof j?.bill_qr_note_default === 'string' ? j.bill_qr_note_default : '',
             qrNoteMax: typeof j?.bill_qr_note_max === 'number' ? j.bill_qr_note_max : BILL_QR_NOTE_MAX_FALLBACK,
+            showQr: j?.bill_show_qr !== false,
         };
     } catch { return empty; }
 };
@@ -5125,12 +5131,14 @@ export const getBillPrintSettings = async (restaurantId: string): Promise<BillPr
 // empty string must reach the backend — presence, not truthiness, decides.
 export const setBillPrintSettings = async (
     restaurantId: string,
-    patch: { legalName?: string; gstin?: string; qrNote?: string },
+    patch: { legalName?: string; gstin?: string; qrNote?: string; showQr?: boolean },
 ): Promise<BillPrintSettings> => {
-    const body: Record<string, string> = {};
+    const body: Record<string, string | boolean> = {};
     if (patch.legalName !== undefined) {body.bill_legal_name = patch.legalName;}
     if (patch.gstin !== undefined) {body.bill_gstin = patch.gstin;}
     if (patch.qrNote !== undefined) {body.bill_qr_note = patch.qrNote;}
+    // A real boolean or nothing: the backend writes only an explicit boolean.
+    if (typeof patch.showQr === 'boolean') {body.bill_show_qr = patch.showQr;}
     const res = await backendCall('/restaurant/settings', restaurantId, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -5145,9 +5153,10 @@ export const setBillPrintSettings = async (
             qrNote: typeof j?.bill_qr_note === 'string' ? j.bill_qr_note : '',
             qrNoteDefault: typeof j?.bill_qr_note_default === 'string' ? j.bill_qr_note_default : '',
             qrNoteMax: typeof j?.bill_qr_note_max === 'number' ? j.bill_qr_note_max : BILL_QR_NOTE_MAX_FALLBACK,
+            showQr: j?.bill_show_qr !== false,
         };
     } catch {
-        return { legalName: patch.legalName ?? '', gstin: patch.gstin ?? '', qrNote: patch.qrNote ?? '', qrNoteDefault: '', qrNoteMax: BILL_QR_NOTE_MAX_FALLBACK };
+        return { legalName: patch.legalName ?? '', gstin: patch.gstin ?? '', qrNote: patch.qrNote ?? '', qrNoteDefault: '', qrNoteMax: BILL_QR_NOTE_MAX_FALLBACK, showQr: patch.showQr ?? true };
     }
 };
 

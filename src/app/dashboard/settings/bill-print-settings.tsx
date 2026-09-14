@@ -16,6 +16,12 @@
 //
 // Pick-then-save (like the timezone card next door, unlike the OTP switch): this
 // text goes on every guest's receipt, so it should take a deliberate click.
+//
+// THE QR ITSELF CAN BE SWITCHED OFF (migration 047). Off, the bill ends at the
+// service-charge line with no QR and no sentence above one, so the message box
+// is disabled rather than hidden: the owner's sentence is kept for the day they
+// turn the QR back on. The switch saves with the same button as the text, for
+// the same reason: it changes every guest's receipt.
 
 import { useEffect, useState } from "react"
 import { Receipt } from "lucide-react"
@@ -24,6 +30,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { useToast } from "@/hooks/use-toast"
 import type { BillPrintSettings } from "@/lib/db"
@@ -39,6 +46,7 @@ export function BillPrintSettingsCard({ restaurantId, isAdmin }: { restaurantId:
   const [legalName, setLegalName] = useState("")
   const [gstin, setGstin] = useState("")
   const [qrNote, setQrNote] = useState("")
+  const [showQr, setShowQr] = useState(true)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
@@ -52,6 +60,7 @@ export function BillPrintSettingsCard({ restaurantId, isAdmin }: { restaurantId:
         setLegalName(s.legalName)
         setGstin(s.gstin)
         setQrNote(s.qrNote)
+        setShowQr(s.showQr)
       })
       .catch(() => {/* fields stay empty; saving still works */})
       .finally(() => { if (active) {setLoading(false)} })
@@ -67,7 +76,8 @@ export function BillPrintSettingsCard({ restaurantId, isAdmin }: { restaurantId:
     saved !== null &&
     (legalName.trim() !== saved.legalName ||
       gstin.trim() !== saved.gstin ||
-      qrNote.trim() !== saved.qrNote)
+      qrNote.trim() !== saved.qrNote ||
+      showQr !== saved.showQr)
 
   const handleSave = async () => {
     if (!restaurantId) {return}
@@ -86,11 +96,13 @@ export function BillPrintSettingsCard({ restaurantId, isAdmin }: { restaurantId:
         legalName: legalName.trim(),
         gstin: gstin.trim(),
         qrNote: qrNote.trim(),
+        showQr,
       })
       setSaved(next)
       setLegalName(next.legalName)
       setGstin(next.gstin)
       setQrNote(next.qrNote)
+      setShowQr(next.showQr)
       toast({
         title: "Bill printing updated",
         description: "New bills will print with these details.",
@@ -111,6 +123,7 @@ export function BillPrintSettingsCard({ restaurantId, isAdmin }: { restaurantId:
     setLegalName(saved.legalName)
     setGstin(saved.gstin)
     setQrNote(saved.qrNote)
+    setShowQr(saved.showQr)
   }
 
   return (
@@ -154,6 +167,22 @@ export function BillPrintSettingsCard({ restaurantId, isAdmin }: { restaurantId:
           </p>
         </div>
 
+        <div className="flex items-start justify-between gap-4 rounded-md border p-3">
+          <div className="space-y-1">
+            <Label htmlFor="bill-show-qr">Print QR code on the bill</Label>
+            <p className="text-xs text-muted-foreground">
+              The feedback / valet QR at the bottom of every customer bill. Turn it off to
+              print bills without it.
+            </p>
+          </div>
+          <Switch
+            id="bill-show-qr"
+            checked={showQr}
+            onCheckedChange={(v) => { setShowQr(v === true) }}
+            disabled={!isAdmin || loading}
+          />
+        </div>
+
         <div className="space-y-2">
           <Label htmlFor="bill-qr-note">Message above the QR code</Label>
           <Textarea
@@ -164,7 +193,7 @@ export function BillPrintSettingsCard({ restaurantId, isAdmin }: { restaurantId:
             className="resize-none"
             rows={2}
             maxLength={noteMax}
-            disabled={!isAdmin || loading}
+            disabled={!isAdmin || loading || !showQr}
           />
           <div className="flex items-center justify-between gap-3">
             <p className="text-xs text-muted-foreground">
