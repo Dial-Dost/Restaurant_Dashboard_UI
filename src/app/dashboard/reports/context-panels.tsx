@@ -451,7 +451,9 @@ export function ContextPanel({ reportKey, payload, currencySymbol }: Ctx & { rep
                         <Tile label="Waivers" value={formatInt(totals.waivers)} hint={(num(totals.reversed_waivers) ?? 0) > 0 ? `${formatInt(totals.reversed_waivers)} reversed` : undefined} />
                         <Tile label="Charge denied" value={money(totals.amount_waived)} tone={(num(totals.amount_waived) ?? 0) > 0 ? "warn" : "default"} />
                         <Tile label="Tax that rode on it" value={money(tax)} hint="Never charged either" />
-                        <Tile label="Guests paid less by" value={money(denied)} tone={denied > 0 ? "warn" : "default"} />
+                        {/* The recorded charge + tax, measured before each bill's round-off
+                            (migration 048) — not the rounded totals' gap, so not "guests paid less by". */}
+                        <Tile label="Charge + tax denied" value={money(denied)} hint="Before each bill's round-off" tone={denied > 0 ? "warn" : "default"} />
                         <Tile label="Service charge collected" value={money(totals.service_charge_collected)} hint="In the same window, on the settlement clock" />
                     </Tiles>
                     {byKind.length > 0 && (

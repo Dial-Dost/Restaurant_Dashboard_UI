@@ -81,7 +81,7 @@ function gaia(over: Partial<BillEscPosInput> = {}): BillEscPosInput {
         ],
         subtotal: 4795.5,
         discount: null,
-        serviceCharge: { percent: 10, amount: 479.55, optedOut: false },
+        serviceCharge: { percent: 10, amount: 479.55 },
         taxes: [
             { id: 's', name: 'SGST', percentage: 2.5, amount: 131.88 },
             { id: 'c', name: 'CGST', percentage: 2.5, amount: 131.88 },
@@ -328,12 +328,14 @@ describe('no value is cut, and no line leaves the print area — escpos.ts\'s la
         ],
         subtotal: 1162690.5,
         discount: { label: 'Coupon SUPERSAVER2026EXTRA', amount: 500 },
-        serviceCharge: { percent: 10, amount: 0, optedOut: true },
+        // Charged (10% of the discounted 1162190.50), mirroring the backend
+        // fixture: a removed charge prints no line, and this fixture wants every rung.
+        serviceCharge: { percent: 10, amount: 116219.05 },
         taxes: [
             { name: 'Compensation Cess on Aerated Beverages', percentage: 12, amount: 1234.5 },
             { name: 'SGST', percentage: 2.5, amount: 118.63 },
         ],
-        grandTotal: 1163543.63,
+        grandTotal: 1279762.68,
         feedbackUrl: 'https://example.test/f?rid=a',
         ...over,
     });
@@ -365,12 +367,12 @@ describe('no value is cut, and no line leaves the print area — escpos.ts\'s la
             '<RULE:THICK>',
             '    Total Qty: 105   Sub Total    1162690.50',
             '    Coupon SUPERSAVER2026EXTRA       -500.00',
-            '            Service Charge 10%     Opted-out',
+            '            Service Charge 10%     116219.05',
             '  Compensation Cess on Aerated',
             '                 Beverages 12%       1234.50',
             '                     SGST 2.5%        118.63',
             '<RULE>',
-            '                   Grand Total Rs 1163543.63',
+            '                   Grand Total Rs 1279762.68',
             '<RULE>',
             'A Voluntary Service Charge is included to',
             'support our staff. If you prefer not to',
@@ -414,13 +416,13 @@ describe('no value is cut, and no line leaves the print area — escpos.ts\'s la
             '            Coupon',
             'SUPERSAVER2026EXTR',
             '                 A       -500.00',
-            'Service Charge 10%     Opted-out',
+            'Service Charge 10%     116219.05',
             ' Compensation Cess',
             '        on Aerated',
             '     Beverages 12%       1234.50',
             '         SGST 2.5%        118.63',
             '<RULE>',
-            '       Grand Total Rs 1163543.63',
+            '       Grand Total Rs 1279762.68',
             '<RULE>',
             'A Voluntary Service Charge is',
             'included to support our staff.',
@@ -622,24 +624,31 @@ describe('billTotals — one wording for the paper and the screen', () => {
             items: [{ quantity: 2 }, { quantity: 1.4 }, { quantity: 0 }],
             subtotal: 1000,
             discount: { label: 'Coupon WELCOME', amount: 500 },
-            serviceCharge: { percent: 10, amount: 0, optedOut: true },
+            serviceCharge: { percent: 10, amount: 50 },
             taxes: [{ name: 'SGST', percentage: 2.5, amount: 12.5 }, { name: 'Cess', percentage: 0, amount: 0 }],
-            roundOff: null,
+            roundOff: 0.5,
         });
         expect(t.totalQty).toBe(4);
         expect(t.subtotal).toBe('1000.00');
         expect(t.rungs.map((r) => [r.label, r.value])).toEqual([
             ['Coupon WELCOME', '-500.00'],
-            ['Service Charge 10%', 'Opted-out'],
+            ['Service Charge 10%', '50.00'],
             ['SGST 2.5%', '12.50'],
         ]);
-        expect(t.roundOff).toBeNull();
+        // The server's round-off (backend migration 048), signed as the paper signs it.
+        expect(t.roundOff).toBe('+0.50');
+        expect(billTotals({ items: [], subtotal: 0, discount: null, serviceCharge: null, taxes: [], roundOff: -0.26 }).roundOff).toBe('-0.26');
     });
 
-    it('a service charge neither charged nor opted out, and a zero discount, print nothing', () => {
-        const t = billTotals({ items: [], subtotal: 0, discount: { label: 'Discount', amount: 0 }, serviceCharge: { percent: 0, amount: 0, optedOut: false }, taxes: [], roundOff: 0.001 });
+    it('a REMOVED service charge prints no rung — no zero, no "Opted-out" — and neither does a zero discount', () => {
+        // The client: "don't show service charge opted out when removed ... this
+        // too in the bill". A waived bill's charge arrives at zero.
+        const t = billTotals({ items: [], subtotal: 0, discount: { label: 'Discount', amount: 0 }, serviceCharge: { percent: 10, amount: 0 }, taxes: [], roundOff: 0.001 });
         expect(t.rungs).toEqual([]);
         expect(t.roundOff).toBeNull();
+        const page = escposLines(buildBillEscPos(gaia({ serviceCharge: { percent: 10, amount: 0 }, serviceChargeNote: null }))).join('\n');
+        expect(page).not.toContain('Service Charge');
+        expect(page).not.toContain('Opted-out');
     });
 });
 

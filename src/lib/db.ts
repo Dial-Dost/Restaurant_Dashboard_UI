@@ -22,10 +22,12 @@ import { readErrorMessage, refusalSentence, type RefusedAction } from '@/lib/err
 import { billPrintRefusal, billPrintStateFields, type BillPrintState } from '@/lib/bill-print-state';
 import { UNREACHABLE_MESSAGE, billCustomerPayload, billCustomerSaveOutcome, type BillCustomerRequest, type BillCustomerSaveOutcome } from '@/lib/bill-customer';
 import { SELECTED_OUTLET_KEY } from '@/lib/outlet';
+import { readPaymentMethods, type PaymentMethodConfig } from '@/lib/payment-methods';
 import type { BrandConfig } from '@/lib/brand-fonts';
 import type { RolePermission } from '@/lib/role-permissions';
 import type { ServiceClock } from '@/lib/service-clock';
 import type { SessionScope } from '@/lib/session-scope';
+import type { SettlementMode } from '@/lib/settlement-breakdown';
 import type {
     BillTenderState,
     BillingCounterRecord,
@@ -144,16 +146,11 @@ export interface MonthlyApcInsight {
     employee_incentives: EmployeeApcIncentive[];
 }
 
-export type PaymentMethod =
-    | 'Swiggy'
-    | 'Dine Out'
-    | 'Zomato Pay'
-    | 'Eazydiner'
-    | 'Cash'
-    | 'Upi'
-    | 'Card'
-    | 'Online Transfer'
-    | 'Split';
+// A built-in id ('Upi', 'Cash', …), 'Split', or a mode the owner added. The set
+// is the restaurant's own (GET /restaurant/settings payment_methods — see
+// src/lib/payment-methods.ts), so it cannot be a union compiled in here: the old
+// one offered 'Swiggy' and 'Online Transfer', which the server always refused.
+export type PaymentMethod = string;
 
 // One row of a split-tender payment ({method, amount}); the rows must sum to
 // the bill's grand total (backend-validated).
@@ -1976,11 +1973,18 @@ export interface ClosedBillSummary {
     grand_total: number;
     // Genuine tax only — a "Service Charge" line stored inside the tax breakdown
     // is lifted out into service_charge by the backend, so it is never counted
-    // twice. INVARIANT: taxable_base + service_charge + tax_total === grand_total.
+    // twice. INVARIANT: taxable_base + service_charge + tax_total + round_off
+    // === grand_total.
     tax_total: number;
     taxable_base: number;
     service_charge: number;
     service_charge_percent: number;
+    /**
+     * Backend migration 048: what rounded the settled total to the rupee. 0 on a
+     * bill settled before rounding; optional because an older backend sends no
+     * key. Read it through roundOffOf (lib/bill-round-off.ts).
+     */
+    round_off?: number;
     payment_method: string | null;
     payment_splits: PaymentSplit[];
     discount_type: 'percent' | 'flat' | null;
@@ -2100,7 +2104,7 @@ export const getClosedBill = async (restaurantId: string, billId: string): Promi
 // only place "who owes me money right now" is answerable.
 //
 // The money is fully computed server-side and obeys the same invariant as a
-// settled bill — taxable_base + service_charge + tax_total === grand_total, with
+// settled bill — taxable_base + service_charge + tax_total + round_off === grand_total, with
 // a "Service Charge" entry lifted out of the tax breakdown. Do not recompute it
 // here: an un-confirmed bill's stored total_amt is the PRE-TAX subtotal, and the
 // backend is what knows the difference.
@@ -2119,6 +2123,8 @@ export interface OpenBillSummary {
     service_charge_percent: number;
     taxes: BillTaxLine[];
     tax_total: number;
+    /** Backend migration 048 — the fourth rung of the invariant above. */
+    round_off?: number;
     discount_type: 'percent' | 'flat' | null;
     discount_value: number;
     coupon_code: string | null;
@@ -4076,6 +4082,23 @@ export interface OverviewHeadline {
     /** Zero means NOTHING SETTLED YET, which is not the same as zero takings. */
     today_bills: number;
     month_bills: number;
+    /**
+     * Today's takings by payment mode — the Settlement Summary's rows for today,
+     * adding up to `today_gross`, with a released ₹0 table left out. OPTIONAL:
+     * an older backend does not send it, and then the block renders nothing.
+     * Read through readHeadlineByMethod (settlement-breakdown.ts), never raw.
+     */
+    today_by_method?: SettlementMode[];
+    /**
+     * Today's bills paid by more than one REAL mode. Not the Settlement Summary's
+     * split_bills: a split whose only other part is the Unallocated residual was
+     * paid one way, and the server leaves it out of this count.
+     */
+    today_split_bills?: number;
+    /** Today's money whose split parts did not add back to the bill. Should be 0. */
+    today_unallocated?: number;
+    /** The block's label and definition, written by the code that computes it. */
+    by_method?: { label: string; hint: string };
 }
 
 /** null on an unreachable backend — never zeroes, which an owner would act on. */
@@ -4204,7 +4227,8 @@ export interface SalesReport {
     from: string; to: string;
     total_sales: number; total_tax: number; total_refund: number; net_sales: number; bill_count: number;
     by_day: { date: string; sales: number; tax: number; refund: number; bills: number }[];
-    by_method: { method: string; sales: number; bills: number }[];
+    // `label` is the owner's name for the mode (display only; rows group by `method`).
+    by_method: { method: string; label?: string; sales: number; bills: number }[];
 }
 export interface GstReport {
     from: string; to: string; total_taxable: number; total_tax: number;
@@ -4286,6 +4310,8 @@ export const reprintSettledBill = async (
 // --- Bank / settlement reconciliation -----------------------------------------
 export interface ReconciliationRow {
     method: string;
+    /** The owner's name for the mode. Display only — saves key on `method`. */
+    label?: string;
     expected: number;
     actual: number | null;
     status: 'matched' | 'variance' | null;
@@ -4898,6 +4924,31 @@ export const getKdsExpo = async (restaurantId: string): Promise<{ tables: ExpoTa
     if (!res?.ok) {return { tables: [] };}
     try { const j = await res.json(); return { tables: Array.isArray(j?.tables) ? j.tables : [] }; } catch { return { tables: [] }; }
 };
+// --- Payment modes (payment_methods in /restaurant/settings) ----------------
+// READ by every settle picker, so it is readable by any signed-in staff (not a
+// privileged settings field). THROWS on failure rather than inventing defaults:
+// the Settings editor must not show an owner a list that is not theirs. Pickers
+// that must never block a settle use usePaymentMethods, which falls back.
+export const getPaymentMethods = async (restaurantId: string): Promise<PaymentMethodConfig[]> => {
+    const res = await backendCall('/restaurant/settings', restaurantId, { method: 'GET' });
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to read the payment modes');}
+    const j = await res.json();
+    return readPaymentMethods(j?.payment_methods);
+};
+// POSTs ONLY `payment_methods`: the settings POST is merge-on-omit, and on the
+// server a payment-modes save is itself a merge that keeps stored modes this
+// list leaves out (removal is enabled:false). A refused save is a 400 whose
+// `details` names every problem, shown to the owner as-is.
+export const savePaymentMethods = async (restaurantId: string, methods: PaymentMethodConfig[]): Promise<PaymentMethodConfig[]> => {
+    const res = await backendCall('/restaurant/settings', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payment_methods: methods }),
+    });
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to save the payment modes');}
+    try { const j = await res.json(); return readPaymentMethods(j?.payment_methods); } catch { return methods; }
+};
+
 // --- Kitchen sections (managed list in /restaurant/settings) ----------------
 // Ordered list of kitchen sections (e.g. Tandoor/Curry/Bar); menu items point
 // at one via their `station` and the KDS offers one display per section.
