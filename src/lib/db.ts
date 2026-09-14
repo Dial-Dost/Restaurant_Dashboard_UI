@@ -1976,11 +1976,18 @@ export interface ClosedBillSummary {
     grand_total: number;
     // Genuine tax only — a "Service Charge" line stored inside the tax breakdown
     // is lifted out into service_charge by the backend, so it is never counted
-    // twice. INVARIANT: taxable_base + service_charge + tax_total === grand_total.
+    // twice. INVARIANT: taxable_base + service_charge + tax_total + round_off
+    // === grand_total.
     tax_total: number;
     taxable_base: number;
     service_charge: number;
     service_charge_percent: number;
+    /**
+     * Backend migration 048: what rounded the settled total to the rupee. 0 on a
+     * bill settled before rounding; optional because an older backend sends no
+     * key. Read it through roundOffOf (lib/bill-round-off.ts).
+     */
+    round_off?: number;
     payment_method: string | null;
     payment_splits: PaymentSplit[];
     discount_type: 'percent' | 'flat' | null;
@@ -2100,7 +2107,7 @@ export const getClosedBill = async (restaurantId: string, billId: string): Promi
 // only place "who owes me money right now" is answerable.
 //
 // The money is fully computed server-side and obeys the same invariant as a
-// settled bill — taxable_base + service_charge + tax_total === grand_total, with
+// settled bill — taxable_base + service_charge + tax_total + round_off === grand_total, with
 // a "Service Charge" entry lifted out of the tax breakdown. Do not recompute it
 // here: an un-confirmed bill's stored total_amt is the PRE-TAX subtotal, and the
 // backend is what knows the difference.
@@ -2119,6 +2126,8 @@ export interface OpenBillSummary {
     service_charge_percent: number;
     taxes: BillTaxLine[];
     tax_total: number;
+    /** Backend migration 048 — the fourth rung of the invariant above. */
+    round_off?: number;
     discount_type: 'percent' | 'flat' | null;
     discount_value: number;
     coupon_code: string | null;

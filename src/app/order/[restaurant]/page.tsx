@@ -19,6 +19,7 @@ import { isMobile10, normalizeMobile10, sanitizePhoneInput } from "@/lib/phone";
 import { GuestPosters, readGuestPosters, type GuestPoster } from "@/components/guest-posters";
 
 import { badgesById, capBadges, guestBadgeStyle, parseBadgeCatalogue, type MenuBadge } from "@/lib/menu-badges";
+import { formatRoundOff, roundOffOf } from "@/lib/bill-round-off";
 
 const BASE = guestBackendBase();
 
@@ -41,6 +42,8 @@ interface BillData {
   service_charge_percent: number;
   taxes: TaxLine[];
   tax_total: number;
+  /** What the server rounded the total to the rupee by (backend 048); null = none to show. */
+  round_off: number | null;
   grand_total: number;
   payment_status: string | null;
 }
@@ -96,6 +99,7 @@ const STRINGS: Record<Lang, Record<string, string>> = {
     discount: "Discount",
     coupon: "Coupon",
     serviceCharge: "Service charge",
+    roundOff: "Round off",
     sendOrder: "Send order to the restaurant",
     sending: "Sending…",
     addMore: "Add more items",
@@ -177,6 +181,7 @@ const STRINGS: Record<Lang, Record<string, string>> = {
     discount: "छूट",
     coupon: "कूपन",
     serviceCharge: "सेवा शुल्क",
+    roundOff: "राउंड ऑफ",
     sendOrder: "ऑर्डर रेस्टोरेंट को भेजें",
     sending: "भेजा जा रहा है…",
     addMore: "और आइटम जोड़ें",
@@ -391,6 +396,7 @@ function OrderInner() {
           service_charge_percent: Number(data?.service_charge_percent ?? 0),
           taxes,
           tax_total: Number(data?.tax_total ?? 0),
+          round_off: roundOffOf(data),
           grand_total: grand,
           payment_status: data?.payment_status ?? null,
         });
@@ -1462,6 +1468,12 @@ function BillSheet(props: {
                   <span>{currency}{Number(t.amount).toFixed(2)}</span>
                 </div>
               ))}
+              {bill?.round_off != null && (
+                <div className="flex items-center justify-between text-[color:var(--inkMuted)]">
+                  <span>{t("roundOff")}</span>
+                  <span>{formatRoundOff(bill.round_off, (n) => `${currency}${n.toFixed(2)}`)}</span>
+                </div>
+              )}
               <div className="flex items-center justify-between pt-2 text-[color:var(--ink)]" style={{ borderTop: "1px solid rgba(var(--edgeRGB),0.08)" }}>
                 <span className="font-semibold">{t("total")}</span>
                 <span className="rf-num text-[length:calc(24px*var(--fs,1))]">{currency}{Number(bill?.grand_total ?? 0).toFixed(2)}</span>
@@ -1576,6 +1588,11 @@ function GuestBillReceipt(props: {
               <span>{tax.name} ({tax.percentage}%)</span><span>{money(tax.amount)}</span>
             </div>
           ))}
+          {bill.round_off != null ? (
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span>Round off</span><span>{formatRoundOff(bill.round_off, money)}</span>
+            </div>
+          ) : null}
           <div style={{ display: "flex", justifyContent: "space-between", borderTop: "1px solid #000", marginTop: 6, paddingTop: 6, fontWeight: 700, fontSize: 14 }}>
             <span>Grand Total</span><span>{money(bill.grand_total)}</span>
           </div>

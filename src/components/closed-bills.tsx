@@ -8,7 +8,7 @@
 // bill), and is mounted by both Accounting and History.
 //
 // The money split it renders comes straight from the backend, which guarantees
-//   taxable_base + service_charge + tax_total === grand_total
+//   taxable_base + service_charge + tax_total + round_off === grand_total
 // and lifts a "Service Charge" entry out of the tax breakdown so it is never
 // shown twice. Nothing is recomputed here.
 
@@ -24,6 +24,7 @@ import { useCurrency } from "@/hooks/use-currency"
 import { useAuth } from "@/context/AuthContext"
 import { BillCustomerDialog } from "@/components/bill-customer-dialog"
 import { canEditSettledBillCustomer } from "@/lib/bill-customer"
+import { formatRoundOff, roundOffOf } from "@/lib/bill-round-off"
 import { getClosedBills, getClosedBill, reprintSettledBill, type ClosedBillSummary, type ClosedBillDetail } from "@/lib/db"
 import { formatDateTime } from "@/lib/tz"
 import { useTimezone } from "@/lib/use-timezone"
@@ -423,6 +424,11 @@ function BillDetailBody({ detail, money }: { detail: ClosedBillDetail; money: (n
         {d.taxes.map((t, i) => (
           <Row key={`${t.name}-${i}`} label={`${t.name}${t.percentage ? ` (${t.percentage}%)` : ""}`} value={money(t.amount)} />
         ))}
+        {/* What rounded the settled total to the rupee (backend migration 048),
+            as recorded at settle — the line on the guest's paper. */}
+        {roundOffOf(d) !== null && (
+          <Row label="Round off" value={formatRoundOff(roundOffOf(d)!, (n) => money(n))} muted />
+        )}
         <div className="border-t pt-1">
           <Row label="Grand total" value={money(d.grand_total)} bold />
         </div>

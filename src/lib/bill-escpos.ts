@@ -275,7 +275,8 @@ export interface BillTotalsSource {
     items: readonly { quantity: unknown }[];
     subtotal: number;
     discount: { label: string; amount: number } | null;
-    serviceCharge: { percent: number; amount: number; optedOut: boolean } | null;
+    /** Printed only when `amount` is above zero — a removed charge prints no line. */
+    serviceCharge: { percent: number; amount: number } | null;
     taxes: readonly { id?: string; name: string; percentage: number; amount: number }[];
     roundOff: number | null;
 }
@@ -291,8 +292,10 @@ export interface BillLadderRung { key: string; label: string; value: string }
  * wording cannot differ between the two slips.
  *
  * Mirrors escpos.ts's gates: a discount only when positive, the service charge
- * when it is charged OR opted out, and a tax line only when it carries money.
- * The round-off is DISCLOSED, never created — only a supplied, non-zero one.
+ * only when it is charged (a removed charge prints nothing — no "Opted-out"), and
+ * a tax line only when it carries money. The round-off is DISCLOSED, never
+ * created — only a supplied, non-zero one, which since backend migration 048 is
+ * every bill that was not already whole rupees.
  */
 export function billTotals(doc: BillTotalsSource): { totalQty: number; subtotal: string; rungs: BillLadderRung[]; roundOff: string | null } {
     const totalQty = doc.items.reduce((s, it) => s + Math.max(1, Math.round(Number(it.quantity) || 1)), 0);
@@ -301,9 +304,9 @@ export function billTotals(doc: BillTotalsSource): { totalQty: number; subtotal:
     if (discount) {
         rungs.push({ key: 'discount', label: discount.label || 'Discount', value: `-${discount.amount.toFixed(2)}` });
     }
-    const sc = doc.serviceCharge && (doc.serviceCharge.amount > 0 || doc.serviceCharge.optedOut) ? doc.serviceCharge : null;
+    const sc = doc.serviceCharge && doc.serviceCharge.amount > 0 ? doc.serviceCharge : null;
     if (sc) {
-        rungs.push({ key: 'service-charge', label: `Service Charge ${String(sc.percent)}%`, value: sc.optedOut ? 'Opted-out' : sc.amount.toFixed(2) });
+        rungs.push({ key: 'service-charge', label: `Service Charge ${String(sc.percent)}%`, value: sc.amount.toFixed(2) });
     }
     doc.taxes.forEach((t, i) => {
         if (t.amount > 0) {
