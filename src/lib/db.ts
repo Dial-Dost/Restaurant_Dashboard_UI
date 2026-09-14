@@ -5079,6 +5079,43 @@ export const setRequireTableOtp = async (restaurantId: string, enabled: boolean)
     try { const j = await res.json(); return j?.require_table_otp === true; } catch { return enabled; }
 };
 
+// --- Valet parking on the guest feedback form (feedback_config.valet_enabled) --
+// One switch for the whole valet part of the form: the vehicle-number step AND
+// the "Valet Parking" rating (see src/lib/feedback-form.ts). Unset reads as off,
+// the backend default.
+//
+// THE SETTER SENDS THE WHOLE FORM, FRESHLY READ, WITH ONLY valet_enabled CHANGED.
+// The backend now writes feedback settings as a patch, so a one-key body would be
+// enough there — but a backend from before that change REPLACES the form with
+// defaults for every key a body leaves out, and backend and dashboard deploy
+// separately (and roll back separately). Read-then-write is correct against both:
+// the owner's title, welcome text, review link and categories go back exactly as
+// the server just returned them.
+export const getFeedbackValetEnabled = async (restaurantId: string): Promise<boolean> => {
+    const res = await backendCall('/restaurant/settings', restaurantId, { method: 'GET' });
+    if (!res?.ok) {return false;}
+    try { const j = await res.json(); return j?.feedback_config?.valet_enabled === true; } catch { return false; }
+};
+export const setFeedbackValetEnabled = async (restaurantId: string, enabled: boolean): Promise<boolean> => {
+    const current = await backendCall('/restaurant/settings', restaurantId, { method: 'GET' });
+    if (!current?.ok) {throw new Error(current ? await readErrorMessage(current) : 'Unable to read the feedback form settings');}
+    let form: Record<string, unknown> = {};
+    try {
+        const j = await current.json();
+        if (j?.feedback_config && typeof j.feedback_config === 'object') {form = j.feedback_config as Record<string, unknown>;}
+    } catch {
+        // An unreadable settings document must not become a write of defaults.
+        throw new Error('Unable to read the feedback form settings');
+    }
+    const res = await backendCall('/restaurant/settings', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ feedback_config: { ...form, valet_enabled: enabled } }),
+    });
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to save the valet setting');}
+    try { const j = await res.json(); return j?.feedback_config?.valet_enabled === true; } catch { return enabled; }
+};
+
 // --- Printed-bill identity + the sentence above the bill QR ------------------
 // The registered entity and GST number printed under the restaurant name, and
 // the tenant's own line above the feedback/valet QR. All three live on

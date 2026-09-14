@@ -36,6 +36,7 @@ import type { RestaurantProfile} from "@/lib/db";
 import { getRestaurantProfile, updateRestaurantProfile, getRequireTableOtp, setRequireTableOtp } from "@/lib/db"
 import { PERM_SETTINGS, hasPermission } from "@/lib/mis-capture"
 import { BillPrintSettingsCard } from "./bill-print-settings"
+import { FeedbackValetCard } from "./feedback-valet-settings"
 import { BillingCountersCard } from "./billing-counters"
 import { BrandingCustomizer } from "./branding-customizer"
 import { PostersEditor } from "./posters-editor"
@@ -418,6 +419,13 @@ export function SettingsForm() {
             </div>
           </CardContent>
         </Card>
+
+        {user?.restaurantUsername ? (
+          <FeedbackValetCard
+            restaurantId={user.restaurantUsername}
+            canEdit={hasPermission(user.actions_set, PERM_SETTINGS)}
+          />
+        ) : null}
 
         {user?.restaurantUsername ? (
           <BillPrintSettingsCard restaurantId={user.restaurantUsername} isAdmin={hasRole("admin")} />

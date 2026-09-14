@@ -35,6 +35,7 @@ import {
   submitFeedback,
   verifyValetAndAdvanceStage,
 } from "./api";
+import { feedbackFormCategories } from "@/lib/feedback-form";
 import styles from "./feedback.module.css";
 
 // Material Symbols glyph (the .ms class comes from GUEST_CSS; renders as nothing
@@ -237,7 +238,12 @@ function FeedbackForm({
   // clamp applied). Defaults to the shipped dark shell until branding lands.
   const [palette, setPalette] = useState<GuestPalette>(() => resolveGuestPalette(null));
   const [theme, setTheme] = useState<ThemeTokens>(fallbackTheme);
-  const [categories, setCategories] = useState<CategoryQuestion[]>(DEFAULT_CATEGORIES);
+  // Until the owner's settings land, the defaults — with valet parking off, the
+  // backend default, so a guest never briefly sees a valet question a restaurant
+  // without valet does not ask.
+  const [categories, setCategories] = useState<CategoryQuestion[]>(() =>
+    feedbackFormCategories(DEFAULT_CATEGORIES, DEFAULT_CONFIG.valet_enabled),
+  );
   const [config, setConfig] = useState<FeedbackFormConfig | null>(null);
   const [brandLogo, setBrandLogo] = useState<string | null>(null);
   const [brandName, setBrandName] = useState<string>("");
@@ -335,9 +341,24 @@ function FeedbackForm({
         setConfig(cfg);
         setBrandLogo(b?.logo_url ?? null);
         setBrandName(b?.restaurant_name ?? "");
-        if (Array.isArray(cfg.categories) && cfg.categories.length > 0) {
-          setCategories(cfg.categories.map((c, i) => ({ id: i + 1, key: c.key, label: c.label })));
-        }
+        // THE VALET SWITCH GOVERNS THE WHOLE VALET PART: the vehicle step below
+        // AND the valet rating, which used to stay on the form with valet off.
+        //
+        // IDS ARE ASSIGNED BEFORE FILTERING, AND THAT ORDER IS LOAD-BEARING. A
+        // category's id is its position in the owner's list, and it is what
+        // fetchMainQuestion sends: the question service picks the question by that
+        // number, and 6 is the valet question. Numbering after the filter shifted
+        // every later category down one, so a category added after "Valet Parking"
+        // would have been asked the valet question under its own heading. Nothing
+        // on this page needs the ids to be gap-free — ratings, questions and
+        // follow-ups are maps looked up by category.id.
+        const configured = Array.isArray(cfg.categories) && cfg.categories.length > 0 ? cfg.categories : DEFAULT_CATEGORIES;
+        setCategories(
+          feedbackFormCategories(
+            configured.map((c, i) => ({ id: i + 1, key: c.key, label: c.label })),
+            cfg.valet_enabled === true,
+          ),
+        );
         // Skip the valet gate entirely when the restaurant doesn't use valet.
         if (!cfg.valet_enabled) {setValetGateComplete(true);}
         // Theme from the SAME object, with the SAME precedence, as the guest order
@@ -653,7 +674,10 @@ function FeedbackForm({
       setFollowUpSuggestionErrors({});
       setFollowUpDynamicPrompt({});
       setFollowUpDynamicPromptLoading({});
-      setValetGateComplete(false);
+      // Back to the start of the form — which starts at the vehicle step ONLY
+      // when the restaurant uses valet. This reset used to reopen the valet step
+      // for the next guest on the same device even with valet switched off.
+      setValetGateComplete(config?.valet_enabled !== true);
       setValetGateMessage("");
       setQuestions((current) => {
         const cloned: QuestionMap = {};
