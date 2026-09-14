@@ -69,17 +69,11 @@ const num = (v: unknown): number => {
 export const UNALLOCATED_METHOD = 'Unallocated';
 
 /**
- * Shape the settlement report into the breakdown the card renders.
- *
- * Returns null for a payload that is not a settlement report, so a caller cannot
- * accidentally render another report's rows as payment modes.
+ * Rows → modes. Shared by the analytics card and the Overview block so the two
+ * cannot shape the same server rows two different ways.
  */
-export function readSettlementBreakdown(payload: MisReportPayload | null): SettlementBreakdown | null {
-    if (!payload) { return null; }
-    const rows = (payload as { rows?: unknown }).rows;
-    if (!Array.isArray(rows)) { return null; }
-
-    const modes: SettlementMode[] = rows
+function shapeModes(rows: unknown[]): SettlementMode[] {
+    return rows
         .map((raw) => {
             const r = (raw ?? {}) as Record<string, unknown>;
             const method = String(r.method ?? '').trim();
@@ -96,6 +90,20 @@ export function readSettlementBreakdown(payload: MisReportPayload | null): Settl
         // Largest first: the question the card answers is "where did the money
         // come from", and the answer is the top row.
         .sort((a, z) => z.amount - a.amount);
+}
+
+/**
+ * Shape the settlement report into the breakdown the card renders.
+ *
+ * Returns null for a payload that is not a settlement report, so a caller cannot
+ * accidentally render another report's rows as payment modes.
+ */
+export function readSettlementBreakdown(payload: MisReportPayload | null): SettlementBreakdown | null {
+    if (!payload) { return null; }
+    const rows = (payload as { rows?: unknown }).rows;
+    if (!Array.isArray(rows)) { return null; }
+
+    const modes = shapeModes(rows);
 
     const totals = (payload.totals ?? {}) as Record<string, unknown>;
     // Prefer the server's own totals — it computed them from the same rows and a
@@ -146,4 +154,61 @@ export function modeSharePct(mode: SettlementMode, total: number): number | null
  */
 export function hasSettlements(b: SettlementBreakdown | null): boolean {
     return b !== null && b.modes.length > 0 && b.total_amount > 0;
+}
+
+/** The Overview's "Collected by payment method" block, shaped. */
+export interface HeadlineByMethod extends SettlementBreakdown {
+    /** The server's label for the block — printed verbatim, like every figure's. */
+    label: string;
+    /** The server's definition of what the rows count. */
+    hint: string;
+}
+
+/**
+ * TODAY BY PAYMENT METHOD, off the headline payload the Overview already reads.
+ *
+ * Client ask: "How much money from each payment method made in the day has to be
+ * shown." The rows are GetOverviewHeadline's `today_by_method` — the Settlement
+ * Summary's own cut (settlementByMethod) over today's bills — so the Cash row
+ * here IS the Cash collection tile beside it, and the rows add up to Today's
+ * gross sale. Nothing is re-summed that the server already totalled.
+ *
+ * NULL — render nothing — when:
+ *   * there is no payload (the headline itself failed; that card says so);
+ *   * `today_by_method` is absent. An older backend never sent it, and "the
+ *     server did not say" must not read as "no money by any method";
+ *   * the block has no label. An unnamed list of money is worse than none —
+ *     the same rule the Flutter headline applies to an unlabelled figure.
+ *
+ * An EMPTY list is returned as an empty breakdown, and `hasSettlements` says no:
+ * the headline card already says "nothing settled yet today".
+ */
+export function readHeadlineByMethod(headline: {
+    today_by_method?: unknown;
+    today_split_bills?: unknown;
+    today_unallocated?: unknown;
+    today_gross?: { value?: unknown } | null;
+    by_method?: { label?: unknown; hint?: unknown } | null;
+} | null): HeadlineByMethod | null {
+    if (!headline || !Array.isArray(headline.today_by_method)) { return null; }
+    const text = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+    const label = text(headline.by_method?.label);
+    if (!label) { return null; }
+    const modes = shapeModes(headline.today_by_method);
+    const r2 = (n: number): number => Math.round(n * 100) / 100;
+    return {
+        label,
+        hint: text(headline.by_method?.hint),
+        modes,
+        // The server's Today's gross sale, which the rows are required to add up
+        // to (jest proves it backend-side). Re-summed only when it is missing.
+        total_amount: headline.today_gross?.value !== undefined
+            ? num(headline.today_gross.value)
+            : r2(modes.reduce((s, m) => s + m.amount, 0)),
+        total_net: r2(modes.reduce((s, m) => s + m.net_amount, 0)),
+        split_bills: Math.round(num(headline.today_split_bills)),
+        unallocated: headline.today_unallocated !== undefined
+            ? num(headline.today_unallocated)
+            : (modes.find((m) => m.method === UNALLOCATED_METHOD)?.amount ?? 0),
+    };
 }
