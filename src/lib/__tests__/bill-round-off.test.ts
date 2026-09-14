@@ -94,6 +94,12 @@ describe('every web surface that shows the ladder shows the round-off rung', () 
         expect(src).toContain('roundOff: "Round off",');
     });
 
+    it('the MIS report bill drill-down', () => {
+        const src = code(readSource('src/app/dashboard/reports/drill-down.tsx'));
+        expect(src).toContain('<Line label="Round off" value={formatRoundOff(roundOffOf(bill)!, money)} />');
+        expect(src.indexOf('label="Round off"')).toBeLessThan(src.indexOf('label="Grand total"'));
+    });
+
     it('the customer-facing display', () => {
         const src = code(readSource('src/app/cfd/[restaurant]/page.tsx'));
         expect(src).toContain('round_off: roundOffOf(data),');
