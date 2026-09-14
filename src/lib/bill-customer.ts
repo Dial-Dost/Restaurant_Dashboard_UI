@@ -81,18 +81,23 @@ const present = (value: unknown): string => {
  * The real bill the client sent (req_images/line3088_1.jpeg) gives the name a
  * slot of its own DIRECTLY UNDER the restaurant header (logo, name, legal
  * entity, address, GSTN), between two rules and ABOVE the Date / Cashier /
- * Bill No. block. The thermal bill keeps that slot, so this does too:
+ * Bill No. block, worded "Name:" as it is there. The thermal bill keeps that
+ * slot, so this does too:
  *
- *     Customer Name: <name, or Guest>   (always — the paper always has the slot)
- *     Customer GSTIN: <gstin>           (only when one is set)
+ *     Name: <name>               (always — the paper always has the slot)
+ *     Customer GSTIN: <gstin>    (only when one is set)
  *
- * "Guest" for an empty name is what the thermal renderer prints
- * (`present(opts.customer) || "Guest"` in escpos.ts); a name the server stored
- * is printed as stored. The web preview and its ESC/POS twin both read this, so
- * a bill off the dashboard and a bill off the till are one document.
+ * A WALK-IN LEAVES THE SLOT BLANK — a bare "Name:", as the client's bill does.
+ * "Guest" / "QR Guest" are the placeholders the ordering flows store for
+ * "nobody gave a name" (isPlaceholderCustomer above); printed, they read as a
+ * name somebody wrote down. That is escpos.ts's rule (`/^(qr )?guest$/i` prints
+ * "Name:" alone); a name the server stored is printed as stored. The web
+ * preview and its ESC/POS twin both read this, so a bill off the dashboard and a
+ * bill off the till are one document.
  */
 export const billCustomerLines = (customer: unknown, customerGstin: unknown): string[] => {
-    const lines = [`Customer Name: ${present(customer) || 'Guest'}`];
+    const name = isPlaceholderCustomer(customer) ? '' : present(customer);
+    const lines = [name ? `Name: ${name}` : 'Name:'];
     const gstin = present(customerGstin);
     if (gstin) { lines.push(`Customer GSTIN: ${gstin}`); }
     return lines;

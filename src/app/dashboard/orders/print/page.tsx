@@ -1,18 +1,31 @@
 "use client";
 
-import { useEffect, Suspense, useState } from 'react';
+import { Fragment, useEffect, Suspense, useState, type ReactNode, type SyntheticEvent } from 'react';
 import QRCode from 'qrcode';
 import { useSearchParams } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
 import type { BillPrintSettings, RestaurantProfile} from '@/lib/db';
 import { getBillLogo, getBillPrintSettings, getRestaurantProfile, getRestaurantLogo, getBillByOrder, getBillForTable, getClosedBill, requestBackend } from '@/lib/db';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import Image from 'next/image';
 import { DEFAULT_TIMEZONE, formatDateTime } from '@/lib/tz';
 import { useTimezone } from '@/lib/use-timezone';
 import { billReceiptIsReprint, REPRINT_MARKER, type BillPrintState } from '@/lib/bill-print-state';
 import { billCustomerLines } from '@/lib/bill-customer';
+import {
+    BILL_SERVICE_CHARGE_NOTE,
+    DOTS_PER_COL,
+    billColumns,
+    billEscPosPreviewText,
+    billFeedbackUrl,
+    billItemRow,
+    billLogoFit,
+    billLogoRaster,
+    billShowsQr,
+    billTextColumns,
+    billTotals,
+    buildBillEscPos,
+} from '@/lib/bill-escpos';
 
 interface OrderItem {
     id: string;
@@ -200,9 +213,10 @@ const docField = (doc: Record<string, unknown> | null | undefined, key: string):
 };
 
 /**
- * The customer slot for this receipt — `Customer Name: …` and, when set,
- * `Customer GSTIN: …` — shared by the on-screen bill and the ESC/POS twin so
- * they cannot drift. See billCustomerLines for why it sits under the header.
+ * The customer slot for this receipt — `Name: …` (a bare `Name:` for a walk-in)
+ * and, when set, `Customer GSTIN: …` — shared by the on-screen bill and the
+ * ESC/POS twin so they cannot drift. See billCustomerLines for why it sits under
+ * the header and why a walk-in's slot is left blank.
  */
 function receiptCustomerLines(printed: PrintedBill, order: { customer?: unknown }): string[] {
     return billCustomerLines(printed.customer === undefined ? order.customer : printed.customer, printed.customerGstin);
@@ -469,6 +483,77 @@ function billQrNote(billPrint: BillPrintSettings | null): string {
     return clean(billPrint?.qrNoteDefault);
 }
 
+// --- The on-screen slip, drawn to the paper's proportions ---------------------
+//
+// THE CLIENT'S OWN BILL IS THE SPEC (their photographed "Gaia - Global
+// Vegetarian" slip): a logo with white either side, the name bold at body size,
+// solid black rules — thicker around the item table — inside visible margins,
+// and the money in a right-hand column. escpos.ts prints exactly that on 80mm
+// paper, and this card is a picture of that paper, so its measurements are
+// taken from the same numbers rather than eyeballed:
+//
+//   * the MARGINS are the thermal bill's two columns of 48 either side, as a
+//     percentage of the card (px-[4.1667%] = 2/48), so every rule and the Amount
+//     column stop exactly as far short of the edge as they do on the roll;
+//   * the ITEM TABLE's columns are billColumns() of the 44-column text area —
+//     Item 20, Qty. 5, Price 9, Amount 10 — as shares of the width;
+//   * the LADDER's figures sit in a column as wide as Amount, right-aligned, so
+//     they line up under the line amounts exactly as the printed ladder does.
+
+/** Dots across the thermal bill's text area on 80mm paper: 44 columns x 12. */
+const BILL_PRINT_AREA_DOTS = billTextColumns(48) * DOTS_PER_COL;
+
+/** The thermal bill's 80mm text area — 44 columns — which this card is a picture of. */
+const RECEIPT_TEXT_COLUMNS = billTextColumns(48);
+
+/** Item / Qty. / Price / Amount, as percentages of the table's width. */
+const RECEIPT_COLUMN_SHARES: readonly number[] = (() => {
+    const text = billTextColumns(48);
+    const { COL_ITEM, COL_QTY, COL_PRICE, COL_TOTAL } = billColumns(text);
+    return [COL_ITEM, COL_QTY, COL_PRICE, COL_TOTAL].map((cols) => (cols / text) * 100);
+})();
+
+/** The Amount column's share — the width of every ladder figure's cell. */
+const RECEIPT_AMOUNT_SHARE = `${(RECEIPT_COLUMN_SHARES[3] ?? 0).toFixed(2)}%`;
+
+/**
+ * A SOLID RULE, as on the paper: a black stroke with a little white above and
+ * below. Thin between blocks; thick around the item table, where the client's
+ * bill (and billRule's 4-row stroke) thickens it. Black whatever the dashboard
+ * theme, because a browser prints no background and a themed border is grey.
+ */
+function ReceiptRule({ thick = false }: { thick?: boolean }) {
+    // `col-span-full`: inside the totals ladder's grid a rule spans both the label
+    // and the amount column; everywhere else it is a plain block and the class
+    // does nothing.
+    return <div aria-hidden className={`col-span-full my-1.5 border-black ${thick ? 'border-t-2' : 'border-t'}`} />;
+}
+
+/**
+ * The totals ladder's grid — ONE amount column for every rung, as wide as the
+ * item table's Amount column or the widest figure on the ladder, whichever is
+ * wider. Every label therefore ends on the same edge, which is escpos.ts's
+ * shared `labelW`: a row sized on its own figure put "Grand Total" left of the
+ * rungs above it on every bill of Rs 1000 or more.
+ */
+const RECEIPT_LADDER_GRID = { gridTemplateColumns: `minmax(0, 1fr) minmax(${RECEIPT_AMOUNT_SHARE}, max-content)` };
+
+/**
+ * One rung of the totals ladder, as two cells of RECEIPT_LADDER_GRID: the label
+ * right-aligned against the shared edge, the figure right-aligned in the amount
+ * column and never broken. A label too long for its side wraps, right-aligned,
+ * and the figure sits on its LAST line — the thermal bill's rule, so a long tax
+ * name keeps its rate rather than losing it to a cut.
+ */
+function ReceiptLadderRow({ label, value, className = '' }: { label: ReactNode; value: string; className?: string }) {
+    return (
+        <>
+            <span className={`min-w-0 break-words text-right ${className}`}>{label}</span>
+            <span className={`self-end whitespace-nowrap pl-2 text-right ${className}`}>{value}</span>
+        </>
+    );
+}
+
 function PrintPageContents() {
     // A bill handed to a guest must carry the restaurant's clock, not the
     // clock of whatever machine happens to be driving the printer.
@@ -478,6 +563,9 @@ function PrintPageContents() {
     const legacyOrderData = searchParams.get('order');
     const { user } = useAuth();
     const [logoBase64, setLogoBase64] = useState<string | null>(null);
+    // The size the logo PRINTS at, once the image has loaded and its pixels are
+    // known (billLogoFit) — which is what the slip below sizes it from.
+    const [logoFit, setLogoFit] = useState<{ width: number; height: number } | null>(null);
     const [bill, setBill] = useState<any | null>(null);
     // THE SERVER'S OWN BILL — the settled one if this order has been paid, the
     // open table bill otherwise. Both carry a grand_total the billing layer
@@ -604,14 +692,15 @@ function PrintPageContents() {
                         try {
                             const fallbackBase = typeof window !== 'undefined' ? `${window.location.origin}/feedback` : '';
                             // `||`, not `??`: the Dockerfile declares ARG NEXT_PUBLIC_FEEDBACK_FORM_URL
-            // with no default, so ENV bakes it as "" — and "" is not null, so `??`
-            // never reached the fallback. baseUrl became "", the guard below went
-            // falsy, and the feedback QR was silently dropped from every printed
-            // bill while the line telling the guest to scan it still printed.
-            const baseUrl = (process.env.NEXT_PUBLIC_FEEDBACK_FORM_URL || fallbackBase).replace(/\/$/, '');
-                            if (baseUrl && user?.res_id && user?.employeeId && user?.outlet_id) {
-                                const params = new URLSearchParams({ restaurantId: user.res_id, employeeId: user.employeeId, outletId: user.outlet_id });
-                                const feedbackUrl = `${baseUrl}?${params.toString()}`;
+                            // with no default, so ENV bakes it as "" — and "" is not null, so `??`
+                            // never reached the fallback. baseUrl became "", the guard below went
+                            // falsy, and the feedback QR was silently dropped from every printed
+                            // bill while the line telling the guest to scan it still printed.
+                            //
+                            // The owner's QR switch (bill_show_qr) is applied here too: a bill
+                            // with the QR off has no code to draw, so none is built.
+                            const feedbackUrl = billFeedbackUrl(process.env.NEXT_PUBLIC_FEEDBACK_FORM_URL || fallbackBase, user, printSettings);
+                            if (feedbackUrl) {
                                 const dataUrl = await QRCode.toDataURL(feedbackUrl, { width: 260, margin: 1 });
                                 setQrDataUrl(dataUrl);
                             }
@@ -722,6 +811,28 @@ function PrintPageContents() {
     // The bill number off the SAME document the totals came from, so the header
     // and the money on one receipt cannot name two different bills.
     const billNo = printed.billNo || bill?.bill_no || '';
+    // Each of these prints only when its value is known — escpos.ts's rule. A
+    // tenant with no bill series and no named cashier got two bare labels.
+    const shownBillNo = clean(String(billNo));
+    const shownCashier = clean(cashierName);
+    // THE LADDER'S OWN STRINGS — the very labels and figures the thermal bill
+    // prints ("Sub Total", "SGST 2.5%", "-500.00"), so the two slips cannot word
+    // the same money differently. See billTotals.
+    const totals = billTotals(printed);
+    const chargesForService = billChargesForService(printed);
+    const qrNote = billQrNote(billPrint);
+    const showQr = billShowsQr(billPrint);
+    /**
+     * The logo at the width the roll prints it, as a share of the text area:
+     * bill_logo.ts fits it inside two thirds of the paper and never enlarges it,
+     * and the printer centres that raster between the margins. A 200-dot
+     * wordmark therefore spans 200 of the 528 dots between the margins here too,
+     * not stretched to fill them.
+     */
+    const onLogoLoad = (e: SyntheticEvent<HTMLImageElement>) => {
+        setLogoFit(billLogoFit(e.currentTarget.naturalWidth, e.currentTarget.naturalHeight));
+    };
+    const logoWidth = logoFit ? `${((logoFit.width / BILL_PRINT_AREA_DOTS) * 100).toFixed(2)}%` : undefined;
 
     return (
         <div className="p-4 bg-white text-black">
@@ -734,17 +845,22 @@ function PrintPageContents() {
                     .receipt-card {
                         display: block !important;
                         visibility: visible !important;
+                        /* The card's outline is the paper's edge on screen; on
+                           paper the roll IS the edge, and the client's bill has
+                           no box drawn round it. */
+                        border-color: transparent !important;
+                        box-shadow: none !important;
                     }
                 }
             `}</style>
-            
+
             {/* 5.1 — PAPER, WHATEVER THE DASHBOARD THEME. The Card primitive paints
                 bg-card / text-card-foreground, which under the default dark theme is
                 a near-black card with near-white ink — and a browser prints no
                 background, so the name came out white-on-white and the address and
                 GSTIN in pale grey. The receipt is forced to black ink on white. */}
             <Card className="mx-auto w-[420px] max-w-full shadow-none border-black receipt-card bg-white text-black">
-                <div className="mb-3 no-print">
+                <div className="mb-1 px-3 pt-3 no-print">
                     <p className="mb-2 text-left text-xs text-gray-500">Bill preview — review the receipt below, then click Print when you&apos;re ready. Nothing prints automatically.</p>
                     <div className="flex gap-2 justify-end">
                         <button
@@ -769,9 +885,11 @@ function PrintPageContents() {
                                         return;
                                     }
 
-                                    // Convert ESC/POS > readable text preview
-                                    const decoded = new TextDecoder().decode(esc);
-                                    setPreviewText(decoded);
+                                    // Convert ESC/POS > readable text preview. Not a
+                                    // plain TextDecoder: the rules and the logo are
+                                    // rasters, and a thin rule's header carries a
+                                    // newline byte — see billEscPosPreviewText.
+                                    setPreviewText(billEscPosPreviewText(esc));
 
                                     // Convert to base64 and send to backend to publish to subscribed printing apps
                                     const toBase64 = (bytes: Uint8Array) => {
@@ -819,6 +937,13 @@ function PrintPageContents() {
                     </div>
                 </div>
                 {/*
+                    THE PAPER. Inside the card's edge, the thermal bill's margins
+                    (px-[4.1667%] is its 2 columns of 48 either side), body type at
+                    the size of the address, figures in tabular numerals so the
+                    money columns line up the way monospaced print lines them up.
+                */}
+                <div data-testid="receipt-paper" className="bg-white px-[4.1667%] pb-8 pt-3 font-sans text-[13px] leading-snug text-black tabular-nums">
+                {/*
                     THE FIRST THING ON A REPRINTED SLIP IS THAT IT IS A REPRINT.
 
                     ABOVE THE LOGO, NOT UNDER IT — the same placement escpos.ts
@@ -831,162 +956,189 @@ function PrintPageContents() {
                     way to tell they are the same document.
                 */}
                 {isReprint ? (
-                    <div className="border-b-2 border-black py-2 text-center text-2xl font-extrabold tracking-widest">
+                    <div className="py-2 text-center text-2xl font-extrabold tracking-widest">
                         {REPRINT_MARKER}
                     </div>
                 ) : null}
-                <CardHeader className="text-center border-b border-black pb-4">
-                    {/* 5.1 — THE LOGO, AT A SIZE THAT READS. It was a 64px box, so a
-                        wordmark (the usual restaurant logo is ~4:1) drew about 16px
-                        tall. Now it takes up to 80% of the slip's width and 7rem of
-                        height, like the logo across the top of the roll. A tenant
-                        with no logo gets no logo line: the old "Loading Logo ..."
-                        placeholder never went away for them, and printed. */}
+                <div data-testid="receipt-header" className="pt-1 text-center">
+                    {/* 5.1 — THE LOGO, AT THE SIZE THE ROLL PRINTS IT. It was a 64px
+                        box, then 80% of the slip; the client's own bill carries its
+                        wordmark at about two thirds of the paper with white either
+                        side, which is what bill_logo.ts now rasterises. So it is
+                        sized from that raster (billLogoFit, via onLogoLoad) — never
+                        wider than two thirds of the paper, never enlarged past its
+                        own pixels — and capped at the same share before it loads.
+                        A tenant with no logo gets no logo line: the old "Loading
+                        Logo ..." placeholder never went away for them, and printed. */}
                     {logoBase64 ? (
-                        <Image src={`data:image/png;base64,${logoBase64}`} alt="Restaurant logo" className="mx-auto h-auto max-h-28 w-auto max-w-[80%] object-contain" width={576} height={240} unoptimized />
+                        <Image src={`data:image/png;base64,${logoBase64}`} alt="Restaurant logo" onLoad={onLogoLoad} style={{ width: logoWidth }} className="mx-auto mb-3 block h-auto w-auto max-w-[72.73%]" width={576} height={240} unoptimized />
                     ) : null}
-                    <CardTitle className="text-2xl font-bold text-black">{profile?.outlet_name ?? 'Not found'}</CardTitle>
-                    {/* Legal entity, address lines, GSTIN — each rendered only
+                    {/* BOLD, AT BODY SIZE — the client's bill, and escpos.ts's. At
+                        double size "Gaia - Global Vegetarian" broke in two and
+                        shouted over the logo that already names the restaurant. */}
+                    <p className="font-bold">{profile?.outlet_name ?? 'Not found'}</p>
+                    {/* Legal entity, address lines, Ph, GSTIN — each rendered only
                         when the tenant has one, so a restaurant without them
                         gets a clean receipt instead of empty labels. Black ink,
                         not the muted description grey (5.1: clearly visible). */}
-                    <CardDescription className="text-sm leading-snug text-black">
+                    <CardDescription className="text-[13px] leading-snug text-black">
                         {billHeaderLines(profile, billPrint).map((l, i) => (
                             <span key={i} className="block">{l}</span>
                         ))}
                     </CardDescription>
-                </CardHeader>
-                <CardContent className="p-6">
-                    <div className="mb-4 text-sm" > 
-                        {/* R2 item 1 — the customer's own slot, directly under the
-                            restaurant header and above the Date / Bill No. block,
-                            as on the client's printed bill: "Customer Name:"
-                            (Guest when nobody named it) and, for a corporate
-                            party, "Customer GSTIN:". The thermal bill prints the
-                            same lines in the same place. */}
-                        <div className="w-full" data-testid="receipt-customer-slot">
-                            {receiptCustomerLines(printed, order).map((l) => {
-                                const [label, ...rest] = l.split(': ');
-                                return (
-                                    <p key={label}>
-                                        <strong>{label}:</strong> {rest.join(': ')}
-                                    </p>
-                                );
-                            })}
-                        </div>
-                        <div className="border-t border-black pt-2 w-full text-center flex justify-between">
-                            <p><strong>Date:</strong> {formatDateTime(Date.now(), timezone)}</p>
-                            <p><strong>Dine In:</strong> {order.table}</p>
-                           
-                        </div>
-                        <div className="w-full flex justify-between">
-                             <p><strong>Bill No.:</strong> {billNo}</p>
-                            <p><strong>Cashier:</strong> {cashierName}</p>
-                        </div>
+                </div>
+                <ReceiptRule />
+                {/* R2 item 1 — the customer's own slot, directly under the
+                    restaurant header and above the Date / Bill No. block, as on
+                    the client's printed bill: "Name:" (left blank for a walk-in)
+                    and, for a corporate party, "Customer GSTIN:". The thermal
+                    bill prints the same lines in the same place. */}
+                <div className="w-full" data-testid="receipt-customer-slot">
+                    {receiptCustomerLines(printed, order).map((l) => (
+                        <p key={l}>{l}</p>
+                    ))}
+                </div>
+                <ReceiptRule />
+                {/* Date left, the table right and BOLD — what a server matches
+                    the slip to. Then Cashier left and Bill No. right, each only
+                    when known: the client's order, and escpos.ts's. */}
+                {/* NEVER CUT A VALUE TO MAKE A ROW FIT — the thermal bill's rule.
+                    Side by side when both fit; otherwise the right-hand run
+                    wraps onto its own line (flex-wrap) rather than squeezing the
+                    date or the cashier, and a single over-long value breaks
+                    inside its own line instead of running off the slip. */}
+                <div data-testid="receipt-date-row" className="flex flex-wrap justify-between gap-x-3">
+                    <span className="min-w-0 break-words">Date: {formatDateTime(Date.now(), timezone)}</span>
+                    <span className="min-w-0 break-words font-bold">Dine In: {order.table || 'N/A'}</span>
+                </div>
+                {shownCashier || shownBillNo ? (
+                    <div data-testid="receipt-cashier-row" className="flex flex-wrap justify-between gap-x-3">
+                        {shownCashier ? <span className="min-w-0 break-words">Cashier: {shownCashier}</span> : null}
+                        {shownBillNo ? <span className="min-w-0 break-words">Bill No.: {shownBillNo}</span> : null}
                     </div>
-                    <Table className="border-t border-black">
-                        <TableHeader>
-                            <TableRow className="border-b border-black">
-                                <TableHead className="text-black">Item</TableHead>
-                                <TableHead className="text-black text-center">Qty</TableHead>
-                                <TableHead className="text-black text-right">Price</TableHead>
-                                <TableHead className="text-black text-right">Total</TableHead>
-                            </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                            {/* The lines of the bill the totals below belong to —
-                                the server's merged list when it supplied the
-                                money, this order's own list otherwise. Items and
-                                total always come from the same document. */}
-                            {printed.items.map(item => (
-                                <TableRow key={item.id}>
-                                    <TableCell className="font-medium">{item.name}</TableCell>
-                                    <TableCell className="text-center">{item.quantity}</TableCell>
-                                    <TableCell className="text-right">{item.price.toFixed(2)}</TableCell>
-                                    <TableCell className="text-right">{(item.price * item.quantity).toFixed(2)}</TableCell>
-                                </TableRow>
-                            ))}
-                        </TableBody>
-                    </Table>
-                    <div className="mt-6 space-y-2 text-sm ml-auto max-w-xs ">
-                        {/* The rungs in escpos.ts's order: Subtotal, Total Qty,
-                            Discount, Service Charge, taxes, Grand Total. Same
-                            ladder, same source, so the paper from either printer
-                            reads the same. */}
-                        <div className="flex justify-between border-t border-black pt-2">
-                            <span>Subtotal</span>
-                            <span>{printed.subtotal.toFixed(2)}</span>
-                        </div>
-                        <div className="flex justify-between">
-                            <span>Total Qty</span>
-                            <span>{printed.totalQty}</span>
-                        </div>
-                        {printed.discount && (
-                            <div className="flex justify-between">
-                                <span>{printed.discount.label}</span>
-                                <span>- {printed.discount.amount.toFixed(2)}</span>
-                            </div>
-                        )}
-                        {printed.serviceCharge && (
-                            <div className="flex justify-between">
-                                <span>Service Charge ({printed.serviceCharge.percent}%)</span>
-                                <span>{printed.serviceCharge.optedOut ? 'Opted-out' : printed.serviceCharge.amount.toFixed(2)}</span>
-                            </div>
-                        )}
-                        {printed.taxes.map(tax => (
-                             <div key={tax.id} className="flex justify-between">
-                                <span>{tax.name} ({tax.percentage}%)</span>
-                                <span>{tax.amount.toFixed(2)}</span>
-                            </div>
+                ) : null}
+                <ReceiptRule thick />
+                {/* Item | Qty. | Price | Amount — the client's headings, in the
+                    thermal bill's column proportions, with the heading's thick
+                    rule under it and another after the last line. */}
+                <table data-testid="receipt-items" className="w-full table-fixed border-collapse">
+                    <colgroup>
+                        {RECEIPT_COLUMN_SHARES.map((share, i) => (
+                            <col key={i} style={{ width: `${share.toFixed(2)}%` }} />
                         ))}
+                    </colgroup>
+                    <thead>
+                        <tr>
+                            <th scope="col" className="border-b-2 border-black pb-1.5 text-left font-normal">Item</th>
+                            <th scope="col" className="border-b-2 border-black pb-1.5 text-right font-normal">Qty.</th>
+                            <th scope="col" className="border-b-2 border-black pb-1.5 text-right font-normal">Price</th>
+                            <th scope="col" className="border-b-2 border-black pb-1.5 text-right font-normal">Amount</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {/* The lines of the bill the totals below belong to —
+                            the server's merged list when it supplied the
+                            money, this order's own list otherwise. Items and
+                            total always come from the same document. */}
+                        {printed.items.map((item, i) => {
+                            // The paper's figures and the paper's "do they fit"
+                            // (billItemRow, on the 44-column text area this card
+                            // draws). A figure that fills its column — 150000.00
+                            // as a price, 1000000.00 as an amount — would run into
+                            // its neighbour, so, as on the thermal bill, the dish
+                            // takes the whole width and "qty x price  amount"
+                            // goes on its own right-aligned line under it.
+                            const row = billItemRow(item.quantity, item.price, RECEIPT_TEXT_COLUMNS);
+                            const top = i === 0 ? 'pt-1.5' : 'pt-0.5';
+                            if (!row.fits) {
+                                return (
+                                    <Fragment key={item.id}>
+                                        <tr className="align-top">
+                                            <td colSpan={4} className={`break-words ${top}`}>{item.name}</td>
+                                        </tr>
+                                        <tr data-testid="receipt-item-figures">
+                                            <td colSpan={4} className="whitespace-pre-wrap text-right">{`${row.qtyText} x ${row.priceText}  ${row.amountText}`}</td>
+                                        </tr>
+                                    </Fragment>
+                                );
+                            }
+                            return (
+                                <tr key={item.id} className="align-top">
+                                    <td className={`break-words pr-2 ${top}`}>{item.name}</td>
+                                    <td className={`text-right ${top}`}>{row.qtyText}</td>
+                                    <td className={`text-right ${top}`}>{row.priceText}</td>
+                                    <td className={`text-right ${top}`}>{row.amountText}</td>
+                                </tr>
+                            );
+                        })}
+                    </tbody>
+                </table>
+                <ReceiptRule thick />
+                {/* THE LADDER, IN THE RIGHT-HAND BLOCK — escpos.ts's rungs in its
+                    order: "Total Qty: n   Sub Total", discount, service charge,
+                    taxes; a rule; the round-off when one is disclosed; the Grand
+                    Total larger and bold; a rule. Labels right-aligned against
+                    ONE shared amount column, so every label ends on one edge. */}
+                <div data-testid="receipt-totals" className="grid" style={RECEIPT_LADDER_GRID}>
+                    <ReceiptLadderRow
+                        label={<>Total Qty: {totals.totalQty}<span aria-hidden className="inline-block w-6" />Sub Total</>}
+                        value={totals.subtotal}
+                    />
+                    {totals.rungs.map((r) => (
+                        <ReceiptLadderRow key={r.key} label={r.label} value={r.value} />
+                    ))}
+                    <ReceiptRule />
+                    {/* Round off is DISCLOSED, never created: only a non-zero one
+                        the billing layer supplied. A server-supplied grand total
+                        has none left to disclose — escpos.ts omits the line for
+                        the same reason. */}
+                    {totals.roundOff !== null && (
+                        <ReceiptLadderRow label="Round off" value={totals.roundOff} />
+                    )}
+                    <ReceiptLadderRow
+                        className="py-0.5 text-[17px] font-bold leading-tight"
+                        label="Grand Total"
+                        value={`${currencySymbol}${printed.grandTotal.toFixed(2)}`}
+                    />
+                    <ReceiptRule />
+                </div>
 
-                        <hr className="border-t border-black my-2" />
+                {/* G2's mandatory sentence, on the browser-printed bill as
+                    well as the ESC/POS one — the two are the same document.
+                    FIRST in the footer and BOLD, straight under the total it
+                    qualifies, as on the client's bill. Printed only when the
+                    guest is actually being charged for service; see
+                    billChargesForService for why the row alone is not the right
+                    question. The old "Thanks" line is gone: the client's bill
+                    has none. */}
+                {chargesForService ? (
+                    <p data-testid="receipt-service-charge-note" className="text-center font-bold">
+                        {BILL_SERVICE_CHARGE_NOTE}
+                    </p>
+                ) : null}
 
-                        {/* Round off is disclosed ONLY when this page did the
-                            rounding. A server-supplied grand total has none left
-                            to disclose — escpos.ts omits the line for the same
-                            reason. */}
-                        {printed.roundOff !== null && (
-                            <div className="flex justify-between text-sm mt-1">
-                                <span>Round off</span>
-                                <span>{(printed.roundOff > 0 ? '+' : '') + printed.roundOff.toFixed(2)}</span>
-                            </div>
-                        )}
-
-                        <div className="flex justify-between font-bold text-lg pt-2 mt-2">
-                            <span>Grand Total:</span>
-                            <span>{currencySymbol}{printed.grandTotal.toFixed(2)}</span>
+                {/* The valet/feedback QR, when there is one to print — and
+                    nothing in its place when there is not. The QR is built in
+                    the same effect that resolves the bill, so by the time this
+                    renders a missing one is missing for good; the "Loading QR..."
+                    that used to stand here never went away, and printed. */}
+                {/* THE OWNER'S QR SWITCH (bill_show_qr): off hides the sentence
+                    AND the code, as the thermal bill does. No settings or no key
+                    keeps them — billShowsQr. */}
+                {showQr && qrDataUrl ? (
+                    <>
+                        {chargesForService ? <ReceiptRule /> : null}
+                        <div className="text-center">
+                            {/* The tenant's own sentence when they have set one;
+                                otherwise the built-in line the backend supplies.
+                                Omitted rather than rendered blank if neither is
+                                available (i.e. the settings fetch failed). */}
+                            {qrNote ? <p>{qrNote}</p> : null}
+                            <Image src={qrDataUrl} alt="valet-qr" className="mx-auto mt-2 w-[150px] h-[150px]" width={150} height={150} />
                         </div>
-                    </div>
-                    <hr className="border-t border-black my-4" />
-                     <div className="text-center mt-2 text-xs text-gray-600">
-                        <p>Thanks</p>
-                    </div>
-
-                    {/* G2's mandatory sentence, on the browser-printed bill as
-                        well as the ESC/POS one — the two are the same document.
-                        Printed only when the guest is actually being charged for
-                        service; see billChargesForService for why the row alone
-                        is not the right question. */}
-                    {billChargesForService(printed) ? (
-                        <p className="text-center mt-2 text-xs text-gray-600">
-                            A Voluntary Service Charge is included to support our staff. If you prefer not to contribute, please inform your server before payment and it will be removed.
-                        </p>
-                    ) : null}
-
-                    <div className="text-center mt-4 text-xs text-gray-600">
-                        {/* The tenant's own sentence when they have set one;
-                            otherwise the built-in line the backend supplies.
-                            Omitted rather than rendered blank if neither is
-                            available (i.e. the settings fetch failed). */}
-                        {billQrNote(billPrint) ? <p>{billQrNote(billPrint)}</p> : null}
-                                                {qrDataUrl ? (
-                                                    <Image src={qrDataUrl} alt="valet-qr" className="mx-auto mt-2 w-[150px] h-[150px]" width={150} height={150} />
-                                                ) : (
-                          <p className="text-xs text-muted-foreground">Loading QR...</p>
-                        )}
-                    </div>
-                </CardContent>
+                    </>
+                ) : null}
+                </div>
             </Card>
             {previewText && (
                 <div className="mt-6 p-4 border bg-gray-100 text-xs whitespace-pre overflow-x-auto">
@@ -1007,20 +1159,44 @@ export default function PrintPage() {
 }
 
 /**
- * The four encoder calls the REPRINT banner makes, named.
+ * The logo as the thermal printer takes it: a GS v 0 raster of the image at the
+ * size bill_logo.ts prints it — inside two thirds of the roll and 240 dots tall,
+ * never enlarged — thresholded to one bit. Browser-only (it needs a canvas), so
+ * it lives here rather than in the pure encoder.
  *
- * `@point-of-sale/receipt-printer-encoder` is loaded through a dynamic import
- * and resolves to `any` here, so every call on it is unchecked. Giving the
- * banner's own four methods a shape means a typo in this block is a build error
- * rather than a silently missing marker on a bill — which is exactly the kind of
- * failure a reprint banner cannot afford, because nobody notices the word that
- * did not print.
+ * The logo this page holds is normally /restaurant/logo/bill's PNG, which IS
+ * that raster already: the fit is then a no-op, the canvas copies it pixel for
+ * pixel, and the bytes match the ones the till's bill carries. A branding-PNG
+ * fallback (a backend without that route) goes through the same fit and
+ * threshold here instead.
+ *
+ * A failure costs the bill its logo, never the bill.
  */
-interface BannerEncoder {
-    bold: (on: boolean) => BannerEncoder;
-    width: (multiplier: number) => BannerEncoder;
-    height: (multiplier: number) => BannerEncoder;
-    line: (text: string) => BannerEncoder;
+async function billLogoRasterFromBase64(logoBase64: string): Promise<Uint8Array | null> {
+    try {
+        const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+            const i = document.createElement('img');
+            i.onload = () => { resolve(i); };
+            i.onerror = reject;
+            i.src = `data:image/png;base64,${logoBase64}`;
+        });
+        const fit = billLogoFit(img.naturalWidth, img.naturalHeight);
+        if (!fit) {return null;}
+        const canvas = document.createElement('canvas');
+        canvas.width = fit.width;
+        canvas.height = fit.height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {return null;}
+        // White first: a transparent PNG would otherwise threshold its empty
+        // background to black and print a solid slab.
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, fit.width, fit.height);
+        ctx.drawImage(img, 0, 0, fit.width, fit.height);
+        return billLogoRaster(ctx.getImageData(0, 0, fit.width, fit.height).data, fit.width, fit.height);
+    } catch (err) {
+        console.error('Failed to render logo to ESC/POS', err);
+        return null;
+    }
 }
 
 /**
@@ -1039,6 +1215,13 @@ interface BannerEncoder {
  * print state — see `isReprint` in PrintPageContents. It defaults to false so
  * the exported signature stays callable as it was, and because an unmarked
  * reprint is a smaller failure than a REPRINT banner across an original bill.
+ *
+ * THE BYTES THEMSELVES ARE buildBillEscPos's (lib/bill-escpos.ts), which builds
+ * the client's layout command for command the way escpos.ts does — margins,
+ * solid rules, the "Name:" slot, Cashier / Bill No., the right-hand ladder, the
+ * double-height Grand Total, the disclaimer before the QR. This function only
+ * gathers what that needs from the page: the same header, customer slot, ladder
+ * and QR sentence the on-screen bill draws, the logo raster and the feedback URL.
  */
 export async function generateEscPos(user: any, profile: any, cashierName: string, bill: any, orderArg?: any, logoBase64?: string | null, timeZone: string = DEFAULT_TIMEZONE, billPrint: BillPrintSettings | null = null, printedArg: PrintedBill | null = null, reprint = false): Promise<Uint8Array | null> {
     try {
@@ -1085,283 +1268,73 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
             if (!order) {return null;}
         }
 
-        const pkg = await import('@point-of-sale/receipt-printer-encoder');
-        const EncoderClass = pkg?.default ?? pkg?.ReceiptPrinterEncoder ?? pkg;
-        if (typeof EncoderClass !== 'function') {
-            console.error('ReceiptPrinterEncoder is not a constructor', EncoderClass);
-            return null;
-        }
-
-        const encoder = new EncoderClass({ 
-            language: 'esc-pos', 
-            width: 48, 
-            columns: 48,
-            feedBeforeCut: 4, 
-        });
-        
-        if (typeof (encoder).initialize === 'function') {(encoder).initialize();}
-
-        // ----------------------------------------------------
-        // Layout Config & Helpers
-        // ----------------------------------------------------
-        const MAX_CHARS = 48; // Standard width for 80mm printers
-        const lineSeparator = '-'.repeat(MAX_CHARS);
-
-        const leftRight = (left: string, right: string, width = MAX_CHARS) => {
-            const l = left.toString();
-            const r = right.toString();
-            if (l.length + r.length >= width) {
-                const availableForLeft = width - r.length - 1;
-                return l.substring(0, availableForLeft > 0 ? availableForLeft : 0) + ' ' + r;
-            }
-            return l + ' '.repeat(width - l.length - r.length) + r;
-        };
-
-        const wrapText = (text: string, maxLen: number): string[] => {
-            const words = (text || '').split(' ');
-            const lines: string[] = [];
-            let currentLine = '';
-
-            words.forEach(word => {
-                if ((currentLine + word).length > maxLen) {
-                    if (currentLine) {lines.push(currentLine.trim());}
-                    currentLine = word + ' ';
-                } else {
-                    currentLine += word + ' ';
-                }
-            });
-            if (currentLine) {lines.push(currentLine.trim());}
-
-            return lines.length > 0 ? lines : [''];
-        };
-
-        const currencySymbol = 'Rs. '; //order.currencySymbol || '₹';
-
-        // ----------------------------------------------------
-        // Receipt Generation
-        // ----------------------------------------------------
-        encoder.align('center');
-
-        /*
-          ** REPRINT **, FIRST AND BIGGEST — the ESC/POS twin of the banner the
-          preview draws, in the same place for the same reason.
-
-          ABOVE THE LOGO. escpos.ts puts it there rather than under it because a
-          tenant with a tall raster logo would otherwise push the one word that
-          has to be unmissable several centimetres down a slip that gets glanced
-          at and filed. This encoder must agree with it: the same bill can be
-          printed through either path, and a reprint marked one way off the till
-          and another way off the dashboard is two documents as far as anyone
-          holding both is concerned.
-
-          THE TEXT IS THE BACKEND'S CONSTANT, NOT A STRING TYPED HERE. Thirteen
-          characters is also load-bearing there — it survives double width on
-          58mm paper (26 of 32 cells) instead of wrapping mid-word — so the
-          length is not ours to tidy either.
-
-          Double width AND height plus bold is the largest type the printer has,
-          which is what escpos.ts's `big()` emits (ESC ! 0x30 + ESC E 1).
-        */
-        if (reprint) {
-            const banner = encoder as BannerEncoder;
-            banner.bold(true).width(2).height(2).line(REPRINT_MARKER).width(1).height(1).bold(false);
-        }
-
-        // Dynamically process and insert the Logo if available
-        if (logoBase64 && typeof window !== 'undefined') {
-            try {
-                // 1. Load image asynchronously to get true dimensions
-                const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-                    const i = document.createElement('img');
-                    i.onload = () => { resolve(i); };
-                    i.onerror = reject;
-                    i.src = `data:image/png;base64,${logoBase64}`;
-                });
-
-                // 2. Calculate aspect ratio boundaries
-                // Full 80mm printer width is 512 dots. We use 384 for a clean centered logo.
-                const MAX_LOGO_WIDTH = 384; 
-                let targetWidth = Math.min(img.width, MAX_LOGO_WIDTH);
-                
-                // 3. Round down to nearest multiple of 8 (Mandatory for ESC/POS bit-image processing)
-                targetWidth = Math.floor(targetWidth / 8) * 8;
-                
-                // 4. Calculate height maintaining aspect ratio
-                const targetHeight = Math.round((img.height / img.width) * targetWidth);
-
-                // 5. Draw to off-screen canvas to flatten transparencies
-                const canvas = document.createElement('canvas');
-                canvas.width = targetWidth;
-                canvas.height = targetHeight;
-                const ctx = canvas.getContext('2d');
-                
-                if (ctx) {
-                    // Fill white background first (prevent transparent PNGs printing black)
-                    ctx.fillStyle = '#FFFFFF';
-                    ctx.fillRect(0, 0, targetWidth, targetHeight);
-                    // Draw resized logo
-                    ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
-
-                    // 6. Push canvas to encoder using threshold (best for vector logos)
-                    encoder.image(canvas, targetWidth, targetHeight, 'threshold');
-                    encoder.newline();
-                }
-            } catch (err) {
-                console.error("Failed to render logo to ESC/POS", err);
-            }
-        }
-
-        // Header Text — name, then legal entity / address lines / GSTIN.
-        // Each of those prints ONLY when the tenant has one (billHeaderLines
-        // drops the rest), so a restaurant with no GSTIN or no registered
-        // entity gets a clean receipt rather than orphan labels.
-        encoder
-            .bold(true)
-            .line(profile?.outlet_name ?? 'CSR Organics Main Outlet')
-            .bold(false);
-
-        for (const headerLine of billHeaderLines(profile, billPrint)) {
-            encoder.line(headerLine);
-        }
-
-        encoder
-            .newline()
-            .line(lineSeparator)
-            .align('left');
-
-        // R2 item 1 — the customer slot, between the header's rule and the next
-        // one, above Date / Bill No., exactly where the client's paper and the
-        // thermal bill have it. Same helper as the preview above.
-        for (const customerLine of receiptCustomerLines(printedArg, order as { customer?: unknown })) {
-            for (const wrapped of wrapText(customerLine, MAX_CHARS)) {
-                encoder.line(wrapped);
-            }
-        }
-        encoder.line(lineSeparator);
-
-        const orderDate = formatDateTime(Date.now(), timeZone); 
-        encoder.line(leftRight(`Date: ${orderDate}`, `Dine In: ${order.table || 'N/A'}`, MAX_CHARS));
-        
         // Resolved once, by the caller, so every figure below comes from one
         // server-computed document. The refusal that guarantees it is at the top
         // of this function, before a single byte is encoded.
         const doc: PrintedBill = printedArg;
         const displayId = doc.billNo || bill?.bill_no || '';
-        // if (displayId.length > 18) {
-        //     const parts = displayId.split('-');
-        //     displayId = parts.length > 1 ? `${parts[0]}-${parts[1].substring(0, 1)}` : displayId.substring(0, 10);
-        // }
 
-        encoder.line(leftRight(`Bill No.: ${displayId}`, `Cashier: ${cashierName}`, MAX_CHARS));
-        encoder.line(lineSeparator);
-
-        // Items Header 
-        const COL_ITEM = 20;
-        const COL_QTY = 6;
-        const COL_PRICE = 10;
-        const COL_TOTAL = 12;
-
-        encoder.line('Item'.padEnd(COL_ITEM) + 'Qty'.padStart(COL_QTY) + 'Price'.padStart(COL_PRICE) + 'Total'.padStart(COL_TOTAL));
-        encoder.line(lineSeparator);
-
-        // Items List — the document's lines, which are the lines the totals
-        // below are built from. Never `order.items` independently of them.
-        doc.items.forEach((it: any) => {
-            const itemNameLines = wrapText(it.name, COL_ITEM - 1);
-            const qtyStr = String(it.quantity).padStart(COL_QTY);
-            const priceStr = Number(it.price).toFixed(2).padStart(COL_PRICE);
-            const totalStr = (Number(it.price) * Number(it.quantity)).toFixed(2).padStart(COL_TOTAL);
-
-            encoder.line(itemNameLines[0].padEnd(COL_ITEM) + qtyStr + priceStr + totalStr);
-
-            for (let i = 1; i < itemNameLines.length; i++) {
-                encoder.line(itemNameLines[i]);
-            }
-            
-            encoder.newline();
-        });
-
-        encoder.line(lineSeparator);
-
-        // Totals — the rungs in escpos.ts's order, off the resolved document.
-        encoder.line(leftRight('Subtotal', doc.subtotal.toFixed(2)));
-        encoder.line(leftRight('Total Qty', String(doc.totalQty)));
-
-        if (doc.discount) {
-            encoder.line(leftRight(doc.discount.label, `- ${doc.discount.amount.toFixed(2)}`));
-        }
-
-        if (doc.serviceCharge) {
-            encoder.line(leftRight(
-                `Service Charge (${doc.serviceCharge.percent}%)`,
-                doc.serviceCharge.optedOut ? 'Opted-out' : doc.serviceCharge.amount.toFixed(2),
-            ));
-        }
-
-        doc.taxes.forEach((t) => {
-            encoder.line(leftRight(`${t.name} (${t.percentage}%)`, t.amount.toFixed(2)));
-        });
-
-        encoder.line(lineSeparator);
-        // Round off is disclosed only when this page did the rounding. A
-        // server-supplied grand total has none left to disclose, and escpos.ts
-        // drops the line in exactly that case for exactly that reason.
-        if (doc.roundOff !== null) {
-            encoder.line(leftRight('Round off', (doc.roundOff > 0 ? '+' : '') + doc.roundOff.toFixed(2)));
-        }
-
-        // Grand Total LAST
-        encoder
-            .bold(true)
-            .line(leftRight('Grand Total:', currencySymbol + doc.grandTotal.toFixed(2)))
-            .bold(false);
-            
-        encoder.line(lineSeparator);
-
-        // Footer
-        encoder
-            .align('center')
-            .line('Thanks')
-            .line(lineSeparator);
-
-        // The tenant's own sentence above the QR when they have set one,
-        // otherwise the built-in valet line. Wrapped to the paper width so a
-        // long message stays inside the column instead of being clipped.
-        //
-        // Guarded on non-empty: wrapText('') yields [''], which would feed the
-        // encoder a blank line where the sentence should be. That only happens
-        // if the settings fetch failed AND the tenant set no note of their own.
-        const qrNoteText = billQrNote(billPrint);
-        if (qrNoteText) {
-            for (const noteLine of wrapText(qrNoteText, MAX_CHARS)) {
-                encoder.line(noteLine);
-            }
-        }
-        encoder.newline();
+        // The logo, fitted and thresholded the way the till's bill fits it.
+        const logo = logoBase64 && typeof window !== 'undefined'
+            ? await billLogoRasterFromBase64(logoBase64)
+            : null;
 
         // QR (feedback form lives inside this app at /feedback; env still overrides)
         const fallbackBase = typeof window !== 'undefined' ? `${window.location.origin}/feedback` : '';
         // `||`, not `??` — see the same guard above: the env bakes as "" and `??`
         // never fires on it, which dropped the feedback QR from the printed bill.
-        const baseUrl = (process.env.NEXT_PUBLIC_FEEDBACK_FORM_URL || fallbackBase).replace(/\/$/, '');
-        if (baseUrl && user?.res_id && user?.employeeId && user?.outlet_id) {
-            const params = new URLSearchParams({ restaurantId: user.res_id, employeeId: user.employeeId, outletId: user.outlet_id });
-            const feedbackUrl = `${baseUrl}?${params.toString()}`;
-            
-            encoder.qrcode(feedbackUrl, 2, 6, 'l');
-        }
+        //
+        // THE OWNER'S QR SWITCH. With bill_show_qr off there is NO feedback URL,
+        // and buildBillEscPos then prints no QR sentence and no QR — exactly what
+        // escpos.ts prints for the same tenant from the till. No settings, or
+        // settings from a backend without the key, keep the QR (billShowsQr).
+        const feedbackUrl = billFeedbackUrl(process.env.NEXT_PUBLIC_FEEDBACK_FORM_URL || fallbackBase, user, billPrint);
 
-        // G2's sentence, and only when the guest is actually being charged for
-        // service. It used to print unconditionally, so a bill with the charge
-        // waived still told the guest a voluntary service charge was included —
-        // the paper contradicting its own Opted-out line. Same predicate as the
-        // on-screen bill and as routes/bills.ts's serviceChargeNote.
-        if (billChargesForService(doc)) {
-            encoder.align('center').line('A Voluntary Service Charge is included to support our staff. If you prefer not to contribute, please inform your server before payment and it will be removed.');
-        }
-        encoder.cut();
-
-        return encoder.encode();
+        return buildBillEscPos({
+            // The dashboard prints for the 80mm roll: 48 columns, 44 of them
+            // between the bill's margins.
+            width: 48,
+            // ** REPRINT **, FIRST AND BIGGEST, above the logo — the backend's
+            // own constant, in the backend's own place (see buildBillEscPos).
+            reprint,
+            logo,
+            restaurantName: clean(profile?.outlet_name) || 'Receipt',
+            // Name, then legal entity / address lines / Ph / GSTIN. Each of
+            // those prints ONLY when the tenant has one (billHeaderLines drops
+            // the rest), so a restaurant with no GSTIN or no registered entity
+            // gets a clean receipt rather than orphan labels.
+            headerLines: billHeaderLines(profile, billPrint),
+            // R2 item 1 — the customer slot, between the header's rule and the
+            // next one, above Date / Bill No., exactly where the client's paper
+            // and the thermal bill have it. Same helper as the preview above.
+            customerLines: receiptCustomerLines(printedArg, order as { customer?: unknown }),
+            printedAt: formatDateTime(Date.now(), timeZone),
+            table: String(order.table || ''),
+            cashier: cashierName,
+            billNo: String(displayId),
+            currency: String(order.currencySymbol || '₹'),
+            // The document's lines, which are the lines the totals below are
+            // built from. Never `order.items` independently of them.
+            items: doc.items,
+            subtotal: doc.subtotal,
+            discount: doc.discount,
+            serviceCharge: doc.serviceCharge,
+            taxes: doc.taxes,
+            roundOff: doc.roundOff,
+            grandTotal: doc.grandTotal,
+            // G2's sentence, and only when the guest is actually being charged
+            // for service. It used to print unconditionally, so a bill with the
+            // charge waived still told the guest a voluntary service charge was
+            // included — the paper contradicting its own Opted-out line. Same
+            // predicate as the on-screen bill and as routes/bills.ts's
+            // serviceChargeNote.
+            serviceChargeNote: billChargesForService(doc) ? BILL_SERVICE_CHARGE_NOTE : null,
+            feedbackUrl,
+            // The tenant's own sentence above the QR when they have set one,
+            // otherwise the built-in valet line; '' (the settings fetch failed
+            // AND no note of their own) prints no sentence rather than a blank.
+            qrNote: billQrNote(billPrint),
+        });
 
     } catch (err) {
         console.error("Error generating ESC/POS sequence:", err);
