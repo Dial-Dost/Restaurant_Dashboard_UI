@@ -38,6 +38,7 @@ import { PERM_SETTINGS, hasPermission } from "@/lib/mis-capture"
 import { BillPrintSettingsCard } from "./bill-print-settings"
 import { FeedbackValetCard } from "./feedback-valet-settings"
 import { BillingCountersCard } from "./billing-counters"
+import { PaymentMethodsCard } from "./payment-methods-settings"
 import { BrandingCustomizer } from "./branding-customizer"
 import { PostersEditor } from "./posters-editor"
 import { TimezoneSelector } from "./timezone-selector"
@@ -429,6 +430,16 @@ export function SettingsForm() {
 
         {user?.restaurantUsername ? (
           <BillPrintSettingsCard restaurantId={user.restaurantUsername} isAdmin={hasRole("admin")} />
+        ) : null}
+
+        {/* How this restaurant takes money: the same list the owner app's
+            Settings > Payments edits and every settle picker reads. Editable
+            with the settings permission the POST requires. */}
+        {user?.restaurantUsername ? (
+          <PaymentMethodsCard
+            restaurantId={user.restaurantUsername}
+            canEdit={hasPermission(user.actions_set, PERM_SETTINGS)}
+          />
         ) : null}
 
         {/* Sits beside the bill-print card because both answer "how does this

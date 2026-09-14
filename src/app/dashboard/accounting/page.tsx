@@ -23,6 +23,7 @@ import {
   type SalesReport, type GstReport, type ProfitAndLoss, type ExpenseRow, type PayrollData, type PayrollRow,
   type BalanceSheet, type ReconciliationRow, type DiscountsReport, type OpenBillSummary,
 } from "@/lib/db"
+import { reportModeName } from "@/lib/payment-methods"
 import { formatDate, formatFullDateTime, monthKeyInZone, timezoneCaption, todayInZone } from "@/lib/tz"
 import { useTimezone } from "@/lib/use-timezone"
 
@@ -250,7 +251,7 @@ function AccountingInner() {
             ) : (
               sales!.by_method.map((m) => (
                 <div key={m.method} className="flex items-center justify-between rounded-lg border p-2 text-sm">
-                  <span className="font-medium">{m.method}</span>
+                  <span className="font-medium">{reportModeName(m)}</span>
                   <span className="text-muted-foreground">{m.bills} bills</span>
                   <span className="font-semibold">{money(m.sales)}</span>
                 </div>
@@ -699,7 +700,7 @@ function ReconciliationSection({ rid, money }: { rid: string; money: (n: number 
       const r = await saveReconciliation(rid, { date, method, actual, note: (notes[method] ?? "").trim() || undefined })
       toast({
         title: r.status === "matched" ? "Matched" : "Variance recorded",
-        description: `${method} · expected ${money(r.expected)} · actual ${money(r.actual)}`,
+        description: `${reportModeName(rows.find((x) => x.method === method) ?? { method })} · expected ${money(r.expected)} · actual ${money(r.actual)}`,
         variant: r.status === "matched" ? undefined : "destructive",
       })
       await load()
@@ -729,7 +730,7 @@ function ReconciliationSection({ rid, money }: { rid: string; money: (n: number 
             {rows.map((r) => (
               <div key={r.method} className="rounded-lg border p-2 text-sm">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="min-w-20 font-medium">{r.method}</span>
+                  <span className="min-w-20 font-medium">{reportModeName(r)}</span>
                   <span className="text-muted-foreground">Expected {money(r.expected)}</span>
                   {r.status === "matched" && (
                     <span className="rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-semibold text-green-800 dark:bg-green-950 dark:text-green-300">Matched</span>

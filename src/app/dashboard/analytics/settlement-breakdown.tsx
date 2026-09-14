@@ -90,7 +90,7 @@ export function SettlementBreakdownCard({ rid, range }: { rid: string; range: Ra
       <div className="space-y-4">
         {/* One bar, proportioned by mode. The point of the card at a glance. */}
         <div className="flex h-3 w-full overflow-hidden rounded-full bg-muted" role="img"
-          aria-label={`Payment modes: ${b.modes.map((m) => `${m.method} ${money(m.amount)}`).join(", ")}`}>
+          aria-label={`Payment modes: ${b.modes.map((m) => `${m.label} ${money(m.amount)}`).join(", ")}`}>
           {b.modes.map((m, i) => {
             const pct = b.total_amount > 0 ? (m.amount / b.total_amount) * 100 : 0
             return pct > 0
@@ -118,7 +118,7 @@ export function SettlementBreakdownCard({ rid, range }: { rid: string; range: Ra
                     <td className="py-1.5 pr-3">
                       <span className="inline-flex items-center gap-2">
                         <span className={`inline-block h-2.5 w-2.5 rounded-sm ${toneFor(m.method, i)}`} />
-                        {m.method}
+                        {m.label}
                       </span>
                     </td>
                     <td className="py-1.5 pr-3 text-right tabular-nums">{money(m.amount)}</td>

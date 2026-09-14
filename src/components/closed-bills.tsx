@@ -12,7 +12,7 @@
 // and lifts a "Service Charge" entry out of the tax breakdown so it is never
 // shown twice. Nothing is recomputed here.
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { useToast } from "@/hooks/use-toast"
@@ -22,6 +22,8 @@ import { Badge } from "@/components/ui/badge"
 import { Pencil, Printer, Receipt } from "lucide-react"
 import { useCurrency } from "@/hooks/use-currency"
 import { useAuth } from "@/context/AuthContext"
+import { usePaymentMethods } from "@/hooks/use-payment-methods"
+import { closedBillMethodFilterOptions, paymentMethodLabel } from "@/lib/payment-methods"
 import { BillCustomerDialog } from "@/components/bill-customer-dialog"
 import { canEditSettledBillCustomer } from "@/lib/bill-customer"
 import { getClosedBills, getClosedBill, reprintSettledBill, type ClosedBillSummary, type ClosedBillDetail } from "@/lib/db"
@@ -33,9 +35,10 @@ import { elapsedToSettlement, formatDuration, readServiceClock } from "@/lib/ser
 
 const PAGE_SIZE = 25
 
-// Mirrors the backend PaymentMethod union. "Split" bills carry their real modes
-// in payment_splits, which the detail view lists individually.
-const PAYMENT_METHODS = ["Upi", "Cash", "Card", "Dineout", "Zomato", "Eazydiner", "District", "Razorpay", "Split"]
+// The method filter is the restaurant's own modes — every one it has configured,
+// switched off or not, because old bills keep their mode — plus "Split", whose
+// bills carry their real modes in payment_splits (listed in the detail view).
+// The value is the stored id, which is what GET /bills/closed filters on.
 
 // Settlement instants are accounting evidence — they render in the restaurant's
 // zone, never the viewer's, so a closed bill reads the same as the till printed.
@@ -68,6 +71,8 @@ interface Props {
 
 export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, range, onRangeChange, description }: Props) {
   const { toast } = useToast()
+  const { methods: paymentMethods } = usePaymentMethods(rid)
+  const methodOptions = useMemo(() => closedBillMethodFilterOptions(paymentMethods), [paymentMethods])
   const { timezone } = useTimezone()
   /** The bill currently being sent to a printer, so the button can say so. */
   const [reprinting, setReprinting] = useState<string | null>(null)
@@ -223,7 +228,7 @@ export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, range
             className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:border-ring"
           >
             <option value="">All payment methods</option>
-            {PAYMENT_METHODS.map((m) => <option key={m} value={m}>{m}</option>)}
+            {methodOptions.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
           </select>
         </div>
 
@@ -257,7 +262,7 @@ export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, range
                   <span className="ml-auto flex items-center gap-2">
                     {b.refunded && <Badge variant="destructive">Refunded</Badge>}
                     {b.coupon_code && <Badge variant="outline">{b.coupon_code}</Badge>}
-                    {b.payment_method && <Badge variant="secondary">{b.payment_method}</Badge>}
+                    {b.payment_method && <Badge variant="secondary">{paymentMethodLabel(b.payment_method, paymentMethods)}</Badge>}
                     <span className="font-semibold">{money(b.grand_total)}</span>
                   </span>
                 </button>

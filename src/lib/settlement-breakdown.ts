@@ -29,8 +29,10 @@ import type { MisReportPayload } from '@/lib/mis-reports';
 
 /** One payment mode's share of the window. */
 export interface SettlementMode {
-    /** 'Cash', 'UPI', 'Card', … or the unallocated bucket. */
+    /** 'Cash', 'Upi', 'Card', … or the unallocated bucket — the stored id rows group by. */
     method: string;
+    /** What to CALL it: the owner's label from Settings > Payments, else the id. */
+    label: string;
     /** Bills that touched this mode. A split bill counts under each mode it used. */
     bills: number;
     /** Gross taken on this mode, before refunds. */
@@ -79,6 +81,7 @@ function shapeModes(rows: unknown[]): SettlementMode[] {
             const method = String(r.method ?? '').trim();
             return {
                 method,
+                label: (typeof r.label === 'string' && r.label.trim()) || method,
                 bills: Math.round(num(r.bills)),
                 amount: num(r.amount),
                 refund: num(r.refund),
