@@ -49,7 +49,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { useCurrency } from "@/hooks/use-currency"
 import { getOverviewHeadline, type OverviewHeadline, type HeadlineFigure } from "@/lib/db"
 import {
-  hasSettlements, modeSharePct, readHeadlineByMethod, UNALLOCATED_METHOD,
+  hasSettlements, modeSharePct, readHeadlineByMethod, unallocatedWarning, UNALLOCATED_METHOD,
 } from "@/lib/settlement-breakdown"
 import { timezoneCaption } from "@/lib/tz"
 
@@ -113,6 +113,7 @@ export function HeadlineStats({ rid }: { rid: string }) {
     const b = readHeadlineByMethod(h)
     // Nothing settled is already said above the tiles; no rows is not a block.
     if (!b || !hasSettlements(b)) { return null }
+    const warning = unallocatedWarning(b, money)
     return (
       <section className="border-t border-border/60 pt-4" aria-label={b.label}>
         <p className="text-xs font-medium text-muted-foreground">{b.label}</p>
@@ -150,20 +151,21 @@ export function HeadlineStats({ rid }: { rid: string }) {
             )
           })}
         </ul>
-        {(b.split_bills > 0 || b.unallocated !== 0) && (
+        {(b.split_bills > 0 || warning) && (
           <div className="mt-3 space-y-1 text-[11px] text-muted-foreground">
             {b.split_bills > 0 && (
+              // Says only what is always true. The counts do NOT reliably add up
+              // to more than "N bills settled": that tag counts a released ₹0
+              // table, which has no row here.
               <p>
                 {b.split_bills} bill{b.split_bills === 1 ? " was" : "s were"} paid across more than one
-                method, so the bill counts add up to more than the bills settled.
+                method; each part counts under its own method.
               </p>
             )}
-            {b.unallocated !== 0 && (
-              // LOUD: the one row that means something is wrong. It should be 0.
-              <p className="text-amber-600 dark:text-amber-400">
-                {money(Math.abs(b.unallocated))} could not be put under a payment method — those
-                bills&apos; split amounts do not add up to their totals and need looking at.
-              </p>
+            {warning && (
+              // LOUD: the one row that means something is wrong. Keyed off the
+              // Unallocated row as well as its sum, which can net to ₹0.00.
+              <p className="text-amber-600 dark:text-amber-400">{warning}</p>
             )}
           </div>
         )}

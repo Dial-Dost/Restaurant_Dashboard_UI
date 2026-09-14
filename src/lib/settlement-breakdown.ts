@@ -162,6 +162,12 @@ export interface HeadlineByMethod extends SettlementBreakdown {
     label: string;
     /** The server's definition of what the rows count. */
     hint: string;
+    /**
+     * Bills whose split parts did not add back to the bill — the Unallocated
+     * row's bill count, 0 without one. NOT derivable from `unallocated`: that is
+     * netted across bills, so ₹50 short on one and ₹50 over on another reads 0.
+     */
+    unallocated_bills: number;
 }
 
 /**
@@ -195,6 +201,7 @@ export function readHeadlineByMethod(headline: {
     const label = text(headline.by_method?.label);
     if (!label) { return null; }
     const modes = shapeModes(headline.today_by_method);
+    const unallocatedRow = modes.find((m) => m.method === UNALLOCATED_METHOD);
     const r2 = (n: number): number => Math.round(n * 100) / 100;
     return {
         label,
@@ -209,6 +216,30 @@ export function readHeadlineByMethod(headline: {
         split_bills: Math.round(num(headline.today_split_bills)),
         unallocated: headline.today_unallocated !== undefined
             ? num(headline.today_unallocated)
-            : (modes.find((m) => m.method === UNALLOCATED_METHOD)?.amount ?? 0),
+            : (unallocatedRow?.amount ?? 0),
+        unallocated_bills: unallocatedRow?.bills ?? 0,
     };
+}
+
+/**
+ * The Overview block's Unallocated warning, or null when there is nothing wrong.
+ *
+ * Keyed off the ROW as well as the sum. Residuals net across bills, so two bills
+ * whose splits are ₹50 short and ₹50 over put ₹0.00 in Unallocated — and a
+ * warning gated on the sum alone would say nothing about two bills that need
+ * looking at. The server never filters the Unallocated row for that reason.
+ * Worded to match the Flutter Overview line for line.
+ */
+export function unallocatedWarning(b: HeadlineByMethod, money: (n: number) => string): string | null {
+    const n = b.unallocated_bills;
+    const whose = n === 0 ? "those bills'" : (n === 1 ? "1 bill's" : `${String(n)} bills'`);
+    if (b.unallocated !== 0) {
+        return `${money(Math.abs(b.unallocated))} could not be put under a payment method — ${whose} split `
+            + 'amounts do not add up to their totals and need looking at.';
+    }
+    if (n > 0) {
+        return `${whose} split amounts do not add up to their totals and need looking at `
+            + `(the differences cancel out to ${money(0)} today).`;
+    }
+    return null;
 }
