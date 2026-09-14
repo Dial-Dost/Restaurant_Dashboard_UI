@@ -282,11 +282,15 @@ function AccountingInner() {
           period, this one is the present tense. */}
       <OpenBillsSection rid={rid} onTotal={setOutstanding} />
 
-      {/* The source records behind every figure above — same date range. */}
+      {/* The source records behind every figure above — same date range. The
+          card's own picker drives THIS page window (setRange), not a private
+          one, so changing the days from down here moves the totals too. */}
       <ClosedBillsSection
         rid={rid}
         from={from}
         to={to}
+        range={range}
+        onRangeChange={setRange}
         description="The individual settled bills behind the sales, GST and discount figures above. Open one for its line items, taxes, service charge, payment and settlement trail."
       />
 
