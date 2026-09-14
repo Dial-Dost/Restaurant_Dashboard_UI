@@ -67,7 +67,8 @@ describe("reading today's modes off the headline", () => {
     it('shapes every mode, largest first, keeping the server share and refund', () => {
         const b = readHeadlineByMethod(headline())!;
         expect(b.modes.map((m) => m.method)).toEqual(['Upi', 'Cash', 'Card']);
-        expect(b.modes[1]).toEqual({ method: 'Cash', bills: 6, amount: 8430.5, share_pct: 37.17, refund: 120, net_amount: 8310.5 });
+        // No label from the server: the id stands in for it (settlement-breakdown.ts).
+        expect(b.modes[1]).toEqual({ method: 'Cash', label: 'Cash', bills: 6, amount: 8430.5, share_pct: 37.17, refund: 120, net_amount: 8310.5 });
         expect(modeSharePct(b.modes[0], b.total_amount)).toBe(48.5);
     });
 
