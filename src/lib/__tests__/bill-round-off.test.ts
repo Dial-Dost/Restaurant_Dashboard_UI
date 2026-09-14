@@ -137,3 +137,28 @@ describe('a removed service charge is not shown on any web bill surface', () => 
         expect(src.match(/\{order\.applyServiceCharge && \(order\.serviceChargePercentage \?\? 0\) > 0 && \(/g) ?? []).toHaveLength(2);
     });
 });
+
+// A waiver's recorded reduction is the charge plus its tax BEFORE round-off; the
+// grand totals shown beside it are rounded. 5499 with a 10% charge and 5% GST is
+// 6351 -> 5774 (577.00 less) against a recorded 577.40, so labelling the
+// reduction "Guest pays less by" put two figures on one panel that disagree.
+describe('a waiver\'s pre-round reduction is never labelled as what the guest pays less by', () => {
+    it('the waiver panel calls it charge + tax, before round-off, and says why the totals differ', () => {
+        const src = code(readSource('src/app/dashboard/orders/capture-actions.tsx'));
+        expect(src).not.toMatch(/less by" value=\{money\([^)]*grand_total_reduction\)\}/);
+        expect(src).not.toMatch(/The guest pays <b>\{money\(done\.rec\.grand_total_reduction\)\}<\/b>/);
+        expect(src).toContain('<ServerFigure label="Charge + tax" value={money(done.rec.grand_total_reduction)} hint="Before round-off" tone="warn" />');
+        expect(src).toContain('(charge and tax {money(live.grand_total_reduction)}, before round-off)');
+        expect(src).not.toContain('total reduction {money(live.grand_total_reduction)}');
+        // The two payable totals stay, straight off the server's response.
+        expect(src).toContain('<ServerFigure label="Grand total before" value={money(done.before)} />');
+        expect(src).toContain('<ServerFigure label="Grand total after" value={money(done.after)} tone="good" />');
+    });
+
+    it('the Service Charge Deny report tile says the same', () => {
+        const src = code(readSource('src/app/dashboard/reports/context-panels.tsx'));
+        expect(src).toContain('const denied = num(totals.grand_total_reduction) ?? 0');
+        expect(src).not.toMatch(/label="Guests paid less by"/);
+        expect(src).toContain('<Tile label="Charge + tax denied" value={money(denied)} hint="Before each bill\'s round-off"');
+    });
+});

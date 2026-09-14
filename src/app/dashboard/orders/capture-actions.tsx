@@ -28,8 +28,9 @@
 // 2. THE ARITHMETIC IS THE SERVER'S. Every money figure shown after an act is
 //    the one the server sent back: the comp's `value` is computed by Postgres,
 //    the waiver's reduction is measured by running the real charge computation
-//    twice and differencing (it differs between the two tax shapes this fleet
-//    runs — GST rides on the charge in one and not the other), and the
+//    twice and differencing the totals before round-off (it differs between the
+//    two tax shapes this fleet runs — GST rides on the charge in one and not the
+//    other), and the
 //    outstanding on a part-paid bill is the server's `outstanding`. The only
 //    number this file computes is what the tender FORM currently adds up to,
 //    and that is labelled as a fact about the form.
@@ -987,22 +988,29 @@ function WaiverDialog({
                             <ServerFigure label="Grand total before" value={money(done.before)} />
                             <ServerFigure label="Grand total after" value={money(done.after)} tone="good" />
                         </div>
+                        {/* TWO DIFFERENT NUMBERS (migration 048). The recorded reduction is the
+                            charge plus its tax BEFORE round-off, exact to the paisa. The two grand
+                            totals are what the guest is asked for, each rounded to the rupee, so
+                            their gap can be off the reduction by under a rupee — which is why the
+                            reduction is never labelled as what the guest pays less by. */}
                         <div className="grid grid-cols-3 gap-2">
                             <ServerFigure label="Charge removed" value={money(done.rec.amount_waived)} />
                             <ServerFigure label="Tax that rode on it" value={money(done.rec.tax_on_waived)} />
-                            <ServerFigure label="Guest pays less by" value={money(done.rec.grand_total_reduction)} tone="warn" />
+                            <ServerFigure label="Charge + tax" value={money(done.rec.grand_total_reduction)} hint="Before round-off" tone="warn" />
                         </div>
                         {/* The whole reason this figure is not computed in the browser. */}
                         <Note>
                             {done.rec.tax_on_waived > 0
-                                ? <>The guest pays <b>{money(done.rec.grand_total_reduction)}</b>{" "}less, which is more than the
-                                    charge itself ({money(done.rec.amount_waived)}) — on this restaurant&apos;s tax setup, GST rode
+                                ? <>The charge ({money(done.rec.amount_waived)}) and the GST that rode on it come to{" "}
+                                    <b>{money(done.rec.grand_total_reduction)}</b> — on this restaurant&apos;s tax setup, GST rode
                                     on the service charge, so removing it removes that tax too.</>
-                                : <>The guest pays <b>{money(done.rec.grand_total_reduction)}</b>{" "}less, exactly the charge — on
-                                    this restaurant&apos;s tax setup the service charge is itself a tax line, so no further tax
+                                : <>That is exactly the charge, <b>{money(done.rec.grand_total_reduction)}</b> — on this
+                                    restaurant&apos;s tax setup the service charge is itself a tax line, so no further tax
                                     rode on it.</>}
-                            {" "}Both totals came from the server, which measured the saving by running the real
-                            charge computation twice and differencing.
+                            {" "}It is measured before the bill is rounded to the rupee. The two grand totals are what
+                            the guest is asked to pay, each rounded, so the gap between them can differ from it by
+                            less than a rupee. Every figure here came from the server, which measured the saving by
+                            running the real charge computation twice and differencing.
                         </Note>
                         <DialogFooter><Button onClick={onClose}>Done</Button></DialogFooter>
                     </div>
@@ -1012,7 +1020,7 @@ function WaiverDialog({
                     <div className="space-y-3">
                         <div className="rounded-md border border-amber-500/40 bg-amber-500/[0.05] px-3 py-2 text-sm">
                             The service charge on this bill is already waived — {money(live.amount_waived)} off
-                            (total reduction {money(live.grand_total_reduction)}), recorded as{" "}
+                            (charge and tax {money(live.grand_total_reduction)}, before round-off), recorded as{" "}
                             {humaniseToken(live.waiver_kind, SERVICE_CHARGE_WAIVER_KINDS)}.
                             <div className="mt-1 text-xs text-muted-foreground">
                                 {live.reason} · authorised by {live.authorised_by_username}
