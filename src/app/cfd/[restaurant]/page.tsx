@@ -9,6 +9,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import { guestBackendBase } from "@/lib/guest-backend";
+import { formatRoundOff, roundOffOf } from "@/lib/bill-round-off";
 
 const BASE = guestBackendBase();
 const DEFAULT_ACCENT = "#ea580c";
@@ -24,6 +25,8 @@ interface BillData {
   service_charge_percent: number;
   taxes: TaxLine[];
   tax_total: number;
+  /** What the server rounded the total to the rupee by (backend 048); null = none to show. */
+  round_off: number | null;
   grand_total: number;
   payment_status: string | null;
 }
@@ -104,6 +107,7 @@ function CfdInner() {
         service_charge_percent: Number(data?.service_charge_percent ?? 0),
         taxes: Array.isArray(data?.taxes) ? data.taxes : [],
         tax_total: Number(data?.tax_total ?? 0),
+        round_off: roundOffOf(data),
         grand_total: Number(data?.grand_total ?? data?.total_amt ?? 0),
         payment_status: data?.payment_status ?? null,
       });
@@ -216,6 +220,12 @@ function CfdInner() {
                 <dd className="tabular-nums">{money(t.amount)}</dd>
               </div>
             ))}
+            {bill.round_off !== null && (
+              <div className="flex justify-between">
+                <dt>Round off</dt>
+                <dd className="tabular-nums">{formatRoundOff(bill.round_off, money)}</dd>
+              </div>
+            )}
           </dl>
           <div className="mt-4 flex items-baseline justify-between border-t-2 border-neutral-200 pt-4">
             <span className="text-3xl font-bold text-neutral-800">Total</span>

@@ -12,6 +12,7 @@ import { DEFAULT_TIMEZONE, formatDateTime } from '@/lib/tz';
 import { useTimezone } from '@/lib/use-timezone';
 import { billReceiptIsReprint, REPRINT_MARKER, type BillPrintState } from '@/lib/bill-print-state';
 import { billCustomerLines } from '@/lib/bill-customer';
+import { roundOffOf } from '@/lib/bill-round-off';
 import {
     BILL_SERVICE_CHARGE_NOTE,
     DOTS_PER_COL,
@@ -176,14 +177,15 @@ interface PrintedBill {
     subtotal: number;
     totalQty: number;
     discount: { label: string; amount: number } | null;
-    /** optedOut prints "Opted-out" in place of an amount, exactly as escpos.ts does. */
-    serviceCharge: { percent: number; amount: number; optedOut: boolean } | null;
+    /** Only a charge that was actually charged; a removed one is null and prints nothing. */
+    serviceCharge: { percent: number; amount: number } | null;
     taxes: { id: string; name: string; percentage: number; amount: number }[];
     /**
-     * Null when the SERVER supplied the grand total. escpos.ts omits its round-off
-     * line in that case for the same reason: the billing layer has already decided
-     * the figure, so there is no rounding left for a renderer to disclose, and a
-     * round-off line here would be this page claiming an adjustment it never made.
+     * The round-off the SERVER applied to reach `grandTotal` (backend migration
+     * 048), read off the same document — null when there is none. Disclosed,
+     * never derived: this page rounding for itself would be a second rule, and a
+     * printed total disagreeing with the settled one is the defect escpos.ts's
+     * grandTotal note describes.
      */
     roundOff: number | null;
     grandTotal: number;
@@ -233,7 +235,7 @@ function receiptCustomerLines(printed: PrintedBill, order: { customer?: unknown 
  * SERVICE_CHARGE_NAME in billing_math.ts — the one matcher the server bills by.
  */
 function billChargesForService(printed: PrintedBill): boolean {
-    if (printed.serviceCharge && !printed.serviceCharge.optedOut && printed.serviceCharge.amount > 0) {return true;}
+    if (printed.serviceCharge && printed.serviceCharge.amount > 0) {return true;}
     return printed.taxes.some((t) => /service\s*charge/i.test(t.name) && t.amount > 0);
 }
 
@@ -255,18 +257,15 @@ const sumQty = (items: readonly { quantity: unknown }[]) => items.reduce((s, it)
 /**
  * The Service Charge row, or none.
  *
- * A positive amount prints the charge; a zero amount against a non-zero percent
- * prints "Opted-out", so the guest can see the charge was REMOVED rather than
- * never applied. `waived` forces that reading where the percent handed in is the
- * one a live waiver was priced at rather than a live config value — which is the
- * only percent that is non-zero on a tenant carrying its service charge as a tax
- * line. Mirrors the serviceCharge branch in routes/bills.ts and the `sc` guard in
- * escpos.ts; all three must agree or the same bill reads differently on paper.
+ * A positive amount prints the charge; anything else prints NO row. A charge
+ * that was removed — a live waiver, a settled bill charged none — used to print
+ * "Opted-out" here; the client asked for a removed charge not to be shown on the
+ * bill at all. Mirrors the serviceCharge branch in routes/bills.ts and the `sc`
+ * guard in escpos.ts; all three must agree or the same bill reads differently on
+ * paper.
  */
-function serviceChargeRow(amount: number, percent: number, waived: boolean): PrintedBill['serviceCharge'] {
-    if (amount > 0) {return { percent, amount, optedOut: false };}
-    if (waived || percent > 0) {return { percent, amount: 0, optedOut: true };}
-    return null;
+function serviceChargeRow(amount: number, percent: number): PrintedBill['serviceCharge'] {
+    return amount > 0 ? { percent, amount } : null;
 }
 
 /** Tax lines from any of the three sources, normalised and keyed for React. */
@@ -381,10 +380,11 @@ function resolvePrintedBill(order: Order, settled: any | null, openBill: any | n
             serviceCharge: serviceChargeRow(
                 Number(settled.service_charge) || 0,
                 Number(settled.service_charge_percent) || 0,
-                false,
             ),
             taxes: taxRows(settled.taxes),
-            roundOff: null,
+            // The round-off RECORDED at settle ("Bills".round_off) — the settled
+            // reprint on the backend prints the same one.
+            roundOff: roundOffOf(settled),
             grandTotal: settledGrand,
             billNo: String(settled.bill_no ?? ''),
             source: 'settled',
@@ -418,12 +418,9 @@ function resolvePrintedBill(order: Order, settled: any | null, openBill: any | n
         }));
         const discountAmt = Number(openBill.discount) || 0;
         // A live waiver (migration 036) has already been taken out of
-        // service_charge AND of the tax lines by openBillChargeConfig, so the
-        // percent to show beside "Opted-out" is the one the waiver was priced at.
-        // Reading a config value here instead would print 0% on exactly the
-        // tenant whose charge lives in the tax config.
-        const waived = openBill.service_charge_waived === true;
-        const waivedPercent = Number(openBill.service_charge_waiver?.basis_percent) || 0;
+        // service_charge AND of the tax lines by openBillChargeConfig, so a
+        // waived bill arrives with no charge in either place and prints no
+        // service-charge line at all.
         const printed: PrintedBill = {
             items,
             subtotal: Number(openBill.subtotal) || 0,
@@ -433,14 +430,15 @@ function resolvePrintedBill(order: Order, settled: any | null, openBill: any | n
                 : null,
             serviceCharge: serviceChargeRow(
                 Number(openBill.service_charge) || 0,
-                waived ? waivedPercent : (Number(openBill.service_charge_percent) || 0),
-                waived,
+                Number(openBill.service_charge_percent) || 0,
             ),
             // On a tax-line tenant the service charge IS one of these rows, which
             // is what the thermal bill prints for the same table. The two
             // renderers show the tenant's own shape rather than a normalised one.
             taxes: taxRows(openBill.taxes),
-            roundOff: null,
+            // The round-off computeBillCharges applied to THIS grand total — the
+            // same one /print/bill hands the thermal renderer.
+            roundOff: roundOffOf(openBill),
             grandTotal: openGrand,
             billNo: String(openBill.bill_no ?? ''),
             source: 'open',
@@ -1089,9 +1087,8 @@ function PrintPageContents() {
                     ))}
                     <ReceiptRule />
                     {/* Round off is DISCLOSED, never created: only a non-zero one
-                        the billing layer supplied. A server-supplied grand total
-                        has none left to disclose — escpos.ts omits the line for
-                        the same reason. */}
+                        the billing layer supplied with the grand total, exactly
+                        as escpos.ts prints it above "Grand Total". */}
                     {totals.roundOff !== null && (
                         <ReceiptLadderRow label="Round off" value={totals.roundOff} />
                     )}
@@ -1325,9 +1322,8 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
             // G2's sentence, and only when the guest is actually being charged
             // for service. It used to print unconditionally, so a bill with the
             // charge waived still told the guest a voluntary service charge was
-            // included — the paper contradicting its own Opted-out line. Same
-            // predicate as the on-screen bill and as routes/bills.ts's
-            // serviceChargeNote.
+            // included — on a bill that charged none. Same predicate as the
+            // on-screen bill and as routes/bills.ts's serviceChargeNote.
             serviceChargeNote: billChargesForService(doc) ? BILL_SERVICE_CHARGE_NOTE : null,
             feedbackUrl,
             // The tenant's own sentence above the QR when they have set one,

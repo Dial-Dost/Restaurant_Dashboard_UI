@@ -26,6 +26,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Separator } from "@/components/ui/separator"
+import { formatRoundOff, roundOffOf } from "@/lib/bill-round-off"
 import { getMisBillDetail, getMisKotDetail, type ClosedBillDetail, type MisOrderDetail } from "@/lib/db"
 import { formatMoney } from "@/lib/mis-reports"
 import { formatFullDateTime } from "@/lib/tz"
@@ -190,6 +191,12 @@ export function DrillDownDialog({ request, onClose, restaurantId, outletId, time
                             {bill.taxes.map((tax) => (
                                 <Line key={tax.name} label={`${tax.name} (${String(tax.percentage)}%)`} value={money(tax.amount)} />
                             ))}
+                            {/* The ladder's round_off rung (backend migration 048), as
+                                recorded at settle — the same name the Sales Summary
+                                gives its column. Only when the bill carries one. */}
+                            {roundOffOf(bill) !== null ? (
+                                <Line label="Round off" value={formatRoundOff(roundOffOf(bill)!, money)} />
+                            ) : null}
                             <Separator className="my-1.5" />
                             <Line label="Grand total" value={money(bill.grand_total)} strong />
                             {bill.refunded && (

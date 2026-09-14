@@ -4314,10 +4314,13 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
               <span>Subtotal</span>
               <span>{currencySymbol}{subtotal.toFixed(2)}</span>
             </div>
-            {order.serviceChargePercentage && (
+            {/* Only a charge that is charged. A removed one shows no row — the
+                client's rule, the same on every bill surface — and a 0% no
+                longer renders a stray "0" through the && short-circuit. */}
+            {order.applyServiceCharge && (order.serviceChargePercentage ?? 0) > 0 && (
               <div className="flex justify-between">
                 <span>Service Charge ({order.serviceChargePercentage}%)</span>
-                <span>{order.applyServiceCharge ? `${currencySymbol}${serviceCharge.toFixed(2)}` : "Opted-out"}</span>
+                <span>{currencySymbol}{serviceCharge.toFixed(2)}</span>
               </div>
             )}
             {calculatedTaxes.map(tax => (
@@ -4521,10 +4524,11 @@ const OrderViewDialog = React.memo(({ order, open, onOpenChange, onRefreshOrders
               <span>Subtotal</span>
               <span>{currencySymbol}{order.subtotal.toFixed(2)}</span>
             </div>
-            {order.serviceChargePercentage && (
+            {/* Only a charge that is charged; a removed one shows no row. */}
+            {order.applyServiceCharge && (order.serviceChargePercentage ?? 0) > 0 && (
               <div className="flex justify-between">
                 <span>Service Charge ({order.serviceChargePercentage}%)</span>
-                <span>{order.applyServiceCharge ? `${currencySymbol}${serviceCharge.toFixed(2)}` : 'Opted-out'}</span>
+                <span>{currencySymbol}{serviceCharge.toFixed(2)}</span>
               </div>
             )}
             {calculatedTaxes.map(tax => (
