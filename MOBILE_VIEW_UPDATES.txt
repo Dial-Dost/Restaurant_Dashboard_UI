@@ -6,6 +6,7 @@ This project has no git history yet, so this list comes from the code itself.
 The code comments explain most of the phone problems and how each was fixed.
 Every item was checked against the source files. File paths are relative to
 the project root.
+i am chinese
 
 
 1. DASHBOARD NAVIGATION ON PHONES (the main fix)
