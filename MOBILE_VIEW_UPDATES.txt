@@ -1,0 +1,319 @@
+MOBILE VIEW UPDATES - RESTAURANT DASHBOARD UI
+=============================================
+Compiled: 15 Sep 2026
+hi
+This project has no git history yet, so this list comes from the code itself.
+The code comments explain most of the phone problems and how each was fixed.
+Every item was checked against the source files. File paths are relative to
+the project root.
+
+
+1. DASHBOARD NAVIGATION ON PHONES (the main fix)
+------------------------------------------------
+Problem: the only dashboard navigation was a macOS-style Dock. For an admin it
+holds 22 icons and is about 1,364px wide, so on a 375px phone it runs off both
+edges. Its labels also only appear on hover, and touch screens have no hover.
+
+[x] New bottom navigation bar for phones
+    - Fixed bar at the bottom of the screen with 4 main destinations plus a
+      "More" button.
+    - Labels are always visible under the icons.
+    - Links use the same permission-filtered list as the Dock, so the two
+      can't get out of sync.
+    Files: src/components/mobile-nav.tsx, src/app/dashboard/layout.tsx
+
+[x] The 4 bar slots are picked on purpose, not just the first 4 items
+    - Priority order: Orders, Tables, Menu, Dashboard.
+    - Floor plan is not on the bar (nobody opens it during service). Menu is
+      (dishes get marked unavailable during a rush).
+    - Short navs (waiter-only, valet) get a short bar and no empty "More".
+    - Rule: every destination is either on the bar or in "More". None dropped.
+    File: src/lib/mobile-nav-layout.ts
+
+[x] "More" bottom sheet
+    - Slides up from the bottom and holds every other page, grouped under the
+      same section titles as the Dock.
+    - 3-column grid of large tiles (4 columns from sm), up to 80% of the
+      screen height, closes when you tap a link.
+
+[x] Thumb-sized tap targets
+    - Bar buttons are at least 56px tall and icons are shrunk slightly so the
+      labels fit.
+
+[x] Safe-area padding
+    - The bar adds env(safe-area-inset-bottom) so it clears the iPhone home
+      indicator.
+
+[x] Dock only shows where it fits
+    - The Dock is hidden below 2xl (1536px) and the bottom bar shows instead.
+      That covers phones, tablets and 1280px laptops, where the Dock was also
+      measured overflowing.
+
+[x] Page content no longer hidden behind the bar
+    - Main content bottom padding is 80px below 2xl and 96px from 2xl.
+    - Fixed a bug where the "p-" shorthand overrode the bottom padding at lg,
+      so the bar covered the last card on every page.
+
+
+2. GLOBAL STYLES AND SHARED COMPONENTS
+--------------------------------------
+[x] No more iOS Safari zoom when tapping a field
+    - On screens 640px or narrower, inputs, selects and textareas use 16px
+      text, so Safari doesn't zoom in on focus.
+    - Chosen over "maximum-scale=1", which would also block pinch-zoom and
+      hurt accessibility.
+    File: src/app/globals.css
+
+[x] useIsMobile hook (below 768px)
+    File: src/hooks/use-mobile.tsx
+
+[x] Date range picker works on phones
+    - Shows 1 month on phones instead of 2.
+    - On touch, you tap a start day and then an end day instead of dragging
+      (a drag inside the scrolling popover got taken as a scroll).
+    - Popover is capped to the screen width. Presets wrap above the calendar
+      on phones and move to a side column from sm.
+    - Trigger button hides the preset name on narrow screens and keeps the
+      dates.
+    - Date labels leave out the current year ("1-15 Aug") so the chip fits
+      next to a page heading on a phone.
+    Files: src/components/date-range-picker.tsx, src/lib/date-range.ts
+
+[x] Header controls fit narrow screens
+    - Dish availability button shows only its icon and "N off" badge on
+      phones, and its sheet opens full width.
+    - Notifications popover width is capped at screen width minus 2rem.
+    Files: src/components/dish-availability-sidebar.tsx,
+           src/components/notifications-bell.tsx
+
+[x] Larger, touch-friendly scrollbars in the dashboard
+    - 14px scrollbars, 18px on touch screens.
+    - Only inside the dashboard. Guest phone pages keep the OS scrollbar.
+    File: src/app/globals.css
+
+[x] "Today at a glance" stat tiles
+    - 2 tiles per row on phones.
+    - Money amounts wrap instead of being cut off.
+    Files: src/components/headline-stats.tsx, src/components/live-gross.tsx
+
+[x] Closed bills list
+    - Filters stack on phones.
+    - Rows wrap.
+    - Detail dialog scrolls inside and its footer stacks.
+    File: src/components/closed-bills.tsx
+
+
+3. SERVICE SCREENS (Orders, Tables, Floor plan, Billing, Cash, History)
+----------------------------------------------------------------------
+[x] Orders
+    - Current Orders table hides the Total and APC Zone columns below md.
+    - D1/D2 wait timers sit inside the Placed column, so there is no sideways
+      scrolling.
+    - Table preview: big full-width "Add Order" and "Print Bill" buttons at
+      the top, stacked on phones.
+    - Add Order dialog: full width on phones, fits the screen height, and the
+      "Send order" button stays pinned at the top.
+    - Payments & tip dialog: split-payment and tip rows stack into one column
+      on phones.
+    - Money inputs open a number keypad (inputMode="decimal"). The GSTIN
+      field auto-capitalises.
+    Files: src/app/dashboard/orders/page.tsx, table-kot-preview.tsx,
+           capture-actions.tsx, src/components/bill-customer-dialog.tsx
+
+[x] Tables / Floor plan
+    - 2 table cards per row on phones, with smaller titles and badges that
+      wrap.
+    - Draggable floor-plan cards use touch-action: none so dragging works on
+      touch screens.
+    Files: src/app/dashboard/tables/page.tsx,
+           src/app/dashboard/floor-plan/page.tsx
+
+[x] Billing / Cash / History
+    - Wide tables scroll sideways inside their cards.
+    - Cards and forms stack on phones.
+    - History totals show 2 per row.
+    - Cash inputs open a number keypad.
+
+[x] Page headers on all dashboard pages
+    - Title is smaller on phones (text-lg, text-2xl from md).
+    - Action buttons and the date picker wrap below the title.
+
+
+4. MANAGEMENT SCREENS
+---------------------
+[x] Analytics
+    - On phones, the 11 view chips are replaced by a "View: ..." button that
+      opens a bottom sheet with large rows.
+    - Stat tiles show 2 per row on phones (Simulation uses the same layout).
+    - Toolbar labels get shorter ("CSV" instead of "Download ...").
+    - Sort buttons show only the arrow on phones.
+    - Drill-down pie and table stack on phones.
+    File: src/app/dashboard/analytics/page.tsx
+
+[x] Reports
+    - Tab strip scrolls sideways instead of wrapping.
+    - Report grid scrolls inside its own box with sticky header and totals
+      rows.
+    - Toolbars wrap and tiles show 2 per row.
+    - Drill-down and column-picker fit the screen height.
+    Files: src/app/dashboard/reports/*
+
+[x] Tables that hide columns on phones (details moved under the name)
+    - Dashboard home: Recent Bookings hides Time and Guests.
+    - Bookings: hides Table and Source; search and toggle stack.
+    - Customers: hides Visits, Total Spend and Last Visit; email shows under
+      the name.
+    - Inventory: hides Category, Stock and Expiry.
+    - Coupons: hides Rules.
+
+[x] Wide tables scroll sideways inside their cards
+    - Accounting open bills, Analytics APC and settlement tables, Simulation
+      results, Audit logs.
+
+[x] Menu
+    - Card headers stack on phones.
+    - Dialogs fit the screen height and their two-pane layouts stack.
+    - Draggable menu rows use touch-action: none so they can be reordered by
+      touch.
+    - Price inputs open a number keypad.
+
+[x] Waitlist
+    - QR card stacks and centres on phones.
+    - Call, Seat and No-show buttons wrap.
+
+[x] Valet
+    - "Scan plate from photo" opens the phone's rear camera
+      (capture="environment").
+    - The photo is shrunk before upload.
+
+[x] Settings
+    - Guest page branding has a live preview inside a phone frame.
+    - Poster editor, tills and payment-method rows stack or wrap on phones.
+
+[x] Accounting, Purchase orders, Audit logs, Feedback, Outlets, Attendance,
+    Employees, Simulation
+    - Grids are one column on phones, rows wrap, and number keypads are used
+      where it makes sense.
+
+
+5. GUEST PAGES (opened on customers' phones)
+--------------------------------------------
+[x] Table QR ordering page (/order/[restaurant])
+    - Phone-width single column (max 448px) at every screen size.
+    - Cart total bar with a "Review" button floats at the bottom.
+    - Cart, item, bill and pay sheets slide up and are capped at 92dvh. The
+      middle scrolls while the total or send button stays pinned.
+    - Category chips scroll sideways with a swipe. A mouse drag is not
+      counted as a tap.
+    - 2-column dish grid with at most 2 promo badges per card ("+N" for the
+      rest). Safety and dietary badges are never hidden.
+    - "Download bill (PDF)" uses the browser's print, which works in mobile
+      Chrome and Safari.
+    - Payment screenshot from the phone is shrunk (max 1280px, JPEG) before
+      upload, because phone photos are 5-15 MB.
+    - OTP field opens the number keypad.
+    File: src/app/order/[restaurant]/page.tsx
+
+[x] Queue / waitlist page (/queue/[restaurant])
+    - Phone-width column using dvh height.
+    - Fixed "Save my picks" bar at the bottom, with extra padding so content
+      isn't hidden behind it.
+    - Pre-order rows are one column with 1 promo badge each.
+    - When the table is ready, the phone vibrates and a notification pops up.
+    File: src/app/queue/[restaurant]/page.tsx
+
+[x] Reservation page (/reserve/[restaurant])
+    - Phone-width column using dvh height.
+    - Date and time fields share one row and shrink on narrow screens.
+    - Email field opens the email keyboard.
+    File: src/app/reserve/[restaurant]/page.tsx
+
+[x] Feedback page (/feedback)
+    - Mobile-first single column (max 480px) using dvh height, with no
+      sideways scroll at 375px.
+    - NPS 0-10 buttons are in a 6-column grid so all 11 fit at 375px.
+    - Touch-friendly stars and buttons with press feedback and no tap flash.
+    - Extra small-phone styles below 380px.
+    Files: src/app/feedback/page.tsx, src/app/feedback/feedback.module.css
+
+[x] Poster banner (order and queue pages)
+    - Swipeable carousel using CSS scroll-snap, which stays smooth on cheap
+      phones.
+    - Each poster has a close button.
+    - Image space is reserved before load so a slow phone connection doesn't
+      push the menu down.
+    Files: src/components/guest-posters.tsx, src/lib/guest-posters.ts
+
+
+6. LOGIN PAGES AND LANDING PAGE
+-------------------------------
+[x] Login, employee login, forgot password and sign-up pages
+    - Cards are centred using min-h-dvh (follows the phone's address bar)
+      with a 16px side margin.
+
+[x] Landing page (/)
+    - 3D brand object is rearranged for portrait and mobile: smaller, placed
+      above the text, and docked top-centre.
+    - Dashboard mock goes full width and extra side elements are hidden
+      below lg.
+    - Custom cursor, magnetic and tilt effects are turned off on touch
+      devices.
+    Files: src/components/experio/*
+
+
+7. OPENING THE APP ON A PHONE, AND THE ANDROID APP
+--------------------------------------------------
+[x] Guest pages work when opened on a phone
+    - Guest pages call the backend through a same-origin "/backend-api"
+      proxy.
+    - Before this, a phone that opened the page by LAN IP or tunnel tried to
+      reach "localhost" (the phone itself) and the page came up blank.
+    - A production build with no backend URL also sent QR-code scans to a
+      404 page; that is fixed too.
+    Files: next.config.ts, src/lib/backend-url.ts, src/lib/guest-backend.ts,
+           Dockerfile, .github/workflows/deploy.yml
+
+[x] Dev server accepts phones on the LAN IP or a Cloudflare tunnel
+    - Uses the allowedDevOrigins setting.
+    File: next.config.ts
+
+[x] Android APK download
+    - public/downloads/RestaurantDash-Android.apk is served at /downloads.
+    - It is kept out of the Docker image and mounted read-only on the server.
+    - The deploy check fails if that exclusion is removed.
+    Files: .dockerignore, deploy/README.md, .github/workflows/deploy.yml
+
+
+8. TESTS COVERING MOBILE BEHAVIOUR
+----------------------------------
+[x] src/lib/__tests__/mobile-nav-layout.test.ts
+    - Checks the bar gets the right 4 pages, nothing is dropped or doubled,
+      short navs get no "More", and the top-up order is correct.
+[x] src/lib/__tests__/guest-backend.test.ts, backend-url.test.ts
+    - Checks a phone on the LAN IP uses the /backend-api proxy.
+[x] src/lib/__tests__/guest-posters.test.ts
+    - Checks poster image space is reserved.
+[x] src/lib/__tests__/menu-badges.test.ts
+    - Checks badge trimming for phone-width cards never hides safety badges.
+[x] src/lib/__tests__/date-range.test.ts
+    - Checks the short date label without the year.
+
+
+9. KNOWN GAPS / POSSIBLE NEXT STEPS
+-----------------------------------
+[ ] No "viewport" export with viewportFit: "cover" in src/app/layout.tsx.
+    Without it, env(safe-area-inset-bottom) is usually 0 in a normal browser
+    tab, so the bottom bar's safe-area padding may not do anything yet.
+[ ] Content bottom padding is a fixed 80px and doesn't include the safe-area
+    inset. On a phone with a real inset, the bar may be taller than the
+    padding.
+[ ] The 16px anti-zoom rule for select and textarea can lose to a Tailwind
+    text-* class set directly on those elements.
+[ ] Platform admin login (src/app/platform/login) still uses min-h-screen
+    instead of min-h-dvh.
+[ ] No web app manifest or theme colour. The APK is not built from this repo
+    (no Capacitor or PWA setup).
+[ ] Deploy docs list the APK as about 94 MB and the zip as about 16 MB. The
+    files on disk are about 57 MB and 18 MB.
+[ ] src/components/ui/sidebar.tsx (shadcn, with its own mobile sheet mode)
+    isn't used anywhere.
