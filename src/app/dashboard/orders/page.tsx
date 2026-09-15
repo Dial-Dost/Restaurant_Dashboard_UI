@@ -3785,12 +3785,12 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
     return (
       <div className="grid gap-4 py-4">
         <div className="sticky -top-6 z-10 -mx-6 -mt-4 border-b bg-background px-6 pb-3 pt-4">
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button variant="outline" size="lg" className="h-12 shrink-0 text-base" onClick={() => { setReviewing(false); }} disabled={sending}>
               Back to menu
             </Button>
-            <Button size="lg" className="h-12 min-w-0 flex-1 text-base" onClick={() => { void handleSubmit(); }} disabled={!canSend || sending}>
-              <span className="truncate">{sending ? "Sending…" : "Send to kitchen"}</span>
+            <Button size="lg" className="h-12 flex-1 text-base" onClick={() => { void handleSubmit(); }} disabled={!canSend || sending}>
+              {sending ? "Sending…" : "Send to kitchen"}
             </Button>
           </div>
         </div>
@@ -3840,15 +3840,15 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
     <div className="grid gap-4 py-4">
       <div className="sticky -top-6 z-10 -mx-6 -mt-4 border-b bg-background px-6 pb-3 pt-4">
         {/* Item 5 — "View order" beside Send, never instead of it: Send is still
-            the one-click send. Both are off while a send is out. */}
-        <div className="flex gap-2">
+            the one-click send. Both are off while a send is out. On a narrow
+            screen Send WRAPS to its own row rather than truncating: "Send order ·
+            1…" is a different count, not a shorter one (the app scales it down). */}
+        <div className="flex flex-wrap gap-2">
           <Button variant="outline" size="lg" className="h-12 shrink-0 text-base" onClick={() => { setReviewing(true); }} disabled={itemsList.length === 0 || sending}>
             {`View order (${String(itemCount)})`}
           </Button>
-          <Button size="lg" className="h-12 min-w-0 flex-1 text-base" onClick={() => { void handleSubmit(); }} disabled={!canSend || sending}>
-            <span className="truncate">
-              {sending ? "Sending…" : itemCount > 0 ? `Send order · ${String(itemCount)} item${itemCount === 1 ? "" : "s"}` : "Send order"}
-            </span>
+          <Button size="lg" className="h-12 flex-1 text-base" onClick={() => { void handleSubmit(); }} disabled={!canSend || sending}>
+            {sending ? "Sending…" : itemCount > 0 ? `Send order · ${String(itemCount)} item${itemCount === 1 ? "" : "s"}` : "Send order"}
           </Button>
         </div>
       </div>

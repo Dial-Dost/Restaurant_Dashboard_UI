@@ -200,6 +200,11 @@ describe('the orders page is wired to all of it', () => {
         expect(form).toMatch(/"Send to kitchen"/);
     });
 
+    it('a narrow dialog wraps both send bars instead of cutting the count off the button', () => {
+        expect(form.match(/<div className="flex flex-wrap gap-2">/g) ?? []).toHaveLength(2);
+        expect(form).not.toMatch(/"truncate"/);
+    });
+
     it('one sending guard covers BOTH send buttons', () => {
         expect(form).toMatch(/if \(sendingRef\.current\) \{return;\}/);
         expect(form).toMatch(/finally \{\s*sendingRef\.current = false;\s*setSending\(false\);/);
