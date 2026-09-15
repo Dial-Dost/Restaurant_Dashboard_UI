@@ -34,6 +34,7 @@ import {
     type MisReportMeta,
 } from '@/lib/mis-reports';
 import { buildPrintDocument } from '@/lib/mis-print';
+import { clampNotices, timeSlotPhrase, timeSlotProvenance } from '@/lib/report-time-slots';
 import { formatFullDateTime } from '@/lib/tz';
 
 export type ExportFormat = 'csv' | 'excel' | 'pdf';
@@ -50,6 +51,12 @@ export interface ExportContext {
     /** True when the body is every row in range, not just the visible page. */
     wholeRange: boolean;
 }
+
+/** The report's title, carrying the slot when there is one: `Sales Summary — Lunch (12:00–17:00)`. */
+const titleOf = (ctx: ExportContext): string => {
+    const title = ctx.meta?.title ?? ctx.def.title;
+    return ctx.meta?.time_slot ? `${title} — ${timeSlotPhrase(ctx.meta.time_slot)}` : title;
+};
 
 /** Hand the browser a file. */
 const download = (blob: Blob, filename: string): void => {
@@ -79,6 +86,8 @@ const provenance = (ctx: ExportContext): [string, string][] => {
         ['Report', m?.title ?? ctx.def.title],
         ['Outlet', m?.outlet_scope === 'all' ? 'All outlets (combined)' : (m?.outlet_name ?? '—')],
         ['Date range', m ? `${m.window.from} to ${m.window.to} (${String(m.window.days)} day${m.window.days === 1 ? '' : 's'}, both inclusive)` : '—'],
+        // What the SERVER applied, never what was asked for — the same rule as the dates.
+        ['Time slot', m ? timeSlotProvenance(m.time_slot) : '—'],
         ['Timezone', m ? `${m.timezone} — every date and total is bucketed on the restaurant's own calendar day` : '—'],
         ['Generated', m ? formatFullDateTime(m.generated_at, m.timezone) : '—'],
         ['Rows', ctx.wholeRange ? `${String(ctx.matrix.body.length)} (every row in range)` : `${String(ctx.matrix.body.length)} (the page on screen)`],
@@ -86,9 +95,13 @@ const provenance = (ctx: ExportContext): [string, string][] => {
         ['Sorted by', ctx.sortLabel || '(report default)'],
         ['Columns', ctx.matrix.header.join(', ')],
     ];
-    if (m?.window.clamped) {
+    // A non-empty list, not a truthy one: `[]` is truthy, and that one character
+    // put "shortened" on the provenance of every export ever taken.
+    const clamp = clampNotices(m?.window.clamped);
+    if (clamp.range) {
         rows.push(['Note', 'The requested range was longer than this system reports on and was shortened — the dates above are the range actually measured.']);
     }
+    if (clamp.slot) {rows.push(['Note', `${clamp.slot}.`]);}
     return rows;
 };
 
@@ -140,7 +153,11 @@ export const exportExcel = async (ctx: ExportContext): Promise<void> => {
     const wb = XLSX.utils.book_new();
     // Excel rejects a sheet name over 31 chars or carrying []:*?/\ — the report
     // titles are all short and clean, but the cap is cheap insurance.
-    XLSX.utils.book_append_sheet(wb, sheet, (ctx.meta?.title ?? ctx.def.title).replace(/[[\]:*?/\\]/g, '').slice(0, 31) || 'Report');
+    // A slot's label rides in the name, its times do not: `:` is one of the
+    // characters Excel refuses, and the times are on the About sheet anyway.
+    const baseTitle = ctx.meta?.title ?? ctx.def.title;
+    const sheetTitle = ctx.meta?.time_slot?.label ? `${baseTitle} - ${ctx.meta.time_slot.label}` : baseTitle;
+    XLSX.utils.book_append_sheet(wb, sheet, sheetTitle.replace(/[[\]:*?/\\]/g, '').slice(0, 31) || 'Report');
     XLSX.utils.book_append_sheet(wb, about, 'About');
     XLSX.writeFile(wb, `${exportBaseName(ctx.meta, ctx.def)}.xlsx`);
 };
@@ -167,7 +184,7 @@ export const exportPdf = (ctx: ExportContext, displayRows: string[][]): void => 
     if (!header) {return;}
 
     const doc = buildPrintDocument({
-        title: ctx.meta?.title ?? ctx.def.title,
+        title: titleOf(ctx),
         blurb: ctx.def.blurb,
         provenance: provenance(ctx),
         notes: ctx.meta?.notes ?? [],
