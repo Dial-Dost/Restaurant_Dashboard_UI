@@ -120,13 +120,15 @@ import { visibleAmount, visibleLineAmount, visibleMoneyText, visibleSubtotal } f
 import {
   draftItemCount,
   draftLineKey,
+  draftReviewTable,
+  draftReviewTitle,
   draftSignature,
   draftSummary,
   keyForDraftSend,
   mergeDraftLine,
   newIdempotencyKey,
   removeDraftLine,
-  setDraftQuantity,
+  stepDraftLine,
   toOrderItems,
   type DraftLine,
   type DraftSendKey,
@@ -3713,7 +3715,7 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
     if (next.length === 0) { setReviewing(false); }
   };
   const removeLine = (key: string) => { updateLines(removeDraftLine(itemsList, key)); };
-  const setLineQuantity = (key: string, quantity: number) => { updateLines(setDraftQuantity(itemsList, key, quantity)); };
+  const stepLine = (key: string, delta: -1 | 1) => { updateLines(stepDraftLine(itemsList, key, delta)); };
 
   /*
     Null for a scoped waiter, and null again if ANY line's price was redacted out
@@ -3781,7 +3783,9 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
     total, the element GONE rather than blanked.
   */
   if (reviewing && itemsList.length > 0) {
-    const reviewTable = selectedTableName ?? tables.find((t) => String(t.id) === selectedTableId)?.name ?? "";
+    // The table the send will POST to, named even when it was picked here rather
+    // than arriving in the URL (see draftReviewTable for the "" that hid it).
+    const reviewTitle = draftReviewTitle(draftReviewTable(tables, selectedTableId, selectedTableName));
     return (
       <div className="grid gap-4 py-4">
         <div className="sticky -top-6 z-10 -mx-6 -mt-4 border-b bg-background px-6 pb-3 pt-4">
@@ -3795,7 +3799,7 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
           </div>
         </div>
         <div>
-          <div className="text-lg font-semibold">Review order · {reviewTable}</div>
+          <div className="text-lg font-semibold">{reviewTitle}</div>
           <div className="text-sm text-muted-foreground">Read it back to the guest, then send.</div>
           <div className="pt-2 text-sm font-medium">
             {draftSummary(itemsList)}{subtotal === null ? "" : ` · ${currencySymbol}${subtotal.toFixed(2)}`}
@@ -3823,9 +3827,9 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
                   {amount === null ? null : <div className="shrink-0">{amount}</div>}
                 </div>
                 <div className="flex items-center justify-end gap-1 pt-1">
-                  <Button variant="ghost" size="icon" aria-label={`One fewer ${it.name}`} onClick={() => { setLineQuantity(key, it.quantity - 1); }} disabled={sending}><Minus className="h-4 w-4"/></Button>
+                  <Button variant="ghost" size="icon" aria-label={`One fewer ${it.name}`} onClick={() => { stepLine(key, -1); }} disabled={sending}><Minus className="h-4 w-4"/></Button>
                   <span className="w-6 text-center tabular-nums">{it.quantity}</span>
-                  <Button variant="ghost" size="icon" aria-label={`One more ${it.name}`} onClick={() => { setLineQuantity(key, it.quantity + 1); }} disabled={sending}><Plus className="h-4 w-4"/></Button>
+                  <Button variant="ghost" size="icon" aria-label={`One more ${it.name}`} onClick={() => { stepLine(key, 1); }} disabled={sending}><Plus className="h-4 w-4"/></Button>
                   <Button variant="ghost" size="icon" aria-label={`Remove ${it.name}`} onClick={() => { removeLine(key); }} disabled={sending}><X className="h-4 w-4"/></Button>
                 </div>
               </div>
@@ -3842,16 +3846,28 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
         {/* Item 5 — "View order" beside Send, never instead of it: Send is still
             the one-click send. Both are off while a send is out. On a narrow
             screen Send WRAPS to its own row rather than truncating: "Send order ·
-            1…" is a different count, not a shorter one (the app scales it down). */}
+            1…" is a different count, not a shorter one (the app scales it down).
+            The label is plain "View order", word for word the owner app's: the
+            count is already on Send beside it, and a waiter moving between the
+            phone and the till looks for the same button by the same name. */}
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" size="lg" className="h-12 shrink-0 text-base" onClick={() => { setReviewing(true); }} disabled={itemsList.length === 0 || sending}>
-            {`View order (${String(itemCount)})`}
+            View order
           </Button>
           <Button size="lg" className="h-12 flex-1 text-base" onClick={() => { void handleSubmit(); }} disabled={!canSend || sending}>
             {sending ? "Sending…" : itemCount > 0 ? `Send order · ${String(itemCount)} item${itemCount === 1 ? "" : "s"}` : "Send order"}
           </Button>
         </div>
       </div>
+      {/* THE WHOLE FORM IS LOCKED WHILE ITS ORDER IS ON THE WAY, not only the two
+          send buttons. handleSubmit takes its lines, table and covers BEFORE it
+          awaits, and a successful send closes this dialog — so a dish Added in
+          the "Sending…" window showed in the list and never reached the kitchen,
+          and the dialog closed on it without a word. The waiter believed it was
+          ordered. A disabled <fieldset> disables every control inside it,
+          including any added later, which a list of `disabled={sending}` props
+          would not. A send that fails leaves the dialog open and unlocks it. */}
+      <fieldset disabled={sending} className="grid min-w-0 gap-4">
       <div className="grid grid-cols-4 items-center gap-4">
       <Label htmlFor="table" className="text-right">Table</Label>
       <div className="col-span-3">
@@ -3986,6 +4002,7 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
         </div>
       )}
       </div>
+      </fieldset>
 
       {/* C4 — the Subtotal is the same money in one line instead of many, so it
           goes with them. The whole row disappears rather than the figure alone:

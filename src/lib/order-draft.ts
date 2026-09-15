@@ -74,6 +74,21 @@ export const setDraftQuantity = (lines: readonly DraftLine[], key: string, quant
   return lines.map((l) => (draftLineKey(l) === key ? { ...l, quantity: qty } : l));
 };
 
+/**
+ * The review's − and + : one line's quantity moved by `delta` (−1 or +1), from
+ * the quantity the LIST holds rather than one a button remembered.
+ *
+ * The owner app's review does the same through `_setQty(id, delta)`, so the two
+ * steppers are one rule. Stepping below one takes the line out, as
+ * setDraftQuantity does; a key that is no longer in the draft changes nothing —
+ * it must not resurrect a line the waiter has just removed.
+ */
+export const stepDraftLine = (lines: readonly DraftLine[], key: string, delta: number): DraftLine[] => {
+  const line = lines.find((l) => draftLineKey(l) === key);
+  if (!line) { return [...lines]; }
+  return setDraftQuantity(lines, key, line.quantity + delta);
+};
+
 /** Plates, not lines: 2 × Naan and 1 × Dal is 3. */
 export const draftItemCount = (lines: readonly Pick<DraftLine, "quantity">[]): number =>
   lines.reduce((sum, l) => sum + l.quantity, 0);
@@ -83,6 +98,37 @@ export const draftSummary = (lines: readonly Pick<DraftLine, "quantity">[]): str
   const items = draftItemCount(lines);
   const dishes = lines.length;
   return `${String(items)} item${items === 1 ? "" : "s"} · ${String(dishes)} dish${dishes === 1 ? "" : "es"}`;
+};
+
+/**
+ * The table the review names: the one the send will POST to.
+ *
+ * That is the table picked in the form (`selectedTableId`), because that id is
+ * what handleAddOrder turns into the order's `table`. The name the page was
+ * opened with is only the fallback for a table list that has not loaded.
+ *
+ * It used to be `selectedTableName ?? <the picked table>`, and the page passes
+ * `""` — not undefined — when the dialog was opened from "Add Order" with no
+ * table in the URL. `"" ?? x` is `""`, so a table chosen from the picker was
+ * never named: the waiter read back "Review order · " and nothing after it.
+ */
+export const draftReviewTable = (
+  tables: readonly { id: number; name: string }[],
+  selectedTableId: string,
+  selectedTableName?: string | null,
+): string => {
+  const picked = tables.find((t) => String(t.id) === selectedTableId)?.name.trim() ?? "";
+  return picked || (selectedTableName ?? "").trim();
+};
+
+/**
+ * "Review order · T4" — the review's heading, worded as the owner app words it.
+ * With no table to name it is plain "Review order": a dangling "·" reads as a
+ * table name that failed to load.
+ */
+export const draftReviewTitle = (tableName: string | null | undefined): string => {
+  const name = (tableName ?? "").trim();
+  return name ? `Review order · ${name}` : "Review order";
 };
 
 /**
