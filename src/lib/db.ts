@@ -40,6 +40,7 @@ import type {
     TenderWire,
 } from '@/lib/mis-capture';
 import type { MisReportPayload } from '@/lib/mis-reports';
+import { misSlotParams, readTimeSlots, slotDraftsBody, type MisBucket, type ReportTimeSlots, type TimeSlotDraft } from '@/lib/report-time-slots';
 
 export interface User {
     id: string;
@@ -5638,7 +5639,12 @@ export interface MisQuery {
     limit?: number;
     offset?: number;
     /** The time-wise toggle. Only Sales Summary changes shape for it. */
-    bucket?: 'day' | 'hour';
+    bucket?: MisBucket;
+    /** A saved session's id (`lunch`). Every report honours it. */
+    slot?: string;
+    /** Custom `HH:mm` pair; wins over `slot`. `timeTo` may be `24:00`. */
+    timeFrom?: string;
+    timeTo?: string;
 }
 
 const misSearchParams = (restaurantId: string, q: MisQuery): string => {
@@ -5650,6 +5656,8 @@ const misSearchParams = (restaurantId: string, q: MisQuery): string => {
     if (typeof q.limit === 'number' && Number.isFinite(q.limit)) {qs.set('limit', String(Math.max(1, Math.round(q.limit))));}
     if (typeof q.offset === 'number' && Number.isFinite(q.offset)) {qs.set('offset', String(Math.max(0, Math.round(q.offset))));}
     if (q.bucket) {qs.set('bucket', q.bucket);}
+    // Nothing at all for all day, so an unsliced request is the URL it always was.
+    for (const [key, value] of misSlotParams(q)) {qs.set(key, value);}
     return qs.toString();
 };
 
@@ -5729,6 +5737,45 @@ export const getMisReport = async (
 ): Promise<MisReportPayload | null> => {
     if (!restaurantId || !path.startsWith('/reports/mis/')) {return null;}
     return misFetch<MisReportPayload>(`${path}?${misSearchParams(restaurantId, q)}`, restaurantId, q.outletId);
+};
+
+/**
+ * The restaurant's saved sessions (Lunch, Dinner, …) and whether this caller may
+ * change them. Null when the route does not answer — an older backend, or a plan
+ * without the accounting reports — and the screen then offers no session picker
+ * rather than a filter the server would ignore.
+ */
+export const getReportTimeSlots = async (restaurantId: string): Promise<ReportTimeSlots | null> => {
+    if (!restaurantId) {return null;}
+    const raw = await misFetch<unknown>(
+        `/reports/mis/time-slots?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+    );
+    return readTimeSlots(raw);
+};
+
+/**
+ * Replace the whole list (an empty list restores Lunch and Dinner). Gated on the
+ * settings permission server-side.
+ *
+ * RETURNS its failure rather than throwing it: Next redacts the message of an
+ * Error thrown out of a Server Action in production, and the server's 400
+ * sentence ("Lunch and Brunch overlap between 12:00 and 13:00") is the whole
+ * point of the editor showing an error at all.
+ */
+export const saveReportTimeSlots = async (
+    restaurantId: string,
+    drafts: TimeSlotDraft[],
+): Promise<{ ok: true; data: ReportTimeSlots } | { ok: false; error: string }> => {
+    const res = await backendCall(`/reports/mis/time-slots?restaurantId=${encodeURIComponent(restaurantId)}`, restaurantId, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(slotDraftsBody(drafts)),
+    });
+    if (!res) {return { ok: false, error: 'Could not reach the server — check the connection and try again.' };}
+    if (!res.ok) {return { ok: false, error: await readErrorMessage(res, 'Unable to save the sessions') };}
+    const data = readTimeSlots(await res.json().catch(() => null));
+    return data ? { ok: true, data } : { ok: false, error: 'The server saved the sessions but sent back a list this screen cannot read — reload to see them.' };
 };
 
 /**

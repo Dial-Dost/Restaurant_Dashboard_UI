@@ -25,6 +25,7 @@
 // build error that tsc and jest both wave through while every page 500s at
 // runtime. `src/lib/table-assignment.ts` set that precedent; this follows it.
 
+import { timeSlotFileSuffix, type MisTimeSlot } from './report-time-slots';
 import { formatDate, formatDateTime } from './tz';
 
 // --- The wire shapes ---------------------------------------------------------
@@ -52,7 +53,12 @@ export interface MisResolvedWindow {
     to: string;
     days: number;
     source?: string;
-    clamped?: boolean;
+    /**
+     * Every adjustment the server made, by name — `[]` when none. An ARRAY, never
+     * a boolean: `[]` is truthy, so a truthiness test read "shortened" off every
+     * report. Read it through `clampNotices` in @/lib/report-time-slots.
+     */
+    clamped?: string[];
 }
 
 export interface MisReportMeta {
@@ -66,6 +72,8 @@ export interface MisReportMeta {
     generated_at: string;
     /** Every caveat that applies to the numbers, in the backend's own words. */
     notes: string[];
+    /** The part of the day the server cut this on. Null / absent = all day. */
+    time_slot?: MisTimeSlot | null;
 }
 
 export interface MisPage {
@@ -155,7 +163,7 @@ export interface MisReportDef {
     rowsKey: string;
     /** True when the backend pages this report and honours limit/offset. */
     paged: boolean;
-    /** True when ?bucket=day|hour changes what comes back. */
+    /** True when ?bucket=day|hour|hour_of_day|session changes what comes back. */
     timeWise: boolean;
     /** What the date range means here. Merged from the catalogue's `shell.basis`. */
     clock: MisClock;
@@ -632,7 +640,11 @@ export const toCsv = (matrix: ExportMatrix): string => {
     return `﻿${lines.join('\r\n')}\r\n`;
 };
 
-/** `order-summary_gaia-test_2026-08-01_to_2026-08-31` — no extension. */
+/**
+ * `order-summary_gaia-test_2026-08-01_to_2026-08-31` — no extension. A report
+ * cut on a time slot adds `_lunch-1200-1700`; an all-day one adds nothing, so
+ * every filename this produced before slots existed is unchanged.
+ */
 export const exportBaseName = (meta: MisReportMeta | null, def: MisReportDef): string => {
     const scope = !meta
         ? 'outlet'
@@ -642,7 +654,7 @@ export const exportBaseName = (meta: MisReportMeta | null, def: MisReportDef): s
     const safe = (s: string) => s.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'report';
     const from = meta?.window.from ?? '';
     const to = meta?.window.to ?? '';
-    return `${safe(def.key.replace(/_/g, '-'))}_${safe(scope)}_${from}_to_${to}`;
+    return `${safe(def.key.replace(/_/g, '-'))}_${safe(scope)}_${from}_to_${to}${timeSlotFileSuffix(meta?.time_slot)}`;
 };
 
 // --- Small screen-level facts ------------------------------------------------
