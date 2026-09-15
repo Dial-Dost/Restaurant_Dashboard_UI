@@ -377,6 +377,76 @@ export const serviceChargeRemovalSentence = (
     };
 };
 
+/**
+ * WHAT TO SAY WHEN "Remove service charge & print" DID NOT COME BACK CLEAN — and
+ * whether anything at all can be said about the money.
+ *
+ * Three different situations, which the dialog used to title alike as "Not
+ * recorded":
+ *
+ *   * A 2xx WAS READ, then the browser's own print flow failed (`answered`).
+ *     The server has already said what it recorded — the waiver row, its audit
+ *     line, the print claim — so the sentence is serviceChargeRemovalSentence's
+ *     for a print that did not happen. Never "Not recorded": the charge is off.
+ *   * A 4xx. Every refusal the route makes (C3's reprint rule, nothing to
+ *     remove, no waive permission, a missing reason or authoriser, an older
+ *     backend's 404) is answered BEFORE it writes, and a failure inside the
+ *     waiver's own transaction rolls back. Nothing was recorded, and the
+ *     server's sentence says why.
+ *   * No answer, or a 5xx. The request may have reached a backend that
+ *     committed the waiver and claimed the print before the answer was lost: a
+ *     connection reset, the browser-to-Next hop dropping, a proxy's 502 or 504
+ *     after a slow print. Nothing proves either way, so this says so, and says
+ *     what to look at — the dialog re-reads the bill whatever happened, the way
+ *     the till reloads after every outcome.
+ */
+export const serviceChargeRemovalTrouble = (
+    trouble: {
+        /** The HTTP status; 0 = no answer at all. Ignored when `answered` is set. */
+        status: number;
+        /** The server's sentence, the transport's, or the thrown error's message. */
+        message: string;
+        /** The 2xx body, when one was read before whatever went wrong. */
+        answered?: Partial<RemoveServiceChargeAndPrintResult> | null;
+    },
+    money: (v: unknown) => string,
+): { title: string; message: string } => {
+    const said = trouble.message.trim();
+    if (trouble.answered) {
+        return {
+            title: 'Check the bill',
+            message: serviceChargeRemovalSentence({ ...trouble.answered, printed: false, print_error: said }, money).message,
+        };
+    }
+    if (trouble.status >= 400 && trouble.status < 500) {
+        return { title: 'Not recorded', message: said || `Unable to remove the service charge (${String(trouble.status)})` };
+    }
+    const lead = said ? `${said}${/[.!?…]$/.test(said) ? '' : '.'} ` : '';
+    return {
+        title: 'Check the bill',
+        message: `${lead}The server did not confirm what happened, so the service charge may already be off this bill. `
+            + 'The bill has been read again: if it now shows the waiver, print it from there instead of removing the charge again.',
+    };
+};
+
+/**
+ * THE LIVE-WAIVER PANEL'S PRINT CONTROL, NAMED FOR THE PAPER IT WILL MAKE.
+ *
+ * The server stamps REPRINT on a bill only when its ledger already counts a
+ * print of this seating's bill (`reprint: print_count > 0` in
+ * printOpenTableBill; the print page reads the same count). A waiver can be on a
+ * bill nobody has printed: an installed 1.9.9 till's "Waive service charge"
+ * still records without printing, and a removal whose print failed leaves the
+ * same state. A control called "Reprint" there describes paper that does not
+ * come out.
+ *
+ * `printedBefore` is `serverBillPrintState(bill)`. Only the server's `true` says
+ * reprint; `false` and "no answer" say print, which is true either way. The till
+ * uses the same words (serviceChargeWaivedPrintCopy in mis_capture.dart).
+ */
+export const serviceChargeWaivedPrintLabel = (printedBefore: boolean | null): string =>
+    printedBefore === true ? 'Reprint without the charge' : 'Print without the charge';
+
 export interface BillTenderRecord {
     id: string;
     bill_id: string;

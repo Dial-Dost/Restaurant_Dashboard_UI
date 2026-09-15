@@ -6069,6 +6069,12 @@ export const reverseServiceChargeWaiver = async (
  * a redacted error is not. The caller opened the print tab before calling, and
  * closes it on `ok: false`.
  *
+ * `ok: false` IS NOT "NOTHING HAPPENED". A 4xx is: the route refuses before it
+ * writes. No answer (`status: 0`) and a 5xx are not — a connection reset or a
+ * proxy's 504 can arrive after the waiver committed and the print was claimed —
+ * so the sentence for those says only what is known, and the dialog
+ * (serviceChargeRemovalTrouble) re-reads the bill before anybody tries again.
+ *
  * No retry and no idempotency key, like every capture write here: the route can
  * mint a bill number, and a repeated request for paper is a second copy.
  */
@@ -6086,7 +6092,9 @@ export const removeServiceChargeAndPrint = async (
         body: JSON.stringify(payload),
     });
     if (!response) {
-        return { ok: false, status: 0, message: 'Could not reach the server. Nothing was recorded and nothing printed.' };
+        // Not "nothing was recorded": fetch throws for a reset AFTER the request
+        // was sent as readily as for a server that was never reached.
+        return { ok: false, status: 0, message: 'The server could not be reached, or its answer was lost on the way back.' };
     }
     if (!response.ok) {
         return { ok: false, status: response.status, message: await captureErrorMessage(response, 'Unable to remove the service charge') };

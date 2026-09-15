@@ -17,6 +17,14 @@
 //     request is awaited, or the waiver lands and no paper appears.
 //   * ONE CLAIM PER PIECE OF PAPER. The route has already claimed the print; the
 //     page's print flow must not claim it again.
+//   * "NOT RECORDED" ONLY WHEN IT IS TRUE. A 4xx is a refusal made before the
+//     route writes. No answer and a 5xx are not — a reset or a proxy's 504 can
+//     land after the waiver committed — and a print flow that fails after a 200
+//     has already been told the charge is off. The dialog used to title all of
+//     them "Not recorded" and leave the removal form on screen.
+//   * "REPRINT" ONLY FOR A BILL THAT HAS BEEN PRINTED. The paper says REPRINT
+//     only when the server's ledger counts a print; the control must not promise
+//     one on a waiver nobody has printed yet.
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -25,6 +33,8 @@ import {
     formatAmount,
     serviceChargeOnBill,
     serviceChargeRemovalSentence,
+    serviceChargeRemovalTrouble,
+    serviceChargeWaivedPrintLabel,
 } from '../mis-capture';
 
 /** The Flutter till formats money without grouping; the words are what is shared. */
@@ -108,6 +118,75 @@ describe('serviceChargeRemovalSentence — says what the server did, in the till
     });
 });
 
+describe('serviceChargeRemovalTrouble — "Not recorded" only when nothing was', () => {
+    it('a 4xx is the server\'s refusal before any write: its sentence, verbatim, titled Not recorded', () => {
+        expect(serviceChargeRemovalTrouble({
+            status: 403, message: "'ravi' is not permitted to authorise a service-charge waiver",
+        }, money)).toEqual({ title: 'Not recorded', message: "'ravi' is not permitted to authorise a service-charge waiver" });
+        expect(serviceChargeRemovalTrouble({ status: 404, message: '' }, money))
+            .toEqual({ title: 'Not recorded', message: 'Unable to remove the service charge (404)' });
+    });
+
+    it.each([
+        [0, 'The server could not be reached, or its answer was lost on the way back.'],
+        [502, 'Unable to remove the service charge (502)'],
+        [504, 'Unable to remove the service charge (504)'],
+        [500, "Unable to read this table's bill"],
+    ])('THE BUG: status %s may hide a committed waiver, so it is never called "Not recorded"', (status, sentence) => {
+        const said = serviceChargeRemovalTrouble({ status, message: sentence }, money);
+        expect(said.title).toBe('Check the bill');
+        expect(said.message.startsWith(sentence)).toBe(true);
+        expect(said.message).toContain('the service charge may already be off this bill');
+        expect(said.message).toContain('The bill has been read again');
+        expect(said.message).not.toMatch(/nothing was recorded|not recorded/i);
+    });
+
+    it('a sentence without a full stop is not run into the next one', () => {
+        expect(serviceChargeRemovalTrouble({ status: 502, message: 'Unable to remove the service charge (502)' }, money).message)
+            .toMatch(/^Unable to remove the service charge \(502\)\. The server did not confirm/);
+    });
+
+    it('THE OTHER HALF: a 200 was read and then the print flow threw — the charge is off, the paper is not', () => {
+        expect(serviceChargeRemovalTrouble({
+            status: 0,
+            message: 'Failed to open the print page',
+            answered: {
+                success: true, printed: true, waiver_created: true, service_charge_removed: true,
+                grand_total_before: 6324, grand_total_after: 5774,
+            },
+        }, money)).toEqual({
+            title: 'Check the bill',
+            message: 'Service charge removed (₹6,324.00 → ₹5,774.00), but the bill did not print: Failed to open the print page. Press Print bill.',
+        });
+    });
+
+    it('a live waiver reprinted and then the print flow threw says the charge is off, not that it was removed now', () => {
+        const said = serviceChargeRemovalTrouble({
+            status: 0,
+            message: 'Popup blocked',
+            answered: { printed: true, waiver_created: false, waiver: { id: 'w-live' } as never, grand_total_after: 5774 },
+        }, money);
+        expect(said).toEqual({
+            title: 'Check the bill',
+            message: 'The service charge is off this bill, but the bill did not print: Popup blocked. Press Print bill.',
+        });
+    });
+});
+
+describe('serviceChargeWaivedPrintLabel — "Reprint" only for a bill the server says was printed', () => {
+    it('printed before: the paper will say REPRINT, and so does the control', () => {
+        expect(serviceChargeWaivedPrintLabel(true)).toBe('Reprint without the charge');
+    });
+
+    it('THE BUG: a waiver recorded without a print (a 1.9.9 till, or a failed print) is a first print', () => {
+        expect(serviceChargeWaivedPrintLabel(false)).toBe('Print without the charge');
+    });
+
+    it('no print state in the payload promises nothing about the banner', () => {
+        expect(serviceChargeWaivedPrintLabel(null)).toBe('Print without the charge');
+    });
+});
+
 // ---------------------------------------------------------------------------
 // WIRING — the dashboard reaches the route the way the page's print flow needs
 // ---------------------------------------------------------------------------
@@ -144,11 +223,46 @@ describe('wiring', () => {
     it('both the removal form and the live-waiver reprint go through it; the old two-step is gone', () => {
         const ui = src('app/dashboard/orders/capture-actions.tsx');
         expect(ui).toContain('Remove service charge &amp; print');
-        expect(ui).toContain('Reprint without the charge');
+        expect(ui).toContain('{serviceChargeWaivedPrintLabel(printedBefore)}');
         expect(ui).toContain('"Remove service charge & print…"');
         expect(ui).not.toContain('Waive service charge…');
         expect(ui).not.toMatch(/\bwaiveServiceCharge\b/);
         expect(ui.match(/removeAndPrint\(/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+    });
+
+    it('a failure that is not a clean refusal is told as one, and the bill is re-read in every outcome', () => {
+        const ui = src('app/dashboard/orders/capture-actions.tsx');
+        const start = ui.indexOf('const removeAndPrint = ');
+        const body = ui.slice(start, ui.indexOf('const reverse = async', start));
+        // No answer / not 2xx: the status decides the title, and the dialog
+        // re-reads instead of leaving a removal form over a charge that is off.
+        const refusal = body.slice(body.indexOf('if (!answer.ok)'), body.indexOf('answered = answer.result'));
+        expect(refusal).toContain('serviceChargeRemovalTrouble({ status: answer.status, message: answer.message }, money)');
+        expect(refusal).toMatch(/load\(\)\s+onChanged\(\)\s+return/);
+        expect(refusal).not.toContain('fail(');
+        // The 200 is remembered BEFORE the print flow runs, so a throw from it
+        // is reported as "the charge is off, the paper is not".
+        expect(body.indexOf('answered = answer.result')).toBeGreaterThan(-1);
+        expect(body.indexOf('answered = answer.result')).toBeLessThan(body.indexOf('await printBill('));
+        const caught = body.slice(body.indexOf('} catch (e) {'), body.indexOf('} finally {'));
+        expect(caught).toMatch(/serviceChargeRemovalTrouble\(\s*\{ status: 0, message: String\(\(e as Error\)\?\.message \?\? e\), answered \}/);
+        expect(caught).toContain('load()');
+        expect(caught).toContain('onChanged()');
+        expect(caught).not.toContain('fail(');
+    });
+
+    it('db.ts does not say "nothing was recorded" when it has no answer to say it from', () => {
+        const db = src('lib/db.ts');
+        const fn = db.slice(db.indexOf('export const removeServiceChargeAndPrint'), db.indexOf('// --- 037: TENDERS AND TIPS'));
+        expect(fn).toContain("status: 0, message: 'The server could not be reached, or its answer was lost on the way back.'");
+        // In a sentence the dialog shows, that is; the comment explaining why may say it.
+        expect(fn).not.toMatch(/'[^'\n]*nothing was recorded[^'\n]*'/i);
+    });
+
+    it('the live-waiver panel names its print from the server\'s print ledger', () => {
+        const ui = src('app/dashboard/orders/capture-actions.tsx');
+        expect(ui).toContain('const printedBefore = serverBillPrintState(bill)');
+        expect(ui).not.toMatch(/>\s*Reprint without the charge\s*</);
     });
 
     it('THE GATING BUG: the dialog asks billCarriesServiceCharge, not the percent leg', () => {
@@ -193,6 +307,8 @@ describe('the Windows/Android till says the same sentences', () => {
             '. Printing bill…',
             'Reprinting without the service charge — total ',
             'Reprinting without the service charge…',
+            'Reprint without the charge',
+            'Print without the charge',
         ]) {
             expect([fragment, flutter.includes(fragment), web.includes(fragment)]).toEqual([fragment, true, true]);
         }

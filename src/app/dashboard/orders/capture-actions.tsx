@@ -127,6 +127,8 @@ import {
     remainderForRow,
     serviceChargeOnBill,
     serviceChargeRemovalSentence,
+    serviceChargeRemovalTrouble,
+    serviceChargeWaivedPrintLabel,
     tenderFormRefusal,
     tendersForWire,
     type BillTenderState,
@@ -134,10 +136,12 @@ import {
     type CompCandidate,
     type NonChargeableRecord,
     type OrderVoidRecord,
+    type RemoveServiceChargeAndPrintResult,
     type ServiceChargeWaiverRecord,
     type TenderDraft,
     type VocabularyOption,
 } from "@/lib/mis-capture"
+import { serverBillPrintState } from "@/lib/bill-print-state"
 import { cancelKotRoute } from "@/lib/orders-grid"
 import { can } from "@/lib/session-scope"
 import { cn } from "@/lib/utils"
@@ -990,6 +994,10 @@ function WaiverDialog({
     const live = bill?.service_charge_waiver && !bill.service_charge_waiver.reversed_at
         ? bill.service_charge_waiver
         : null
+    // The server's print ledger for this seating, read off the same payload —
+    // "Reprint" only when it says the bill has been printed. See
+    // serviceChargeWaivedPrintLabel.
+    const printedBefore = serverBillPrintState(bill)
 
     /*
       ONE REQUEST FOR BOTH HALVES. POST /bills/service-charge-waiver/print
@@ -1008,14 +1016,29 @@ function WaiverDialog({
         const tab = openPrintTab()
         setBusy(true)
         void (async () => {
+            // Set once a 2xx body has been read. From then on the server has SAID
+            // what it recorded, and anything that fails is this browser's print —
+            // which must never be reported as "Not recorded".
+            let answered: RemoveServiceChargeAndPrintResult | null = null
             try {
                 const answer = await removeServiceChargeAndPrint(restaurantId, { table_name: tableName, ...form })
                 if (!answer.ok) {
-                    // Nothing was ever drawn in it. The server's sentence, verbatim.
+                    // Nothing was ever drawn in it.
                     tab?.close()
-                    fail(new Error(answer.message))
+                    // A 4xx is the server's refusal, verbatim; no answer or a 5xx
+                    // is an unknown outcome and is told as one.
+                    const trouble = serviceChargeRemovalTrouble({ status: answer.status, message: answer.message }, money)
+                    toast({ title: trouble.title, description: trouble.message, variant: "destructive" })
+                    // Re-read in EVERY outcome, as the till does: a lost answer can
+                    // hide a committed waiver, and the panel that comes back —
+                    // the form, or the live waiver with its print control — is
+                    // the answer, instead of a removal form for a charge that is
+                    // already off.
+                    load()
+                    onChanged()
                     return
                 }
+                answered = answer.result
                 const said = serviceChargeRemovalSentence(answer.result, money)
                 if (answer.result.printed && printBill) {
                     await printBill({ printWindow: tab, printableBill: answer.result.printable_bill ?? null })
@@ -1031,9 +1054,14 @@ function WaiverDialog({
                 onClose()
             } catch (e) {
                 tab?.close()
-                fail(e)
-                // The waiver may have landed before whatever went wrong; the
-                // bill on screen is re-read either way.
+                // Either the call itself threw before any answer (the browser-to-
+                // server hop failed: unknown), or the page's print flow threw
+                // AFTER the server answered 200 (the charge is off; no paper).
+                const trouble = serviceChargeRemovalTrouble(
+                    { status: 0, message: String((e as Error)?.message ?? e), answered },
+                    money,
+                )
+                toast({ title: trouble.title, description: trouble.message, variant: "destructive" })
                 load()
                 onChanged()
             } finally {
@@ -1082,10 +1110,13 @@ function WaiverDialog({
                             </div>
                         </div>
                         <Note>
-                            One live waiver per bill. Reprinting prints it again without the charge and records
-                            nothing new. Reversing it puts the charge back on and leaves the original in the record,
-                            marked reversed — so the report shows a waiver a manager overturned rather than showing
-                            nothing.
+                            One live waiver per bill.{" "}
+                            {printedBefore === true
+                                ? "Reprinting it without the charge"
+                                : "Printing it without the charge"}{" "}
+                            records nothing new. Reversing it puts the charge back on and leaves the original in the
+                            record, marked reversed — so the report shows a waiver a manager overturned rather than
+                            showing nothing.
                         </Note>
                         <DialogFooter>
                             <Button variant="ghost" onClick={onClose} disabled={busy}>Close</Button>
@@ -1094,7 +1125,7 @@ function WaiverDialog({
                             </Button>
                             <Button onClick={() => { removeAndPrint() }} disabled={busy} className="gap-1">
                                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Printer className="h-4 w-4" />}
-                                Reprint without the charge
+                                {serviceChargeWaivedPrintLabel(printedBefore)}
                             </Button>
                         </DialogFooter>
                     </div>
