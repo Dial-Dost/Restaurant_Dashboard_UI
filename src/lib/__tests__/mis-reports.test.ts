@@ -14,7 +14,9 @@
 // clock — the storage helpers are exercised against a stubbed localStorage.
 
 import {
+    COLUMN_PREFS_VERSION,
     MIS_REPORTS,
+    RUNGS_NOW_ON_BY_DEFAULT,
     buildExportMatrix,
     clockFromBasis,
     columnPrefsKey,
@@ -23,6 +25,8 @@ import {
     defaultHidden,
     drillTarget,
     exportBaseName,
+    exportMoneyColumnIndex,
+    exportSummaryLine,
     formatCell,
     formatMatrix,
     formatMoney,
@@ -324,6 +328,121 @@ describe('column configuration', () => {
         expect(loadColumnPrefs('emp-1', 'discount')).toBeNull();
         expect(() => { saveColumnPrefs('emp-1', 'discount', { hidden: [] }); }).not.toThrow();
     });
+
+    // Client item 1 turned Round off (Sales), Service charge (Order, Counter) and
+    // Tax (Counter) ON by default, so the visible rungs add up to Gross. A layout
+    // saved before that still lists them as hidden — not because anyone chose to,
+    // but because toggling ANY column saved the old default along with it — and
+    // the grid, CSV, XLSX and PDF would keep printing Net + SC + Tax ≠ Gross.
+    describe('a layout saved before the ladder rungs were turned on', () => {
+        const withStore = (run: (store: Map<string, string>) => void): void => {
+            const store = new Map<string, string>();
+            (globalThis as unknown as { window?: unknown }).window = {
+                localStorage: {
+                    getItem: (k: string) => store.get(k) ?? null,
+                    setItem: (k: string, v: string) => { store.set(k, v); },
+                    removeItem: (k: string) => { store.delete(k); },
+                },
+            };
+            try { run(store); } finally { delete (globalThis as unknown as { window?: unknown }).window; }
+        };
+
+        it('loads without the rung, keeps every column the user did hide, and is re-saved stamped', () => {
+            withStore((store) => {
+                // Exactly what origin/main's toggleColumn left behind: the old
+                // default hidden list (round_off, nc_value) plus the user's own pick.
+                store.set(columnPrefsKey('emp-1', 'sales_summary'), JSON.stringify({ hidden: ['round_off', 'nc_value', 'covers'] }));
+                expect(loadColumnPrefs('emp-1', 'sales_summary')).toEqual({ hidden: ['nc_value', 'covers'] });
+                expect(JSON.parse(store.get(columnPrefsKey('emp-1', 'sales_summary')) ?? '{}'))
+                    .toEqual({ hidden: ['nc_value', 'covers'], v: COLUMN_PREFS_VERSION });
+
+                store.set(columnPrefsKey('emp-1', 'order_summary'), JSON.stringify({ hidden: ['service_charge', 'refund', 'waiter'] }));
+                expect(loadColumnPrefs('emp-1', 'order_summary')).toEqual({ hidden: ['refund', 'waiter'] });
+
+                store.set(columnPrefsKey('emp-1', 'counter_summary'), JSON.stringify({ hidden: ['covers', 'service_charge', 'tax', 'refund'] }));
+                expect(loadColumnPrefs('emp-1', 'counter_summary')).toEqual({ hidden: ['covers', 'refund'] });
+            });
+        });
+
+        it('and the visible rungs then add up to Gross', () => {
+            withStore((store) => {
+                const ladder: MisColumn[] = [
+                    { key: 'net', label: 'Net', type: 'money', total: true },
+                    { key: 'service_charge', label: 'Service charge', type: 'money', total: true },
+                    { key: 'tax', label: 'Tax', type: 'money', total: true },
+                    { key: 'round_off', label: 'Round off', type: 'money', total: true },
+                    { key: 'grand_total', label: 'Gross', type: 'money', total: true },
+                ];
+                const totals: Record<string, number> = { net: 5835, service_charge: 10, tax: 292.26, round_off: -0.26, grand_total: 6137 };
+                store.set(columnPrefsKey('emp-1', 'sales_summary'), JSON.stringify({ hidden: ['round_off'] }));
+                const shown = visibleColumns(ladder, loadColumnPrefs('emp-1', 'sales_summary')?.hidden ?? []);
+                const rungs = shown.filter((c) => c.key !== 'grand_total').reduce((s, c) => s + (totals[c.key] ?? 0), 0);
+                expect(Math.round(rungs * 100) / 100).toBe(totals.grand_total);
+            });
+        });
+
+        it('runs ONCE: a rung hidden again on this build stays hidden', () => {
+            withStore(() => {
+                saveColumnPrefs('emp-1', 'sales_summary', { hidden: ['round_off'] });
+                expect(loadColumnPrefs('emp-1', 'sales_summary')).toEqual({ hidden: ['round_off'] });
+                expect(loadColumnPrefs('emp-1', 'sales_summary')).toEqual({ hidden: ['round_off'] });
+            });
+        });
+
+        it('leaves every other report, and a key that merely looks like a rung, alone', () => {
+            withStore((store) => {
+                store.set(columnPrefsKey('emp-1', 'discount'), JSON.stringify({ hidden: ['round_off', 'tax'] }));
+                expect(loadColumnPrefs('emp-1', 'discount')).toEqual({ hidden: ['round_off', 'tax'] });
+                // Tax was always ON on the Order Summary; a hidden tax there is a choice.
+                store.set(columnPrefsKey('emp-1', 'order_summary'), JSON.stringify({ hidden: ['tax'] }));
+                expect(loadColumnPrefs('emp-1', 'order_summary')).toEqual({ hidden: ['tax'] });
+                expect(RUNGS_NOW_ON_BY_DEFAULT).toEqual({
+                    sales_summary: ['round_off'],
+                    order_summary: ['service_charge'],
+                    counter_summary: ['service_charge', 'tax'],
+                });
+            });
+        });
+    });
+});
+
+// Item Wise, Group Summary and Variation Summary lost their always-equal Net
+// (net_amount) column in client item 1. The toast's money pick looked only for
+// grand_total / net_amount / amount, so their "N rows · ₹X" quietly became "N rows".
+describe('the export confirmation quotes the money', () => {
+    const itemWise: MisColumn[] = [
+        { key: 'item_name', label: 'Item', type: 'text' },
+        { key: 'qty', label: 'Qty', type: 'int', total: true },
+        { key: 'gross_amount', label: 'Item total', type: 'money', total: true },
+    ];
+
+    it('an Item Wise-shaped export (Item total, no Net) still carries its ₹ figure', () => {
+        const m = buildExportMatrix(itemWise, [{ item_name: 'Dal', qty: 3, gross_amount: 450 }], { qty: 3, gross_amount: 450 });
+        expect(exportMoneyColumnIndex(m.columns)).toBe(2);
+        expect(exportSummaryLine(m, '₹')).toBe(`1 rows · ${formatMoney(450, '₹')}`);
+    });
+
+    it('the bill-level reports keep their pick — gross_amount is only the fallback', () => {
+        const both: MisColumn[] = [
+            ...itemWise,
+            { key: 'grand_total', label: 'Gross', type: 'money', total: true },
+        ];
+        expect(exportMoneyColumnIndex(both)).toBe(3);
+        const settlement: MisColumn[] = [
+            { key: 'method', label: 'Method', type: 'text' },
+            { key: 'amount', label: 'Collected', type: 'money', total: true },
+            { key: 'net_amount', label: 'After refunds', type: 'money', total: true },
+        ];
+        expect(exportMoneyColumnIndex(settlement)).toBe(1);
+        expect(exportMoneyColumnIndex(COLUMNS)).toBe(5);
+    });
+
+    it('no money column, or no totals row, is just the row count', () => {
+        const m = buildExportMatrix([{ key: 'reason', label: 'Reason', type: 'text' }], [{ reason: 'x' }], null);
+        expect(exportSummaryLine(m, '₹')).toBe('1 rows');
+    });
+    // export.ts delegating to exportSummaryLine is pinned in gross-net.test.ts,
+    // beside the other source guards.
 });
 
 describe('the export is the screen', () => {

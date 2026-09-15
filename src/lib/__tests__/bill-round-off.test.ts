@@ -97,7 +97,10 @@ describe('every web surface that shows the ladder shows the round-off rung', () 
     it('the MIS report bill drill-down', () => {
         const src = code(readSource('src/app/dashboard/reports/drill-down.tsx'));
         expect(src).toContain('<Line label="Round off" value={formatRoundOff(roundOffOf(bill)!, money)} />');
-        expect(src.indexOf('label="Round off"')).toBeLessThan(src.indexOf('label="Grand total"'));
+        // The bottom rung is "Gross" here — the word on the report row this dialog
+        // opens from (client item 1; pinned in gross-net.test.ts).
+        expect(src.indexOf('label={GROSS}')).toBeGreaterThan(-1);
+        expect(src.indexOf('label="Round off"')).toBeLessThan(src.indexOf('label={GROSS}'));
     });
 
     it('the customer-facing display', () => {

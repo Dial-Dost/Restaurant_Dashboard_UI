@@ -314,7 +314,7 @@ function AccountingInner() {
         <CardHeader>
           <CardTitle>Discounts &amp; offers</CardTitle>
           <CardDescription>
-            Money given away on settled bills in this range. Bill totals are stored net of discount,
+            Money given away on settled bills in this range. Bill totals are stored after discount,
             so the sales and P&amp;L figures above already reflect these — nothing here is double-counted.
           </CardDescription>
         </CardHeader>

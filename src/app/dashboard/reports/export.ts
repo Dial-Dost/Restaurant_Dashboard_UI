@@ -25,7 +25,7 @@
 
 import {
     exportBaseName,
-    formatMoney,
+    exportSummaryLine,
     toCsv,
     type ExportMatrix,
     type FormatOptions,
@@ -206,11 +206,10 @@ export const runExport = async (format: ExportFormat, ctx: ExportContext, displa
     return 'Opening the print dialog — choose "Save as PDF"';
 };
 
-/** A one-line summary of the money on screen, for the export confirmation toast. */
-export const exportSummary = (ctx: ExportContext): string => {
-    const totalIndex = ctx.matrix.columns.findIndex((c) => c.key === 'grand_total' || c.key === 'net_amount' || c.key === 'amount');
-    if (totalIndex < 0 || !ctx.matrix.totals) {return `${String(ctx.matrix.body.length)} rows`;}
-    const value = ctx.matrix.totals[totalIndex];
-    if (typeof value !== 'number') {return `${String(ctx.matrix.body.length)} rows`;}
-    return `${String(ctx.matrix.body.length)} rows · ${formatMoney(value, ctx.format.currencySymbol)}`;
-};
+/**
+ * A one-line summary of the money on screen, for the export confirmation toast.
+ * The column it quotes is chosen in @/lib/mis-reports (exportMoneyColumnIndex),
+ * where jest can reach it — this file's imports keep it out of the test runner.
+ */
+export const exportSummary = (ctx: ExportContext): string =>
+    exportSummaryLine(ctx.matrix, ctx.format.currencySymbol);

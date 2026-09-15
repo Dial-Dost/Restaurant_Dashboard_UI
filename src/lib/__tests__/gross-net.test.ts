@@ -36,6 +36,38 @@ function readSource(relative: string): string {
 const code = (src: string): string =>
     src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\{\/\*[\s\S]*?\*\/\}/g, '').replace(/^\s*\/\/.*$/gm, '');
 
+/** The text of one JSX attribute: `{…}` without its braces (balanced), `"…"` with its quotes. */
+const attrOf = (element: string, name: 'label' | 'value'): string => {
+    const at = (name === 'label' ? /(?:^|\s)label=/ : /(?:^|\s)value=/).exec(element);
+    if (!at) {return '';}
+    let i = at.index + at[0].length;
+    if (element[i] === '"') {return element.slice(i, element.indexOf('"', i + 1) + 1);}
+    if (element[i] !== '{') {return '';}
+    const start = i + 1;
+    let depth = 0;
+    for (; i < element.length; i++) {
+        if (element[i] === '{') {depth++;}
+        else if (element[i] === '}' && --depth === 0) {break;}
+    }
+    return element.slice(start, i);
+};
+
+/** Every `<Tile …/>` in a source, as its label and value — whatever order the attributes come in. */
+const tilesOf = (src: string): { label: string; value: string }[] =>
+    [...src.matchAll(/<Tile\b/g)].map((m) => {
+        let i = m.index + m[0].length;
+        const start = i;
+        let depth = 0;
+        for (; i < src.length; i++) {
+            if (src[i] === '{') {depth++;}
+            else if (src[i] === '}') {depth--;}
+            else if (depth === 0 && src[i] === '/' && src[i + 1] === '>') {break;}
+        }
+        const element = src.slice(start, i);
+        const label = attrOf(element, 'label');
+        return { label, value: attrOf(element, 'value') };
+    });
+
 /**
  * The Sales Summary totals the server sends today, for Gaia's receipt plus a
  * discounted bill: item total 5985 − 150 = net 5835 + SC 10 + tax 292.26 + round
@@ -124,13 +156,39 @@ describe('the report tiles say the words through the helper', () => {
         expect(src).not.toMatch(/label="Net in drawer"/);
     });
 
+    // Read as ELEMENTS, not as one label-then-value regex: that regex matched
+    // nothing on a tile whose hint came before its value, and a single toMatch
+    // for Item total was already satisfied by the Sales Summary tile — so the
+    // Discount report's Item total tile could read grand_total and every test
+    // still passed. Here every tile carrying one of the words is checked.
+    const tiles = tilesOf(src);
+    const valuesFor = (word: string): string[] => tiles.filter((t) => t.label === word).map((t) => t.value);
+
+    it('the element reader sees every tile, whatever order its attributes come in', () => {
+        expect(tilesOf('<Tile hint="h" value={money(totals.net)}\n    label={NET} />')).toEqual([
+            { label: 'NET', value: 'money(totals.net)' },
+        ]);
+        expect(tilesOf('<Tiles><Tile label="Bills" value={formatInt(totals.bills)} tone={x > 0 ? "warn" : "default"} /></Tiles>'))
+            .toEqual([{ label: '"Bills"', value: 'formatInt(totals.bills)' }]);
+    });
+
     it('every Gross tile reads grand_total, and every Net tile reads net', () => {
-        const gross = [...src.matchAll(/label=\{GROSS\} value=\{money\(([^)]*)\)\}/g)].map((m) => m[1]);
+        const gross = valuesFor('GROSS');
         expect(gross.length).toBeGreaterThanOrEqual(6);
-        for (const expr of gross) {expect(expr).toBe('totals.grand_total');}
-        const net = [...src.matchAll(/label=\{NET\} value=\{money\(([^)]*)\)\}/g)].map((m) => m[1]);
+        for (const expr of gross) {expect(expr).toBe('money(totals.grand_total)');}
+        const net = valuesFor('NET');
         expect(net.length).toBeGreaterThanOrEqual(3);
-        for (const expr of net) {expect(expr).toBe('totals.net');}
+        for (const expr of net) {expect(expr).toBe('money(totals.net)');}
+    });
+
+    it('every Item total tile reads the pre-discount rung — through itemTotalOf on the ladder reports, gross_amount on the item reports', () => {
+        const itemTotal = valuesFor('ITEM_TOTAL');
+        expect(itemTotal.length).toBeGreaterThanOrEqual(4);
+        for (const expr of itemTotal) {
+            expect(['money(itemTotalOf(totals))', 'money(totals.gross_amount)']).toContain(expr);
+        }
+        // Sales Summary AND Discount, not just one of them.
+        expect(itemTotal.filter((e) => e === 'money(itemTotalOf(totals))').length).toBeGreaterThanOrEqual(2);
     });
 
     it('the pre-discount rung is read through itemTotalOf, and the old gross key is not read directly', () => {
@@ -156,6 +214,20 @@ describe('Accounting headlines Net through readAccountingSales', () => {
         expect(src).not.toMatch(/sales\?\.net_sales/);
         expect(src).not.toMatch(/>Net sales ↗</);
     });
+
+    // The two figures under the headline were free text reading the helper —
+    // pointing "Gross sales" at salesWords.netSales passed every test above.
+    it('the line under the card puts each word on its own figure', () => {
+        expect(src).toMatch(/Gross sales \{money\(salesWords\.grossSales\)\}/);
+        expect(src).toMatch(/Gross after refunds \{money\(salesWords\.grossAfterRefunds\)\}/);
+        expect(src).not.toMatch(/Gross sales \{money\(salesWords\.(?!grossSales\))/);
+        expect(src).not.toMatch(/Gross after refunds \{money\(salesWords\.(?!grossAfterRefunds\))/);
+    });
+
+    it('the discounts card does not call the bill totals "net of discount" — Net is a defined word, and those totals are Gross', () => {
+        expect(src).not.toMatch(/\bnet of discount/i);
+        expect(src).toMatch(/Bill totals are stored after discount/);
+    });
 });
 
 describe('the other screens', () => {
@@ -170,5 +242,23 @@ describe('the other screens', () => {
         const src = code(readSource('src/app/dashboard/reports/drill-down.tsx'));
         expect(src).toMatch(/label=\{ITEM_TOTAL\} value=\{money\(bill\.items_subtotal\)\}/);
         expect(src).not.toMatch(/subtotal \(gross\)/);
+    });
+
+    // The report row this dialog opens from prints the bill's grand total under
+    // "Gross"; the dialog's bottom rung said "Grand total" for the same figure.
+    // The app's drill-down is pinned to the same three words in
+    // restaurant_owner_app test/reports_module_test.dart.
+    it('the bill drill-down names its bottom rung Gross and its middle rung Net — the words on the row it opened from', () => {
+        const src = code(readSource('src/app/dashboard/reports/drill-down.tsx'));
+        expect(src).toMatch(/label=\{GROSS\} value=\{money\(bill\.grand_total\)\}/);
+        expect(src).toMatch(/label=\{NET\} value=\{money\(bill\.taxable_base\)\}/);
+        expect(src).not.toMatch(/label="Grand total"/);
+        expect(src).not.toMatch(/label="Net"/);
+    });
+
+    it('the export toast picks its money column through the helper jest can reach', () => {
+        const src = code(readSource('src/app/dashboard/reports/export.ts'));
+        expect(src).toMatch(/exportSummaryLine\(ctx\.matrix, ctx\.format\.currencySymbol\)/);
+        expect(src).not.toMatch(/c\.key === 'net_amount'/);
     });
 });
