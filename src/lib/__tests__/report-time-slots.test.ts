@@ -37,6 +37,7 @@ import {
     reconcileSlotSelection,
     slotDraftsBody,
     slotQuery,
+    slotDefinitionKey,
     slotSelectionFromParams,
     slotSelectionKey,
     slotSelectionLabel,
@@ -122,6 +123,9 @@ describe('clock text', () => {
         expect(normaliseSlotSelection({ kind: 'custom', from: '12:00', to: '00:00' })).toEqual({ kind: 'custom', from: '12:00', to: '24:00' });
         expect(normaliseSlotSelection({ kind: 'custom', from: '00:00', to: '00:00' })).toBe(ALL_DAY);
         expect(normaliseSlotSelection({ kind: 'preset', id: 'all' })).toBe(ALL_DAY);
+        // The server lower-cases `?slot=`; a hand-typed `Dinner` is Dinner, not a dead id.
+        expect(normaliseSlotSelection({ kind: 'preset', id: ' Dinner ' })).toEqual({ kind: 'preset', id: 'dinner' });
+        expect(normaliseSlotSelection({ kind: 'preset', id: 'ALL' })).toBe(ALL_DAY);
         expect(normaliseSlotSelection(null)).toBe(ALL_DAY);
     });
 });
@@ -150,6 +154,18 @@ describe('what goes on the wire', () => {
         expect(slotSelectionKey(ALL_DAY)).toBe('all');
         expect(slotSelectionKey({ kind: 'preset', id: 'lunch' })).toBe('preset:lunch');
         expect(slotSelectionKey({ kind: 'custom', from: '22:00', to: '02:00' })).toBe('custom:22:00-02:00');
+    });
+
+    it('re-keys a preset when its hours are edited, though `slot=lunch` stays the same URL', () => {
+        const lunch = { kind: 'preset', id: 'lunch' } as const;
+        const moved = DEFAULTS.map((p) => (p.id === 'lunch' ? { ...p, start: '11:00', end: '15:00' } : p));
+        expect(misSlotParams(slotQuery(lunch))).toEqual([['slot', 'lunch']]);
+        expect(slotDefinitionKey(lunch, DEFAULTS)).toBe('preset:lunch@12:00-17:00');
+        expect(slotDefinitionKey(lunch, moved)).toBe('preset:lunch@11:00-15:00');
+        // Renaming alone asks nothing new: the hours, and so the numbers, are the same.
+        expect(slotDefinitionKey(lunch, DEFAULTS.map((p) => ({ ...p, label: `${p.label}!` })))).toBe('preset:lunch@12:00-17:00');
+        expect(slotDefinitionKey(ALL_DAY, DEFAULTS)).toBe('all');
+        expect(slotDefinitionKey({ kind: 'custom', from: '22:00', to: '02:00' }, DEFAULTS)).toBe('custom:22:00-02:00');
     });
 });
 
@@ -274,6 +290,7 @@ describe('the URL', () => {
         expect(slotSelectionFromParams(params('slot=dinner'))).toEqual({ kind: 'preset', id: 'dinner' });
         expect(slotSelectionFromParams(params('slot=lunch&time_from=22:00&time_to=02:00'))).toEqual({ kind: 'custom', from: '22:00', to: '02:00' });
         expect(slotSelectionFromParams(params('slot=all'))).toBe(ALL_DAY);
+        expect(slotSelectionFromParams(params('slot=Dinner'))).toEqual({ kind: 'preset', id: 'dinner' });
         expect(slotSelectionFromParams(params('report=discount'))).toBeNull();
         expect(slotSelectionFromParams(null)).toBeNull();
     });
@@ -326,8 +343,11 @@ describe('wiring', () => {
         expect(base).toMatch(/slot: slotParams\.slot/);
         expect(base).toMatch(/timeFrom: slotParams\.timeFrom/);
         expect(base).toMatch(/timeTo: slotParams\.timeTo/);
-        // A new slot is a new question: back to page one.
-        expect(page).toMatch(/setOffset\(0\) \}, \[[^\]]*slotKey\]/);
+        // A new slot — or new hours behind the same slot — is a new question:
+        // back to page one, and fetched again even though the URL is unchanged.
+        expect(page).toContain('slotDefinitionKey(effectiveSlot, slotCatalogue?.slots ?? [])');
+        expect(page).toMatch(/setOffset\(0\) \}, \[[^\]]*slotDefKey\]/);
+        expect(page).toMatch(/getMisReport\(rid, def\.path[\s\S]*?\}, \[[^\]]*slotDefKey\]\)/);
         // …remembered like the range, and on the URL.
         expect(page).toContain('saveSlotSelection("reports", next)');
         expect(page).toContain('withSlotParams(window.location.search, next)');

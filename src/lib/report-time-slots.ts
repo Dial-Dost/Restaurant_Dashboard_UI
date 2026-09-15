@@ -179,7 +179,10 @@ export const ALL_DAY: TimeSlotSelection = Object.freeze({ kind: 'all' });
 export const normaliseSlotSelection = (sel: TimeSlotSelection | null | undefined): TimeSlotSelection => {
     if (!sel || sel.kind === 'all') {return ALL_DAY;}
     if (sel.kind === 'preset') {
-        const id = typeof sel.id === 'string' ? sel.id.trim() : '';
+        // Ids are lower-case slugs and the server lower-cases `?slot=` before it
+        // looks one up, so a hand-typed `?slot=Dinner` is Dinner here too —
+        // not an unknown id quietly reconciled away to all day.
+        const id = typeof sel.id === 'string' ? sel.id.trim().toLowerCase() : '';
         return id && id !== 'all' ? { kind: 'preset', id } : ALL_DAY;
     }
     if (validateCustomSlot(sel.from, sel.to) !== null) {return ALL_DAY;}
@@ -192,6 +195,21 @@ export const normaliseSlotSelection = (sel: TimeSlotSelection | null | undefined
 /** A stable string for a selection — an effect dependency, a memo key. */
 export const slotSelectionKey = (sel: TimeSlotSelection): string =>
     sel.kind === 'all' ? 'all' : sel.kind === 'preset' ? `preset:${sel.id}` : `custom:${sel.from}-${sel.to}`;
+
+/**
+ * What a selection MEANS right now, as a string: the key, plus a preset's hours.
+ *
+ * `slot=lunch` is the same URL before and after an owner moves Lunch from
+ * 12:00–17:00 to 11:00–15:00, so a screen that refetched only when the request
+ * changed would keep the old Lunch's numbers under the new Lunch's name. Keying
+ * the fetch on this instead re-asks exactly when the hours behind the pick move.
+ */
+export const slotDefinitionKey = (sel: TimeSlotSelection, presets: readonly ReportTimeSlotPreset[]): string => {
+    const key = slotSelectionKey(sel);
+    if (sel.kind !== 'preset') {return key;}
+    const p = presets.find((x) => x.id === sel.id);
+    return p ? `${key}@${p.start}-${p.end}` : key;
+};
 
 /** The `MisQuery` fields for a selection. All day adds nothing at all. */
 export const slotQuery = (sel: TimeSlotSelection): { slot?: string; timeFrom?: string; timeTo?: string } => {

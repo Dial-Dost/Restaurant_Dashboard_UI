@@ -96,8 +96,8 @@ import {
     reconcileSlotSelection,
     saveSlotSelection,
     slotQuery,
+    slotDefinitionKey,
     slotSelectionFromParams,
-    slotSelectionKey,
     timeSlotPhrase,
     timeWiseOptions,
     withSlotParams,
@@ -244,8 +244,8 @@ function ReportsInner() {
         // replaceState, not a navigation: nothing on this page re-reads the URL
         // after its first paint, and a history entry per click would make Back useless.
         if (typeof window !== "undefined") {
-            const search = withSlotParams(window.location.search, next)
-            window.history.replaceState(window.history.state, "", `${window.location.pathname}${search}${window.location.hash}`)
+            const nextSearch = withSlotParams(window.location.search, next)
+            window.history.replaceState(window.history.state, "", `${window.location.pathname}${nextSearch}${window.location.hash}`)
         }
     }, [])
 
@@ -264,8 +264,10 @@ function ReportsInner() {
     // Any change to WHAT is being asked returns to the first page. Staying on
     // page 7 of a new question shows an empty grid that looks like no data.
     const effectiveSlot = slotCatalogue ? slotSel : ALL_DAY
-    const slotKey = slotSelectionKey(effectiveSlot)
-    useEffect(() => { setOffset(0) }, [activeKey, search, outletId, bucket, limit, range.from, range.to, slotKey])
+    // The pick AND the hours behind it: editing Lunch's times is a new question
+    // under the same `slot=lunch`, so it must refetch (and return to page one).
+    const slotDefKey = slotDefinitionKey(effectiveSlot, slotCatalogue?.slots ?? [])
+    useEffect(() => { setOffset(0) }, [activeKey, search, outletId, bucket, limit, range.from, range.to, slotDefKey])
     // Switching tabs drops the previous report's payload rather than leaving it
     // on screen under the new report's heading. The two do not share a column
     // set, so the old rows would render as a grid of blanks beneath the new
@@ -342,7 +344,7 @@ function ReportsInner() {
             .catch(() => { if (active) { setPayload(null); setFailed(true) } })
             .finally(() => { if (active) {setLoading(false)} })
         return () => { active = false }
-    }, [rid, def, baseQuery, limit, offset, waitForSlots])
+    }, [rid, def, baseQuery, limit, offset, waitForSlots, slotDefKey])
 
     // --- What the grid is showing --------------------------------------------
     const rawRows = useMemo(() => (payload && def ? rowsOf(payload, def) : []), [payload, def])
