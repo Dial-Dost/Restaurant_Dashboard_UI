@@ -36,6 +36,7 @@ import type {
     MenuVariationRecord,
     NonChargeableRecord,
     OrderVoidRecord,
+    RemoveServiceChargeAndPrintResult,
     ServiceChargeWaiverRecord,
     TenderWire,
 } from '@/lib/mis-capture';
@@ -6106,6 +6107,63 @@ export const reverseServiceChargeWaiver = async (
         { reason },
         'Unable to reverse that waiver',
     );
+
+/**
+ * "Remove service charge & print" — the waiver and the print in ONE request.
+ *
+ * POST /bills/service-charge-waiver/print with `render: "client"`: the server
+ * answers every refusal (C3's reprint rule, no charge to remove, no waive
+ * permission, a missing reason or authoriser) BEFORE it writes anything, records
+ * the waiver exactly as POST /bills/service-charge-waiver does, then CLAIMS the
+ * print the way POST /print/bill/claim does and hands back `printable_bill`
+ * priced after the waiver. A bill that already carries a waiver is only
+ * reprinted, so the live-waiver panel calls this with no kind and no reason.
+ *
+ * RETURNED, NOT THROWN, for the reason claimBillPrint gives: this module is "use
+ * server", Next redacts an Error's message across that boundary in a production
+ * build, and the refusal's sentence is what the person at the till needs —
+ * "'ravi' is not permitted to authorise a service-charge waiver" is actionable;
+ * a redacted error is not. The caller opened the print tab before calling, and
+ * closes it on `ok: false`.
+ *
+ * `ok: false` IS NOT "NOTHING HAPPENED". A 4xx is: the route refuses before it
+ * writes. No answer (`status: 0`) and a 5xx are not — a connection reset or a
+ * proxy's 504 can arrive after the waiver committed and the print was claimed —
+ * so the sentence for those says only what is known, and the dialog
+ * (serviceChargeRemovalTrouble) re-reads the bill before anybody tries again.
+ *
+ * No retry and no idempotency key, like every capture write here: the route can
+ * mint a bill number, and a repeated request for paper is a second copy.
+ */
+export const removeServiceChargeAndPrint = async (
+    restaurantId: string,
+    body: { table_name: string; waiver_kind?: string; reason?: string; authorised_by?: string },
+): Promise<{ ok: true; result: RemoveServiceChargeAndPrintResult } | { ok: false; status: number; message: string }> => {
+    const payload: Record<string, string> = { table_name: body.table_name.trim(), render: 'client' };
+    if (body.waiver_kind?.trim()) {payload.waiver_kind = body.waiver_kind.trim();}
+    if (body.reason?.trim()) {payload.reason = body.reason.trim();}
+    if (body.authorised_by?.trim()) {payload.authorised_by = body.authorised_by.trim();}
+    const response = await backendCall('/bills/service-charge-waiver/print', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+    if (!response) {
+        // Not "nothing was recorded": fetch throws for a reset AFTER the request
+        // was sent as readily as for a server that was never reached.
+        return { ok: false, status: 0, message: 'The server could not be reached, or its answer was lost on the way back.' };
+    }
+    if (!response.ok) {
+        return { ok: false, status: response.status, message: await captureErrorMessage(response, 'Unable to remove the service charge') };
+    }
+    try {
+        return { ok: true, result: (await response.json()) as RemoveServiceChargeAndPrintResult };
+    } catch {
+        // A 2xx with an unreadable body: the waiver may well have landed. Say
+        // what is known — the paper did not come from this answer.
+        return { ok: true, result: { success: true, waiver: null, waiver_created: false, grand_total_before: null, grand_total_after: null, service_charge_removed: false, printed: false, print_error: 'The answer from the server could not be read' } };
+    }
+};
 
 // --- 037: TENDERS AND TIPS ---------------------------------------------------
 
