@@ -31,6 +31,7 @@ import {
     misSlotParams,
     normaliseSlotSelection,
     parseClock,
+    parseEndClock,
     presetOptionLabel,
     readTimeSlots,
     reconcileSlotSelection,
@@ -94,6 +95,9 @@ describe('clock text', () => {
         for (const junk of ['25:00', '12:60', '1200', '', 'noon', '24:01', ' 12:3 ']) {
             expect(parseClock(junk, { allow24: true })).toBeNull();
         }
+        // An END of 00:00 is midnight, as the server reads it.
+        expect(parseEndClock('00:00')).toBe(1440);
+        expect(parseEndClock('02:00')).toBe(120);
         expect(formatClock(570)).toBe('09:30');
         expect(formatClock(1440)).toBe('24:00');
     });
@@ -107,12 +111,16 @@ describe('clock text', () => {
         expect(validateCustomSlot('13:00', '13:00')).toBe('Start and end are the same time — choose two different times.');
         expect(crossesMidnight('22:00', '02:00')).toBe(true);
         expect(crossesMidnight('18:00', '24:00')).toBe(false);
+        expect(crossesMidnight('18:00', '00:00')).toBe(false);
     });
 
     it('treats 00:00–24:00 as exactly all day, and junk as all day rather than a clamp', () => {
         expect(normaliseSlotSelection({ kind: 'custom', from: '00:00', to: '24:00' })).toBe(ALL_DAY);
         expect(normaliseSlotSelection({ kind: 'custom', from: '9:00', to: '13:30' })).toEqual({ kind: 'custom', from: '09:00', to: '13:30' });
         expect(normaliseSlotSelection({ kind: 'custom', from: 'x', to: '13:30' })).toBe(ALL_DAY);
+        // "12:00 to 00:00" is until midnight, sent as 24:00; 00:00 to 00:00 is the whole day.
+        expect(normaliseSlotSelection({ kind: 'custom', from: '12:00', to: '00:00' })).toEqual({ kind: 'custom', from: '12:00', to: '24:00' });
+        expect(normaliseSlotSelection({ kind: 'custom', from: '00:00', to: '00:00' })).toBe(ALL_DAY);
         expect(normaliseSlotSelection({ kind: 'preset', id: 'all' })).toBe(ALL_DAY);
         expect(normaliseSlotSelection(null)).toBe(ALL_DAY);
     });
@@ -186,7 +194,9 @@ describe('the export filename', () => {
         expect(timeSlotFileSuffix({ ...LUNCH, id: 'dinner', label: 'Dinner', start: '18:00', end: '24:00' })).toBe('_dinner-1800-2400');
         expect(timeSlotFileSuffix(LATE)).toBe('_custom-2200-0200');
         expect(timeSlotFileSuffix({ ...LUNCH, label: 'Late / Night "Bar"' })).toBe('_late-night-bar-1200-1700');
-        expect(timeSlotFileSuffix({ ...LUNCH, label: '' })).toBe('_1200-1700');
+        // The server's slug rules: NFKD, and `slot` when nothing survives.
+        expect(timeSlotFileSuffix({ ...LUNCH, label: 'Café' })).toBe('_cafe-1200-1700');
+        expect(timeSlotFileSuffix({ ...LUNCH, label: 'दोपहर' })).toBe('_slot-1200-1700');
     });
 });
 
@@ -229,6 +239,7 @@ describe('the presets and the editor', () => {
         expect(validateSlotDrafts([{ label: 'Lunch', start: '12:00', end: '17:00' }, { label: 'Late', start: '22:00', end: '02:00' }])).toBeNull();
         expect(validateSlotDrafts([{ label: 'Dinner', start: '18:00', end: '24:00' }])).toBeNull();
         expect(validateSlotDrafts([{ label: 'Whole day', start: '00:00', end: '24:00' }])).toBeNull();
+        expect(validateSlotDrafts([{ label: 'Evening', start: '18:00', end: '00:00' }])).toBeNull();
         expect(validateSlotDrafts([{ label: '  ', start: '12:00', end: '17:00' }]))
             .toBe('Session 1: a session needs a name of 1 to 24 characters.');
         expect(validateSlotDrafts([{ label: 'Lunch', start: '25:00', end: '17:00' }]))
@@ -244,7 +255,7 @@ describe('the presets and the editor', () => {
     it('sends the whole list, keeping ids of renamed rows and normalising times', () => {
         expect(slotDraftsBody([
             { id: 'lunch', label: ' Brunch ', start: '11:00', end: '15:00' },
-            { label: 'Late', start: '9:05', end: '24:00' },
+            { label: 'Late', start: '9:05', end: '00:00' },
         ])).toEqual({
             slots: [
                 { id: 'lunch', label: 'Brunch', start: '11:00', end: '15:00' },

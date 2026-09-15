@@ -92,6 +92,16 @@ export const parseClock = (text: unknown, opts: { allow24?: boolean } = {}): num
     return h * 60 + min;
 };
 
+/**
+ * An END time in minutes, with `00:00` read as midnight (1440) — the server's
+ * rule, so "12:00 to 00:00" is Lunch-to-midnight and never an empty or a
+ * day-long crossing slot. Null when unreadable.
+ */
+export const parseEndClock = (text: unknown): number | null => {
+    const m = parseClock(text, { allow24: true });
+    return m === 0 ? 1440 : m;
+};
+
 /** Minutes → `HH:mm`. 1440 is `24:00`. */
 export const formatClock = (minutes: number): string => {
     const total = Math.max(0, Math.min(1440, Math.round(minutes)));
@@ -111,7 +121,7 @@ export const clockRange = (start: string, end: string): string => `${start}–${
 export const validateCustomSlot = (from: string, to: string): string | null => {
     const start = parseClock(from);
     if (start === null) {return 'Start time must be a 24-hour time between 00:00 and 23:59.';}
-    const end = parseClock(to, { allow24: true });
+    const end = parseEndClock(to);
     if (end === null) {return 'End time must be a 24-hour time between 00:00 and 24:00.';}
     if (start === end) {return 'Start and end are the same time — choose two different times.';}
     return null;
@@ -120,7 +130,7 @@ export const validateCustomSlot = (from: string, to: string): string | null => {
 /** A slot whose end is earlier than its start runs past midnight. */
 export const crossesMidnight = (from: string, to: string): boolean => {
     const start = parseClock(from);
-    const end = parseClock(to, { allow24: true });
+    const end = parseEndClock(to);
     return start !== null && end !== null && end < start;
 };
 
@@ -174,7 +184,7 @@ export const normaliseSlotSelection = (sel: TimeSlotSelection | null | undefined
     }
     if (validateCustomSlot(sel.from, sel.to) !== null) {return ALL_DAY;}
     const start = parseClock(sel.from) ?? 0;
-    const end = parseClock(sel.to, { allow24: true }) ?? 1440;
+    const end = parseEndClock(sel.to) ?? 1440;
     if (start === 0 && end === 1440) {return ALL_DAY;}
     return { kind: 'custom', from: formatClock(start), to: formatClock(end) };
 };
@@ -254,9 +264,12 @@ export const timeSlotProvenance = (slot: MisTimeSlot | null | undefined): string
  */
 export const timeSlotFileSuffix = (slot: MisTimeSlot | null | undefined): string => {
     if (!slot) {return '';}
-    const slug = slot.label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    // The server's slug, exactly: NFKD so "Café" is `cafe`, 32 at most, and
+    // `slot` when nothing survives (a label in another script).
+    const slug = slot.label.toLowerCase().normalize('NFKD')
+        .replace(/[^a-z0-9]+/g, '-').replace(/^-+/, '').slice(0, 32).replace(/-+$/, '') || 'slot';
     const hhmm = (s: string): string => s.replace(/[^0-9]/g, '');
-    return `_${slug ? `${slug}-` : ''}${hhmm(slot.start)}-${hhmm(slot.end)}`;
+    return `_${slug}-${hhmm(slot.start)}-${hhmm(slot.end)}`;
 };
 
 // --- Clamps ------------------------------------------------------------------
@@ -334,7 +347,7 @@ export const validateSlotDrafts = (drafts: readonly TimeSlotDraft[]): string | n
             return `${which}: a session needs a name of 1 to ${String(MAX_TIME_SLOT_LABEL)} characters.`;
         }
         if (parseClock(d.start) === null) {return `${which}: start time must be between 00:00 and 23:59.`;}
-        const end = parseClock(d.end, { allow24: true });
+        const end = parseEndClock(d.end);
         if (end === null) {return `${which}: end time must be between 00:00 and 24:00.`;}
         if (parseClock(d.start) === end) {return `${which}: start and end cannot be the same time.`;}
     }
@@ -345,7 +358,7 @@ export const validateSlotDrafts = (drafts: readonly TimeSlotDraft[]): string | n
 export const slotDraftsBody = (drafts: readonly TimeSlotDraft[]): { slots: TimeSlotDraft[] } => ({
     slots: drafts.map((d) => {
         const start = parseClock(d.start);
-        const end = parseClock(d.end, { allow24: true });
+        const end = parseEndClock(d.end);
         return {
             ...(d.id ? { id: d.id } : {}),
             label: d.label.trim(),
