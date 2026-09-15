@@ -24,6 +24,7 @@
 // something Chrome, Edge and Safari all do natively and better.
 
 import {
+    excelSheetName,
     exportBaseName,
     exportSummaryLine,
     sheetColumnWidths,
@@ -151,13 +152,9 @@ export const exportExcel = async (ctx: ExportContext): Promise<void> => {
     }
 
     const wb = XLSX.utils.book_new();
-    // Excel rejects a sheet name over 31 chars or carrying []:*?/\ — the report
-    // titles are all short and clean, but the cap is cheap insurance.
-    // A slot's label rides in the name, its times do not: `:` is one of the
-    // characters Excel refuses, and the times are on the About sheet anyway.
-    const baseTitle = ctx.meta?.title ?? ctx.def.title;
-    const sheetTitle = ctx.meta?.time_slot?.label ? `${baseTitle} - ${ctx.meta.time_slot.label}` : baseTitle;
-    XLSX.utils.book_append_sheet(wb, sheet, sheetTitle.replace(/[[\]:*?/\\]/g, '').slice(0, 31) || 'Report');
+    // A slot's label rides in the tab name, its times do not. excelSheetName
+    // says what Excel refuses in a name that the spreadsheet library lets through.
+    XLSX.utils.book_append_sheet(wb, sheet, excelSheetName(ctx.meta?.title ?? ctx.def.title, ctx.meta?.time_slot?.label));
     XLSX.utils.book_append_sheet(wb, about, 'About');
     XLSX.writeFile(wb, `${exportBaseName(ctx.meta, ctx.def)}.xlsx`);
 };

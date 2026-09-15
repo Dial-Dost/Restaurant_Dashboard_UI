@@ -772,6 +772,31 @@ export const sheetColumnWidths = (matrix: ExportMatrix): number[] => {
 };
 
 /**
+ * THE NAME ON THE REPORT'S SHEET TAB: the report title, and the slot's label
+ * when the server cut the report on one ("Order Summary - Dinner").
+ *
+ * Excel refuses a sheet name over 31 characters, one carrying any of []:*?/\,
+ * and one that BEGINS OR ENDS WITH AN APOSTROPHE. The SheetJS build this
+ * dashboard pins (0.18.5) checks only the first two, so a name breaking the
+ * third is written without complaint and Excel opens the file as corrupt and
+ * offers to repair it. The report titles never trip any of these; a session
+ * label is the owner's free text ("Chefs'"), and a long one can land an
+ * apostrophe on character 31. So the apostrophes (and any spaces the cut left)
+ * come off both ends AFTER the cut, and so does half of an emoji the cut split,
+ * which would otherwise be written as a lone surrogate the file cannot encode.
+ *
+ * A slot's TIMES stay out of the name: `:` is refused, and they are on the About
+ * sheet anyway.
+ */
+export const SHEET_NAME_MAX = 31;
+
+export const excelSheetName = (title: string, slotLabel?: string | null): string => {
+    const named = slotLabel ? `${title} - ${slotLabel}` : title;
+    const cut = named.replace(/[[\]:*?/\\]/g, '').slice(0, SHEET_NAME_MAX).replace(/[\uD800-\uDBFF]$/, '');
+    return cut.replace(/^['\s]+|['\s]+$/g, '') || 'Report';
+};
+
+/**
  * `order-summary_gaia-test_2026-08-01_to_2026-08-31` — no extension. A report
  * cut on a time slot adds `_lunch-1200-1700`; an all-day one adds nothing, so
  * every filename this produced before slots existed is unchanged.

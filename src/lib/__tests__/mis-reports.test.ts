@@ -20,6 +20,7 @@ import {
     COLUMN_PREFS_VERSION,
     MIS_REPORTS,
     RUNGS_NOW_ON_BY_DEFAULT,
+    SHEET_NAME_MAX,
     buildExportMatrix,
     clockFromBasis,
     columnPrefsKey,
@@ -27,6 +28,7 @@ import {
     csvEscape,
     defaultHidden,
     drillTarget,
+    excelSheetName,
     exportBaseName,
     exportMoneyColumnIndex,
     exportSummaryLine,
@@ -974,5 +976,68 @@ describe('a spreadsheet column is as wide as its widest cell', () => {
         // Built but never called is this project's most repeated bug.
         const exporter = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'dashboard', 'reports', 'export.ts'), 'utf8');
         expect(exporter).toMatch(/sheet\['!cols'\] = sheetColumnWidths\(ctx\.matrix\)\.map\(\(wch\) => \(\{ wch \}\)\);/);
+    });
+});
+
+describe('the Excel sheet tab carries a name Excel will open', () => {
+    // Excel refuses a name over 31 characters, carrying []:*?/\, or beginning or
+    // ending with an apostrophe. The pinned SheetJS (0.18.5) checks only the first
+    // two, so a name breaking the third is written and Excel calls the file corrupt.
+    // A session label is free text, so the slot's label is what can break it.
+
+    it('is the report title, with the slot label when there is one', () => {
+        expect(excelSheetName('Order Summary')).toBe('Order Summary');
+        expect(excelSheetName('Order Summary', null)).toBe('Order Summary');
+        expect(excelSheetName('Order Summary', 'Dinner')).toBe('Order Summary - Dinner');
+    });
+
+    it('drops an apostrophe that ends the label', () => {
+        expect(excelSheetName('Order Summary', "Chefs'")).toBe('Order Summary - Chefs');
+        expect(excelSheetName('Tip Summary', "Chefs' ")).toBe('Tip Summary - Chefs');
+    });
+
+    it('drops an apostrophe the 31-character cut lands at the end', () => {
+        const title = 'Cover Size Summary';
+        const label = "Late owls' bar";
+        // The precondition: cutting alone leaves the apostrophe last.
+        expect(`${title} - ${label}`.slice(0, 31).endsWith("'")).toBe(true);
+        expect(excelSheetName(title, label)).toBe('Cover Size Summary - Late owls');
+    });
+
+    it('never begins with an apostrophe either, and never comes out empty', () => {
+        expect(excelSheetName("'Quoted'")).toBe('Quoted');
+        expect(excelSheetName('[]:*?/\\')).toBe('Report');
+        expect(excelSheetName("''")).toBe('Report');
+    });
+
+    it('keeps the old rules: no refused characters, at most 31 characters', () => {
+        const name = excelSheetName('Service Charge Deny', 'Lunch [a/b]: *main*? \\x');
+        expect(name).not.toMatch(/[[\]:*?/\\]/);
+        expect(name.length).toBeLessThanOrEqual(SHEET_NAME_MAX);
+        expect(name).toBe('Service Charge Deny - Lunch ab');
+        for (const def of MIS_REPORTS) {
+            for (const label of [undefined, 'Lunch', "Chefs'", 'x'.repeat(24), "'".repeat(24)]) {
+                const n = excelSheetName(def.title, label);
+                expect(n.length).toBeGreaterThan(0);
+                expect(n.length).toBeLessThanOrEqual(SHEET_NAME_MAX);
+                expect(n).not.toMatch(/^'|'$/);
+            }
+        }
+    });
+
+    it('does not leave half of an emoji the cut split', () => {
+        // 'Group Summary - ' is 16 units; 14 letters put the emoji on units 30-31.
+        const name = excelSheetName('Group Summary', `${'a'.repeat(14)}🍳`);
+        expect(name).toBe(`Group Summary - ${'a'.repeat(14)}`);
+        expect(name).not.toMatch(/[\uD800-\uDBFF]$/);
+        // One that fits whole is kept whole.
+        expect(excelSheetName('Group Summary', 'Brunch 🍳')).toBe('Group Summary - Brunch 🍳');
+    });
+
+    it('the Excel writer names the sheet through it', () => {
+        // Built but never called is this project's most repeated bug.
+        const exporter = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'dashboard', 'reports', 'export.ts'), 'utf8');
+        expect(exporter).toContain('XLSX.utils.book_append_sheet(wb, sheet, excelSheetName(ctx.meta?.title ?? ctx.def.title, ctx.meta?.time_slot?.label));');
+        expect(exporter).not.toMatch(/\.slice\(0, 31\)/);
     });
 });
