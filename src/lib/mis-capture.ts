@@ -254,6 +254,129 @@ export interface ServiceChargeWaiverRecord {
     reversal_reason: string | null;
 }
 
+// --- Remove service charge & print (client item 6) ---------------------------
+//
+// "Reprint without service charge and waive service charge should be merged as
+// one option instead of being 2 separate steps." The waiver and the print are
+// ONE server call now, POST /bills/service-charge-waiver/print, which answers
+// every refusal before it writes anything and prints from the bill as it stands
+// after the waiver commits. Everything below reads that route's answer; none of
+// it decides anything about money.
+
+/** What POST /bills/service-charge-waiver/print answers with `render: "client"`. */
+export interface RemoveServiceChargeAndPrintResult {
+    success: boolean;
+    /** The live waiver now on the bill — the one just recorded, or the one reprinted. */
+    waiver: ServiceChargeWaiverRecord | null;
+    /** False when the bill already carried a waiver (or another device won the race) and was only reprinted. */
+    waiver_created: boolean;
+    /** What the guest was asked for before THIS waiver. Null on a reprint. */
+    grand_total_before: number | null;
+    /** What is on the paper when there is paper; the waiver's own figure when the print failed. */
+    grand_total_after: number | null;
+    service_charge_removed: boolean;
+    printed: boolean;
+    print_error?: string;
+    render?: 'thermal' | 'client';
+    /** The server's priced bill for the browser to render — the claim's own `printable_bill`. */
+    printable_bill?: Record<string, unknown> | null;
+    print_count?: number;
+}
+
+const SERVICE_CHARGE_LINE = /service\s*charge/i;
+
+/**
+ * The service charge on an open bill, in both shapes — a HEADLINE for the form,
+ * never a figure anybody is charged. The percent leg plus any tax line whose
+ * name the server would call a service charge.
+ */
+export const serviceChargeOnBill = (bill: { service_charge?: unknown; taxes?: unknown } | null | undefined): number => {
+    if (!bill) {return 0;}
+    let paise = Math.round((Number(bill.service_charge) || 0) * 100);
+    for (const t of Array.isArray(bill.taxes) ? bill.taxes : []) {
+        const line = (t ?? {}) as { name?: unknown; amount?: unknown };
+        if (typeof line.name === 'string' && SERVICE_CHARGE_LINE.test(line.name)) {
+            paise += Math.round((Number(line.amount) || 0) * 100);
+        }
+    }
+    return paise / 100;
+};
+
+/**
+ * Does this open bill carry a service charge that could be taken off?
+ *
+ * THE SERVER'S `service_charge_basis` DECIDES whenever it is sent: "none" is the
+ * only value that means there is nothing to remove. This used to be
+ * `(bill.service_charge ?? 0) <= 0`, and `service_charge` is only the
+ * restaurant_percent leg — it is 0 on every tenant carrying the charge as a tax
+ * line, which in production is seven of the nine that charge one — so the
+ * dialog told most of the fleet "This bill carries no service charge".
+ *
+ * The fallback, for a backend that predates the field, reads both shapes, and
+ * matches a tax line the way the server does (`/service\s*charge/i`).
+ */
+export const billCarriesServiceCharge = (bill: {
+    service_charge?: unknown;
+    service_charge_basis?: unknown;
+    taxes?: unknown;
+} | null | undefined): boolean => {
+    if (!bill) {return false;}
+    if (typeof bill.service_charge_basis === 'string' && bill.service_charge_basis.length > 0) {
+        return bill.service_charge_basis !== 'none';
+    }
+    return serviceChargeOnBill(bill) > 0;
+};
+
+/**
+ * WHAT TO TELL SOMEBODY AFTER "Remove service charge & print", in the words the
+ * Windows and Android till use (serviceChargeRemovalOutcome in
+ * restaurant_owner_app/lib/screens/mis_capture.dart). Only what the server
+ * reported:
+ *
+ *   * removed and printed — both payable totals;
+ *   * an existing waiver reprinted — the total on the paper, no claim of a new
+ *     removal;
+ *   * the print FAILED after the waiver landed — that the charge is off AND
+ *     that no paper came out, with what to press (`tone: "warn"`);
+ *   * paper that carries the charge after all — that, never "removed".
+ */
+export const serviceChargeRemovalSentence = (
+    result: Partial<RemoveServiceChargeAndPrintResult> | null | undefined,
+    money: (v: unknown) => string,
+): { message: string; tone: 'ok' | 'warn' } => {
+    const r = result ?? {};
+    const created = r.waiver_created === true;
+    const printed = r.printed === true;
+    const before = r.grand_total_before;
+    const after = r.grand_total_after;
+    const hasTotals = before !== null && before !== undefined && after !== null && after !== undefined;
+    if (printed && r.service_charge_removed === false) {
+        return { message: 'Printed WITH the service charge — the waiver was put back before the bill printed.', tone: 'warn' };
+    }
+    if (!printed) {
+        const why = (r.print_error ?? '').trim();
+        const notPrinted = `did not print${why ? `: ${why}` : ''}. Press Print bill.`;
+        if (created && hasTotals) {
+            return { message: `Service charge removed (${money(before)} → ${money(after)}), but the bill ${notPrinted}`, tone: 'warn' };
+        }
+        return {
+            message: created || (r.waiver !== null && typeof r.waiver === 'object')
+                ? `The service charge is off this bill, but the bill ${notPrinted}`
+                : `The bill ${notPrinted}`,
+            tone: 'warn',
+        };
+    }
+    if (created && hasTotals) {
+        return { message: `Service charge removed — total ${money(before)} → ${money(after)}. Printing bill…`, tone: 'ok' };
+    }
+    return {
+        message: after !== null && after !== undefined
+            ? `Reprinting without the service charge — total ${money(after)}.`
+            : 'Reprinting without the service charge…',
+        tone: 'ok',
+    };
+};
+
 export interface BillTenderRecord {
     id: string;
     bill_id: string;

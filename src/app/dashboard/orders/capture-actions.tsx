@@ -54,6 +54,7 @@ import {
     Lock,
     Monitor,
     Plus,
+    Printer,
     Receipt,
     RotateCcw,
     ShieldCheck,
@@ -94,13 +95,13 @@ import {
     getOrderNonChargeables,
     markOrderItemNonChargeable,
     recordBillTenders,
+    removeServiceChargeAndPrint,
     reverseNonChargeable,
     reverseServiceChargeWaiver,
     setBillCounter,
     voidBillTender,
     cancelOrderWithReason,
     voidOrderWithReason,
-    waiveServiceCharge,
 } from "@/lib/db"
 import { usePaymentMethods } from "@/hooks/use-payment-methods"
 import { paymentMethodLabel, tenderPaymentOptions } from "@/lib/payment-methods"
@@ -112,6 +113,7 @@ import {
     TIP_MODES,
     VOID_KINDS,
     VOID_STAGE_LABELS,
+    billCarriesServiceCharge,
     canPartiallyComp,
     compPreviewValue,
     draftTenderTotal,
@@ -123,6 +125,8 @@ import {
     isUnsplittableMethod,
     parseMoney,
     remainderForRow,
+    serviceChargeOnBill,
+    serviceChargeRemovalSentence,
     tenderFormRefusal,
     tendersForWire,
     type BillTenderState,
@@ -147,6 +151,17 @@ export interface CaptureOrder {
 }
 
 type Which = null | "comp" | "void" | "waiver" | "tenders" | "counter"
+
+/**
+ * What "Remove service charge & print" hands the page's print flow: the tab it
+ * opened inside its own click (a popup blocker would kill one opened later), and
+ * the bill the server has ALREADY claimed the print of — so the page renders it
+ * without claiming a second time.
+ */
+export interface PrintBillHandoff {
+    printWindow: Window | null
+    printableBill: Record<string, unknown> | null
+}
 
 // ---------------------------------------------------------------------------
 // Shared bits
@@ -276,10 +291,12 @@ function Note({ children, tone = "info" }: { children: React.ReactNode; tone?: "
 // The panel
 // ---------------------------------------------------------------------------
 
-export function CaptureActions({ restaurantId, order, onChanged }: {
+export function CaptureActions({ restaurantId, order, onChanged, printBill }: {
     restaurantId: string
     order: CaptureOrder
     onChanged: () => void
+    /** The page's own print flow (triggerPrint), given the handed-over tab and claimed bill. */
+    printBill?: (handoff: PrintBillHandoff) => Promise<void>
 }) {
     const { user } = useAuth()
     const { currencySymbol } = useCurrency()
@@ -369,7 +386,7 @@ export function CaptureActions({ restaurantId, order, onChanged }: {
                     <DropdownMenuSeparator />
                     {item("comp", <Gift className="h-4 w-4" />, "Non-chargeable item…", canComp, "Mark Items Non-Chargeable")}
                     {item("void", <Ban className="h-4 w-4" />, "Void this order…", canVoid, "Void Orders With Reason")}
-                    {item("waiver", <Receipt className="h-4 w-4" />, "Waive service charge…", canWaive, "Waive Service Charge")}
+                    {item("waiver", <Receipt className="h-4 w-4" />, "Remove service charge & print…", canWaive, "Waive Service Charge")}
                     <DropdownMenuSeparator />
                     {item("tenders", <Wallet className="h-4 w-4" />, "Payments & tip…", canTender, "Record Payment")}
                     {item("counter", <Monitor className="h-4 w-4" />, "Billing counter…", canTender, "Record Payment")}
@@ -408,6 +425,7 @@ export function CaptureActions({ restaurantId, order, onChanged }: {
                 <WaiverDialog
                     restaurantId={restaurantId} tableName={order.table} money={money}
                     busy={busy} setBusy={setBusy} onClose={close} onChanged={onChanged} fail={fail}
+                    toast={toast} printBill={printBill}
                 />
             ) : null}
 
@@ -906,26 +924,60 @@ export function CancelKotButton({ restaurantId, order, kotLabel, onChanged, clas
 }
 
 // ---------------------------------------------------------------------------
-// 036 — SERVICE CHARGE WAIVER
+// 036 — SERVICE CHARGE WAIVER: remove it and print, as one act
 // ---------------------------------------------------------------------------
 
 interface OpenBillShape {
     service_charge?: number
     service_charge_percent?: number
+    /** The server's own "which shape carries the charge" — "none" = nothing to remove. */
+    service_charge_basis?: string
     service_charge_waived?: boolean
     service_charge_waiver?: ServiceChargeWaiverRecord | null
+    taxes?: { name?: string; amount?: number }[]
     grand_total?: number
 }
 
+/**
+ * Take the print tab NOW, inside the click that asked for it.
+ *
+ * Every browser blocks a `window.open()` that is not in the same task as the
+ * user's gesture, and the request below is an `await`. Opening the tab after it
+ * would mean "Remove service charge & print" recorded the waiver and then
+ * silently produced no paper on a default Chrome — the waiter would press it
+ * again, and get a REPRINT. So the tab is opened here, left empty until the
+ * server has answered, closed on a refusal, and handed to the page's print flow
+ * (triggerPrint) on success. Same rule, same reason as triggerPrint's own open.
+ */
+const openPrintTab = (): Window | null => {
+    const tab = typeof window !== "undefined" ? window.open("", "_blank") : null
+    if (tab) {
+        try {
+            tab.document.title = "Preparing the bill…"
+            const note = tab.document.createElement("p")
+            note.textContent = "Preparing the bill…"
+            tab.document.body.appendChild(note)
+        } catch { /* the tab stays blank until it navigates, which is harmless */ }
+    }
+    return tab
+}
+
 function WaiverDialog({
-    restaurantId, tableName, money, busy, setBusy, onClose, onChanged, fail,
-}: DialogShell & { tableName: string; money: (v: unknown) => string }) {
+    restaurantId, tableName, money, busy, setBusy, onClose, onChanged, fail, toast, printBill,
+}: DialogShell & {
+    tableName: string
+    money: (v: unknown) => string
+    toast: Toast
+    printBill?: (handoff: PrintBillHandoff) => Promise<void>
+}) {
     const [bill, setBill] = useState<OpenBillShape | null>(null)
     const [loading, setLoading] = useState(true)
-    const [kind, setKind] = useState("")
+    // "Guest asked" leads the list and is chosen already: nine of the first
+    // eleven waivers recorded in production were exactly that. The Windows and
+    // Android till preselect it too.
+    const [kind, setKind] = useState("guest_request")
     const [reason, setReason] = useState("")
     const [authorisedBy, setAuthorisedBy] = useState("")
-    const [done, setDone] = useState<{ rec: ServiceChargeWaiverRecord; before: number; after: number } | null>(null)
 
     const load = useCallback(() => {
         setLoading(true)
@@ -939,19 +991,55 @@ function WaiverDialog({
         ? bill.service_charge_waiver
         : null
 
-    const submit = async (): Promise<void> => {
+    /*
+      ONE REQUEST FOR BOTH HALVES. POST /bills/service-charge-waiver/print
+      answers every refusal before it writes anything, records the waiver the
+      way the waiver route does, and claims the print the way
+      /print/bill/claim does — so the dialog never has to stitch a waiver and a
+      print together, and a waiter the tenant granted the waiver can never
+      record one and then have the print refused (the drawer would drop while
+      the guest held the old, higher paper).
+
+      `form` is absent for the live-waiver reprint: the server reprints the
+      existing waiver and records nothing new.
+    */
+    const removeAndPrint = (form?: { waiver_kind: string; reason: string; authorised_by: string }): void => {
+        // Synchronously, before anything is awaited — see openPrintTab.
+        const tab = openPrintTab()
         setBusy(true)
-        try {
-            const r = await waiveServiceCharge(restaurantId, {
-                table_name: tableName,
-                waiver_kind: kind,
-                reason: reason.trim(),
-                authorised_by: authorisedBy.trim(),
-            })
-            setDone({ rec: r.waiver, before: r.grand_total_before, after: r.grand_total_after })
-            load()
-            onChanged()
-        } catch (e) { fail(e) } finally { setBusy(false) }
+        void (async () => {
+            try {
+                const answer = await removeServiceChargeAndPrint(restaurantId, { table_name: tableName, ...form })
+                if (!answer.ok) {
+                    // Nothing was ever drawn in it. The server's sentence, verbatim.
+                    tab?.close()
+                    fail(new Error(answer.message))
+                    return
+                }
+                const said = serviceChargeRemovalSentence(answer.result, money)
+                if (answer.result.printed && printBill) {
+                    await printBill({ printWindow: tab, printableBill: answer.result.printable_bill ?? null })
+                } else {
+                    tab?.close()
+                }
+                toast({
+                    title: said.tone === "warn" ? "Check the bill" : "Service charge",
+                    description: said.message,
+                    variant: said.tone === "warn" ? "destructive" : undefined,
+                })
+                onChanged()
+                onClose()
+            } catch (e) {
+                tab?.close()
+                fail(e)
+                // The waiver may have landed before whatever went wrong; the
+                // bill on screen is re-read either way.
+                load()
+                onChanged()
+            } finally {
+                setBusy(false)
+            }
+        })()
     }
 
     const reverse = async (): Promise<void> => {
@@ -961,7 +1049,6 @@ function WaiverDialog({
         setBusy(true)
         try {
             await reverseServiceChargeWaiver(restaurantId, live.id, why.trim())
-            setDone(null)
             load()
             onChanged()
         } catch (e) { fail(e) } finally { setBusy(false) }
@@ -973,7 +1060,8 @@ function WaiverDialog({
                 <DialogHeader>
                     <DialogTitle>Service charge · Table {tableName}</DialogTitle>
                     <DialogDescription>
-                        Take the service charge off this table&apos;s open bill and record on whose say-so.
+                        Take the service charge off this table&apos;s open bill, record on whose say-so, and print the
+                        bill without it.
                     </DialogDescription>
                 </DialogHeader>
 
@@ -983,41 +1071,7 @@ function WaiverDialog({
                     </div>
                 ) : null}
 
-                {!loading && done ? (
-                    <div className="space-y-3">
-                        <div className="grid grid-cols-2 gap-2">
-                            <ServerFigure label="Grand total before" value={money(done.before)} />
-                            <ServerFigure label="Grand total after" value={money(done.after)} tone="good" />
-                        </div>
-                        {/* TWO DIFFERENT NUMBERS (migration 048). The recorded reduction is the
-                            charge plus its tax BEFORE round-off, exact to the paisa. The two grand
-                            totals are what the guest is asked for, each rounded to the rupee, so
-                            their gap can be off the reduction by under a rupee — which is why the
-                            reduction is never labelled as what the guest pays less by. */}
-                        <div className="grid grid-cols-3 gap-2">
-                            <ServerFigure label="Charge removed" value={money(done.rec.amount_waived)} />
-                            <ServerFigure label="Tax that rode on it" value={money(done.rec.tax_on_waived)} />
-                            <ServerFigure label="Charge + tax" value={money(done.rec.grand_total_reduction)} hint="Before round-off" tone="warn" />
-                        </div>
-                        {/* The whole reason this figure is not computed in the browser. */}
-                        <Note>
-                            {done.rec.tax_on_waived > 0
-                                ? <>The charge ({money(done.rec.amount_waived)}) and the GST that rode on it come to{" "}
-                                    <b>{money(done.rec.grand_total_reduction)}</b> — on this restaurant&apos;s tax setup, GST rode
-                                    on the service charge, so removing it removes that tax too.</>
-                                : <>That is exactly the charge, <b>{money(done.rec.grand_total_reduction)}</b> — on this
-                                    restaurant&apos;s tax setup the service charge is itself a tax line, so no further tax
-                                    rode on it.</>}
-                            {" "}It is measured before the bill is rounded to the rupee. The two grand totals are what
-                            the guest is asked to pay, each rounded, so the gap between them can differ from it by
-                            less than a rupee. Every figure here came from the server, which measured the saving by
-                            running the real charge computation twice and differencing.
-                        </Note>
-                        <DialogFooter><Button onClick={onClose}>Done</Button></DialogFooter>
-                    </div>
-                ) : null}
-
-                {!loading && !done && live ? (
+                {!loading && live ? (
                     <div className="space-y-3">
                         <div className="rounded-md border border-amber-500/40 bg-amber-500/[0.05] px-3 py-2 text-sm">
                             The service charge on this bill is already waived — {money(live.amount_waived)} off
@@ -1028,20 +1082,25 @@ function WaiverDialog({
                             </div>
                         </div>
                         <Note>
-                            One live waiver per bill. Reversing it puts the charge back on and leaves the
-                            original in the record, marked reversed — so the report shows a waiver a manager
-                            overturned rather than showing nothing.
+                            One live waiver per bill. Reprinting prints it again without the charge and records
+                            nothing new. Reversing it puts the charge back on and leaves the original in the record,
+                            marked reversed — so the report shows a waiver a manager overturned rather than showing
+                            nothing.
                         </Note>
                         <DialogFooter>
                             <Button variant="ghost" onClick={onClose} disabled={busy}>Close</Button>
                             <Button variant="outline" onClick={() => void reverse()} disabled={busy} className="gap-1">
                                 <RotateCcw className="h-4 w-4" /> Put the charge back
                             </Button>
+                            <Button onClick={() => { removeAndPrint() }} disabled={busy} className="gap-1">
+                                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Printer className="h-4 w-4" />}
+                                Reprint without the charge
+                            </Button>
                         </DialogFooter>
                     </div>
                 ) : null}
 
-                {!loading && !done && !live ? (
+                {!loading && !live ? (
                     bill === null ? (
                         <>
                             {/* The bill could not be read, so this screen does not know
@@ -1055,10 +1114,10 @@ function WaiverDialog({
                             </Note>
                             <DialogFooter><Button onClick={onClose}>Close</Button></DialogFooter>
                         </>
-                    ) : (bill.service_charge ?? 0) <= 0 ? (
+                    ) : !billCarriesServiceCharge(bill) ? (
                         <>
                             <Note tone="warn">
-                                This bill carries no service charge, so there is nothing to waive. If you expected
+                                This bill carries no service charge, so there is nothing to remove. If you expected
                                 one, check the restaurant&apos;s service-charge percentage or its default tax lines.
                             </Note>
                             <DialogFooter><Button onClick={onClose}>Close</Button></DialogFooter>
@@ -1066,17 +1125,20 @@ function WaiverDialog({
                     ) : (
                         <>
                             <div className="grid grid-cols-2 gap-2">
+                                {/* BOTH SHAPES. `service_charge` alone is the percent leg and is
+                                    0 on a tenant whose charge is a tax line — which is most of
+                                    them — so this figure adds the tax-line leg the server names. */}
                                 <ServerFigure
                                     label="Service charge now"
-                                    value={money(bill?.service_charge)}
-                                    hint={bill?.service_charge_percent ? `${String(bill.service_charge_percent)}% as configured` : undefined}
+                                    value={money(serviceChargeOnBill(bill))}
+                                    hint={bill.service_charge_percent ? `${String(bill.service_charge_percent)}% as configured` : undefined}
                                 />
-                                <ServerFigure label="Grand total now" value={money(bill?.grand_total)} hint="Tax-inclusive" />
+                                <ServerFigure label="Grand total now" value={money(bill.grand_total)} hint="Tax-inclusive" />
                             </div>
                             <Note>
                                 The reduction is not simply the charge: on one of the two tax shapes this system
                                 supports, GST rides on the service charge, so the grand total falls by more. The
-                                exact figure is measured by the server when you record this, and shown then.
+                                server measures it when you confirm, and you are told both totals as the bill prints.
                             </Note>
                             <KindPicker label="Why is it coming off?" options={SERVICE_CHARGE_WAIVER_KINDS} value={kind} onChange={setKind} />
                             <ReasonField value={reason} onChange={setReason} placeholder="e.g. Guest asked — long wait for the mains" />
@@ -1084,11 +1146,17 @@ function WaiverDialog({
                             <DialogFooter>
                                 <Button variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
                                 <Button
-                                    onClick={() => void submit()}
+                                    onClick={() => {
+                                        removeAndPrint({
+                                            waiver_kind: kind,
+                                            reason: reason.trim(),
+                                            authorised_by: authorisedBy.trim(),
+                                        })
+                                    }}
                                     disabled={busy || !kind || reason.trim().length === 0 || authorisedBy.trim().length === 0}
                                 >
-                                    {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Receipt className="mr-2 h-4 w-4" />}
-                                    Waive the service charge
+                                    {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Printer className="mr-2 h-4 w-4" />}
+                                    Remove service charge &amp; print
                                 </Button>
                             </DialogFooter>
                         </>

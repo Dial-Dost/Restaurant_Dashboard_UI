@@ -154,7 +154,7 @@ import { useTimezone } from "@/lib/use-timezone";
 import type { MenuItem } from "../menu/data";
 import { type MenuVariationRecord } from "@/lib/mis-capture";
 import { BillActions } from "./bill-actions";
-import { CancelKotButton, CaptureActions } from "./capture-actions";
+import { CancelKotButton, CaptureActions, type PrintBillHandoff } from "./capture-actions";
 import { TableKotPreview } from "./table-kot-preview";
 import { OrdersScopeNotice } from "./orders-scope-notice";
 
@@ -993,7 +993,7 @@ function OrdersDashboard() {
     wording here would send the refused waiter to fetch the wrong person the
     first time that list changes.
   */
-  const triggerPrint = async (order: Order): Promise<void> => {
+  const triggerPrint = async (order: Order, handoff?: PrintBillHandoff): Promise<void> => {
     const restaurantId = user?.restaurantUsername;
     const tableName = (order.table || "").trim();
 
@@ -1016,8 +1016,13 @@ function OrdersDashboard() {
       fallback open at the end is the old behaviour — worth having, because a
       blocked print is still a table that cannot be billed.
     */
-    const printWindow = typeof window !== "undefined" ? window.open("", "_blank") : null;
-    if (printWindow) {
+    // "Remove service charge & print" opens its tab in ITS click handler, for
+    // exactly this reason, and hands it over — a second open here would be a
+    // second tab outside any gesture.
+    const printWindow = handoff
+      ? handoff.printWindow
+      : typeof window !== "undefined" ? window.open("", "_blank") : null;
+    if (printWindow && !handoff) {
       // A word in the empty tab, so it does not read as a browser that hung.
       // Wrapped because a hardened browser refusing to let us touch about:blank
       // is not worth failing the print over.
@@ -1047,7 +1052,20 @@ function OrdersDashboard() {
     let printableBill: Record<string, unknown> | null = null;
     let priorPrintState: BillPrintState | null =
       billPrintByTable.get(tableName.toLowerCase()) ?? null;
-    if (restaurantId && tableName) {
+    if (restaurantId && tableName && handoff) {
+      // THE COMPOSITE ROUTE HAS ALREADY CLAIMED THIS PRINT, after its waiver
+      // committed — the same ledger row and audit line /print/bill/claim writes.
+      // Claiming again would count one piece of paper twice (and spend a
+      // waiter's one print on nothing). Its `printable_bill` was read BEFORE
+      // that claim was recorded, so its print state is the "was this already
+      // printed" the reprint banner asks about.
+      printableBill = handoff.printableBill;
+      priorPrintState = billPrintStateFields(handoff.printableBill) ?? priorPrintState;
+      try {
+        const refreshed = await getTables(restaurantId);
+        setTables(Array.isArray(refreshed) ? refreshed : []);
+      } catch { /* the poll will catch up */ }
+    } else if (restaurantId && tableName) {
       const fresh: unknown = await getBillForTable(restaurantId, tableName).catch(() => null);
       priorPrintState = billPrintStateFields(fresh) ?? priorPrintState;
 
@@ -2079,6 +2097,7 @@ function OrdersDashboard() {
                       })),
                     }}
                     onChanged={() => { void refreshOrders(); }}
+                    printBill={(handoff) => triggerPrint(order, handoff)}
                   />
                 ) : null;
                 return (
