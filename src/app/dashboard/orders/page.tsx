@@ -30,7 +30,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { MoreHorizontal, PlusCircle, Clock, Printer, Trash2, X, ChevronUp, ChevronDown, Flame, ChefHat, CheckCircle2, MonitorSmartphone, Megaphone, Store, ReceiptText } from "lucide-react";
+import { MoreHorizontal, PlusCircle, Clock, Printer, Trash2, X, ChevronUp, ChevronDown, Flame, ChefHat, CheckCircle2, MonitorSmartphone, Megaphone, Store, ReceiptText, Minus, Plus } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -117,6 +117,20 @@ import {
   type BillPrintState,
 } from "@/lib/bill-print-state";
 import { visibleAmount, visibleLineAmount, visibleMoneyText, visibleSubtotal } from "@/lib/order-prices";
+import {
+  draftItemCount,
+  draftLineKey,
+  draftSignature,
+  draftSummary,
+  keyForDraftSend,
+  mergeDraftLine,
+  newIdempotencyKey,
+  removeDraftLine,
+  setDraftQuantity,
+  toOrderItems,
+  type DraftLine,
+  type DraftSendKey,
+} from "@/lib/order-draft";
 import { canBarkFromBoard, cancelKotRoute, ordersGridColumns, showsTableApcSummary } from "@/lib/orders-grid";
 /*
   THE PREP TIMERS STAY LOCAL; THE SERVICE CLOCK DOES NOT.
@@ -1113,7 +1127,7 @@ function OrdersDashboard() {
       if (printWindow) { printWindow.location.href = url; } else { window.open(url, '_blank'); }
   }
   
-  const handleAddOrder = async (newOrderData: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null; course_hold?: boolean; variation_id?: string }[]; covers?: number }) => {
+  const handleAddOrder = async (newOrderData: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null; course_hold?: boolean; variation_id?: string }[]; covers?: number; idempotencyKey?: string }) => {
     if (!user?.restaurantUsername) {return;}
     const items = newOrderData.items.map(it => ({
       id: it.id ?? `i${Date.now()}${Math.random().toString(36).slice(2,5)}`,
@@ -1166,7 +1180,9 @@ function OrdersDashboard() {
         }
       }
 
-      const resp: any = await addOrder(user.restaurantUsername, newOrder);
+      // Keyed by the draft (see keyForDraftSend in the form): the identical
+      // draft sent twice is ONE order to the server, not two.
+      const resp: any = await addOrder(user.restaurantUsername, newOrder, { idempotencyKey: newOrderData.idempotencyKey });
       const createdId = resp?.id ?? resp?._id ?? null;
 
       // Link the table to the created order id for quick access
@@ -3591,7 +3607,7 @@ function KitchenKioskDisplay({ station }: { station: string }) {
   JSX draws nothing at all; see `order-prices.ts` for why they do not
   distinguish the two.
 */
-function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSelectedTable, variationsByMenuId }: { onSubmit: (data: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null; course_hold?: boolean; variation_id?: string }[]; covers?: number }) => Promise<void> | void; menuItems: MenuItem[]; tables: { id: number; name: string; capacity: number }[]; selectedTableName?: string; onClearSelectedTable?: () => void; variationsByMenuId?: Map<string, MenuVariationRecord[]> }) {
+function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSelectedTable, variationsByMenuId }: { onSubmit: (data: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null; course_hold?: boolean; variation_id?: string }[]; covers?: number; idempotencyKey?: string }) => Promise<void> | void; menuItems: MenuItem[]; tables: { id: number; name: string; capacity: number }[]; selectedTableName?: string; onClearSelectedTable?: () => void; variationsByMenuId?: Map<string, MenuVariationRecord[]> }) {
   const { currencySymbol } = useCurrency();
   // C4's gate, from the session and therefore from the server. Read here rather
   // than passed in as a prop: a prop could be forgotten at one of the call
@@ -3612,8 +3628,16 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
   // which is what every line was before variations existed and what every dish
   // that has none still is.
   const [selectedVariationId, setSelectedVariationId] = useState("");
-  const [itemsList, setItemsList] = useState<{ id?: string; name: string; price: number; quantity: number; note?: string | null; course_hold?: boolean; variation_id?: string; variation_label?: string }[]>([]);
+  const [itemsList, setItemsList] = useState<DraftLine[]>([]);
   const [covers, setCovers] = useState<number>(1);
+  // Item 5 — "View order": the draft read back before it goes to the kitchen.
+  const [reviewing, setReviewing] = useState(false);
+  // One send at a time, across BOTH send buttons. The ref is the guard (it is
+  // set before React re-renders, so a second click in the same frame is already
+  // refused); the state is what disables and relabels the buttons.
+  const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
+  const sendKeyRef = useRef<DraftSendKey | null>(null);
 
   useEffect(() => {
     if (selectedTableName) {
@@ -3657,22 +3681,13 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
     const hold = selectedHold;
     const variationId = chosenSize?.id;
     // Half and Full are DIFFERENT LINES, so the size is part of what makes two
-    // adds the same line. Without it, adding a Full after a Half would silently
-    // bump the Half's quantity and the guest would be billed the wrong size.
-    const same = (p: { name: string; note?: string | null; course_hold?: boolean; variation_id?: string }) =>
-      p.name.toLowerCase() === name.toLowerCase()
-      && String(p.note ?? "") === note
-      && Boolean(p.course_hold) === hold
-      && String(p.variation_id ?? "") === String(variationId ?? "");
-    setItemsList(prev => {
-      if (prev.some(same)) {
-        return prev.map(p => (same(p) ? { ...p, quantity: p.quantity + selectedQuantity } : p));
-      }
-      return [...prev, {
-        id: undefined, name, price, quantity: selectedQuantity, note: note || null, course_hold: hold,
-        ...(variationId ? { variation_id: variationId, variation_label: chosenSize?.name } : {}),
-      }];
-    });
+    // adds the same line (draftLineKey). Without it, adding a Full after a Half
+    // would silently bump the Half's quantity and the guest would be billed the
+    // wrong size.
+    setItemsList(prev => mergeDraftLine(prev, {
+      id: undefined, name, price, quantity: selectedQuantity, note: note || null, course_hold: hold,
+      ...(variationId ? { variation_id: variationId, variation_label: chosenSize?.name } : {}),
+    }));
     setSelectedItemValue("");
     setSelectedQuantity(1);
     setSelectedNote("");
@@ -3686,13 +3701,19 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
     return money === null ? label : `${label} — ${money}`;
   };
 
-  const removeItem = (name: string, note?: string | null, variationId?: string) => {
-    setItemsList(prev => prev.filter(p => !(
-      p.name === name
-      && String(p.note ?? "") === String(note ?? "")
-      && String(p.variation_id ?? "") === String(variationId ?? "")
-    )));
+  /*
+    One line out, or one line's quantity changed — from the pending list's X and
+    from the review's steppers alike. Both go through the draft's own key, which
+    includes the HOLD: the old remove did not, so the X on a held line also took
+    the un-held line of the same dish. Emptying the order ends the review; there
+    is nothing left to read back.
+  */
+  const updateLines = (next: DraftLine[]) => {
+    setItemsList(next);
+    if (next.length === 0) { setReviewing(false); }
   };
+  const removeLine = (key: string) => { updateLines(removeDraftLine(itemsList, key)); };
+  const setLineQuantity = (key: string, quantity: number) => { updateLines(setDraftQuantity(itemsList, key, quantity)); };
 
   /*
     Null for a scoped waiter, and null again if ANY line's price was redacted out
@@ -3702,15 +3723,32 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
   */
   const subtotal = visibleSubtotal(user, itemsList);
 
-  const handleSubmit = () => {
+  /*
+    THE ONE SEND, behind both "Send order" and the review's "Send to kitchen".
+
+    It used to be `void onSubmit(...)` with nothing held while it ran — and the
+    add awaits an occupy, the order, a second occupy and two reloads, so a second
+    click in that window posted a second order. Bill = sum of orders: the guest
+    was charged twice. Now a send in flight refuses every other, and the draft's
+    idempotency key means even a send that gets past this (the same draft, sent
+    again after an unanswered first try) is one order to the server.
+  */
+  const handleSubmit = async () => {
+    if (sendingRef.current) {return;}
     const tableIdNum = Number(selectedTableId);
     if (!selectedTableId || Number.isNaN(tableIdNum) || itemsList.length === 0) {return;}
-    // `variation_label` is a label for THIS form and nothing else — the server
-    // stamps its own from the live variation. Sending it would put a
-    // client-authored string on a stored order line, which is exactly the kind of
-    // key that later gets read as authoritative by something.
-    const items = itemsList.map(({ variation_label: _label, ...rest }) => rest);
-    void onSubmit({ tableId: tableIdNum, items, covers });
+    // `variation_label` is stripped here (toOrderItems): the server stamps its own.
+    const items = toOrderItems(itemsList);
+    const sendKey = keyForDraftSend(sendKeyRef.current, draftSignature(tableIdNum, covers, itemsList), newIdempotencyKey);
+    sendKeyRef.current = sendKey;
+    sendingRef.current = true;
+    setSending(true);
+    try {
+      await onSubmit({ tableId: tableIdNum, items, covers, idempotencyKey: sendKey.key });
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
+    }
   };
 
   /*
@@ -3727,15 +3765,92 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
     nothing. The count is lines-by-quantity, like the owner app's bar; the money
     stays off it (C4), because a waiter-only session has none to show.
   */
-  const itemCount = itemsList.reduce((sum, it) => sum + it.quantity, 0);
+  const itemCount = draftItemCount(itemsList);
   const canSend = Boolean(selectedTableId) && itemsList.length > 0;
+
+  /*
+    ITEM 5 — THE REVIEW, drawn INSIDE this dialog in place of the form rather
+    than as a second dialog on top of it (a nested Radix dialog is a second focus
+    trap, and Escape would close the wrong one). Only the unsent draft: what the
+    table already has is on its bill, and reading sent dishes back as new ones is
+    how a guest gets a second plate.
+
+    The same pinned bar as 6.8, so "Send to kitchen" is on screen however long
+    the order is. Quantities and removal go through the draft's own rules; money
+    only through C4's gate — a waiter's review has no amount on any line and no
+    total, the element GONE rather than blanked.
+  */
+  if (reviewing && itemsList.length > 0) {
+    const reviewTable = selectedTableName ?? tables.find((t) => String(t.id) === selectedTableId)?.name ?? "";
+    return (
+      <div className="grid gap-4 py-4">
+        <div className="sticky -top-6 z-10 -mx-6 -mt-4 border-b bg-background px-6 pb-3 pt-4">
+          <div className="flex gap-2">
+            <Button variant="outline" size="lg" className="h-12 shrink-0 text-base" onClick={() => { setReviewing(false); }} disabled={sending}>
+              Back to menu
+            </Button>
+            <Button size="lg" className="h-12 min-w-0 flex-1 text-base" onClick={() => { void handleSubmit(); }} disabled={!canSend || sending}>
+              <span className="truncate">{sending ? "Sending…" : "Send to kitchen"}</span>
+            </Button>
+          </div>
+        </div>
+        <div>
+          <div className="text-lg font-semibold">Review order · {reviewTable}</div>
+          <div className="text-sm text-muted-foreground">Read it back to the guest, then send.</div>
+          <div className="pt-2 text-sm font-medium">
+            {draftSummary(itemsList)}{subtotal === null ? "" : ` · ${currencySymbol}${subtotal.toFixed(2)}`}
+          </div>
+        </div>
+        <div className="space-y-2">
+          {itemsList.map((it) => {
+            const key = draftLineKey(it);
+            const amount = visibleMoneyText(currencySymbol, visibleLineAmount(user, it.price, it.quantity));
+            return (
+              <div key={key} className="rounded-md border p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-1.5 font-medium">
+                      {it.quantity} × {it.name}
+                      {it.variation_label ? (
+                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">{it.variation_label}</Badge>
+                      ) : null}
+                      {it.course_hold ? (
+                        <Badge variant="outline" className="border-amber-400 bg-amber-50 text-amber-800 text-[10px] px-1.5 py-0">HOLD</Badge>
+                      ) : null}
+                    </div>
+                    {it.note ? <div className="text-xs italic text-muted-foreground">{it.note}</div> : null}
+                  </div>
+                  {amount === null ? null : <div className="shrink-0">{amount}</div>}
+                </div>
+                <div className="flex items-center justify-end gap-1 pt-1">
+                  <Button variant="ghost" size="icon" aria-label={`One fewer ${it.name}`} onClick={() => { setLineQuantity(key, it.quantity - 1); }} disabled={sending}><Minus className="h-4 w-4"/></Button>
+                  <span className="w-6 text-center tabular-nums">{it.quantity}</span>
+                  <Button variant="ghost" size="icon" aria-label={`One more ${it.name}`} onClick={() => { setLineQuantity(key, it.quantity + 1); }} disabled={sending}><Plus className="h-4 w-4"/></Button>
+                  <Button variant="ghost" size="icon" aria-label={`Remove ${it.name}`} onClick={() => { removeLine(key); }} disabled={sending}><X className="h-4 w-4"/></Button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="grid gap-4 py-4">
       <div className="sticky -top-6 z-10 -mx-6 -mt-4 border-b bg-background px-6 pb-3 pt-4">
-        <Button size="lg" className="h-12 w-full text-base" onClick={handleSubmit} disabled={!canSend}>
-          {itemCount > 0 ? `Send order · ${String(itemCount)} item${itemCount === 1 ? "" : "s"}` : "Send order"}
-        </Button>
+        {/* Item 5 — "View order" beside Send, never instead of it: Send is still
+            the one-click send. Both are off while a send is out. */}
+        <div className="flex gap-2">
+          <Button variant="outline" size="lg" className="h-12 shrink-0 text-base" onClick={() => { setReviewing(true); }} disabled={itemsList.length === 0 || sending}>
+            {`View order (${String(itemCount)})`}
+          </Button>
+          <Button size="lg" className="h-12 min-w-0 flex-1 text-base" onClick={() => { void handleSubmit(); }} disabled={!canSend || sending}>
+            <span className="truncate">
+              {sending ? "Sending…" : itemCount > 0 ? `Send order · ${String(itemCount)} item${itemCount === 1 ? "" : "s"}` : "Send order"}
+            </span>
+          </Button>
+        </div>
       </div>
       <div className="grid grid-cols-4 items-center gap-4">
       <Label htmlFor="table" className="text-right">Table</Label>
@@ -3843,7 +3958,7 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
       ) : (
         <div className="space-y-2">
           {itemsList.map(it => (
-            <div key={`${it.name}-${String(it.note ?? "")}-${it.course_hold ? "h" : ""}-${String(it.variation_id ?? "")}`} className="flex items-center justify-between">
+            <div key={draftLineKey(it)} className="flex items-center justify-between">
               <div>
                 <div className="flex items-center gap-1.5">
                   {it.quantity}x {it.name}
@@ -3864,7 +3979,7 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
                   const amount = visibleMoneyText(currencySymbol, visibleLineAmount(user, it.price, it.quantity));
                   return amount === null ? null : <div>{amount}</div>;
                 })()}
-                <Button variant="ghost" size="icon" onClick={() => { removeItem(it.name, it.note, it.variation_id); }}><X className="h-4 w-4"/></Button>
+                <Button variant="ghost" size="icon" onClick={() => { removeLine(draftLineKey(it)); }} disabled={sending}><X className="h-4 w-4"/></Button>
               </div>
             </div>
           ))}

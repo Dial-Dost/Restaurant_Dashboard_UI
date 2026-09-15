@@ -2392,10 +2392,16 @@ export const addMenuItem = async (restaurantId: string, item: MenuItem) => {
     return { acknowledged: true };
 };
 
-export const addOrder = async (restaurantId: string, order: Order) => {
+// `idempotencyKey` — one per logical send (the Add New Order dialog mints it per
+// draft). POST /orders honours it: the same key is never applied twice. Callers
+// that use this route as a status upsert pass none and are unchanged.
+export const addOrder = async (restaurantId: string, order: Order, opts?: { idempotencyKey?: string }) => {
     const response = await backendCall('/orders', restaurantId, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+            'Content-Type': 'application/json',
+            ...(opts?.idempotencyKey ? { 'Idempotency-Key': opts.idempotencyKey } : {}),
+        },
         body: JSON.stringify(order),
     });
 
