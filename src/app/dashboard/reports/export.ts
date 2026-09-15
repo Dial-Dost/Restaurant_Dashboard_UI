@@ -24,8 +24,10 @@
 // something Chrome, Edge and Safari all do natively and better.
 
 import {
+    excelSheetName,
     exportBaseName,
-    formatMoney,
+    exportSummaryLine,
+    sheetColumnWidths,
     toCsv,
     type ExportMatrix,
     type FormatOptions,
@@ -33,6 +35,7 @@ import {
     type MisReportMeta,
 } from '@/lib/mis-reports';
 import { buildPrintDocument } from '@/lib/mis-print';
+import { clampNotices, timeSlotPhrase, timeSlotProvenance } from '@/lib/report-time-slots';
 import { formatFullDateTime } from '@/lib/tz';
 
 export type ExportFormat = 'csv' | 'excel' | 'pdf';
@@ -49,6 +52,12 @@ export interface ExportContext {
     /** True when the body is every row in range, not just the visible page. */
     wholeRange: boolean;
 }
+
+/** The report's title, carrying the slot when there is one: `Sales Summary — Lunch (12:00–17:00)`. */
+const titleOf = (ctx: ExportContext): string => {
+    const title = ctx.meta?.title ?? ctx.def.title;
+    return ctx.meta?.time_slot ? `${title} — ${timeSlotPhrase(ctx.meta.time_slot)}` : title;
+};
 
 /** Hand the browser a file. */
 const download = (blob: Blob, filename: string): void => {
@@ -78,6 +87,8 @@ const provenance = (ctx: ExportContext): [string, string][] => {
         ['Report', m?.title ?? ctx.def.title],
         ['Outlet', m?.outlet_scope === 'all' ? 'All outlets (combined)' : (m?.outlet_name ?? '—')],
         ['Date range', m ? `${m.window.from} to ${m.window.to} (${String(m.window.days)} day${m.window.days === 1 ? '' : 's'}, both inclusive)` : '—'],
+        // What the SERVER applied, never what was asked for — the same rule as the dates.
+        ['Time slot', m ? timeSlotProvenance(m.time_slot) : '—'],
         ['Timezone', m ? `${m.timezone} — every date and total is bucketed on the restaurant's own calendar day` : '—'],
         ['Generated', m ? formatFullDateTime(m.generated_at, m.timezone) : '—'],
         ['Rows', ctx.wholeRange ? `${String(ctx.matrix.body.length)} (every row in range)` : `${String(ctx.matrix.body.length)} (the page on screen)`],
@@ -85,9 +96,13 @@ const provenance = (ctx: ExportContext): [string, string][] => {
         ['Sorted by', ctx.sortLabel || '(report default)'],
         ['Columns', ctx.matrix.header.join(', ')],
     ];
-    if (m?.window.clamped) {
+    // A non-empty list, not a truthy one: `[]` is truthy, and that one character
+    // put "shortened" on the provenance of every export ever taken.
+    const clamp = clampNotices(m?.window.clamped);
+    if (clamp.range) {
         rows.push(['Note', 'The requested range was longer than this system reports on and was shortened — the dates above are the range actually measured.']);
     }
+    if (clamp.slot) {rows.push(['Note', `${clamp.slot}.`]);}
     return rows;
 };
 
@@ -123,11 +138,9 @@ export const exportExcel = async (ctx: ExportContext): Promise<void> => {
 
     const sheet = XLSX.utils.aoa_to_sheet(aoa);
     // Give every column a width from its widest cell so the sheet opens readable
-    // instead of as a wall of ####.
-    sheet['!cols'] = ctx.matrix.header.map((h, i) => {
-        const widest = aoa.reduce((w, row) => Math.max(w, String(row[i] ?? '').length), h.length);
-        return { wch: Math.min(Math.max(widest + 2, 10), 42) };
-    });
+    // instead of as a wall of #### or a dish list cut off by the next column.
+    // sheetColumnWidths says why there is no smaller cap.
+    sheet['!cols'] = sheetColumnWidths(ctx.matrix).map((wch) => ({ wch }));
     // Freeze the header row: on a 500-row settlement report, scrolling past the
     // headings is the difference between reading a column and guessing at it.
     sheet['!freeze'] = { xSplit: '0', ySplit: '1', topLeftCell: 'A2', activePane: 'bottomLeft', state: 'frozen' };
@@ -139,9 +152,9 @@ export const exportExcel = async (ctx: ExportContext): Promise<void> => {
     }
 
     const wb = XLSX.utils.book_new();
-    // Excel rejects a sheet name over 31 chars or carrying []:*?/\ — the report
-    // titles are all short and clean, but the cap is cheap insurance.
-    XLSX.utils.book_append_sheet(wb, sheet, (ctx.meta?.title ?? ctx.def.title).replace(/[[\]:*?/\\]/g, '').slice(0, 31) || 'Report');
+    // A slot's label rides in the tab name, its times do not. excelSheetName
+    // says what Excel refuses in a name that the spreadsheet library lets through.
+    XLSX.utils.book_append_sheet(wb, sheet, excelSheetName(ctx.meta?.title ?? ctx.def.title, ctx.meta?.time_slot?.label));
     XLSX.utils.book_append_sheet(wb, about, 'About');
     XLSX.writeFile(wb, `${exportBaseName(ctx.meta, ctx.def)}.xlsx`);
 };
@@ -168,7 +181,7 @@ export const exportPdf = (ctx: ExportContext, displayRows: string[][]): void => 
     if (!header) {return;}
 
     const doc = buildPrintDocument({
-        title: ctx.meta?.title ?? ctx.def.title,
+        title: titleOf(ctx),
         blurb: ctx.def.blurb,
         provenance: provenance(ctx),
         notes: ctx.meta?.notes ?? [],
@@ -206,11 +219,10 @@ export const runExport = async (format: ExportFormat, ctx: ExportContext, displa
     return 'Opening the print dialog — choose "Save as PDF"';
 };
 
-/** A one-line summary of the money on screen, for the export confirmation toast. */
-export const exportSummary = (ctx: ExportContext): string => {
-    const totalIndex = ctx.matrix.columns.findIndex((c) => c.key === 'grand_total' || c.key === 'net_amount' || c.key === 'amount');
-    if (totalIndex < 0 || !ctx.matrix.totals) {return `${String(ctx.matrix.body.length)} rows`;}
-    const value = ctx.matrix.totals[totalIndex];
-    if (typeof value !== 'number') {return `${String(ctx.matrix.body.length)} rows`;}
-    return `${String(ctx.matrix.body.length)} rows · ${formatMoney(value, ctx.format.currencySymbol)}`;
-};
+/**
+ * A one-line summary of the money on screen, for the export confirmation toast.
+ * The column it quotes is chosen in @/lib/mis-reports (exportMoneyColumnIndex),
+ * where jest can reach it — this file's imports keep it out of the test runner.
+ */
+export const exportSummary = (ctx: ExportContext): string =>
+    exportSummaryLine(ctx.matrix, ctx.format.currencySymbol);

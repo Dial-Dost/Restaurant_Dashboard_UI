@@ -16,14 +16,21 @@
 // adding it to their takings.
 //
 // EVERY NUMBER HERE COMES OFF THE PAYLOAD. Nothing on this page is derived,
-// summed or re-scaled client-side. The one exception is presentational — picking
-// the colour of a growth chip from the sign of a number the server sent.
+// summed or re-scaled client-side. The exceptions are presentational — picking
+// the colour of a growth chip from the sign of a number the server sent, and the
+// Sales Summary's one tile that puts service charge, tax and round off (the three
+// rungs between Net and Gross) together, via chargesAboveNet in lib/gross-net.ts.
+//
+// THE WORDS ARE lib/gross-net.ts's. Gross is the grand total, Net is after
+// discount and before service charge, tax and round off, Item total is before
+// the discount — the same three the server's column labels use.
 
 import { AlertTriangle, Info, TrendingDown, TrendingUp } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
+import { AFTER_REFUNDS, GROSS, ITEM_TOTAL, NET, chargesAboveNet, discountPctOf, itemTotalOf } from "@/lib/gross-net"
 import {
     formatInt,
     formatMoney,
@@ -127,8 +134,7 @@ export function ContextPanel({ reportKey, payload, currencySymbol }: Ctx & { rep
                     <Tiles>
                         <Tile label="Distinct items" value={formatInt(totals.items)} />
                         <Tile label="Qty sold" value={formatInt(totals.qty)} />
-                        <Tile label="Gross" value={money(totals.gross_amount)} />
-                        <Tile label="Net" value={money(totals.net_amount)} hint="Equals gross — discounts here are bill-level" />
+                        <Tile label={ITEM_TOTAL} value={money(totals.gross_amount)} hint="Menu price × qty, before any discount" />
                         <Tile
                             label="Bill-level discount"
                             value={money(billDiscount)}
@@ -140,9 +146,10 @@ export function ContextPanel({ reportKey, payload, currencySymbol }: Ctx & { rep
                         This report is bucketed by when the ORDER WAS PLACED, as the chip beside its title says;
                         most of the others bucket by when the bill was SETTLED, so its totals are not expected to
                         reconcile with theirs. Group Summary and Variation Summary are the same lines re-cut on
-                        this same clock, and their gross equals this one&apos;s exactly.
-                        Discounts on this system are applied to the whole bill, never to a line, so per-item net
-                        equals per-item gross — the window&apos;s real discount is the tile above.
+                        this same clock, and their item total equals this one&apos;s exactly.
+                        Gross and Net are bill figures: a discount, a service charge and tax are applied to the whole
+                        bill, never to a line, so this report shows only the item total — the window&apos;s real
+                        discount is the tile above.
                     </Caveat>
                     {!categoryExact && (
                         <Caveat tone="warn">
@@ -157,7 +164,7 @@ export function ContextPanel({ reportKey, payload, currencySymbol }: Ctx & { rep
 
         case "discount": {
             const estimated = num(totals.estimated_bills) ?? 0
-            const pct = num(totals.discount_pct_of_gross)
+            const pct = num(discountPctOf(totals))
             return (
                 <div className="space-y-2">
                     <Tiles>
@@ -167,9 +174,9 @@ export function ContextPanel({ reportKey, payload, currencySymbol }: Ctx & { rep
                             value={money(totals.discount_amount)}
                             tone={(num(totals.discount_amount) ?? 0) > 0 ? "warn" : "default"}
                         />
-                        <Tile label="% of gross" value={formatPercent(pct)} hint="The share of takings given away" />
-                        <Tile label="Gross" value={money(totals.gross)} />
-                        <Tile label="Grand total" value={money(totals.grand_total)} />
+                        <Tile label="% of item total" value={formatPercent(pct)} hint="Of everything sold in the window" />
+                        <Tile label={ITEM_TOTAL} value={money(itemTotalOf(totals))} hint="Discounted bills, before the discount" />
+                        <Tile label={GROSS} value={money(totals.grand_total)} hint="Discounted bills, what guests paid" />
                     </Tiles>
                     {estimated > 0 && (
                         <Caveat tone="warn">
@@ -246,11 +253,11 @@ export function ContextPanel({ reportKey, payload, currencySymbol }: Ctx & { rep
             return (
                 <div className="space-y-2">
                     <Tiles>
-                        <Tile label="Gross" value={money(totals.gross)} />
+                        <Tile label={ITEM_TOTAL} value={money(itemTotalOf(totals))} hint="Menu price, before discount" />
                         <Tile label="Discount" value={`− ${money(totals.discount)}`} />
-                        <Tile label="Net" value={money(totals.net)} hint="Pre-tax, after discount" />
-                        <Tile label="Tax + service charge" value={money((num(totals.tax) ?? 0) + (num(totals.service_charge) ?? 0))} />
-                        <Tile label="Grand total" value={money(totals.grand_total)} hint="Tax-inclusive — what guests paid" />
+                        <Tile label={NET} value={money(totals.net)} hint="After discount, before service charge, tax and round off" />
+                        <Tile label="Service charge, tax & round off" value={`+ ${money(chargesAboveNet(totals))}`} />
+                        <Tile label={GROSS} value={money(totals.grand_total)} hint="Grand total — what guests paid" />
                     </Tiles>
                     <Tiles>
                         <Tile label="Bills" value={formatInt(totals.bills)} />
@@ -286,14 +293,14 @@ export function ContextPanel({ reportKey, payload, currencySymbol }: Ctx & { rep
                 <div className="space-y-2">
                     <Tiles>
                         <Tile label="Bills" value={formatInt(totals.bills)} />
-                        <Tile label="Net" value={money(totals.net)} />
+                        <Tile label={NET} value={money(totals.net)} />
                         <Tile label="Tax" value={money(totals.tax)} />
-                        <Tile label="Grand total" value={money(totals.grand_total)} />
+                        <Tile label={GROSS} value={money(totals.grand_total)} hint="Grand total — what guests paid" />
                         <Tile label="Refunds" value={money(totals.refund)} tone={(num(totals.refund) ?? 0) > 0 ? "warn" : "default"} />
                     </Tiles>
                     <Caveat>
                         The totals row covers <b>every bill in the range</b>, not just the page on screen — which is
-                        why the visible rows will not add up to it. Its grand total is the same figure the Sales
+                        why the visible rows will not add up to it. Its Gross is the same figure the Sales
                         Summary and the Settlement Summary report for this window.
                     </Caveat>
                 </div>
@@ -306,15 +313,15 @@ export function ContextPanel({ reportKey, payload, currencySymbol }: Ctx & { rep
             return (
                 <div className="space-y-2">
                     <Tiles>
-                        <Tile label="Grand total" value={money(totals.grand_total)} />
-                        <Tile label="Previous period" value={money(previous.grand_total)} />
+                        <Tile label={GROSS} value={money(totals.grand_total)} />
+                        <Tile label="Previous period (gross)" value={money(previous.grand_total)} />
                         <Tile label="Bills" value={formatInt(totals.bills)} />
                         <Tile label="Covers" value={formatInt(totals.covers)} />
                         <Tile label="APC" value={money(totals.apc)} hint="Per cover, pre-tax" />
                     </Tiles>
                     <div className="flex flex-wrap items-center gap-2">
-                        <GrowthChip value={num(growth.grand_total)} label="Sales" />
-                        <GrowthChip value={num(growth.net)} label="Net" />
+                        <GrowthChip value={num(growth.grand_total)} label={GROSS} />
+                        <GrowthChip value={num(growth.net)} label={NET} />
                         <GrowthChip value={num(growth.bills)} label="Bills" />
                         <GrowthChip value={num(growth.covers)} label="Covers" />
                         <GrowthChip value={num(growth.abv)} label="ABV" />
@@ -338,7 +345,7 @@ export function ContextPanel({ reportKey, payload, currencySymbol }: Ctx & { rep
                         <Tile label="Parties" value={formatInt(totals.parties)} />
                         <Tile label="Covers" value={formatInt(totals.covers)} />
                         <Tile label="Bills" value={formatInt(totals.bills)} />
-                        <Tile label="Grand total" value={money(totals.grand_total)} />
+                        <Tile label={GROSS} value={money(totals.grand_total)} />
                         <Tile label="Spend per cover" value={money(totals.apc)} hint="Pre-tax" />
                     </Tiles>
                     <Caveat>
@@ -357,7 +364,7 @@ export function ContextPanel({ reportKey, payload, currencySymbol }: Ctx & { rep
                         <Tile label="Bills settled" value={formatInt(totals.bills)} />
                         <Tile label="Collected" value={money(totals.amount)} />
                         <Tile label="Refunds" value={money(totals.refund)} tone={(num(totals.refund) ?? 0) > 0 ? "warn" : "default"} />
-                        <Tile label="Net in drawer" value={money(totals.net_amount)} hint="Collected less refunds" />
+                        <Tile label={AFTER_REFUNDS} value={money(totals.net_amount)} hint="Collected less refunds — tax still in" />
                         <Tile
                             label="Unallocated"
                             value={money(unallocated)}
@@ -372,7 +379,7 @@ export function ContextPanel({ reportKey, payload, currencySymbol }: Ctx & { rep
                         </Caveat>
                     )}
                     <Caveat>
-                        Collected here equals the Sales Summary&apos;s grand total and the sum of the Order Summary&apos;s
+                        Collected here equals the Sales Summary&apos;s Gross and the sum of the Order Summary&apos;s
                         rows for the same window — the three are cut from one ladder and are tested against each
                         other.{splitBills > 0 ? ` ${String(splitBills)} bill(s) were settled across more than one mode.` : ""}
                     </Caveat>
@@ -493,7 +500,7 @@ export function ContextPanel({ reportKey, payload, currencySymbol }: Ctx & { rep
                         <Tile label="Groups" value={formatInt(totals.groups)} />
                         <Tile label="Items" value={formatInt(totals.items)} />
                         <Tile label="Qty" value={formatInt(totals.qty)} />
-                        <Tile label="Gross" value={money(totals.gross_amount)} hint="Equals Item Wise for this window" />
+                        <Tile label={ITEM_TOTAL} value={money(totals.gross_amount)} hint="Equals Item Wise for this window" />
                         <Tile
                             label="Bill-level discount"
                             value={money(billDiscount)}
@@ -503,8 +510,8 @@ export function ContextPanel({ reportKey, payload, currencySymbol }: Ctx & { rep
                     </Tiles>
                     <Caveat>
                         These are the <b>same order lines as Item Wise</b>, re-cut — same window, same
-                        order-placement clock, same menu-price basis — so the gross above equals that report&apos;s
-                        gross exactly. Two item-level reports that disagreed about what sold would be the same
+                        order-placement clock, same menu-price basis — so the item total above equals that
+                        report&apos;s exactly. Two item-level reports that disagreed about what sold would be the same
                         failure as two bill-level reports disagreeing about net sales.
                     </Caveat>
                     {unclassified > 0 || unattributed > 0 ? (
@@ -542,8 +549,8 @@ export function ContextPanel({ reportKey, payload, currencySymbol }: Ctx & { rep
                         <Tile label="Dishes with sizes" value={formatInt(totals.items)} />
                         <Tile label="Price points" value={formatInt(totals.variations)} />
                         <Tile label="Qty" value={formatInt(totals.qty)} />
-                        <Tile label="Gross in this report" value={money(totals.gross_amount)} />
-                        <Tile label="Gross in the whole window" value={money(windowGross)} hint="Item Wise, same window" />
+                        <Tile label="Item total in this report" value={money(totals.gross_amount)} />
+                        <Tile label="Item total, whole window" value={money(windowGross)} hint="Item Wise, same window" />
                     </Tiles>
                     {none ? (
                         <Caveat tone="warn">
@@ -556,7 +563,7 @@ export function ContextPanel({ reportKey, payload, currencySymbol }: Ctx & { rep
                             <b>A deliberate subset, and it says so.</b>{" "}Only dishes that HAVE sizes appear — one row
                             per size, plus a base row where lines of that dish named none. Listing every dish with a
                             single &ldquo;Base&rdquo; row would bury the handful actually sold in sizes under hundreds
-                            that are not. The window&apos;s whole gross sits beside it so the size of the subset is
+                            that are not. The window&apos;s whole item total sits beside it so the size of the subset is
                             visible rather than implied.
                         </Caveat>
                     )}
@@ -604,8 +611,8 @@ export function ContextPanel({ reportKey, payload, currencySymbol }: Ctx & { rep
                         </div>
                     )}
                     <Caveat tone="warn">
-                        <b>A tip is not revenue and appears in no sales figure on this system</b>{" "}— not in gross,
-                        not in net, not in the grand total, not in APC or ABV, and not in any settlement bucket. It
+                        <b>A tip is not revenue and appears in no sales figure on this system</b>{" "}— not in the item
+                        total, not in Net, not in Gross, not in APC or ABV, and not in any settlement bucket. It
                         rides on a payment beside the amount that settles the bill and is excluded from every sum
                         that reconciles against it. This is a payroll document, not a sales one.
                     </Caveat>
@@ -626,8 +633,8 @@ export function ContextPanel({ reportKey, payload, currencySymbol }: Ctx & { rep
                     <Tiles>
                         <Tile label="Tills" value={formatInt(totals.counters)} />
                         <Tile label="Bills" value={formatInt(totals.bills)} />
-                        <Tile label="Net" value={money(totals.net)} />
-                        <Tile label="Grand total" value={money(totals.grand_total)} hint="Equals the Sales Summary" />
+                        <Tile label={NET} value={money(totals.net)} />
+                        <Tile label={GROSS} value={money(totals.grand_total)} hint="Equals the Sales Summary" />
                         <Tile
                             label="Cash variance"
                             value={money(variance)}
@@ -646,7 +653,7 @@ export function ContextPanel({ reportKey, payload, currencySymbol }: Ctx & { rep
                         <Caveat>
                             A bill with no till is not dropped — it lands in an explicit <b>(none)</b>{" "}row. Every
                             bill taken before tills were configured is in it, and so is every bill nobody
-                            attributed. That is the only reason this report&apos;s grand total equals the Sales
+                            attributed. That is the only reason this report&apos;s Gross equals the Sales
                             Summary&apos;s.
                         </Caveat>
                     )}

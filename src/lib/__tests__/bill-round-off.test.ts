@@ -97,7 +97,10 @@ describe('every web surface that shows the ladder shows the round-off rung', () 
     it('the MIS report bill drill-down', () => {
         const src = code(readSource('src/app/dashboard/reports/drill-down.tsx'));
         expect(src).toContain('<Line label="Round off" value={formatRoundOff(roundOffOf(bill)!, money)} />');
-        expect(src.indexOf('label="Round off"')).toBeLessThan(src.indexOf('label="Grand total"'));
+        // The bottom rung is "Gross" here — the word on the report row this dialog
+        // opens from (client item 1; pinned in gross-net.test.ts).
+        expect(src.indexOf('label={GROSS}')).toBeGreaterThan(-1);
+        expect(src.indexOf('label="Round off"')).toBeLessThan(src.indexOf('label={GROSS}'));
     });
 
     it('the customer-facing display', () => {
@@ -143,16 +146,20 @@ describe('a removed service charge is not shown on any web bill surface', () => 
 // 6351 -> 5774 (577.00 less) against a recorded 577.40, so labelling the
 // reduction "Guest pays less by" put two figures on one panel that disagree.
 describe('a waiver\'s pre-round reduction is never labelled as what the guest pays less by', () => {
-    it('the waiver panel calls it charge + tax, before round-off, and says why the totals differ', () => {
+    it('the waiver panel calls it charge + tax, before round-off, and the removal toast names only the totals', () => {
         const src = code(readSource('src/app/dashboard/orders/capture-actions.tsx'));
         expect(src).not.toMatch(/less by" value=\{money\([^)]*grand_total_reduction\)\}/);
-        expect(src).not.toMatch(/The guest pays <b>\{money\(done\.rec\.grand_total_reduction\)\}<\/b>/);
-        expect(src).toContain('<ServerFigure label="Charge + tax" value={money(done.rec.grand_total_reduction)} hint="Before round-off" tone="warn" />');
+        expect(src).not.toMatch(/The guest pays <b>\{money\([^)]*grand_total_reduction\)\}<\/b>/);
         expect(src).toContain('(charge and tax {money(live.grand_total_reduction)}, before round-off)');
         expect(src).not.toContain('total reduction {money(live.grand_total_reduction)}');
-        // The two payable totals stay, straight off the server's response.
-        expect(src).toContain('<ServerFigure label="Grand total before" value={money(done.before)} />');
-        expect(src).toContain('<ServerFigure label="Grand total after" value={money(done.after)} tone="good" />');
+        // Client item 6 replaced the after-waiver Done panel with a toast as the
+        // bill prints. It carries the two PAYABLE totals, straight off the
+        // server's response, and never the pre-round reduction beside them.
+        expect(src).toContain('serviceChargeRemovalSentence(answer.result, money)');
+        const lib = code(readSource('src/lib/mis-capture.ts'));
+        const sentence = lib.slice(lib.indexOf('export const serviceChargeRemovalSentence'), lib.indexOf('export interface BillTenderRecord'));
+        expect(sentence).toContain('total ${money(before)} → ${money(after)}');
+        expect(sentence).not.toContain('grand_total_reduction');
     });
 
     it('the Service Charge Deny report tile says the same', () => {

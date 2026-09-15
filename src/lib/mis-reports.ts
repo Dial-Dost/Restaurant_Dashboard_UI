@@ -4,7 +4,7 @@
 // WHAT THIS MODULE IS NOT
 // -----------------------
 // It does not do money. Not one figure on any of the fifteen reports is computed
-// here: Gross → Discount → Net → Tax → Service Charge → Round Off → Grand Total
+// here: Item total → Discount → Net → Service Charge → Tax → Round Off → Gross
 // is pinned ONCE, server-side, in the backend's `mis_report_math.ts`, and every
 // number this file touches has already been through it. The client's job is to
 // show those numbers and to hand back exactly what it showed — nothing else.
@@ -25,7 +25,8 @@
 // build error that tsc and jest both wave through while every page 500s at
 // runtime. `src/lib/table-assignment.ts` set that precedent; this follows it.
 
-import { formatDate, formatDateTime } from './tz';
+import { timeSlotFileSuffix, type MisTimeSlot } from './report-time-slots';
+import { formatDate, formatDateTime, formatSheetDateTime, wallClockToUtcInZone } from './tz';
 
 // --- The wire shapes ---------------------------------------------------------
 // Mirrors of the backend's `MisColumn` / `MisReportMeta` / `MisPage` and the
@@ -52,7 +53,12 @@ export interface MisResolvedWindow {
     to: string;
     days: number;
     source?: string;
-    clamped?: boolean;
+    /**
+     * Every adjustment the server made, by name — `[]` when none. An ARRAY, never
+     * a boolean: `[]` is truthy, so a truthiness test read "shortened" off every
+     * report. Read it through `clampNotices` in @/lib/report-time-slots.
+     */
+    clamped?: string[];
 }
 
 export interface MisReportMeta {
@@ -66,6 +72,8 @@ export interface MisReportMeta {
     generated_at: string;
     /** Every caveat that applies to the numbers, in the backend's own words. */
     notes: string[];
+    /** The part of the day the server cut this on. Null / absent = all day. */
+    time_slot?: MisTimeSlot | null;
 }
 
 export interface MisPage {
@@ -155,7 +163,7 @@ export interface MisReportDef {
     rowsKey: string;
     /** True when the backend pages this report and honours limit/offset. */
     paged: boolean;
-    /** True when ?bucket=day|hour changes what comes back. */
+    /** True when ?bucket=day|hour|hour_of_day|session changes what comes back. */
     timeWise: boolean;
     /** What the date range means here. Merged from the catalogue's `shell.basis`. */
     clock: MisClock;
@@ -213,7 +221,7 @@ export const MIS_REPORTS: readonly MisReportDef[] = [
     {
         key: 'sales_summary', title: 'Sales Summary', path: '/reports/mis/sales-summary',
         rowsKey: 'series', paged: false, timeWise: true, drill: 'none', clock: 'settlement',
-        blurb: 'The whole ladder — gross to grand total — with bills, covers and ABV.',
+        blurb: 'The whole ladder — item total to Net to Gross — with bills, covers and ABV.',
     },
     {
         key: 'order_summary', title: 'Order Summary', path: '/reports/mis/order-summary',
@@ -328,26 +336,65 @@ export const columnPrefsKey = (userId: string, reportKey: string): string =>
 export const defaultHidden = (columns: readonly MisColumn[]): string[] =>
     columns.filter((c) => c.default_on === false).map((c) => c.key);
 
-export const loadColumnPrefs = (userId: string, reportKey: string): ColumnPrefs | null => {
-    if (typeof window === 'undefined') {return null;}
-    try {
-        const raw = window.localStorage.getItem(columnPrefsKey(userId, reportKey));
-        if (!raw) {return null;}
-        const parsed = JSON.parse(raw) as Partial<ColumnPrefs>;
-        if (!Array.isArray(parsed.hidden)) {return null;}
-        return { hidden: parsed.hidden.filter((k): k is string => typeof k === 'string') };
-    } catch {
-        // Private mode, cleared storage, or a value from an older build. The
-        // backend's own default layout is a perfectly good answer.
-        return null;
-    }
+/**
+ * The stamp every saved layout carries from this build on. A stored layout
+ * WITHOUT it was saved by an older build, and may still be hiding a column that
+ * was only hidden because the backend used to default it off.
+ */
+export const COLUMN_PREFS_VERSION = 2;
+
+/**
+ * Ladder rungs the backend turned ON by default in client item 1 (Gross and Net),
+ * per report. Net + service charge + tax + round off IS Gross, so each of these
+ * hidden leaves a grid whose visible rungs stop short of the Gross beside them.
+ *
+ * `toggleColumn` saves the WHOLE hidden list, and before item 1 that list began
+ * as the old default — so anyone who ever toggled any column on these reports
+ * has these keys stored as hidden without ever having chosen to hide them, and
+ * `defaultHidden` never reaches them again. An unstamped layout is therefore
+ * migrated ONCE: these keys leave its hidden list and the layout is re-saved
+ * with the stamp. Hiding one again afterwards is a real choice, and it sticks.
+ */
+export const RUNGS_NOW_ON_BY_DEFAULT: Readonly<Record<string, readonly string[]>> = {
+    sales_summary: ['round_off'],
+    order_summary: ['service_charge'],
+    counter_summary: ['service_charge', 'tax'],
 };
 
 export const saveColumnPrefs = (userId: string, reportKey: string, prefs: ColumnPrefs): void => {
     if (typeof window === 'undefined') {return;}
     try {
-        window.localStorage.setItem(columnPrefsKey(userId, reportKey), JSON.stringify(prefs));
+        // Stamped, so the one-time migration in loadColumnPrefs never undoes a
+        // choice made on this build.
+        window.localStorage.setItem(
+            columnPrefsKey(userId, reportKey),
+            JSON.stringify({ hidden: prefs.hidden, v: COLUMN_PREFS_VERSION }),
+        );
     } catch {/* quota or private mode — the in-memory state still holds this session */}
+};
+
+export const loadColumnPrefs = (userId: string, reportKey: string): ColumnPrefs | null => {
+    if (typeof window === 'undefined') {return null;}
+    try {
+        const raw = window.localStorage.getItem(columnPrefsKey(userId, reportKey));
+        if (!raw) {return null;}
+        const parsed = JSON.parse(raw) as Partial<ColumnPrefs> & { v?: unknown };
+        if (!Array.isArray(parsed.hidden)) {return null;}
+        const hidden = parsed.hidden.filter((k): k is string => typeof k === 'string');
+        const nowOn = Object.prototype.hasOwnProperty.call(RUNGS_NOW_ON_BY_DEFAULT, reportKey)
+            ? RUNGS_NOW_ON_BY_DEFAULT[reportKey]
+            : undefined;
+        if (nowOn && parsed.v !== COLUMN_PREFS_VERSION) {
+            const migrated = hidden.filter((k) => !nowOn.includes(k));
+            saveColumnPrefs(userId, reportKey, { hidden: migrated });
+            return { hidden: migrated };
+        }
+        return { hidden };
+    } catch {
+        // Private mode, cleared storage, or a value from an older build. The
+        // backend's own default layout is a perfectly good answer.
+        return null;
+    }
 };
 
 export const clearColumnPrefs = (userId: string, reportKey: string): void => {
@@ -534,9 +581,15 @@ export interface ExportMatrix {
     totals: ExportCell[] | null;
     /** The column descriptors backing each position, for display formatting. */
     columns: MisColumn[];
+    /**
+     * The restaurant zone every `datetime` cell in `body` was already written in
+     * (as formatSheetDateTime's `2026-09-14 18:36`), or null when those cells are
+     * still the server's raw instants.
+     */
+    timezone: string | null;
 }
 
-const rawCell = (value: unknown, type: MisColumnType): ExportCell => {
+const rawCell = (value: unknown, type: MisColumnType, timezone: string | null): ExportCell => {
     if (value === null || value === undefined || value === '') {return null;}
     if (isNumericType(type)) {
         const n = Number(value);
@@ -545,6 +598,14 @@ const rawCell = (value: unknown, type: MisColumnType): ExportCell => {
         // accountant tries to do with it.
         return Number.isNaN(n) ? String(value) : n;
     }
+    // AN INSTANT IS WRITTEN AS THE RESTAURANT'S WALL CLOCK, YEAR FIRST. The
+    // server sends UTC ISO text, and a sheet that carries it verbatim puts a
+    // 18:36 void at "2026-09-14T13:06:36.104Z", which reads as 1 pm to anyone
+    // who opens it. Not the grid's "14/09/26 18:36" either: see
+    // formatSheetDateTime for why a file needs "2026-09-14 18:36". A value that
+    // is not an instant is kept as it came rather than blanked, so a malformed
+    // stamp is still visible in the file.
+    if (type === 'datetime' && timezone) {return formatSheetDateTime(String(value), timezone, String(value));}
     return String(value);
 };
 
@@ -556,46 +617,96 @@ const rawCell = (value: unknown, type: MisColumnType): ExportCell => {
  * says so — an export whose rows do not add up to its own total, with nothing
  * explaining why, is exactly the document that destroys confidence in the other
  * eight.
+ *
+ * `timezone` is the zone the grid formats in. With it, every `datetime` cell is
+ * written as that zone's wall clock, `2026-09-14 18:36`, the same string the
+ * owner app writes, and the PDF shows the grid's own `14/09/26 18:36`. Without
+ * it those cells stay raw instants.
  */
 export const buildExportMatrix = (
     columns: readonly MisColumn[],
     rows: readonly MisRow[],
     totals: Record<string, unknown> | null | undefined,
     totalsLabel = 'Total',
+    timezone?: string,
 ): ExportMatrix => {
     const cols = [...columns];
+    const zone = timezone ?? null;
     const header = cols.map((c) => c.label);
-    const body = rows.map((row) => cols.map((c) => rawCell(row[c.key], c.type)));
+    const body = rows.map((row) => cols.map((c) => rawCell(row[c.key], c.type, zone)));
 
     let totalsRow: ExportCell[] | null = null;
     if (totals) {
         const anyTotalled = cols.some((c) => c.total && totals[c.key] !== undefined);
         if (anyTotalled) {
             totalsRow = cols.map((c, i) => {
-                if (c.total && totals[c.key] !== undefined) {return rawCell(totals[c.key], c.type);}
+                if (c.total && totals[c.key] !== undefined) {return rawCell(totals[c.key], c.type, zone);}
                 // The label rides in the first column, which is always the
                 // report's identifying column (item, bill no., period, outlet).
                 return i === 0 ? totalsLabel : null;
             });
         }
     }
-    return { header, body, totals: totalsRow, columns: cols };
+    return { header, body, totals: totalsRow, columns: cols, timezone: zone };
 };
 
 /** The same matrix, every cell rendered as the reader sees it — for PDF. */
 export const formatMatrix = (matrix: ExportMatrix, opts: FormatOptions): string[][] => {
-    const render = (row: ExportCell[]): string[] =>
+    const render = (row: ExportCell[], isTotals: boolean): string[] =>
         row.map((cell, i) => {
             if (cell === null) {return '';}
+            // THE TOTALS LABEL IS WORDS, WHATEVER TYPE OF COLUMN IT SITS IN.
+            // buildExportMatrix puts it in the first cell, and on Cover Size
+            // Summary (party size, an int), or any report whose leading text
+            // column is hidden, that column is numeric: formatted as a number,
+            // "Total" printed as "—" on the PDF while the grid, the CSV and the
+            // sheet all said "Total". A string there is the label, because a
+            // total is a number (rawCell keeps only a non-numeric one as text,
+            // which the CSV and the sheet also write as it came).
+            if (isTotals && i === 0 && typeof cell === 'string') {return cell;}
             // Every row is built column-by-column from `matrix.columns`, so a
             // missing descriptor cannot happen; if it ever did, showing the raw
             // value beats throwing away the reader's document.
             const col = matrix.columns[i] as MisColumn | undefined;
+            // Already the restaurant's wall clock, written for a sheet. The PDF
+            // shows the grid's format, so the wall clock is read back IN THE
+            // RESTAURANT ZONE and formatted the way the grid formats it. Handing
+            // the text to `new Date` instead would read it in the viewer's
+            // browser zone. A stamp that was kept as it came stays as it came.
+            if (col?.type === 'datetime' && matrix.timezone) {
+                const at = wallClockToUtcInZone(String(cell), matrix.timezone);
+                return at ? formatDateTime(at, matrix.timezone) : String(cell);
+            }
             return col ? formatCell(cell, col.type, opts) : String(cell);
         });
-    const out = matrix.body.map(render);
-    if (matrix.totals) {out.push(render(matrix.totals));}
+    const out = matrix.body.map((row) => render(row, false));
+    if (matrix.totals) {out.push(render(matrix.totals, true));}
     return [matrix.header, ...out];
+};
+
+/**
+ * Which column's total the export confirmation quotes as "the money".
+ *
+ * The bill-level reports keep their pick — the first of grand_total, net_amount
+ * or amount in column order, exactly as before. `gross_amount` is consulted ONLY
+ * when none of those is on screen: it is the one money column Item Wise, Group
+ * Summary and Variation Summary have left since their always-equal Net
+ * (`net_amount`) left the grid (client item 1), and without it their toast
+ * silently lost its ₹ figure. Same value those reports quoted before.
+ */
+export const exportMoneyColumnIndex = (columns: readonly MisColumn[]): number => {
+    const billLevel = columns.findIndex((c) => c.key === 'grand_total' || c.key === 'net_amount' || c.key === 'amount');
+    return billLevel >= 0 ? billLevel : columns.findIndex((c) => c.key === 'gross_amount');
+};
+
+/** A one-line summary of the money in an export, for its confirmation toast. */
+export const exportSummaryLine = (matrix: ExportMatrix, currencySymbol: string): string => {
+    const rows = `${String(matrix.body.length)} rows`;
+    const totalIndex = exportMoneyColumnIndex(matrix.columns);
+    if (totalIndex < 0 || !matrix.totals) {return rows;}
+    const value = matrix.totals[totalIndex];
+    if (typeof value !== 'number') {return rows;}
+    return `${rows} · ${formatMoney(value, currencySymbol)}`;
 };
 
 /**
@@ -632,7 +743,64 @@ export const toCsv = (matrix: ExportMatrix): string => {
     return `﻿${lines.join('\r\n')}\r\n`;
 };
 
-/** `order-summary_gaia-test_2026-08-01_to_2026-08-31` — no extension. */
+/**
+ * THE WIDTH OF EACH SPREADSHEET COLUMN, in characters: its widest cell plus two,
+ * never under 10.
+ *
+ * WHY THERE IS NO SMALLER CAP. Excel lets text spill into the next cell only when
+ * that cell is empty, and every report has a filled column to the right of its
+ * text. The Void KOT Items cell ("HARA DHANIYA PULAO x1; SUBZ TEHRI x1; …") sat
+ * in a column capped at 42 beside a Type cell that is never blank, so a ticket
+ * with three dishes opened cut off mid-name. The dashboard's spreadsheet library
+ * (the SheetJS community build) cannot write wrap-text, so the only way a long
+ * cell reads whole when the file opens is a column as wide as it. The ceiling is
+ * Excel's own: it refuses a column wider than 255 characters, and 250 leaves
+ * room for the padding the writer adds on top.
+ *
+ * The owner app sizes its sheet by the same rule (misSheetColumnWidths), so a
+ * file from either client opens the same.
+ */
+export const SHEET_MIN_WIDTH = 10;
+export const SHEET_MAX_WIDTH = 250;
+
+export const sheetColumnWidths = (matrix: ExportMatrix): number[] => {
+    const rows: readonly (readonly ExportCell[])[] = [matrix.header, ...matrix.body, ...(matrix.totals ? [matrix.totals] : [])];
+    return matrix.header.map((_, i) => {
+        const widest = rows.reduce((w, row) => Math.max(w, String(row[i] ?? '').length), 0);
+        return Math.min(Math.max(widest + 2, SHEET_MIN_WIDTH), SHEET_MAX_WIDTH);
+    });
+};
+
+/**
+ * THE NAME ON THE REPORT'S SHEET TAB: the report title, and the slot's label
+ * when the server cut the report on one ("Order Summary - Dinner").
+ *
+ * Excel refuses a sheet name over 31 characters, one carrying any of []:*?/\,
+ * and one that BEGINS OR ENDS WITH AN APOSTROPHE. The SheetJS build this
+ * dashboard pins (0.18.5) checks only the first two, so a name breaking the
+ * third is written without complaint and Excel opens the file as corrupt and
+ * offers to repair it. The report titles never trip any of these; a session
+ * label is the owner's free text ("Chefs'"), and a long one can land an
+ * apostrophe on character 31. So the apostrophes (and any spaces the cut left)
+ * come off both ends AFTER the cut, and so does half of an emoji the cut split,
+ * which would otherwise be written as a lone surrogate the file cannot encode.
+ *
+ * A slot's TIMES stay out of the name: `:` is refused, and they are on the About
+ * sheet anyway.
+ */
+export const SHEET_NAME_MAX = 31;
+
+export const excelSheetName = (title: string, slotLabel?: string | null): string => {
+    const named = slotLabel ? `${title} - ${slotLabel}` : title;
+    const cut = named.replace(/[[\]:*?/\\]/g, '').slice(0, SHEET_NAME_MAX).replace(/[\uD800-\uDBFF]$/, '');
+    return cut.replace(/^['\s]+|['\s]+$/g, '') || 'Report';
+};
+
+/**
+ * `order-summary_gaia-test_2026-08-01_to_2026-08-31` — no extension. A report
+ * cut on a time slot adds `_lunch-1200-1700`; an all-day one adds nothing, so
+ * every filename this produced before slots existed is unchanged.
+ */
 export const exportBaseName = (meta: MisReportMeta | null, def: MisReportDef): string => {
     const scope = !meta
         ? 'outlet'
@@ -642,7 +810,7 @@ export const exportBaseName = (meta: MisReportMeta | null, def: MisReportDef): s
     const safe = (s: string) => s.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'report';
     const from = meta?.window.from ?? '';
     const to = meta?.window.to ?? '';
-    return `${safe(def.key.replace(/_/g, '-'))}_${safe(scope)}_${from}_to_${to}`;
+    return `${safe(def.key.replace(/_/g, '-'))}_${safe(scope)}_${from}_to_${to}${timeSlotFileSuffix(meta?.time_slot)}`;
 };
 
 // --- Small screen-level facts ------------------------------------------------

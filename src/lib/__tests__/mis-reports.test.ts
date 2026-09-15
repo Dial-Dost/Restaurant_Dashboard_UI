@@ -13,8 +13,14 @@
 // Everything below is pure: fixed rows in, strings out. No DOM, no fetch, no
 // clock — the storage helpers are exercised against a stubbed localStorage.
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+
 import {
+    COLUMN_PREFS_VERSION,
     MIS_REPORTS,
+    RUNGS_NOW_ON_BY_DEFAULT,
+    SHEET_NAME_MAX,
     buildExportMatrix,
     clockFromBasis,
     columnPrefsKey,
@@ -22,7 +28,10 @@ import {
     csvEscape,
     defaultHidden,
     drillTarget,
+    excelSheetName,
     exportBaseName,
+    exportMoneyColumnIndex,
+    exportSummaryLine,
     formatCell,
     formatMatrix,
     formatMoney,
@@ -33,6 +42,7 @@ import {
     reportDef,
     rowsOf,
     saveColumnPrefs,
+    sheetColumnWidths,
     sortRows,
     toCsv,
     totalsLabelFor,
@@ -42,6 +52,7 @@ import {
     type MisReportMeta,
     type MisRow,
 } from '../mis-reports';
+import { formatSheetDateTime } from '../tz';
 
 const FMT = { timezone: 'Asia/Kolkata', currencySymbol: '₹' };
 
@@ -324,6 +335,121 @@ describe('column configuration', () => {
         expect(loadColumnPrefs('emp-1', 'discount')).toBeNull();
         expect(() => { saveColumnPrefs('emp-1', 'discount', { hidden: [] }); }).not.toThrow();
     });
+
+    // Client item 1 turned Round off (Sales), Service charge (Order, Counter) and
+    // Tax (Counter) ON by default, so the visible rungs add up to Gross. A layout
+    // saved before that still lists them as hidden — not because anyone chose to,
+    // but because toggling ANY column saved the old default along with it — and
+    // the grid, CSV, XLSX and PDF would keep printing Net + SC + Tax ≠ Gross.
+    describe('a layout saved before the ladder rungs were turned on', () => {
+        const withStore = (run: (store: Map<string, string>) => void): void => {
+            const store = new Map<string, string>();
+            (globalThis as unknown as { window?: unknown }).window = {
+                localStorage: {
+                    getItem: (k: string) => store.get(k) ?? null,
+                    setItem: (k: string, v: string) => { store.set(k, v); },
+                    removeItem: (k: string) => { store.delete(k); },
+                },
+            };
+            try { run(store); } finally { delete (globalThis as unknown as { window?: unknown }).window; }
+        };
+
+        it('loads without the rung, keeps every column the user did hide, and is re-saved stamped', () => {
+            withStore((store) => {
+                // Exactly what origin/main's toggleColumn left behind: the old
+                // default hidden list (round_off, nc_value) plus the user's own pick.
+                store.set(columnPrefsKey('emp-1', 'sales_summary'), JSON.stringify({ hidden: ['round_off', 'nc_value', 'covers'] }));
+                expect(loadColumnPrefs('emp-1', 'sales_summary')).toEqual({ hidden: ['nc_value', 'covers'] });
+                expect(JSON.parse(store.get(columnPrefsKey('emp-1', 'sales_summary')) ?? '{}'))
+                    .toEqual({ hidden: ['nc_value', 'covers'], v: COLUMN_PREFS_VERSION });
+
+                store.set(columnPrefsKey('emp-1', 'order_summary'), JSON.stringify({ hidden: ['service_charge', 'refund', 'waiter'] }));
+                expect(loadColumnPrefs('emp-1', 'order_summary')).toEqual({ hidden: ['refund', 'waiter'] });
+
+                store.set(columnPrefsKey('emp-1', 'counter_summary'), JSON.stringify({ hidden: ['covers', 'service_charge', 'tax', 'refund'] }));
+                expect(loadColumnPrefs('emp-1', 'counter_summary')).toEqual({ hidden: ['covers', 'refund'] });
+            });
+        });
+
+        it('and the visible rungs then add up to Gross', () => {
+            withStore((store) => {
+                const ladder: MisColumn[] = [
+                    { key: 'net', label: 'Net', type: 'money', total: true },
+                    { key: 'service_charge', label: 'Service charge', type: 'money', total: true },
+                    { key: 'tax', label: 'Tax', type: 'money', total: true },
+                    { key: 'round_off', label: 'Round off', type: 'money', total: true },
+                    { key: 'grand_total', label: 'Gross', type: 'money', total: true },
+                ];
+                const totals: Record<string, number> = { net: 5835, service_charge: 10, tax: 292.26, round_off: -0.26, grand_total: 6137 };
+                store.set(columnPrefsKey('emp-1', 'sales_summary'), JSON.stringify({ hidden: ['round_off'] }));
+                const shown = visibleColumns(ladder, loadColumnPrefs('emp-1', 'sales_summary')?.hidden ?? []);
+                const rungs = shown.filter((c) => c.key !== 'grand_total').reduce((s, c) => s + (totals[c.key] ?? 0), 0);
+                expect(Math.round(rungs * 100) / 100).toBe(totals.grand_total);
+            });
+        });
+
+        it('runs ONCE: a rung hidden again on this build stays hidden', () => {
+            withStore(() => {
+                saveColumnPrefs('emp-1', 'sales_summary', { hidden: ['round_off'] });
+                expect(loadColumnPrefs('emp-1', 'sales_summary')).toEqual({ hidden: ['round_off'] });
+                expect(loadColumnPrefs('emp-1', 'sales_summary')).toEqual({ hidden: ['round_off'] });
+            });
+        });
+
+        it('leaves every other report, and a key that merely looks like a rung, alone', () => {
+            withStore((store) => {
+                store.set(columnPrefsKey('emp-1', 'discount'), JSON.stringify({ hidden: ['round_off', 'tax'] }));
+                expect(loadColumnPrefs('emp-1', 'discount')).toEqual({ hidden: ['round_off', 'tax'] });
+                // Tax was always ON on the Order Summary; a hidden tax there is a choice.
+                store.set(columnPrefsKey('emp-1', 'order_summary'), JSON.stringify({ hidden: ['tax'] }));
+                expect(loadColumnPrefs('emp-1', 'order_summary')).toEqual({ hidden: ['tax'] });
+                expect(RUNGS_NOW_ON_BY_DEFAULT).toEqual({
+                    sales_summary: ['round_off'],
+                    order_summary: ['service_charge'],
+                    counter_summary: ['service_charge', 'tax'],
+                });
+            });
+        });
+    });
+});
+
+// Item Wise, Group Summary and Variation Summary lost their always-equal Net
+// (net_amount) column in client item 1. The toast's money pick looked only for
+// grand_total / net_amount / amount, so their "N rows · ₹X" quietly became "N rows".
+describe('the export confirmation quotes the money', () => {
+    const itemWise: MisColumn[] = [
+        { key: 'item_name', label: 'Item', type: 'text' },
+        { key: 'qty', label: 'Qty', type: 'int', total: true },
+        { key: 'gross_amount', label: 'Item total', type: 'money', total: true },
+    ];
+
+    it('an Item Wise-shaped export (Item total, no Net) still carries its ₹ figure', () => {
+        const m = buildExportMatrix(itemWise, [{ item_name: 'Dal', qty: 3, gross_amount: 450 }], { qty: 3, gross_amount: 450 });
+        expect(exportMoneyColumnIndex(m.columns)).toBe(2);
+        expect(exportSummaryLine(m, '₹')).toBe(`1 rows · ${formatMoney(450, '₹')}`);
+    });
+
+    it('the bill-level reports keep their pick — gross_amount is only the fallback', () => {
+        const both: MisColumn[] = [
+            ...itemWise,
+            { key: 'grand_total', label: 'Gross', type: 'money', total: true },
+        ];
+        expect(exportMoneyColumnIndex(both)).toBe(3);
+        const settlement: MisColumn[] = [
+            { key: 'method', label: 'Method', type: 'text' },
+            { key: 'amount', label: 'Collected', type: 'money', total: true },
+            { key: 'net_amount', label: 'After refunds', type: 'money', total: true },
+        ];
+        expect(exportMoneyColumnIndex(settlement)).toBe(1);
+        expect(exportMoneyColumnIndex(COLUMNS)).toBe(5);
+    });
+
+    it('no money column, or no totals row, is just the row count', () => {
+        const m = buildExportMatrix([{ key: 'reason', label: 'Reason', type: 'text' }], [{ reason: 'x' }], null);
+        expect(exportSummaryLine(m, '₹')).toBe('1 rows');
+    });
+    // export.ts delegating to exportSummaryLine is pinned in gross-net.test.ts,
+    // beside the other source guards.
 });
 
 describe('the export is the screen', () => {
@@ -438,6 +564,57 @@ describe('the printable matrix', () => {
         // The totals row is the last line and carries its label.
         expect(display[display.length - 1]?.[0]).toBe('Total');
     });
+
+    // Cover Size Summary as the backend sends it: the first column is the party
+    // size, an INT the backend does not total. The PDF formatted the label as a
+    // number and printed "—" where the grid, the CSV and the sheet say "Total".
+    const COVER_SIZE: MisColumn[] = [
+        { key: 'party_size', label: 'Party size', type: 'int' },
+        { key: 'parties', label: 'Parties', type: 'int', total: true },
+        { key: 'bills', label: 'Bills', type: 'int', total: true },
+        { key: 'covers', label: 'Covers', type: 'int', total: true },
+        { key: 'net', label: 'Net', type: 'money', total: true },
+        { key: 'grand_total', label: 'Gross', type: 'money', total: true },
+        { key: 'spend_per_cover', label: 'Spend per cover (pre-tax)', type: 'money' },
+        { key: 'share_pct', label: '% of gross', type: 'percent' },
+    ];
+    const COVER_ROWS: MisRow[] = [
+        { party_size: 2, parties: 13, bills: 14, covers: 26, net: 36338.55, grand_total: 41971.04, spend_per_cover: 1397.64, share_pct: 84.29 },
+        { party_size: 3, parties: 2, bills: 3, covers: 6, net: 6774.36, grand_total: 7824.38, spend_per_cover: 1129.06, share_pct: 15.71 },
+    ];
+    const COVER_TOTALS = { parties: 15, bills: 17, covers: 32, net: 43112.91, grand_total: 49795.42, gross: 43112.91 };
+
+    it('prints the totals label, not "—", when the first column holds numbers (Cover Size Summary)', () => {
+        const m = buildExportMatrix(COVER_SIZE, COVER_ROWS, COVER_TOTALS, 'Total', FMT.timezone);
+        const display = formatMatrix(m, FMT);
+        const last = display.length - 1;
+        expect(display[last]?.[0]).toBe('Total');
+        // The totals beside it are still formatted as the grid formats them.
+        expect(display[last]?.[1]).toBe(formatCell(15, 'int', FMT));
+        expect(display[last]?.[5]).toBe(formatCell(49795.42, 'money', FMT));
+        expect(display[last]?.[6]).toBe('');
+        // The body's party sizes are still numbers, formatted as numbers.
+        expect(display[1]?.[0]).toBe(formatCell(2, 'int', FMT));
+    });
+
+    it('carries a paged label into a numeric first column the reader left after hiding the text ones', () => {
+        // Order Summary with Bill No. and Table hidden: Covers (an int, untotalled) leads.
+        const shown = visibleColumns(COLUMNS, ['bill_no', 'table_name']);
+        expect(shown[0]?.type).toBe('int');
+        const label = 'Total · all 2,431 rows in range';
+        const display = formatMatrix(buildExportMatrix(shown, ROWS, TOTALS, label), FMT);
+        expect(display[display.length - 1]?.[0]).toBe(label);
+    });
+
+    it('only the totals label is exempt: a totalled first column and a stray body string format as before', () => {
+        const cols: MisColumn[] = [{ key: 'bills', label: 'Bills', type: 'int', total: true }, { key: 'net', label: 'Net', type: 'money', total: true }];
+        const m = buildExportMatrix(cols, [{ bills: 'n/a', net: 10 }], { bills: 12345, net: 10 }, 'Total');
+        const display = formatMatrix(m, FMT);
+        // The first column is totalled, so the number wins the cell and is formatted.
+        expect(display[2]?.[0]).toBe(formatCell(12345, 'int', FMT));
+        // A non-number in a BODY int cell is still the honest gap.
+        expect(display[1]?.[0]).toBe('—');
+    });
 });
 
 describe('the totals row says what it is a total of', () => {
@@ -542,6 +719,7 @@ const VOID_KOT_COLUMNS: MisColumn[] = [
     { key: 'voided_at', label: 'Voided', type: 'datetime' },
     { key: 'order_id', label: 'KOT / Order', type: 'text' },
     { key: 'table_name', label: 'Table', type: 'text' },
+    { key: 'items_text', label: 'Items', type: 'text' },
     { key: 'order_type', label: 'Type', type: 'text' },
     { key: 'item_count', label: 'Lines', type: 'int', total: true },
     { key: 'qty', label: 'Qty', type: 'int', total: true },
@@ -558,6 +736,8 @@ const VOID_ROWS: MisRow[] = [
     {
         placed_at: '2026-08-14T12:30:00.000Z', voided_at: '2026-08-14T12:41:00.000Z',
         order_id: 'o-1', table_name: 'T1', order_type: 'Dine In',
+        items_text: 'Biryani (Half) x2; Raita x1',
+        items: [{ name: 'Biryani', variation: 'Half', quantity: 2, price: 270 }, { name: 'Raita', variation: null, quantity: 1, price: 100 }],
         item_count: 2, qty: 3, value: 640, voided_by: 'Asha',
         reason: 'Guest changed their mind', void_kind: 'guest_request', stage: 'before_print',
     },
@@ -652,5 +832,212 @@ describe('the Void KOT report renders the columns the SERVER sends', () => {
         const d = reportDef('void_kot');
         if (!d) {throw new Error('missing');}
         expect(drillTarget(VOID_ROWS[1] ?? {}, d)).toEqual({ kind: 'kot', id: 'o-2' });
+    });
+
+    // "Item names should show up properly in the void KOT reports in the Excel."
+    // The row always carried an `items` ARRAY, and an array is not a cell. The
+    // server now sends the names as one text column; these pin that it reaches
+    // the file as the plain string, and that the array never does.
+    it('exports the Items column as the plain string the server wrote, never [object Object]', () => {
+        const matrix = buildExportMatrix(visibleColumns(VOID_KOT_COLUMNS, []), VOID_ROWS, VOID_TOTALS, 'Total', 'Asia/Kolkata');
+        const at = matrix.header.indexOf('Items');
+        expect(at).toBe(matrix.header.indexOf('Table') + 1);
+        expect(matrix.body[0]?.[at]).toBe('Biryani (Half) x2; Raita x1');
+        // A row the server could name nothing on is a blank, not a guess.
+        expect(matrix.body[1]?.[at]).toBeNull();
+        const csv = toCsv(matrix);
+        expect(csv).toContain('Biryani (Half) x2; Raita x1');
+        expect(csv).not.toContain('[object Object]');
+        expect(matrix.totals?.[at]).toBeNull();
+    });
+});
+
+describe('an exported instant reads as the restaurant clock, year first', () => {
+    // CSV and Excel used to carry the server's UTC ISO text. A void rung at
+    // 18:00 in Kolkata read "2026-08-14T12:30:00.000Z" in the sheet. The grid's
+    // own "14/08/26 18:00" is no answer for a FILE: Excel on a month-first locale
+    // reads "01/09/26" as 9 January, and neither form sorts in date order.
+    const shown = visibleColumns(VOID_KOT_COLUMNS, []);
+
+    it('writes each datetime cell as the restaurant wall clock, year first, in CSV and Excel alike', () => {
+        const matrix = buildExportMatrix(shown, VOID_ROWS, VOID_TOTALS, 'Total', FMT.timezone);
+        const placed = matrix.header.indexOf('Placed');
+        const voided = matrix.header.indexOf('Voided');
+        expect(matrix.body[0]?.[placed]).toBe('2026-08-14 18:00');
+        expect(matrix.body[0]?.[voided]).toBe('2026-08-14 18:11');
+        const csv = toCsv(matrix);
+        expect(csv).toContain('2026-08-14 18:00,2026-08-14 18:11,');
+        expect(csv).not.toContain('2026-08-14T12:30:00.000Z');
+        // The grid's day-first form never reaches a file.
+        expect(csv).not.toContain('14/08/26');
+    });
+
+    it('sorts in date order even as plain text, across a month and a year', () => {
+        const cols: MisColumn[] = [{ key: 'at', label: 'Date & time', type: 'datetime' }];
+        const instants = ['2026-09-02T04:30:00.000Z', '2026-09-14T04:30:00.000Z', '2025-09-14T04:30:00.000Z', '2026-10-01T04:30:00.000Z'];
+        const cells = buildExportMatrix(cols, instants.map((at) => ({ at })), null, 'Total', FMT.timezone).body.map((r) => String(r[0]));
+        const byText = [...cells].sort();
+        const byInstant = [...instants].sort().map((at) => formatSheetDateTime(at, FMT.timezone));
+        expect(byText).toEqual(byInstant);
+    });
+
+    it('is generic by column type: any report, any datetime column, any zone', () => {
+        const cols: MisColumn[] = [{ key: 'at', label: 'Date & time', type: 'datetime' }, { key: 'note', label: 'Note', type: 'text' }];
+        const rows = [{ at: '2026-08-01T20:00:00.000Z', note: '2026-08-01T20:00:00.000Z' }];
+        const ny = buildExportMatrix(cols, rows, null, 'Total', 'America/New_York');
+        expect(ny.body[0]?.[0]).toBe('2026-08-01 16:00');
+        // Only the column TYPE decides. A text column holding ISO-looking text is
+        // somebody's words and stays exactly as written.
+        expect(ny.body[0]?.[1]).toBe('2026-08-01T20:00:00.000Z');
+    });
+
+    it('the web and the owner app write the same string for the same instant and zone', () => {
+        // THE SAME TABLE is pinned in the app's reports_module_test.dart
+        // (RestaurantTime.sheet). Change one and the other fails.
+        const PARITY: [string, string, string][] = [
+            ['2026-09-14T13:06:36.104Z', 'Asia/Kolkata', '2026-09-14 18:36'],
+            ['2026-09-14T18:30:00.000Z', 'Asia/Kolkata', '2026-09-15 00:00'],
+            ['2026-01-15T17:00:00.000Z', 'America/New_York', '2026-01-15 12:00'],
+            ['2026-07-15T17:00:00.000Z', 'America/New_York', '2026-07-15 13:00'],
+        ];
+        const cols: MisColumn[] = [{ key: 'at', label: 'At', type: 'datetime' }];
+        for (const [at, zone, want] of PARITY) {
+            expect(formatSheetDateTime(at, zone)).toBe(want);
+            expect(buildExportMatrix(cols, [{ at }], null, 'Total', zone).body[0]?.[0]).toBe(want);
+        }
+    });
+
+    it('the PDF shows the grid format, read back in the restaurant zone rather than the viewer zone', () => {
+        // 1 Feb 10:00 in Kolkata. Read back as a browser-zone date, or month-first,
+        // it would print a different day or a different hour.
+        const cols: MisColumn[] = [{ key: 'at', label: 'Date & time', type: 'datetime' }];
+        const matrix = buildExportMatrix(cols, [{ at: '2026-02-01T04:30:00.000Z' }], null, 'Total', FMT.timezone);
+        expect(matrix.body[0]?.[0]).toBe('2026-02-01 10:00');
+        expect(formatMatrix(matrix, FMT)[1]?.[0]).toBe('01/02/26 10:00');
+        // A zone far from any machine running this suite, either side of a DST change.
+        const opts = { timezone: 'America/New_York', currencySymbol: '$' };
+        for (const at of ['2026-01-15T17:00:00.000Z', '2026-07-15T17:00:00.000Z']) {
+            const m = buildExportMatrix(cols, [{ at }], null, 'Total', opts.timezone);
+            expect(formatMatrix(m, opts)[1]?.[0]).toBe(formatCell(at, 'datetime', opts));
+        }
+    });
+
+    it('keeps a malformed stamp visible rather than blanking it', () => {
+        const cols: MisColumn[] = [{ key: 'at', label: 'Date & time', type: 'datetime' }];
+        const matrix = buildExportMatrix(cols, [{ at: 'not-a-date' }, { at: null }], null, 'Total', FMT.timezone);
+        expect(matrix.body[0]?.[0]).toBe('not-a-date');
+        expect(matrix.body[1]?.[0]).toBeNull();
+        expect(formatMatrix(matrix, FMT)[1]?.[0]).toBe('not-a-date');
+    });
+
+    it('the Reports screen hands the grid zone to the export', () => {
+        // Built but never fed is this project's most repeated bug: the matrix only
+        // localises when the screen passes the zone it formats the grid in.
+        const page = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'dashboard', 'reports', 'page.tsx'), 'utf8');
+        expect(page).toMatch(/buildExportMatrix\(shownColumns, exportRows, totals, totalsLabelFor\(page, exportRows\.length\), formatOpts\.timezone\)/);
+        expect(page).toMatch(/const formatOpts = useMemo\(\(\) => \(\{ timezone, currencySymbol \}\)/);
+    });
+});
+
+describe('a spreadsheet column is as wide as its widest cell', () => {
+    // Excel lets text spill into the next cell only when that cell is empty, and
+    // the Void KOT Items column has a Type cell beside it on every row. A column
+    // narrower than its text shows the text cut off when the file opens.
+    const shown = visibleColumns(VOID_KOT_COLUMNS, []);
+    // A real ticket from the client's own day of voids (14 Sep), 115 characters.
+    const LONG = 'BOTTLE WATER x1; CRISP WRAPPED COTTAGE CHEESE x1; BAINGAN BHARTHA KULCHA x1; ENOKII TEMPURA x1; HOUSE FRIED RICE x1';
+
+    it('the Items column fits the longest ticket, which the old 42-character cap cut off', () => {
+        const rows = [{ ...VOID_ROWS[0], items_text: LONG }, ...VOID_ROWS.slice(1)];
+        const matrix = buildExportMatrix(shown, rows, VOID_TOTALS, 'Total', FMT.timezone);
+        const widths = sheetColumnWidths(matrix);
+        const at = matrix.header.indexOf('Items');
+        expect(LONG.length).toBeGreaterThan(42);
+        expect(widths[at]).toBeGreaterThanOrEqual(LONG.length);
+        expect(widths).toHaveLength(matrix.header.length);
+    });
+
+    it('a header, a totals label and a number count toward the width; nothing is under 10 or over 250', () => {
+        const cols: MisColumn[] = [
+            { key: 'a', label: 'A very long column heading', type: 'text' },
+            { key: 'n', label: 'N', type: 'int', total: true },
+            { key: 'x', label: 'X', type: 'text' },
+        ];
+        const matrix = buildExportMatrix(cols, [{ a: 'x', n: 1234567890123, x: 'y'.repeat(400) }], { n: 1 }, 'TOTAL (whole period, every outlet)');
+        expect(sheetColumnWidths(matrix)).toEqual([
+            'TOTAL (whole period, every outlet)'.length + 2,
+            '1234567890123'.length + 2,
+            250,
+        ]);
+        expect(sheetColumnWidths(buildExportMatrix([{ key: 'q', label: 'Q', type: 'int' }], [{ q: 1 }], null))).toEqual([10]);
+    });
+
+    it('the Excel writer uses it', () => {
+        // Built but never called is this project's most repeated bug.
+        const exporter = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'dashboard', 'reports', 'export.ts'), 'utf8');
+        expect(exporter).toMatch(/sheet\['!cols'\] = sheetColumnWidths\(ctx\.matrix\)\.map\(\(wch\) => \(\{ wch \}\)\);/);
+    });
+});
+
+describe('the Excel sheet tab carries a name Excel will open', () => {
+    // Excel refuses a name over 31 characters, carrying []:*?/\, or beginning or
+    // ending with an apostrophe. The pinned SheetJS (0.18.5) checks only the first
+    // two, so a name breaking the third is written and Excel calls the file corrupt.
+    // A session label is free text, so the slot's label is what can break it.
+
+    it('is the report title, with the slot label when there is one', () => {
+        expect(excelSheetName('Order Summary')).toBe('Order Summary');
+        expect(excelSheetName('Order Summary', null)).toBe('Order Summary');
+        expect(excelSheetName('Order Summary', 'Dinner')).toBe('Order Summary - Dinner');
+    });
+
+    it('drops an apostrophe that ends the label', () => {
+        expect(excelSheetName('Order Summary', "Chefs'")).toBe('Order Summary - Chefs');
+        expect(excelSheetName('Tip Summary', "Chefs' ")).toBe('Tip Summary - Chefs');
+    });
+
+    it('drops an apostrophe the 31-character cut lands at the end', () => {
+        const title = 'Cover Size Summary';
+        const label = "Late owls' bar";
+        // The precondition: cutting alone leaves the apostrophe last.
+        expect(`${title} - ${label}`.slice(0, 31).endsWith("'")).toBe(true);
+        expect(excelSheetName(title, label)).toBe('Cover Size Summary - Late owls');
+    });
+
+    it('never begins with an apostrophe either, and never comes out empty', () => {
+        expect(excelSheetName("'Quoted'")).toBe('Quoted');
+        expect(excelSheetName('[]:*?/\\')).toBe('Report');
+        expect(excelSheetName("''")).toBe('Report');
+    });
+
+    it('keeps the old rules: no refused characters, at most 31 characters', () => {
+        const name = excelSheetName('Service Charge Deny', 'Lunch [a/b]: *main*? \\x');
+        expect(name).not.toMatch(/[[\]:*?/\\]/);
+        expect(name.length).toBeLessThanOrEqual(SHEET_NAME_MAX);
+        expect(name).toBe('Service Charge Deny - Lunch ab');
+        for (const def of MIS_REPORTS) {
+            for (const label of [undefined, 'Lunch', "Chefs'", 'x'.repeat(24), "'".repeat(24)]) {
+                const n = excelSheetName(def.title, label);
+                expect(n.length).toBeGreaterThan(0);
+                expect(n.length).toBeLessThanOrEqual(SHEET_NAME_MAX);
+                expect(n).not.toMatch(/^'|'$/);
+            }
+        }
+    });
+
+    it('does not leave half of an emoji the cut split', () => {
+        // 'Group Summary - ' is 16 units; 14 letters put the emoji on units 30-31.
+        const name = excelSheetName('Group Summary', `${'a'.repeat(14)}🍳`);
+        expect(name).toBe(`Group Summary - ${'a'.repeat(14)}`);
+        expect(name).not.toMatch(/[\uD800-\uDBFF]$/);
+        // One that fits whole is kept whole.
+        expect(excelSheetName('Group Summary', 'Brunch 🍳')).toBe('Group Summary - Brunch 🍳');
+    });
+
+    it('the Excel writer names the sheet through it', () => {
+        // Built but never called is this project's most repeated bug.
+        const exporter = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'dashboard', 'reports', 'export.ts'), 'utf8');
+        expect(exporter).toContain('XLSX.utils.book_append_sheet(wb, sheet, excelSheetName(ctx.meta?.title ?? ctx.def.title, ctx.meta?.time_slot?.label));');
+        expect(exporter).not.toMatch(/\.slice\(0, 31\)/);
     });
 });

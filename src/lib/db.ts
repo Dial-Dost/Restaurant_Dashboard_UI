@@ -36,10 +36,12 @@ import type {
     MenuVariationRecord,
     NonChargeableRecord,
     OrderVoidRecord,
+    RemoveServiceChargeAndPrintResult,
     ServiceChargeWaiverRecord,
     TenderWire,
 } from '@/lib/mis-capture';
 import type { MisReportPayload } from '@/lib/mis-reports';
+import { misSlotParams, readTimeSlots, slotDraftsBody, type MisBucket, type ReportTimeSlots, type TimeSlotDraft } from '@/lib/report-time-slots';
 
 export interface User {
     id: string;
@@ -2392,10 +2394,16 @@ export const addMenuItem = async (restaurantId: string, item: MenuItem) => {
     return { acknowledged: true };
 };
 
-export const addOrder = async (restaurantId: string, order: Order) => {
+// `idempotencyKey` — one per logical send (the Add New Order dialog mints it per
+// draft). POST /orders honours it: the same key is never applied twice. Callers
+// that use this route as a status upsert pass none and are unchanged.
+export const addOrder = async (restaurantId: string, order: Order, opts?: { idempotencyKey?: string }) => {
     const response = await backendCall('/orders', restaurantId, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+            'Content-Type': 'application/json',
+            ...(opts?.idempotencyKey ? { 'Idempotency-Key': opts.idempotencyKey } : {}),
+        },
         body: JSON.stringify(order),
     });
 
@@ -4226,7 +4234,11 @@ export const getMetricExplainers = async (restaurantId: string): Promise<MetricE
 export interface SalesReport {
     from: string; to: string;
     total_sales: number; total_tax: number; total_refund: number; net_sales: number; bill_count: number;
-    by_day: { date: string; sales: number; tax: number; refund: number; bills: number }[];
+    // Gross is total_sales; Net is total_net (optional: absent from an older
+    // backend). net_sales is Gross less refunds — read all three through
+    // lib/gross-net.ts, which is where the words are decided.
+    total_net?: number; total_round_off?: number;
+    by_day: { date: string; sales: number; net?: number; tax: number; refund: number; bills: number }[];
     // `label` is the owner's name for the mode (display only; rows group by `method`).
     by_method: { method: string; label?: string; sales: number; bills: number }[];
 }
@@ -5638,7 +5650,12 @@ export interface MisQuery {
     limit?: number;
     offset?: number;
     /** The time-wise toggle. Only Sales Summary changes shape for it. */
-    bucket?: 'day' | 'hour';
+    bucket?: MisBucket;
+    /** A saved session's id (`lunch`). Every report honours it. */
+    slot?: string;
+    /** Custom `HH:mm` pair; wins over `slot`. `timeTo` may be `24:00`. */
+    timeFrom?: string;
+    timeTo?: string;
 }
 
 const misSearchParams = (restaurantId: string, q: MisQuery): string => {
@@ -5650,6 +5667,8 @@ const misSearchParams = (restaurantId: string, q: MisQuery): string => {
     if (typeof q.limit === 'number' && Number.isFinite(q.limit)) {qs.set('limit', String(Math.max(1, Math.round(q.limit))));}
     if (typeof q.offset === 'number' && Number.isFinite(q.offset)) {qs.set('offset', String(Math.max(0, Math.round(q.offset))));}
     if (q.bucket) {qs.set('bucket', q.bucket);}
+    // Nothing at all for all day, so an unsliced request is the URL it always was.
+    for (const [key, value] of misSlotParams(q)) {qs.set(key, value);}
     return qs.toString();
 };
 
@@ -5729,6 +5748,45 @@ export const getMisReport = async (
 ): Promise<MisReportPayload | null> => {
     if (!restaurantId || !path.startsWith('/reports/mis/')) {return null;}
     return misFetch<MisReportPayload>(`${path}?${misSearchParams(restaurantId, q)}`, restaurantId, q.outletId);
+};
+
+/**
+ * The restaurant's saved sessions (Lunch, Dinner, …) and whether this caller may
+ * change them. Null when the route does not answer — an older backend, or a plan
+ * without the accounting reports — and the screen then offers no session picker
+ * rather than a filter the server would ignore.
+ */
+export const getReportTimeSlots = async (restaurantId: string): Promise<ReportTimeSlots | null> => {
+    if (!restaurantId) {return null;}
+    const raw = await misFetch<unknown>(
+        `/reports/mis/time-slots?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+    );
+    return readTimeSlots(raw);
+};
+
+/**
+ * Replace the whole list (an empty list restores Lunch and Dinner). Gated on the
+ * settings permission server-side.
+ *
+ * RETURNS its failure rather than throwing it: Next redacts the message of an
+ * Error thrown out of a Server Action in production, and the server's 400
+ * sentence ("Lunch and Brunch overlap between 12:00 and 13:00") is the whole
+ * point of the editor showing an error at all.
+ */
+export const saveReportTimeSlots = async (
+    restaurantId: string,
+    drafts: TimeSlotDraft[],
+): Promise<{ ok: true; data: ReportTimeSlots } | { ok: false; error: string }> => {
+    const res = await backendCall(`/reports/mis/time-slots?restaurantId=${encodeURIComponent(restaurantId)}`, restaurantId, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(slotDraftsBody(drafts)),
+    });
+    if (!res) {return { ok: false, error: 'Could not reach the server — check the connection and try again.' };}
+    if (!res.ok) {return { ok: false, error: await readErrorMessage(res, 'Unable to save the sessions') };}
+    const data = readTimeSlots(await res.json().catch(() => null));
+    return data ? { ok: true, data } : { ok: false, error: 'The server saved the sessions but sent back a list this screen cannot read — reload to see them.' };
 };
 
 /**
@@ -6049,6 +6107,63 @@ export const reverseServiceChargeWaiver = async (
         { reason },
         'Unable to reverse that waiver',
     );
+
+/**
+ * "Remove service charge & print" — the waiver and the print in ONE request.
+ *
+ * POST /bills/service-charge-waiver/print with `render: "client"`: the server
+ * answers every refusal (C3's reprint rule, no charge to remove, no waive
+ * permission, a missing reason or authoriser) BEFORE it writes anything, records
+ * the waiver exactly as POST /bills/service-charge-waiver does, then CLAIMS the
+ * print the way POST /print/bill/claim does and hands back `printable_bill`
+ * priced after the waiver. A bill that already carries a waiver is only
+ * reprinted, so the live-waiver panel calls this with no kind and no reason.
+ *
+ * RETURNED, NOT THROWN, for the reason claimBillPrint gives: this module is "use
+ * server", Next redacts an Error's message across that boundary in a production
+ * build, and the refusal's sentence is what the person at the till needs —
+ * "'ravi' is not permitted to authorise a service-charge waiver" is actionable;
+ * a redacted error is not. The caller opened the print tab before calling, and
+ * closes it on `ok: false`.
+ *
+ * `ok: false` IS NOT "NOTHING HAPPENED". A 4xx is: the route refuses before it
+ * writes. No answer (`status: 0`) and a 5xx are not — a connection reset or a
+ * proxy's 504 can arrive after the waiver committed and the print was claimed —
+ * so the sentence for those says only what is known, and the dialog
+ * (serviceChargeRemovalTrouble) re-reads the bill before anybody tries again.
+ *
+ * No retry and no idempotency key, like every capture write here: the route can
+ * mint a bill number, and a repeated request for paper is a second copy.
+ */
+export const removeServiceChargeAndPrint = async (
+    restaurantId: string,
+    body: { table_name: string; waiver_kind?: string; reason?: string; authorised_by?: string },
+): Promise<{ ok: true; result: RemoveServiceChargeAndPrintResult } | { ok: false; status: number; message: string }> => {
+    const payload: Record<string, string> = { table_name: body.table_name.trim(), render: 'client' };
+    if (body.waiver_kind?.trim()) {payload.waiver_kind = body.waiver_kind.trim();}
+    if (body.reason?.trim()) {payload.reason = body.reason.trim();}
+    if (body.authorised_by?.trim()) {payload.authorised_by = body.authorised_by.trim();}
+    const response = await backendCall('/bills/service-charge-waiver/print', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+    if (!response) {
+        // Not "nothing was recorded": fetch throws for a reset AFTER the request
+        // was sent as readily as for a server that was never reached.
+        return { ok: false, status: 0, message: 'The server could not be reached, or its answer was lost on the way back.' };
+    }
+    if (!response.ok) {
+        return { ok: false, status: response.status, message: await captureErrorMessage(response, 'Unable to remove the service charge') };
+    }
+    try {
+        return { ok: true, result: (await response.json()) as RemoveServiceChargeAndPrintResult };
+    } catch {
+        // A 2xx with an unreadable body: the waiver may well have landed. Say
+        // what is known — the paper did not come from this answer.
+        return { ok: true, result: { success: true, waiver: null, waiver_created: false, grand_total_before: null, grand_total_after: null, service_charge_removed: false, printed: false, print_error: 'The answer from the server could not be read' } };
+    }
+};
 
 // --- 037: TENDERS AND TIPS ---------------------------------------------------
 

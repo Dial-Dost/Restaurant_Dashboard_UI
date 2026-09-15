@@ -33,7 +33,8 @@ minutes.
 
 ## The pipeline here
 
-`.github/workflows/deploy.yml`, `workflow_dispatch`-only for now:
+`.github/workflows/deploy.yml`, which runs on **every push to `main`** (and can
+still be dispatched by hand). Merging to `main` is deploying:
 
 1. **ci** — invokes `dashboard-ci.yml` unchanged via `workflow_call` (toolchain
    parity with the Dockerfile, lint, typecheck, `next build`, jest; Node 22). A
@@ -189,6 +190,40 @@ out-of-memory kill is realistic; and there is still no combined rollback.
 **Ship API contract changes expand/contract:** add the field in the backend and
 release it, then consume it here and release. Two deploys, decided by a person
 who understands the contract. Do not push both repos at once.
+
+### "Backend first" means backend LIVE, not backend pushed first
+
+Pushing the backend a few minutes before the dashboard does not put it on the
+box first. The two deploys are independent and the backend's is slower and
+more variable: recent CI + deploy runs took about 9–10 minutes for this repo
+and up to about 18 minutes for the backend. A dashboard merged shortly after
+the backend therefore routinely goes live FIRST. The exit-69 precondition does
+not catch that, because it only asks whether the backend that is running (the
+old one) is healthy.
+
+Release 2.0.0 is the concrete case. "Remove service charge & print" posts to
+`POST /bills/service-charge-waiver/print`, which an older backend does not
+have. The separate Waive and Reprint-without-charge controls are gone from the
+web, so while that route 404s a cashier cannot take the charge off at all:
+the dialog shows "Unable to remove the service charge" and nothing is recorded.
+
+So when a dashboard change calls a route or field the backend is adding, the
+backend's deploy is a **gate**:
+
+1. Merge the backend to `main` and wait for its **Deploy (production)** run
+   to finish **green**.
+2. Prove the box runs it: `sudo rd-deploy revision` (or `revision` through
+   the deploy key) must print the merged backend commit on the `Restaurant_Backend` line.
+3. Optional canary: call a route only the new backend has, **with a real
+   session** (a signed-in dashboard's bearer token). For 2.0.0 that is
+   `GET https://api.dialdost.com/reports/mis/time-slots`, which answers 200 or
+   403 JSON from the new code and 404 from the old. An **unauthenticated**
+   request gets 401 from both, because the auth gate runs before routing, so
+   it tells you nothing.
+4. Only then merge this repo.
+
+If the dashboard did go live first, wait for the backend deploy to finish;
+do not roll the dashboard back. In 2.0.0 the failing calls write nothing.
 
 Full discussion, including the optional server-side `flock`, is in
 `Restaurant_Backend/deploy/vps/README.md`, *Cross-repo ordering*.
