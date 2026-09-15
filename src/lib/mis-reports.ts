@@ -652,9 +652,18 @@ export const buildExportMatrix = (
 
 /** The same matrix, every cell rendered as the reader sees it — for PDF. */
 export const formatMatrix = (matrix: ExportMatrix, opts: FormatOptions): string[][] => {
-    const render = (row: ExportCell[]): string[] =>
+    const render = (row: ExportCell[], isTotals: boolean): string[] =>
         row.map((cell, i) => {
             if (cell === null) {return '';}
+            // THE TOTALS LABEL IS WORDS, WHATEVER TYPE OF COLUMN IT SITS IN.
+            // buildExportMatrix puts it in the first cell, and on Cover Size
+            // Summary (party size, an int), or any report whose leading text
+            // column is hidden, that column is numeric: formatted as a number,
+            // "Total" printed as "—" on the PDF while the grid, the CSV and the
+            // sheet all said "Total". A string there is the label, because a
+            // total is a number (rawCell keeps only a non-numeric one as text,
+            // which the CSV and the sheet also write as it came).
+            if (isTotals && i === 0 && typeof cell === 'string') {return cell;}
             // Every row is built column-by-column from `matrix.columns`, so a
             // missing descriptor cannot happen; if it ever did, showing the raw
             // value beats throwing away the reader's document.
@@ -670,8 +679,8 @@ export const formatMatrix = (matrix: ExportMatrix, opts: FormatOptions): string[
             }
             return col ? formatCell(cell, col.type, opts) : String(cell);
         });
-    const out = matrix.body.map(render);
-    if (matrix.totals) {out.push(render(matrix.totals));}
+    const out = matrix.body.map((row) => render(row, false));
+    if (matrix.totals) {out.push(render(matrix.totals, true));}
     return [matrix.header, ...out];
 };
 

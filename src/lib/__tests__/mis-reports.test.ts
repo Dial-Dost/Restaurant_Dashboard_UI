@@ -562,6 +562,57 @@ describe('the printable matrix', () => {
         // The totals row is the last line and carries its label.
         expect(display[display.length - 1]?.[0]).toBe('Total');
     });
+
+    // Cover Size Summary as the backend sends it: the first column is the party
+    // size, an INT the backend does not total. The PDF formatted the label as a
+    // number and printed "—" where the grid, the CSV and the sheet say "Total".
+    const COVER_SIZE: MisColumn[] = [
+        { key: 'party_size', label: 'Party size', type: 'int' },
+        { key: 'parties', label: 'Parties', type: 'int', total: true },
+        { key: 'bills', label: 'Bills', type: 'int', total: true },
+        { key: 'covers', label: 'Covers', type: 'int', total: true },
+        { key: 'net', label: 'Net', type: 'money', total: true },
+        { key: 'grand_total', label: 'Gross', type: 'money', total: true },
+        { key: 'spend_per_cover', label: 'Spend per cover (pre-tax)', type: 'money' },
+        { key: 'share_pct', label: '% of gross', type: 'percent' },
+    ];
+    const COVER_ROWS: MisRow[] = [
+        { party_size: 2, parties: 13, bills: 14, covers: 26, net: 36338.55, grand_total: 41971.04, spend_per_cover: 1397.64, share_pct: 84.29 },
+        { party_size: 3, parties: 2, bills: 3, covers: 6, net: 6774.36, grand_total: 7824.38, spend_per_cover: 1129.06, share_pct: 15.71 },
+    ];
+    const COVER_TOTALS = { parties: 15, bills: 17, covers: 32, net: 43112.91, grand_total: 49795.42, gross: 43112.91 };
+
+    it('prints the totals label, not "—", when the first column holds numbers (Cover Size Summary)', () => {
+        const m = buildExportMatrix(COVER_SIZE, COVER_ROWS, COVER_TOTALS, 'Total', FMT.timezone);
+        const display = formatMatrix(m, FMT);
+        const last = display.length - 1;
+        expect(display[last]?.[0]).toBe('Total');
+        // The totals beside it are still formatted as the grid formats them.
+        expect(display[last]?.[1]).toBe(formatCell(15, 'int', FMT));
+        expect(display[last]?.[5]).toBe(formatCell(49795.42, 'money', FMT));
+        expect(display[last]?.[6]).toBe('');
+        // The body's party sizes are still numbers, formatted as numbers.
+        expect(display[1]?.[0]).toBe(formatCell(2, 'int', FMT));
+    });
+
+    it('carries a paged label into a numeric first column the reader left after hiding the text ones', () => {
+        // Order Summary with Bill No. and Table hidden: Covers (an int, untotalled) leads.
+        const shown = visibleColumns(COLUMNS, ['bill_no', 'table_name']);
+        expect(shown[0]?.type).toBe('int');
+        const label = 'Total · all 2,431 rows in range';
+        const display = formatMatrix(buildExportMatrix(shown, ROWS, TOTALS, label), FMT);
+        expect(display[display.length - 1]?.[0]).toBe(label);
+    });
+
+    it('only the totals label is exempt: a totalled first column and a stray body string format as before', () => {
+        const cols: MisColumn[] = [{ key: 'bills', label: 'Bills', type: 'int', total: true }, { key: 'net', label: 'Net', type: 'money', total: true }];
+        const m = buildExportMatrix(cols, [{ bills: 'n/a', net: 10 }], { bills: 12345, net: 10 }, 'Total');
+        const display = formatMatrix(m, FMT);
+        // The first column is totalled, so the number wins the cell and is formatted.
+        expect(display[2]?.[0]).toBe(formatCell(12345, 'int', FMT));
+        // A non-number in a BODY int cell is still the honest gap.
+        expect(display[1]?.[0]).toBe('—');
+    });
 });
 
 describe('the totals row says what it is a total of', () => {
