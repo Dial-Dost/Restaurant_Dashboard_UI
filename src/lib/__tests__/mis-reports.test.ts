@@ -36,6 +36,7 @@ import {
     reportDef,
     rowsOf,
     saveColumnPrefs,
+    sheetColumnWidths,
     sortRows,
     toCsv,
     totalsLabelFor,
@@ -45,6 +46,7 @@ import {
     type MisReportMeta,
     type MisRow,
 } from '../mis-reports';
+import { formatSheetDateTime } from '../tz';
 
 const FMT = { timezone: 'Asia/Kolkata', currencySymbol: '₹' };
 
@@ -678,39 +680,74 @@ describe('the Void KOT report renders the columns the SERVER sends', () => {
     });
 });
 
-describe('an exported instant reads as the restaurant clock the grid shows', () => {
+describe('an exported instant reads as the restaurant clock, year first', () => {
     // CSV and Excel used to carry the server's UTC ISO text. A void rung at
-    // 18:00 in Kolkata read "2026-08-14T12:30:00.000Z" in the sheet.
+    // 18:00 in Kolkata read "2026-08-14T12:30:00.000Z" in the sheet. The grid's
+    // own "14/08/26 18:00" is no answer for a FILE: Excel on a month-first locale
+    // reads "01/09/26" as 9 January, and neither form sorts in date order.
     const shown = visibleColumns(VOID_KOT_COLUMNS, []);
 
-    it('writes each datetime cell exactly as the grid formats it', () => {
+    it('writes each datetime cell as the restaurant wall clock, year first, in CSV and Excel alike', () => {
         const matrix = buildExportMatrix(shown, VOID_ROWS, VOID_TOTALS, 'Total', FMT.timezone);
         const placed = matrix.header.indexOf('Placed');
         const voided = matrix.header.indexOf('Voided');
-        expect(matrix.body[0]?.[placed]).toBe(formatCell(VOID_ROWS[0]?.placed_at, 'datetime', FMT));
-        expect(matrix.body[0]?.[placed]).toBe('14/08/26 18:00');
-        expect(matrix.body[0]?.[voided]).toBe('14/08/26 18:11');
+        expect(matrix.body[0]?.[placed]).toBe('2026-08-14 18:00');
+        expect(matrix.body[0]?.[voided]).toBe('2026-08-14 18:11');
         const csv = toCsv(matrix);
-        expect(csv).toContain('14/08/26 18:00');
+        expect(csv).toContain('2026-08-14 18:00,2026-08-14 18:11,');
         expect(csv).not.toContain('2026-08-14T12:30:00.000Z');
+        // The grid's day-first form never reaches a file.
+        expect(csv).not.toContain('14/08/26');
+    });
+
+    it('sorts in date order even as plain text, across a month and a year', () => {
+        const cols: MisColumn[] = [{ key: 'at', label: 'Date & time', type: 'datetime' }];
+        const instants = ['2026-09-02T04:30:00.000Z', '2026-09-14T04:30:00.000Z', '2025-09-14T04:30:00.000Z', '2026-10-01T04:30:00.000Z'];
+        const cells = buildExportMatrix(cols, instants.map((at) => ({ at })), null, 'Total', FMT.timezone).body.map((r) => String(r[0]));
+        const byText = [...cells].sort();
+        const byInstant = [...instants].sort().map((at) => formatSheetDateTime(at, FMT.timezone));
+        expect(byText).toEqual(byInstant);
     });
 
     it('is generic by column type: any report, any datetime column, any zone', () => {
         const cols: MisColumn[] = [{ key: 'at', label: 'Date & time', type: 'datetime' }, { key: 'note', label: 'Note', type: 'text' }];
         const rows = [{ at: '2026-08-01T20:00:00.000Z', note: '2026-08-01T20:00:00.000Z' }];
         const ny = buildExportMatrix(cols, rows, null, 'Total', 'America/New_York');
-        expect(ny.body[0]?.[0]).toBe('01/08/26 16:00');
+        expect(ny.body[0]?.[0]).toBe('2026-08-01 16:00');
         // Only the column TYPE decides. A text column holding ISO-looking text is
         // somebody's words and stays exactly as written.
         expect(ny.body[0]?.[1]).toBe('2026-08-01T20:00:00.000Z');
     });
 
-    it('the PDF does not read a localised stamp back as a date, which would swap day and month', () => {
-        // 1 Feb 10:00 in Kolkata. Re-parsing "01/02/26 10:00" would give 2 January.
+    it('the web and the owner app write the same string for the same instant and zone', () => {
+        // THE SAME TABLE is pinned in the app's reports_module_test.dart
+        // (RestaurantTime.sheet). Change one and the other fails.
+        const PARITY: [string, string, string][] = [
+            ['2026-09-14T13:06:36.104Z', 'Asia/Kolkata', '2026-09-14 18:36'],
+            ['2026-09-14T18:30:00.000Z', 'Asia/Kolkata', '2026-09-15 00:00'],
+            ['2026-01-15T17:00:00.000Z', 'America/New_York', '2026-01-15 12:00'],
+            ['2026-07-15T17:00:00.000Z', 'America/New_York', '2026-07-15 13:00'],
+        ];
+        const cols: MisColumn[] = [{ key: 'at', label: 'At', type: 'datetime' }];
+        for (const [at, zone, want] of PARITY) {
+            expect(formatSheetDateTime(at, zone)).toBe(want);
+            expect(buildExportMatrix(cols, [{ at }], null, 'Total', zone).body[0]?.[0]).toBe(want);
+        }
+    });
+
+    it('the PDF shows the grid format, read back in the restaurant zone rather than the viewer zone', () => {
+        // 1 Feb 10:00 in Kolkata. Read back as a browser-zone date, or month-first,
+        // it would print a different day or a different hour.
         const cols: MisColumn[] = [{ key: 'at', label: 'Date & time', type: 'datetime' }];
         const matrix = buildExportMatrix(cols, [{ at: '2026-02-01T04:30:00.000Z' }], null, 'Total', FMT.timezone);
-        expect(matrix.body[0]?.[0]).toBe('01/02/26 10:00');
+        expect(matrix.body[0]?.[0]).toBe('2026-02-01 10:00');
         expect(formatMatrix(matrix, FMT)[1]?.[0]).toBe('01/02/26 10:00');
+        // A zone far from any machine running this suite, either side of a DST change.
+        const opts = { timezone: 'America/New_York', currencySymbol: '$' };
+        for (const at of ['2026-01-15T17:00:00.000Z', '2026-07-15T17:00:00.000Z']) {
+            const m = buildExportMatrix(cols, [{ at }], null, 'Total', opts.timezone);
+            expect(formatMatrix(m, opts)[1]?.[0]).toBe(formatCell(at, 'datetime', opts));
+        }
     });
 
     it('keeps a malformed stamp visible rather than blanking it', () => {
@@ -718,15 +755,54 @@ describe('an exported instant reads as the restaurant clock the grid shows', () 
         const matrix = buildExportMatrix(cols, [{ at: 'not-a-date' }, { at: null }], null, 'Total', FMT.timezone);
         expect(matrix.body[0]?.[0]).toBe('not-a-date');
         expect(matrix.body[1]?.[0]).toBeNull();
+        expect(formatMatrix(matrix, FMT)[1]?.[0]).toBe('not-a-date');
     });
 
     it('the Reports screen hands the grid zone to the export', () => {
         // Built but never fed is this project's most repeated bug: the matrix only
         // localises when the screen passes the zone it formats the grid in.
-        // A fixed path to this repo's own source file, not user input.
-        // eslint-disable-next-line security/detect-non-literal-fs-filename
         const page = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'dashboard', 'reports', 'page.tsx'), 'utf8');
         expect(page).toMatch(/buildExportMatrix\(shownColumns, exportRows, totals, totalsLabelFor\(page, exportRows\.length\), formatOpts\.timezone\)/);
         expect(page).toMatch(/const formatOpts = useMemo\(\(\) => \(\{ timezone, currencySymbol \}\)/);
+    });
+});
+
+describe('a spreadsheet column is as wide as its widest cell', () => {
+    // Excel lets text spill into the next cell only when that cell is empty, and
+    // the Void KOT Items column has a Type cell beside it on every row. A column
+    // narrower than its text shows the text cut off when the file opens.
+    const shown = visibleColumns(VOID_KOT_COLUMNS, []);
+    // A real ticket from the client's own day of voids (14 Sep), 115 characters.
+    const LONG = 'BOTTLE WATER x1; CRISP WRAPPED COTTAGE CHEESE x1; BAINGAN BHARTHA KULCHA x1; ENOKII TEMPURA x1; HOUSE FRIED RICE x1';
+
+    it('the Items column fits the longest ticket, which the old 42-character cap cut off', () => {
+        const rows = [{ ...VOID_ROWS[0], items_text: LONG }, ...VOID_ROWS.slice(1)];
+        const matrix = buildExportMatrix(shown, rows, VOID_TOTALS, 'Total', FMT.timezone);
+        const widths = sheetColumnWidths(matrix);
+        const at = matrix.header.indexOf('Items');
+        expect(LONG.length).toBeGreaterThan(42);
+        expect(widths[at]).toBeGreaterThanOrEqual(LONG.length);
+        expect(widths).toHaveLength(matrix.header.length);
+    });
+
+    it('a header, a totals label and a number count toward the width; nothing is under 10 or over 250', () => {
+        const cols: MisColumn[] = [
+            { key: 'a', label: 'A very long column heading', type: 'text' },
+            { key: 'n', label: 'N', type: 'int', total: true },
+            { key: 'x', label: 'X', type: 'text' },
+        ];
+        const matrix = buildExportMatrix(cols, [{ a: 'x', n: 1234567890123, x: 'y'.repeat(400) }], { n: 1 }, 'TOTAL (whole period, every outlet)');
+        expect(sheetColumnWidths(matrix)).toEqual([
+            'TOTAL (whole period, every outlet)'.length + 2,
+            '1234567890123'.length + 2,
+            250,
+        ]);
+        expect(sheetColumnWidths(buildExportMatrix([{ key: 'q', label: 'Q', type: 'int' }], [{ q: 1 }], null))).toEqual([10]);
+    });
+
+    it('the Excel writer uses it', () => {
+        // Built but never called is this project's most repeated bug.
+        const exporter = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'dashboard', 'reports', 'export.ts'), 'utf8');
+        expect(exporter).toMatch(/sheet\['!cols'\] = sheetColumnWidths\(ctx\.matrix\)\.map\(\(wch\) => \(\{ wch \}\)\);/);
     });
 });

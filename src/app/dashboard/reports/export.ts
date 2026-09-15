@@ -26,6 +26,7 @@
 import {
     exportBaseName,
     formatMoney,
+    sheetColumnWidths,
     toCsv,
     type ExportMatrix,
     type FormatOptions,
@@ -123,11 +124,9 @@ export const exportExcel = async (ctx: ExportContext): Promise<void> => {
 
     const sheet = XLSX.utils.aoa_to_sheet(aoa);
     // Give every column a width from its widest cell so the sheet opens readable
-    // instead of as a wall of ####.
-    sheet['!cols'] = ctx.matrix.header.map((h, i) => {
-        const widest = aoa.reduce((w, row) => Math.max(w, String(row[i] ?? '').length), h.length);
-        return { wch: Math.min(Math.max(widest + 2, 10), 42) };
-    });
+    // instead of as a wall of #### or a dish list cut off by the next column.
+    // sheetColumnWidths says why there is no smaller cap.
+    sheet['!cols'] = sheetColumnWidths(ctx.matrix).map((wch) => ({ wch }));
     // Freeze the header row: on a 500-row settlement report, scrolling past the
     // headings is the difference between reading a column and guessing at it.
     sheet['!freeze'] = { xSplit: '0', ySplit: '1', topLeftCell: 'A2', activePane: 'bottomLeft', state: 'frozen' };
