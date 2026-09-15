@@ -309,7 +309,7 @@ function ReportsInner() {
         setExporting(format)
         try {
             const exportRows = await collectRows()
-            const matrix = buildExportMatrix(shownColumns, exportRows, totals, totalsLabelFor(page, exportRows.length))
+            const matrix = buildExportMatrix(shownColumns, exportRows, totals, totalsLabelFor(page, exportRows.length), formatOpts.timezone)
             const ctx: ExportContext = {
                 matrix, meta, def, format: formatOpts, search,
                 sortLabel, wholeRange: !def.paged || exportRows.length >= (page?.total ?? exportRows.length),

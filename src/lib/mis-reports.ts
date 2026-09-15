@@ -25,7 +25,7 @@
 // build error that tsc and jest both wave through while every page 500s at
 // runtime. `src/lib/table-assignment.ts` set that precedent; this follows it.
 
-import { formatDate, formatDateTime } from './tz';
+import { formatDate, formatDateTime, formatSheetDateTime, wallClockToUtcInZone } from './tz';
 
 // --- The wire shapes ---------------------------------------------------------
 // Mirrors of the backend's `MisColumn` / `MisReportMeta` / `MisPage` and the
@@ -573,9 +573,15 @@ export interface ExportMatrix {
     totals: ExportCell[] | null;
     /** The column descriptors backing each position, for display formatting. */
     columns: MisColumn[];
+    /**
+     * The restaurant zone every `datetime` cell in `body` was already written in
+     * (as formatSheetDateTime's `2026-09-14 18:36`), or null when those cells are
+     * still the server's raw instants.
+     */
+    timezone: string | null;
 }
 
-const rawCell = (value: unknown, type: MisColumnType): ExportCell => {
+const rawCell = (value: unknown, type: MisColumnType, timezone: string | null): ExportCell => {
     if (value === null || value === undefined || value === '') {return null;}
     if (isNumericType(type)) {
         const n = Number(value);
@@ -584,6 +590,14 @@ const rawCell = (value: unknown, type: MisColumnType): ExportCell => {
         // accountant tries to do with it.
         return Number.isNaN(n) ? String(value) : n;
     }
+    // AN INSTANT IS WRITTEN AS THE RESTAURANT'S WALL CLOCK, YEAR FIRST. The
+    // server sends UTC ISO text, and a sheet that carries it verbatim puts a
+    // 18:36 void at "2026-09-14T13:06:36.104Z", which reads as 1 pm to anyone
+    // who opens it. Not the grid's "14/09/26 18:36" either: see
+    // formatSheetDateTime for why a file needs "2026-09-14 18:36". A value that
+    // is not an instant is kept as it came rather than blanked, so a malformed
+    // stamp is still visible in the file.
+    if (type === 'datetime' && timezone) {return formatSheetDateTime(String(value), timezone, String(value));}
     return String(value);
 };
 
@@ -595,30 +609,37 @@ const rawCell = (value: unknown, type: MisColumnType): ExportCell => {
  * says so — an export whose rows do not add up to its own total, with nothing
  * explaining why, is exactly the document that destroys confidence in the other
  * eight.
+ *
+ * `timezone` is the zone the grid formats in. With it, every `datetime` cell is
+ * written as that zone's wall clock, `2026-09-14 18:36`, the same string the
+ * owner app writes, and the PDF shows the grid's own `14/09/26 18:36`. Without
+ * it those cells stay raw instants.
  */
 export const buildExportMatrix = (
     columns: readonly MisColumn[],
     rows: readonly MisRow[],
     totals: Record<string, unknown> | null | undefined,
     totalsLabel = 'Total',
+    timezone?: string,
 ): ExportMatrix => {
     const cols = [...columns];
+    const zone = timezone ?? null;
     const header = cols.map((c) => c.label);
-    const body = rows.map((row) => cols.map((c) => rawCell(row[c.key], c.type)));
+    const body = rows.map((row) => cols.map((c) => rawCell(row[c.key], c.type, zone)));
 
     let totalsRow: ExportCell[] | null = null;
     if (totals) {
         const anyTotalled = cols.some((c) => c.total && totals[c.key] !== undefined);
         if (anyTotalled) {
             totalsRow = cols.map((c, i) => {
-                if (c.total && totals[c.key] !== undefined) {return rawCell(totals[c.key], c.type);}
+                if (c.total && totals[c.key] !== undefined) {return rawCell(totals[c.key], c.type, zone);}
                 // The label rides in the first column, which is always the
                 // report's identifying column (item, bill no., period, outlet).
                 return i === 0 ? totalsLabel : null;
             });
         }
     }
-    return { header, body, totals: totalsRow, columns: cols };
+    return { header, body, totals: totalsRow, columns: cols, timezone: zone };
 };
 
 /** The same matrix, every cell rendered as the reader sees it — for PDF. */
@@ -630,6 +651,15 @@ export const formatMatrix = (matrix: ExportMatrix, opts: FormatOptions): string[
             // missing descriptor cannot happen; if it ever did, showing the raw
             // value beats throwing away the reader's document.
             const col = matrix.columns[i] as MisColumn | undefined;
+            // Already the restaurant's wall clock, written for a sheet. The PDF
+            // shows the grid's format, so the wall clock is read back IN THE
+            // RESTAURANT ZONE and formatted the way the grid formats it. Handing
+            // the text to `new Date` instead would read it in the viewer's
+            // browser zone. A stamp that was kept as it came stays as it came.
+            if (col?.type === 'datetime' && matrix.timezone) {
+                const at = wallClockToUtcInZone(String(cell), matrix.timezone);
+                return at ? formatDateTime(at, matrix.timezone) : String(cell);
+            }
             return col ? formatCell(cell, col.type, opts) : String(cell);
         });
     const out = matrix.body.map(render);
@@ -694,6 +724,34 @@ export const toCsv = (matrix: ExportMatrix): string => {
     for (const row of matrix.body) {lines.push(row.map((c) => csvEscape(c)).join(','));}
     if (matrix.totals) {lines.push(matrix.totals.map((c) => csvEscape(c)).join(','));}
     return `﻿${lines.join('\r\n')}\r\n`;
+};
+
+/**
+ * THE WIDTH OF EACH SPREADSHEET COLUMN, in characters: its widest cell plus two,
+ * never under 10.
+ *
+ * WHY THERE IS NO SMALLER CAP. Excel lets text spill into the next cell only when
+ * that cell is empty, and every report has a filled column to the right of its
+ * text. The Void KOT Items cell ("HARA DHANIYA PULAO x1; SUBZ TEHRI x1; …") sat
+ * in a column capped at 42 beside a Type cell that is never blank, so a ticket
+ * with three dishes opened cut off mid-name. The dashboard's spreadsheet library
+ * (the SheetJS community build) cannot write wrap-text, so the only way a long
+ * cell reads whole when the file opens is a column as wide as it. The ceiling is
+ * Excel's own: it refuses a column wider than 255 characters, and 250 leaves
+ * room for the padding the writer adds on top.
+ *
+ * The owner app sizes its sheet by the same rule (misSheetColumnWidths), so a
+ * file from either client opens the same.
+ */
+export const SHEET_MIN_WIDTH = 10;
+export const SHEET_MAX_WIDTH = 250;
+
+export const sheetColumnWidths = (matrix: ExportMatrix): number[] => {
+    const rows: readonly (readonly ExportCell[])[] = [matrix.header, ...matrix.body, ...(matrix.totals ? [matrix.totals] : [])];
+    return matrix.header.map((_, i) => {
+        const widest = rows.reduce((w, row) => Math.max(w, String(row[i] ?? '').length), 0);
+        return Math.min(Math.max(widest + 2, SHEET_MIN_WIDTH), SHEET_MAX_WIDTH);
+    });
 };
 
 /** `order-summary_gaia-test_2026-08-01_to_2026-08-31` — no extension. */
