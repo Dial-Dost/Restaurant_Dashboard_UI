@@ -4226,7 +4226,11 @@ export const getMetricExplainers = async (restaurantId: string): Promise<MetricE
 export interface SalesReport {
     from: string; to: string;
     total_sales: number; total_tax: number; total_refund: number; net_sales: number; bill_count: number;
-    by_day: { date: string; sales: number; tax: number; refund: number; bills: number }[];
+    // Gross is total_sales; Net is total_net (optional: absent from an older
+    // backend). net_sales is Gross less refunds — read all three through
+    // lib/gross-net.ts, which is where the words are decided.
+    total_net?: number; total_round_off?: number;
+    by_day: { date: string; sales: number; net?: number; tax: number; refund: number; bills: number }[];
     // `label` is the owner's name for the mode (display only; rows group by `method`).
     by_method: { method: string; label?: string; sales: number; bills: number }[];
 }

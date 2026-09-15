@@ -28,6 +28,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Separator } from "@/components/ui/separator"
 import { formatRoundOff, roundOffOf } from "@/lib/bill-round-off"
 import { getMisBillDetail, getMisKotDetail, type ClosedBillDetail, type MisOrderDetail } from "@/lib/db"
+import { ITEM_TOTAL } from "@/lib/gross-net"
 import { formatMoney } from "@/lib/mis-reports"
 import { formatFullDateTime } from "@/lib/tz"
 
@@ -175,9 +176,11 @@ export function DrillDownDialog({ request, onClose, restaurantId, outletId, time
 
                         {/* The ladder, in the same order and with the same names the
                             reports use. Two screens naming the same figure two
-                            different things is how an owner stops trusting both. */}
+                            different things is how an owner stops trusting both —
+                            which is why the top rung is "Item total", not "gross":
+                            Gross is the bill's grand total, at the bottom. */}
                         <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm">
-                            <Line label="Items subtotal (gross)" value={money(bill.items_subtotal)} />
+                            <Line label={ITEM_TOTAL} value={money(bill.items_subtotal)} />
                             {bill.discount_amount ? (
                                 <Line
                                     label={`Discount${bill.discount_type === "percent" ? ` (${String(bill.discount_value)}%)` : ""}${bill.coupon_code ? ` · ${bill.coupon_code}` : ""}`}

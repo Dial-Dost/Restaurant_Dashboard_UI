@@ -4,7 +4,7 @@
 // WHAT THIS MODULE IS NOT
 // -----------------------
 // It does not do money. Not one figure on any of the fifteen reports is computed
-// here: Gross → Discount → Net → Tax → Service Charge → Round Off → Grand Total
+// here: Item total → Discount → Net → Service Charge → Tax → Round Off → Gross
 // is pinned ONCE, server-side, in the backend's `mis_report_math.ts`, and every
 // number this file touches has already been through it. The client's job is to
 // show those numbers and to hand back exactly what it showed — nothing else.
@@ -213,7 +213,7 @@ export const MIS_REPORTS: readonly MisReportDef[] = [
     {
         key: 'sales_summary', title: 'Sales Summary', path: '/reports/mis/sales-summary',
         rowsKey: 'series', paged: false, timeWise: true, drill: 'none', clock: 'settlement',
-        blurb: 'The whole ladder — gross to grand total — with bills, covers and ABV.',
+        blurb: 'The whole ladder — item total to Net to Gross — with bills, covers and ABV.',
     },
     {
         key: 'order_summary', title: 'Order Summary', path: '/reports/mis/order-summary',
