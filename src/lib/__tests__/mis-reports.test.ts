@@ -13,6 +13,9 @@
 // Everything below is pure: fixed rows in, strings out. No DOM, no fetch, no
 // clock — the storage helpers are exercised against a stubbed localStorage.
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+
 import {
     MIS_REPORTS,
     buildExportMatrix,
@@ -542,6 +545,7 @@ const VOID_KOT_COLUMNS: MisColumn[] = [
     { key: 'voided_at', label: 'Voided', type: 'datetime' },
     { key: 'order_id', label: 'KOT / Order', type: 'text' },
     { key: 'table_name', label: 'Table', type: 'text' },
+    { key: 'items_text', label: 'Items', type: 'text' },
     { key: 'order_type', label: 'Type', type: 'text' },
     { key: 'item_count', label: 'Lines', type: 'int', total: true },
     { key: 'qty', label: 'Qty', type: 'int', total: true },
@@ -558,6 +562,8 @@ const VOID_ROWS: MisRow[] = [
     {
         placed_at: '2026-08-14T12:30:00.000Z', voided_at: '2026-08-14T12:41:00.000Z',
         order_id: 'o-1', table_name: 'T1', order_type: 'Dine In',
+        items_text: 'Biryani (Half) x2; Raita x1',
+        items: [{ name: 'Biryani', variation: 'Half', quantity: 2, price: 270 }, { name: 'Raita', variation: null, quantity: 1, price: 100 }],
         item_count: 2, qty: 3, value: 640, voided_by: 'Asha',
         reason: 'Guest changed their mind', void_kind: 'guest_request', stage: 'before_print',
     },
@@ -652,5 +658,75 @@ describe('the Void KOT report renders the columns the SERVER sends', () => {
         const d = reportDef('void_kot');
         if (!d) {throw new Error('missing');}
         expect(drillTarget(VOID_ROWS[1] ?? {}, d)).toEqual({ kind: 'kot', id: 'o-2' });
+    });
+
+    // "Item names should show up properly in the void KOT reports in the Excel."
+    // The row always carried an `items` ARRAY, and an array is not a cell. The
+    // server now sends the names as one text column; these pin that it reaches
+    // the file as the plain string, and that the array never does.
+    it('exports the Items column as the plain string the server wrote, never [object Object]', () => {
+        const matrix = buildExportMatrix(visibleColumns(VOID_KOT_COLUMNS, []), VOID_ROWS, VOID_TOTALS, 'Total', 'Asia/Kolkata');
+        const at = matrix.header.indexOf('Items');
+        expect(at).toBe(matrix.header.indexOf('Table') + 1);
+        expect(matrix.body[0]?.[at]).toBe('Biryani (Half) x2; Raita x1');
+        // A row the server could name nothing on is a blank, not a guess.
+        expect(matrix.body[1]?.[at]).toBeNull();
+        const csv = toCsv(matrix);
+        expect(csv).toContain('Biryani (Half) x2; Raita x1');
+        expect(csv).not.toContain('[object Object]');
+        expect(matrix.totals?.[at]).toBeNull();
+    });
+});
+
+describe('an exported instant reads as the restaurant clock the grid shows', () => {
+    // CSV and Excel used to carry the server's UTC ISO text. A void rung at
+    // 18:00 in Kolkata read "2026-08-14T12:30:00.000Z" in the sheet.
+    const shown = visibleColumns(VOID_KOT_COLUMNS, []);
+
+    it('writes each datetime cell exactly as the grid formats it', () => {
+        const matrix = buildExportMatrix(shown, VOID_ROWS, VOID_TOTALS, 'Total', FMT.timezone);
+        const placed = matrix.header.indexOf('Placed');
+        const voided = matrix.header.indexOf('Voided');
+        expect(matrix.body[0]?.[placed]).toBe(formatCell(VOID_ROWS[0]?.placed_at, 'datetime', FMT));
+        expect(matrix.body[0]?.[placed]).toBe('14/08/26 18:00');
+        expect(matrix.body[0]?.[voided]).toBe('14/08/26 18:11');
+        const csv = toCsv(matrix);
+        expect(csv).toContain('14/08/26 18:00');
+        expect(csv).not.toContain('2026-08-14T12:30:00.000Z');
+    });
+
+    it('is generic by column type: any report, any datetime column, any zone', () => {
+        const cols: MisColumn[] = [{ key: 'at', label: 'Date & time', type: 'datetime' }, { key: 'note', label: 'Note', type: 'text' }];
+        const rows = [{ at: '2026-08-01T20:00:00.000Z', note: '2026-08-01T20:00:00.000Z' }];
+        const ny = buildExportMatrix(cols, rows, null, 'Total', 'America/New_York');
+        expect(ny.body[0]?.[0]).toBe('01/08/26 16:00');
+        // Only the column TYPE decides. A text column holding ISO-looking text is
+        // somebody's words and stays exactly as written.
+        expect(ny.body[0]?.[1]).toBe('2026-08-01T20:00:00.000Z');
+    });
+
+    it('the PDF does not read a localised stamp back as a date, which would swap day and month', () => {
+        // 1 Feb 10:00 in Kolkata. Re-parsing "01/02/26 10:00" would give 2 January.
+        const cols: MisColumn[] = [{ key: 'at', label: 'Date & time', type: 'datetime' }];
+        const matrix = buildExportMatrix(cols, [{ at: '2026-02-01T04:30:00.000Z' }], null, 'Total', FMT.timezone);
+        expect(matrix.body[0]?.[0]).toBe('01/02/26 10:00');
+        expect(formatMatrix(matrix, FMT)[1]?.[0]).toBe('01/02/26 10:00');
+    });
+
+    it('keeps a malformed stamp visible rather than blanking it', () => {
+        const cols: MisColumn[] = [{ key: 'at', label: 'Date & time', type: 'datetime' }];
+        const matrix = buildExportMatrix(cols, [{ at: 'not-a-date' }, { at: null }], null, 'Total', FMT.timezone);
+        expect(matrix.body[0]?.[0]).toBe('not-a-date');
+        expect(matrix.body[1]?.[0]).toBeNull();
+    });
+
+    it('the Reports screen hands the grid zone to the export', () => {
+        // Built but never fed is this project's most repeated bug: the matrix only
+        // localises when the screen passes the zone it formats the grid in.
+        // A fixed path to this repo's own source file, not user input.
+        // eslint-disable-next-line security/detect-non-literal-fs-filename
+        const page = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'dashboard', 'reports', 'page.tsx'), 'utf8');
+        expect(page).toMatch(/buildExportMatrix\(shownColumns, exportRows, totals, totalsLabelFor\(page, exportRows\.length\), formatOpts\.timezone\)/);
+        expect(page).toMatch(/const formatOpts = useMemo\(\(\) => \(\{ timezone, currencySymbol \}\)/);
     });
 });

@@ -534,9 +534,14 @@ export interface ExportMatrix {
     totals: ExportCell[] | null;
     /** The column descriptors backing each position, for display formatting. */
     columns: MisColumn[];
+    /**
+     * The restaurant zone every `datetime` cell in `body` was already rendered
+     * in, or null when those cells are still the server's raw instants.
+     */
+    timezone: string | null;
 }
 
-const rawCell = (value: unknown, type: MisColumnType): ExportCell => {
+const rawCell = (value: unknown, type: MisColumnType, timezone: string | null): ExportCell => {
     if (value === null || value === undefined || value === '') {return null;}
     if (isNumericType(type)) {
         const n = Number(value);
@@ -545,6 +550,12 @@ const rawCell = (value: unknown, type: MisColumnType): ExportCell => {
         // accountant tries to do with it.
         return Number.isNaN(n) ? String(value) : n;
     }
+    // AN INSTANT IS WRITTEN AS THE GRID SHOWS IT: the restaurant's wall clock.
+    // The server sends UTC ISO text, and a sheet that carries it verbatim puts a
+    // 18:36 void at "2026-09-14T13:06:36.104Z", which reads as 1 pm to anyone
+    // who opens it. A value that is not an instant is kept as it came rather
+    // than blanked, so a malformed stamp is still visible in the file.
+    if (type === 'datetime' && timezone) {return formatDateTime(String(value), timezone, String(value));}
     return String(value);
 };
 
@@ -556,30 +567,36 @@ const rawCell = (value: unknown, type: MisColumnType): ExportCell => {
  * says so — an export whose rows do not add up to its own total, with nothing
  * explaining why, is exactly the document that destroys confidence in the other
  * eight.
+ *
+ * `timezone` is the zone the grid formats in. With it, every `datetime` cell is
+ * written as the grid shows it, in CSV and Excel as well as PDF. Without it
+ * those cells stay raw instants.
  */
 export const buildExportMatrix = (
     columns: readonly MisColumn[],
     rows: readonly MisRow[],
     totals: Record<string, unknown> | null | undefined,
     totalsLabel = 'Total',
+    timezone?: string,
 ): ExportMatrix => {
     const cols = [...columns];
+    const zone = timezone ?? null;
     const header = cols.map((c) => c.label);
-    const body = rows.map((row) => cols.map((c) => rawCell(row[c.key], c.type)));
+    const body = rows.map((row) => cols.map((c) => rawCell(row[c.key], c.type, zone)));
 
     let totalsRow: ExportCell[] | null = null;
     if (totals) {
         const anyTotalled = cols.some((c) => c.total && totals[c.key] !== undefined);
         if (anyTotalled) {
             totalsRow = cols.map((c, i) => {
-                if (c.total && totals[c.key] !== undefined) {return rawCell(totals[c.key], c.type);}
+                if (c.total && totals[c.key] !== undefined) {return rawCell(totals[c.key], c.type, zone);}
                 // The label rides in the first column, which is always the
                 // report's identifying column (item, bill no., period, outlet).
                 return i === 0 ? totalsLabel : null;
             });
         }
     }
-    return { header, body, totals: totalsRow, columns: cols };
+    return { header, body, totals: totalsRow, columns: cols, timezone: zone };
 };
 
 /** The same matrix, every cell rendered as the reader sees it — for PDF. */
@@ -591,6 +608,9 @@ export const formatMatrix = (matrix: ExportMatrix, opts: FormatOptions): string[
             // missing descriptor cannot happen; if it ever did, showing the raw
             // value beats throwing away the reader's document.
             const col = matrix.columns[i] as MisColumn | undefined;
+            // Already the grid's wall-clock text. Parsing "01/02/26 10:00" back
+            // into a Date would read it month-first and print 2 January.
+            if (col?.type === 'datetime' && matrix.timezone) {return String(cell);}
             return col ? formatCell(cell, col.type, opts) : String(cell);
         });
     const out = matrix.body.map(render);
