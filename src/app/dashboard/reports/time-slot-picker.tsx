@@ -53,6 +53,13 @@ import { cn } from "@/lib/utils"
 
 type SaveOutcome = { ok: true; data: ReportTimeSlots } | { ok: false; error: string }
 
+/**
+ * What a save that never got an answer says — the sentence saveReportTimeSlots
+ * returns when the backend itself cannot be reached. Trying again is safe: the
+ * save replaces the whole list, so a repeat of one that did land changes nothing.
+ */
+const SAVE_UNREACHABLE = "Could not reach the server — check the connection and try again."
+
 interface Props {
     value: TimeSlotSelection
     slots: ReportTimeSlotPreset[]
@@ -101,8 +108,20 @@ function ManageSessionsDialog({
         const problem = validateSlotDrafts(list)
         if (problem) {setError(problem); return}
         setSaving(true)
-        const outcome = await onSave(list)
-        setSaving(false)
+        // A THROWN SAVE MUST STILL UNLOCK THE DIALOG. onSave is a Server Action:
+        // it RETURNS the backend's refusals, but the browser-to-Next hop itself
+        // rejects — till wifi dropping, or a deploy landing while this tab was
+        // open ("Failed to find Server Action"). Without the finally, `saving`
+        // stays true, every button here is disabled and the dialog refuses to
+        // close, so only a page reload gets the owner out.
+        let outcome: SaveOutcome
+        try {
+            outcome = await onSave(list)
+        } catch {
+            outcome = { ok: false, error: SAVE_UNREACHABLE }
+        } finally {
+            setSaving(false)
+        }
         if (!outcome.ok) {setError(outcome.error); return}
         onSaved(outcome.data)
         onOpenChange(false)

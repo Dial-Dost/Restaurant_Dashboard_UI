@@ -397,6 +397,23 @@ describe('wiring', () => {
         expect(exporter).toContain('title: titleOf(ctx)');
     });
 
+    it('a save that throws still unlocks "Manage sessions" and says why', () => {
+        // The Server Action RETURNS refusals, but the browser-to-Next hop itself
+        // rejects (wifi gone, a deploy landing mid-session). Awaited bare, that
+        // left `saving` true: every button disabled and the dialog unclosable.
+        const start = picker.indexOf('const submit = async');
+        const submit = picker.slice(start, picker.indexOf('return (', start));
+        expect(submit).toMatch(
+            /setSaving\(true\)\s*let outcome: SaveOutcome\s*try \{\s*outcome = await onSave\(list\)\s*\} catch \{\s*outcome = \{ ok: false, error: SAVE_UNREACHABLE \}\s*\} finally \{\s*setSaving\(false\)\s*\}\s*if \(!outcome\.ok\) \{setError\(outcome\.error\); return\}/,
+        );
+        // …and the save is awaited nowhere else, unguarded.
+        expect(picker.match(/await onSave\(/g)).toHaveLength(1);
+        // The same sentence the action gives when the backend cannot be reached.
+        expect(picker).toContain('const SAVE_UNREACHABLE = "Could not reach the server — check the connection and try again."');
+        const save = db.slice(db.indexOf('export const saveReportTimeSlots'), db.indexOf('export const getMisBillDetail'));
+        expect(save).toContain("error: 'Could not reach the server — check the connection and try again.'");
+    });
+
     it('offers "Manage sessions" only to a caller the server says may edit', () => {
         expect(page).toContain('canEdit={slotCatalogue.can_edit}');
         expect(picker).toMatch(/\{canEdit && \([\s\S]*?Manage sessions…/);
