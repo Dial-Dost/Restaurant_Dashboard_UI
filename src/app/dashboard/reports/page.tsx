@@ -22,8 +22,8 @@
 //    they are looking at.
 //  * COLUMNS persist per user per report; SORT and PAGING are per visit.
 //
-// EVERY NUMBER ON THIS SCREEN IS THE SERVER'S. The money ladder — Gross →
-// Discount → Net → Tax → Service Charge → Round Off → Grand Total — is pinned
+// EVERY NUMBER ON THIS SCREEN IS THE SERVER'S. The money ladder — Item total →
+// Discount → Net → Service Charge → Tax → Round Off → Gross — is pinned
 // once in the backend's `mis_report_math.ts` and all fifteen reports derive from
 // it there. Nothing here re-derives, re-rounds or cross-foots a figure. The only
 // arithmetic in this file counts rows.

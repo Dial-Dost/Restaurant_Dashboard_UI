@@ -28,6 +28,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Separator } from "@/components/ui/separator"
 import { formatRoundOff, roundOffOf } from "@/lib/bill-round-off"
 import { getMisBillDetail, getMisKotDetail, type ClosedBillDetail, type MisOrderDetail } from "@/lib/db"
+import { GROSS, ITEM_TOTAL, NET } from "@/lib/gross-net"
 import { formatMoney } from "@/lib/mis-reports"
 import { formatFullDateTime } from "@/lib/tz"
 
@@ -175,16 +176,23 @@ export function DrillDownDialog({ request, onClose, restaurantId, outletId, time
 
                         {/* The ladder, in the same order and with the same names the
                             reports use. Two screens naming the same figure two
-                            different things is how an owner stops trusting both. */}
+                            different things is how an owner stops trusting both —
+                            which is why the top rung is "Item total", not "gross":
+                            Gross is the bill's grand total, at the bottom. The row
+                            this dialog opens from prints that same figure under
+                            "Gross", so the bottom rung says Gross too — never the
+                            receipt's "Grand total". The app's drill-down (the
+                            reportWords body in modules.dart) says the same three
+                            words. */}
                         <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm">
-                            <Line label="Items subtotal (gross)" value={money(bill.items_subtotal)} />
+                            <Line label={ITEM_TOTAL} value={money(bill.items_subtotal)} />
                             {bill.discount_amount ? (
                                 <Line
                                     label={`Discount${bill.discount_type === "percent" ? ` (${String(bill.discount_value)}%)` : ""}${bill.coupon_code ? ` · ${bill.coupon_code}` : ""}`}
                                     value={`− ${money(bill.discount_amount)}`}
                                 />
                             ) : null}
-                            <Line label="Net" value={money(bill.taxable_base)} />
+                            <Line label={NET} value={money(bill.taxable_base)} />
                             {bill.service_charge ? (
                                 <Line label={`Service charge${bill.service_charge_percent ? ` (${String(bill.service_charge_percent)}%)` : ""}`} value={money(bill.service_charge)} />
                             ) : null}
@@ -198,7 +206,7 @@ export function DrillDownDialog({ request, onClose, restaurantId, outletId, time
                                 <Line label="Round off" value={formatRoundOff(roundOffOf(bill)!, money)} />
                             ) : null}
                             <Separator className="my-1.5" />
-                            <Line label="Grand total" value={money(bill.grand_total)} strong />
+                            <Line label={GROSS} value={money(bill.grand_total)} strong />
                             {bill.refunded && (
                                 <div className="mt-2 rounded border border-destructive/40 bg-destructive/5 px-2 py-1.5 text-xs">
                                     <div className="flex items-baseline justify-between gap-4 font-medium text-destructive">

@@ -4,7 +4,7 @@
 // WHAT THIS MODULE IS NOT
 // -----------------------
 // It does not do money. Not one figure on any of the fifteen reports is computed
-// here: Gross → Discount → Net → Tax → Service Charge → Round Off → Grand Total
+// here: Item total → Discount → Net → Service Charge → Tax → Round Off → Gross
 // is pinned ONCE, server-side, in the backend's `mis_report_math.ts`, and every
 // number this file touches has already been through it. The client's job is to
 // show those numbers and to hand back exactly what it showed — nothing else.
@@ -213,7 +213,7 @@ export const MIS_REPORTS: readonly MisReportDef[] = [
     {
         key: 'sales_summary', title: 'Sales Summary', path: '/reports/mis/sales-summary',
         rowsKey: 'series', paged: false, timeWise: true, drill: 'none', clock: 'settlement',
-        blurb: 'The whole ladder — gross to grand total — with bills, covers and ABV.',
+        blurb: 'The whole ladder — item total to Net to Gross — with bills, covers and ABV.',
     },
     {
         key: 'order_summary', title: 'Order Summary', path: '/reports/mis/order-summary',
@@ -328,26 +328,65 @@ export const columnPrefsKey = (userId: string, reportKey: string): string =>
 export const defaultHidden = (columns: readonly MisColumn[]): string[] =>
     columns.filter((c) => c.default_on === false).map((c) => c.key);
 
-export const loadColumnPrefs = (userId: string, reportKey: string): ColumnPrefs | null => {
-    if (typeof window === 'undefined') {return null;}
-    try {
-        const raw = window.localStorage.getItem(columnPrefsKey(userId, reportKey));
-        if (!raw) {return null;}
-        const parsed = JSON.parse(raw) as Partial<ColumnPrefs>;
-        if (!Array.isArray(parsed.hidden)) {return null;}
-        return { hidden: parsed.hidden.filter((k): k is string => typeof k === 'string') };
-    } catch {
-        // Private mode, cleared storage, or a value from an older build. The
-        // backend's own default layout is a perfectly good answer.
-        return null;
-    }
+/**
+ * The stamp every saved layout carries from this build on. A stored layout
+ * WITHOUT it was saved by an older build, and may still be hiding a column that
+ * was only hidden because the backend used to default it off.
+ */
+export const COLUMN_PREFS_VERSION = 2;
+
+/**
+ * Ladder rungs the backend turned ON by default in client item 1 (Gross and Net),
+ * per report. Net + service charge + tax + round off IS Gross, so each of these
+ * hidden leaves a grid whose visible rungs stop short of the Gross beside them.
+ *
+ * `toggleColumn` saves the WHOLE hidden list, and before item 1 that list began
+ * as the old default — so anyone who ever toggled any column on these reports
+ * has these keys stored as hidden without ever having chosen to hide them, and
+ * `defaultHidden` never reaches them again. An unstamped layout is therefore
+ * migrated ONCE: these keys leave its hidden list and the layout is re-saved
+ * with the stamp. Hiding one again afterwards is a real choice, and it sticks.
+ */
+export const RUNGS_NOW_ON_BY_DEFAULT: Readonly<Record<string, readonly string[]>> = {
+    sales_summary: ['round_off'],
+    order_summary: ['service_charge'],
+    counter_summary: ['service_charge', 'tax'],
 };
 
 export const saveColumnPrefs = (userId: string, reportKey: string, prefs: ColumnPrefs): void => {
     if (typeof window === 'undefined') {return;}
     try {
-        window.localStorage.setItem(columnPrefsKey(userId, reportKey), JSON.stringify(prefs));
+        // Stamped, so the one-time migration in loadColumnPrefs never undoes a
+        // choice made on this build.
+        window.localStorage.setItem(
+            columnPrefsKey(userId, reportKey),
+            JSON.stringify({ hidden: prefs.hidden, v: COLUMN_PREFS_VERSION }),
+        );
     } catch {/* quota or private mode — the in-memory state still holds this session */}
+};
+
+export const loadColumnPrefs = (userId: string, reportKey: string): ColumnPrefs | null => {
+    if (typeof window === 'undefined') {return null;}
+    try {
+        const raw = window.localStorage.getItem(columnPrefsKey(userId, reportKey));
+        if (!raw) {return null;}
+        const parsed = JSON.parse(raw) as Partial<ColumnPrefs> & { v?: unknown };
+        if (!Array.isArray(parsed.hidden)) {return null;}
+        const hidden = parsed.hidden.filter((k): k is string => typeof k === 'string');
+        const nowOn = Object.prototype.hasOwnProperty.call(RUNGS_NOW_ON_BY_DEFAULT, reportKey)
+            ? RUNGS_NOW_ON_BY_DEFAULT[reportKey]
+            : undefined;
+        if (nowOn && parsed.v !== COLUMN_PREFS_VERSION) {
+            const migrated = hidden.filter((k) => !nowOn.includes(k));
+            saveColumnPrefs(userId, reportKey, { hidden: migrated });
+            return { hidden: migrated };
+        }
+        return { hidden };
+    } catch {
+        // Private mode, cleared storage, or a value from an older build. The
+        // backend's own default layout is a perfectly good answer.
+        return null;
+    }
 };
 
 export const clearColumnPrefs = (userId: string, reportKey: string): void => {
@@ -596,6 +635,31 @@ export const formatMatrix = (matrix: ExportMatrix, opts: FormatOptions): string[
     const out = matrix.body.map(render);
     if (matrix.totals) {out.push(render(matrix.totals));}
     return [matrix.header, ...out];
+};
+
+/**
+ * Which column's total the export confirmation quotes as "the money".
+ *
+ * The bill-level reports keep their pick — the first of grand_total, net_amount
+ * or amount in column order, exactly as before. `gross_amount` is consulted ONLY
+ * when none of those is on screen: it is the one money column Item Wise, Group
+ * Summary and Variation Summary have left since their always-equal Net
+ * (`net_amount`) left the grid (client item 1), and without it their toast
+ * silently lost its ₹ figure. Same value those reports quoted before.
+ */
+export const exportMoneyColumnIndex = (columns: readonly MisColumn[]): number => {
+    const billLevel = columns.findIndex((c) => c.key === 'grand_total' || c.key === 'net_amount' || c.key === 'amount');
+    return billLevel >= 0 ? billLevel : columns.findIndex((c) => c.key === 'gross_amount');
+};
+
+/** A one-line summary of the money in an export, for its confirmation toast. */
+export const exportSummaryLine = (matrix: ExportMatrix, currencySymbol: string): string => {
+    const rows = `${String(matrix.body.length)} rows`;
+    const totalIndex = exportMoneyColumnIndex(matrix.columns);
+    if (totalIndex < 0 || !matrix.totals) {return rows;}
+    const value = matrix.totals[totalIndex];
+    if (typeof value !== 'number') {return rows;}
+    return `${rows} · ${formatMoney(value, currencySymbol)}`;
 };
 
 /**
