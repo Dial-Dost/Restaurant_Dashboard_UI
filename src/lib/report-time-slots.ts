@@ -73,29 +73,6 @@ export const MAX_TIME_SLOTS = 8;
 /** The server's label length limit. */
 export const MAX_TIME_SLOT_LABEL = 24;
 
-/**
- * Read a time-slots response defensively. A slot the server sent in a shape this
- * client cannot read is dropped rather than rendered as `undefined–undefined`;
- * a body with no usable list at all is null, and the screen offers no picker.
- */
-export const readTimeSlots = (raw: unknown): ReportTimeSlots | null => {
-    if (raw === null || typeof raw !== 'object') {return null;}
-    const body = raw as Record<string, unknown>;
-    if (!Array.isArray(body.slots)) {return null;}
-    const slots: ReportTimeSlotPreset[] = [];
-    for (const item of body.slots) {
-        if (item === null || typeof item !== 'object') {continue;}
-        const s = item as Record<string, unknown>;
-        const id = typeof s.id === 'string' ? s.id : '';
-        const label = typeof s.label === 'string' ? s.label : '';
-        const start = typeof s.start === 'string' ? s.start : '';
-        const end = typeof s.end === 'string' ? s.end : '';
-        if (!id || parseClock(start) === null || parseClock(end, { allow24: true }) === null) {continue;}
-        slots.push({ id, label: label || id, start, end, crosses_midnight: s.crosses_midnight === true });
-    }
-    return { slots, can_edit: body.can_edit === true, is_default: body.is_default === true };
-};
-
 // --- Clock text --------------------------------------------------------------
 
 /**
@@ -147,6 +124,29 @@ export const crossesMidnight = (from: string, to: string): boolean => {
     return start !== null && end !== null && end < start;
 };
 
+/**
+ * Read a time-slots response defensively. A slot the server sent in a shape this
+ * client cannot read is dropped rather than rendered as `undefined–undefined`;
+ * a body with no usable list at all is null, and the screen offers no picker.
+ */
+export const readTimeSlots = (raw: unknown): ReportTimeSlots | null => {
+    if (raw === null || typeof raw !== 'object') {return null;}
+    const body = raw as Record<string, unknown>;
+    if (!Array.isArray(body.slots)) {return null;}
+    const slots: ReportTimeSlotPreset[] = [];
+    for (const item of body.slots) {
+        if (item === null || typeof item !== 'object') {continue;}
+        const s = item as Record<string, unknown>;
+        const id = typeof s.id === 'string' ? s.id : '';
+        const label = typeof s.label === 'string' ? s.label : '';
+        const start = typeof s.start === 'string' ? s.start : '';
+        const end = typeof s.end === 'string' ? s.end : '';
+        if (!id || parseClock(start) === null || parseClock(end, { allow24: true }) === null) {continue;}
+        slots.push({ id, label: label || id, start, end, crosses_midnight: s.crosses_midnight === true });
+    }
+    return { slots, can_edit: body.can_edit === true, is_default: body.is_default === true };
+};
+
 // --- The reader's choice -----------------------------------------------------
 
 export type TimeSlotSelection =
@@ -159,7 +159,7 @@ export type TimeSlotSelection =
  * identity (a memo, an effect dependency) does not refetch a report because a
  * second `{kind:'all'}` was minted somewhere.
  */
-export const ALL_DAY: TimeSlotSelection = Object.freeze({ kind: 'all' }) as TimeSlotSelection;
+export const ALL_DAY: TimeSlotSelection = Object.freeze({ kind: 'all' });
 
 /**
  * Coerce any selection into a legal one. Custom times are validated and
@@ -254,8 +254,8 @@ export const timeSlotProvenance = (slot: MisTimeSlot | null | undefined): string
  */
 export const timeSlotFileSuffix = (slot: MisTimeSlot | null | undefined): string => {
     if (!slot) {return '';}
-    const slug = String(slot.label ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-    const hhmm = (s: string) => String(s ?? '').replace(/[^0-9]/g, '');
+    const slug = slot.label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    const hhmm = (s: string): string => s.replace(/[^0-9]/g, '');
     return `_${slug ? `${slug}-` : ''}${hhmm(slot.start)}-${hhmm(slot.end)}`;
 };
 
@@ -325,13 +325,13 @@ export interface TimeSlotDraft {
  * is caught here, in the same words, without asking.
  */
 export const validateSlotDrafts = (drafts: readonly TimeSlotDraft[]): string | null => {
-    if (drafts.length > MAX_TIME_SLOTS) {return `A restaurant can keep at most ${MAX_TIME_SLOTS} sessions.`;}
+    if (drafts.length > MAX_TIME_SLOTS) {return `A restaurant can keep at most ${String(MAX_TIME_SLOTS)} sessions.`;}
     for (let i = 0; i < drafts.length; i += 1) {
         const d = drafts[i];
         const name = d.label.trim();
-        const which = name || `Session ${i + 1}`;
+        const which = name || `Session ${String(i + 1)}`;
         if (name.length === 0 || name.length > MAX_TIME_SLOT_LABEL) {
-            return `${which}: a session needs a name of 1 to ${MAX_TIME_SLOT_LABEL} characters.`;
+            return `${which}: a session needs a name of 1 to ${String(MAX_TIME_SLOT_LABEL)} characters.`;
         }
         if (parseClock(d.start) === null) {return `${which}: start time must be between 00:00 and 23:59.`;}
         const end = parseClock(d.end, { allow24: true });
@@ -360,7 +360,7 @@ export const slotDraftsBody = (drafts: readonly TimeSlotDraft[]): { slots: TimeS
 // question asked this afternoon, and tomorrow's first look should open on the
 // whole day rather than a filter nobody remembers setting.
 
-const storageKey = (screen: string) => `rd-time-slot:${screen}`;
+const storageKey = (screen: string): string => `rd-time-slot:${screen}`;
 
 /**
  * `?slot=dinner`, or `?time_from=22:00&time_to=02:00`. Custom times win, as they

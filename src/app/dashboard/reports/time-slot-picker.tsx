@@ -20,7 +20,7 @@
 // Every rule and every sentence is in @/lib/report-time-slots, shared word for
 // word with the owner app; this file is layout and state.
 
-import { useEffect, useState } from "react"
+import { useEffect, useState, type ReactElement } from "react"
 import { Check, Clock, Loader2, Plus, Settings2, Trash2 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -65,7 +65,141 @@ interface Props {
     disabled?: boolean
 }
 
-export function TimeSlotPicker({ value, slots, canEdit, onChange, onSave, onSaved, disabled }: Props) {
+/**
+ * The restaurant's list, edited as a whole and saved as a whole — the route
+ * replaces the list, so the dialog never pretends a single row was saved on its
+ * own. The server judges overlaps; its sentence is shown here, verbatim.
+ */
+function ManageSessionsDialog({
+    open, onOpenChange, slots, onSave, onSaved,
+}: {
+    open: boolean
+    onOpenChange: (open: boolean) => void
+    slots: ReportTimeSlotPreset[]
+    onSave: (drafts: TimeSlotDraft[]) => Promise<SaveOutcome>
+    onSaved: (next: ReportTimeSlots) => void
+}): ReactElement {
+    const [drafts, setDrafts] = useState<TimeSlotDraft[]>([])
+    const [error, setError] = useState<string | null>(null)
+    const [saving, setSaving] = useState(false)
+    const [confirmReset, setConfirmReset] = useState(false)
+
+    useEffect(() => {
+        if (!open) {return}
+        setDrafts(slots.map((s) => ({ id: s.id, label: s.label, start: s.start, end: s.end })))
+        setError(null)
+        setSaving(false)
+        setConfirmReset(false)
+    }, [open, slots])
+
+    const edit = (i: number, patch: Partial<TimeSlotDraft>): void => {
+        setDrafts((rows) => rows.map((r, j) => (j === i ? { ...r, ...patch } : r)))
+        setError(null)
+    }
+
+    const submit = async (list: TimeSlotDraft[]): Promise<void> => {
+        const problem = validateSlotDrafts(list)
+        if (problem) {setError(problem); return}
+        setSaving(true)
+        const outcome = await onSave(list)
+        setSaving(false)
+        if (!outcome.ok) {setError(outcome.error); return}
+        onSaved(outcome.data)
+        onOpenChange(false)
+    }
+
+    return (
+        <Dialog open={open} onOpenChange={(next) => { if (!saving) {onOpenChange(next)} }}>
+            <DialogContent className="max-h-[90vh] max-w-[min(94vw,34rem)] overflow-y-auto">
+                <DialogHeader>
+                    <DialogTitle>Manage sessions</DialogTitle>
+                    <DialogDescription>
+                        Saved for the whole restaurant. Everyone who reads reports can pick these; only people who can
+                        change settings can edit them. 24-hour times; an end may be 24:00, and an end before the start
+                        runs past midnight.
+                    </DialogDescription>
+                </DialogHeader>
+
+                <div className="space-y-2">
+                    {drafts.map((d, i) => (
+                        <div key={d.id ?? `new-${String(i)}`} className="flex flex-wrap items-center gap-2 rounded-md border p-2 sm:flex-nowrap sm:border-0 sm:p-0">
+                            <Input
+                                value={d.label}
+                                onChange={(e) => { edit(i, { label: e.target.value }) }}
+                                placeholder="Name"
+                                maxLength={MAX_TIME_SLOT_LABEL}
+                                className="h-9 min-w-0 basis-full sm:basis-auto sm:flex-1"
+                                aria-label={`Session ${String(i + 1)} name`}
+                            />
+                            <Input
+                                value={d.start}
+                                onChange={(e) => { edit(i, { start: e.target.value }) }}
+                                placeholder="HH:mm"
+                                inputMode="numeric"
+                                maxLength={5}
+                                className="h-9 w-[5.5rem]"
+                                aria-label={`Session ${String(i + 1)} start, HH:mm`}
+                            />
+                            <span className="text-muted-foreground">–</span>
+                            <Input
+                                value={d.end}
+                                onChange={(e) => { edit(i, { end: e.target.value }) }}
+                                placeholder="HH:mm"
+                                inputMode="numeric"
+                                maxLength={5}
+                                className="h-9 w-[5.5rem]"
+                                aria-label={`Session ${String(i + 1)} end, HH:mm (24:00 allowed)`}
+                            />
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                className="ml-auto h-9 w-9 shrink-0"
+                                onClick={() => { setDrafts((rows) => rows.filter((_, j) => j !== i)); setError(null) }}
+                                aria-label={`Remove ${d.label || `session ${String(i + 1)}`}`}
+                            >
+                                <Trash2 className="h-4 w-4" />
+                            </Button>
+                        </div>
+                    ))}
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={drafts.length >= MAX_TIME_SLOTS}
+                        onClick={() => { setDrafts((rows) => [...rows, { label: "", start: "", end: "" }]); setError(null) }}
+                    >
+                        <Plus className="mr-1.5 h-4 w-4" />
+                        {drafts.length >= MAX_TIME_SLOTS ? `At most ${String(MAX_TIME_SLOTS)} sessions` : "Add session"}
+                    </Button>
+                </div>
+
+                {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+
+                <DialogFooter className="gap-2 sm:items-center sm:justify-between sm:space-x-0">
+                    {confirmReset ? (
+                        <div className="flex flex-wrap items-center gap-2 text-sm">
+                            <span>Replace these with Lunch and Dinner?</span>
+                            <Button size="sm" variant="destructive" disabled={saving} onClick={() => { void submit([]) }}>Reset</Button>
+                            <Button size="sm" variant="ghost" disabled={saving} onClick={() => { setConfirmReset(false) }}>Keep</Button>
+                        </div>
+                    ) : (
+                        <Button variant="ghost" size="sm" disabled={saving} onClick={() => { setConfirmReset(true) }}>
+                            Reset to defaults
+                        </Button>
+                    )}
+                    <div className="flex gap-2">
+                        <Button variant="outline" size="sm" disabled={saving} onClick={() => { onOpenChange(false) }}>Cancel</Button>
+                        <Button size="sm" disabled={saving} onClick={() => { void submit(drafts) }}>
+                            {saving && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
+                            Save sessions
+                        </Button>
+                    </div>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+    )
+}
+
+export function TimeSlotPicker({ value, slots, canEdit, onChange, onSave, onSaved, disabled }: Props): ReactElement {
     const [open, setOpen] = useState(false)
     const [managing, setManaging] = useState(false)
     const [customOpen, setCustomOpen] = useState(value.kind === "custom")
@@ -82,12 +216,12 @@ export function TimeSlotPicker({ value, slots, canEdit, onChange, onSave, onSave
         setCustomError(null)
     }, [open, value])
 
-    const choose = (next: TimeSlotSelection) => {
+    const choose = (next: TimeSlotSelection): void => {
         onChange(next)
         setOpen(false)
     }
 
-    const applyCustom = () => {
+    const applyCustom = (): void => {
         const problem = validateCustomSlot(from, to)
         if (problem) {setCustomError(problem); return}
         choose(normaliseSlotSelection({ kind: "custom", from, to }))
@@ -96,7 +230,7 @@ export function TimeSlotPicker({ value, slots, canEdit, onChange, onSave, onSave
     const label = slotSelectionLabel(value, slots)
     const filtered = value.kind !== "all"
 
-    const option = (key: string, text: string, active: boolean, onClick: () => void) => (
+    const option = (key: string, text: string, active: boolean, onClick: () => void): ReactElement => (
         <button
             key={key}
             type="button"
@@ -211,139 +345,5 @@ export function TimeSlotPicker({ value, slots, canEdit, onChange, onSave, onSave
                 />
             )}
         </>
-    )
-}
-
-/**
- * The restaurant's list, edited as a whole and saved as a whole — the route
- * replaces the list, so the dialog never pretends a single row was saved on its
- * own. The server judges overlaps; its sentence is shown here, verbatim.
- */
-function ManageSessionsDialog({
-    open, onOpenChange, slots, onSave, onSaved,
-}: {
-    open: boolean
-    onOpenChange: (open: boolean) => void
-    slots: ReportTimeSlotPreset[]
-    onSave: (drafts: TimeSlotDraft[]) => Promise<SaveOutcome>
-    onSaved: (next: ReportTimeSlots) => void
-}) {
-    const [drafts, setDrafts] = useState<TimeSlotDraft[]>([])
-    const [error, setError] = useState<string | null>(null)
-    const [saving, setSaving] = useState(false)
-    const [confirmReset, setConfirmReset] = useState(false)
-
-    useEffect(() => {
-        if (!open) {return}
-        setDrafts(slots.map((s) => ({ id: s.id, label: s.label, start: s.start, end: s.end })))
-        setError(null)
-        setSaving(false)
-        setConfirmReset(false)
-    }, [open, slots])
-
-    const edit = (i: number, patch: Partial<TimeSlotDraft>) => {
-        setDrafts((rows) => rows.map((r, j) => (j === i ? { ...r, ...patch } : r)))
-        setError(null)
-    }
-
-    const submit = async (list: TimeSlotDraft[]) => {
-        const problem = validateSlotDrafts(list)
-        if (problem) {setError(problem); return}
-        setSaving(true)
-        const outcome = await onSave(list)
-        setSaving(false)
-        if (!outcome.ok) {setError(outcome.error); return}
-        onSaved(outcome.data)
-        onOpenChange(false)
-    }
-
-    return (
-        <Dialog open={open} onOpenChange={(next) => { if (!saving) {onOpenChange(next)} }}>
-            <DialogContent className="max-h-[90vh] max-w-[min(94vw,34rem)] overflow-y-auto">
-                <DialogHeader>
-                    <DialogTitle>Manage sessions</DialogTitle>
-                    <DialogDescription>
-                        Saved for the whole restaurant. Everyone who reads reports can pick these; only people who can
-                        change settings can edit them. 24-hour times; an end may be 24:00, and an end before the start
-                        runs past midnight.
-                    </DialogDescription>
-                </DialogHeader>
-
-                <div className="space-y-2">
-                    {drafts.map((d, i) => (
-                        <div key={d.id ?? `new-${i}`} className="flex flex-wrap items-center gap-2 rounded-md border p-2 sm:flex-nowrap sm:border-0 sm:p-0">
-                            <Input
-                                value={d.label}
-                                onChange={(e) => { edit(i, { label: e.target.value }) }}
-                                placeholder="Name"
-                                maxLength={MAX_TIME_SLOT_LABEL}
-                                className="h-9 min-w-0 basis-full sm:basis-auto sm:flex-1"
-                                aria-label={`Session ${i + 1} name`}
-                            />
-                            <Input
-                                value={d.start}
-                                onChange={(e) => { edit(i, { start: e.target.value }) }}
-                                placeholder="HH:mm"
-                                inputMode="numeric"
-                                maxLength={5}
-                                className="h-9 w-[5.5rem]"
-                                aria-label={`Session ${i + 1} start, HH:mm`}
-                            />
-                            <span className="text-muted-foreground">–</span>
-                            <Input
-                                value={d.end}
-                                onChange={(e) => { edit(i, { end: e.target.value }) }}
-                                placeholder="HH:mm"
-                                inputMode="numeric"
-                                maxLength={5}
-                                className="h-9 w-[5.5rem]"
-                                aria-label={`Session ${i + 1} end, HH:mm (24:00 allowed)`}
-                            />
-                            <Button
-                                variant="ghost"
-                                size="icon"
-                                className="ml-auto h-9 w-9 shrink-0"
-                                onClick={() => { setDrafts((rows) => rows.filter((_, j) => j !== i)); setError(null) }}
-                                aria-label={`Remove ${d.label || `session ${i + 1}`}`}
-                            >
-                                <Trash2 className="h-4 w-4" />
-                            </Button>
-                        </div>
-                    ))}
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={drafts.length >= MAX_TIME_SLOTS}
-                        onClick={() => { setDrafts((rows) => [...rows, { label: "", start: "", end: "" }]); setError(null) }}
-                    >
-                        <Plus className="mr-1.5 h-4 w-4" />
-                        {drafts.length >= MAX_TIME_SLOTS ? `At most ${MAX_TIME_SLOTS} sessions` : "Add session"}
-                    </Button>
-                </div>
-
-                {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-
-                <DialogFooter className="gap-2 sm:items-center sm:justify-between sm:space-x-0">
-                    {confirmReset ? (
-                        <div className="flex flex-wrap items-center gap-2 text-sm">
-                            <span>Replace these with Lunch and Dinner?</span>
-                            <Button size="sm" variant="destructive" disabled={saving} onClick={() => { void submit([]) }}>Reset</Button>
-                            <Button size="sm" variant="ghost" disabled={saving} onClick={() => { setConfirmReset(false) }}>Keep</Button>
-                        </div>
-                    ) : (
-                        <Button variant="ghost" size="sm" disabled={saving} onClick={() => { setConfirmReset(true) }}>
-                            Reset to defaults
-                        </Button>
-                    )}
-                    <div className="flex gap-2">
-                        <Button variant="outline" size="sm" disabled={saving} onClick={() => { onOpenChange(false) }}>Cancel</Button>
-                        <Button size="sm" disabled={saving} onClick={() => { void submit(drafts) }}>
-                            {saving && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
-                            Save sessions
-                        </Button>
-                    </div>
-                </DialogFooter>
-            </DialogContent>
-        </Dialog>
     )
 }

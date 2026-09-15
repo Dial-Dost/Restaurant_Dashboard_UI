@@ -237,7 +237,7 @@ describe('the presets and the editor', () => {
             .toBe('Lunch: end time must be between 00:00 and 24:00.');
         expect(validateSlotDrafts([{ label: 'Lunch', start: '12:00', end: '12:00' }]))
             .toBe('Lunch: start and end cannot be the same time.');
-        const nine = Array.from({ length: MAX_TIME_SLOTS + 1 }, (_, i) => ({ label: `S${i}`, start: `${String(i).padStart(2, '0')}:00`, end: `${String(i).padStart(2, '0')}:30` }));
+        const nine = Array.from({ length: MAX_TIME_SLOTS + 1 }, (_, i) => ({ label: `S${String(i)}`, start: `${String(i).padStart(2, '0')}:00`, end: `${String(i).padStart(2, '0')}:30` }));
         expect(validateSlotDrafts(nine)).toBe('A restaurant can keep at most 8 sessions.');
     });
 
@@ -257,7 +257,7 @@ describe('the presets and the editor', () => {
 });
 
 describe('the URL', () => {
-    const params = (qs: string) => new URLSearchParams(qs);
+    const params = (qs: string): URLSearchParams => new URLSearchParams(qs);
 
     it('opens on the slot a link names; custom beats preset; nothing named falls through', () => {
         expect(slotSelectionFromParams(params('slot=dinner'))).toEqual({ kind: 'preset', id: 'dinner' });
