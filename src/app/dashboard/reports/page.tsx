@@ -264,9 +264,18 @@ function ReportsInner() {
     // Any change to WHAT is being asked returns to the first page. Staying on
     // page 7 of a new question shows an empty grid that looks like no data.
     const effectiveSlot = slotCatalogue ? slotSel : ALL_DAY
-    // The pick AND the hours behind it: editing Lunch's times is a new question
-    // under the same `slot=lunch`, so it must refetch (and return to page one).
-    const slotDefKey = slotDefinitionKey(effectiveSlot, slotCatalogue?.slots ?? [])
+    // The two newer segments exist only where the presets route does; a bucket
+    // the server cannot answer is sent as the day-wise table it would return.
+    const bucketOptions = timeWiseOptions(slotCatalogue !== null)
+    const effectiveBucket: MisBucket = bucketOptions.some((b) => b.value === bucket) ? bucket : "day"
+    // The cut actually SENT — only the time-wise report takes one. Named once, so
+    // the request and the key below can never be built from two different cuts.
+    const sentBucket = def?.timeWise ? effectiveBucket : undefined
+    // The pick AND what stands behind it: editing Lunch's hours or name is a new
+    // question under the same `slot=lunch`, and on "By session" saving ANY preset
+    // is one — All day picked included, since those rows are the presets. Either
+    // must refetch (and return to page one) although the URL has not changed.
+    const slotDefKey = slotDefinitionKey(effectiveSlot, slotCatalogue?.slots ?? [], sentBucket)
     useEffect(() => { setOffset(0) }, [activeKey, search, outletId, bucket, limit, range.from, range.to, slotDefKey])
     // Switching tabs drops the previous report's payload rather than leaving it
     // on screen under the new report's heading. The two do not share a column
@@ -311,10 +320,7 @@ function ReportsInner() {
     const resetColumns = useCallback(() => { setHiddenPersisted(defaultHidden(columns)) }, [columns, setHiddenPersisted])
 
     // --- The query and the fetch ---------------------------------------------
-    // The two newer segments exist only where the presets route does; a bucket
-    // the server cannot answer is sent as the day-wise table it would return.
-    const bucketOptions = timeWiseOptions(slotCatalogue !== null)
-    const effectiveBucket: MisBucket = bucketOptions.some((b) => b.value === bucket) ? bucket : "day"
+    // `sentBucket` is settled above, beside the slot key it feeds.
     const slotParams = slotQuery(effectiveSlot)
     const baseQuery = useMemo<MisQuery>(() => ({
         from: query.from,
@@ -322,11 +328,11 @@ function ReportsInner() {
         days: query.days,
         outletId,
         search: search || undefined,
-        bucket: def?.timeWise ? effectiveBucket : undefined,
+        bucket: sentBucket,
         slot: slotParams.slot,
         timeFrom: slotParams.timeFrom,
         timeTo: slotParams.timeTo,
-    }), [query.from, query.to, query.days, outletId, search, def?.timeWise, effectiveBucket, slotParams.slot, slotParams.timeFrom, slotParams.timeTo])
+    }), [query.from, query.to, query.days, outletId, search, sentBucket, slotParams.slot, slotParams.timeFrom, slotParams.timeTo])
 
     // A remembered slot waits for the presets to answer, so the first request is
     // the question the reader asked rather than an all-day one thrown away.

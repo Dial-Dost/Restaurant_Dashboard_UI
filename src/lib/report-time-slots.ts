@@ -197,18 +197,33 @@ export const slotSelectionKey = (sel: TimeSlotSelection): string =>
     sel.kind === 'all' ? 'all' : sel.kind === 'preset' ? `preset:${sel.id}` : `custom:${sel.from}-${sel.to}`;
 
 /**
- * What a selection MEANS right now, as a string: the key, plus a preset's hours.
+ * What a selection MEANS right now, as a string: the key, plus everything the
+ * server builds its answer from that the request itself does not carry.
  *
  * `slot=lunch` is the same URL before and after an owner moves Lunch from
  * 12:00–17:00 to 11:00–15:00, so a screen that refetched only when the request
- * changed would keep the old Lunch's numbers under the new Lunch's name. Keying
- * the fetch on this instead re-asks exactly when the hours behind the pick move.
+ * changed would keep the old Lunch's numbers under the new Lunch's name. So a
+ * picked preset's hours are in the key — and its NAME, because the caption, the
+ * export's "Time slot" row and its filename are all spelled from the name the
+ * server applied, and a rename would otherwise leave them on the old one.
+ *
+ * `bucket` is the cut actually SENT (undefined where the report takes none).
+ * "By session" goes further than the pick: its rows ARE the presets — "Lunch
+ * (12:00-17:00)", "Dinner (18:00-24:00)", then Outside sessions — whatever is
+ * picked, All day included, where the pick alone keys as plain `all`. Saving any
+ * preset reshapes that table under an unchanged URL, so for that cut the whole
+ * list is part of the question.
  */
-export const slotDefinitionKey = (sel: TimeSlotSelection, presets: readonly ReportTimeSlotPreset[]): string => {
+export const slotDefinitionKey = (
+    sel: TimeSlotSelection,
+    presets: readonly ReportTimeSlotPreset[],
+    bucket?: MisBucket,
+): string => {
     const key = slotSelectionKey(sel);
-    if (sel.kind !== 'preset') {return key;}
-    const p = presets.find((x) => x.id === sel.id);
-    return p ? `${key}@${p.start}-${p.end}` : key;
+    const picked = sel.kind === 'preset' ? presets.find((x) => x.id === sel.id) : undefined;
+    const pick = picked ? `${key}@${picked.start}-${picked.end}/${picked.label}` : key;
+    if (bucket !== 'session') {return pick;}
+    return `${pick}#${JSON.stringify(presets.map((p) => [p.id, p.label, p.start, p.end]))}`;
 };
 
 /** The `MisQuery` fields for a selection. All day adds nothing at all. */

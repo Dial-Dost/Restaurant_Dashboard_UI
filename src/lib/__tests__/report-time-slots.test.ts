@@ -156,16 +156,40 @@ describe('what goes on the wire', () => {
         expect(slotSelectionKey({ kind: 'custom', from: '22:00', to: '02:00' })).toBe('custom:22:00-02:00');
     });
 
-    it('re-keys a preset when its hours are edited, though `slot=lunch` stays the same URL', () => {
+    it('re-keys a preset when its hours or its name are edited, though `slot=lunch` stays the same URL', () => {
         const lunch = { kind: 'preset', id: 'lunch' } as const;
         const moved = DEFAULTS.map((p) => (p.id === 'lunch' ? { ...p, start: '11:00', end: '15:00' } : p));
         expect(misSlotParams(slotQuery(lunch))).toEqual([['slot', 'lunch']]);
-        expect(slotDefinitionKey(lunch, DEFAULTS)).toBe('preset:lunch@12:00-17:00');
-        expect(slotDefinitionKey(lunch, moved)).toBe('preset:lunch@11:00-15:00');
-        // Renaming alone asks nothing new: the hours, and so the numbers, are the same.
-        expect(slotDefinitionKey(lunch, DEFAULTS.map((p) => ({ ...p, label: `${p.label}!` })))).toBe('preset:lunch@12:00-17:00');
+        expect(slotDefinitionKey(lunch, DEFAULTS)).toBe('preset:lunch@12:00-17:00/Lunch');
+        expect(slotDefinitionKey(lunch, moved)).toBe('preset:lunch@11:00-15:00/Lunch');
+        // A rename re-asks too: the caption, the export's Time slot row and its
+        // filename are spelled from the name the server applied.
+        expect(slotDefinitionKey(lunch, DEFAULTS.map((p) => (p.id === 'lunch' ? { ...p, label: 'Brunch' } : p))))
+            .toBe('preset:lunch@12:00-17:00/Brunch');
+        // Another preset's edit is not this pick's question.
+        const dinnerMoved = DEFAULTS.map((p) => (p.id === 'dinner' ? { ...p, start: '19:00' } : p));
+        expect(slotDefinitionKey(lunch, dinnerMoved)).toBe('preset:lunch@12:00-17:00/Lunch');
         expect(slotDefinitionKey(ALL_DAY, DEFAULTS)).toBe('all');
         expect(slotDefinitionKey({ kind: 'custom', from: '22:00', to: '02:00' }, DEFAULTS)).toBe('custom:22:00-02:00');
+    });
+
+    it('keys "By session" on EVERY preset, All day included — those rows are the presets', () => {
+        const moved = DEFAULTS.map((p) => (p.id === 'lunch' ? { ...p, end: '15:00' } : p));
+        const renamed = DEFAULTS.map((p) => (p.id === 'dinner' ? { ...p, label: 'Supper' } : p));
+        const all = slotDefinitionKey(ALL_DAY, DEFAULTS, 'session');
+        expect(all).toBe('all#[["lunch","Lunch","12:00","17:00"],["dinner","Dinner","18:00","24:00"]]');
+        // The table the reader is looking at — "Lunch (12:00-17:00)" — changes
+        // under an unchanged URL on each of these, so each must be re-asked.
+        expect(slotDefinitionKey(ALL_DAY, moved, 'session')).not.toBe(all);
+        expect(slotDefinitionKey(ALL_DAY, renamed, 'session')).not.toBe(all);
+        expect(slotDefinitionKey(ALL_DAY, DEFAULTS.slice(0, 1), 'session')).not.toBe(all);
+        // Custom 16:00–19:00 by session carries a sliver of Dinner: its edit reshapes that row.
+        const custom = { kind: 'custom', from: '16:00', to: '19:00' } as const;
+        expect(slotDefinitionKey(custom, renamed, 'session')).not.toBe(slotDefinitionKey(custom, DEFAULTS, 'session'));
+        // Every other cut (and a report with none) keys exactly as before.
+        for (const bucket of ['day', 'hour', 'hour_of_day', undefined] as const) {
+            expect(slotDefinitionKey(ALL_DAY, moved, bucket)).toBe('all');
+        }
     });
 });
 
@@ -345,7 +369,11 @@ describe('wiring', () => {
         expect(base).toMatch(/timeTo: slotParams\.timeTo/);
         // A new slot — or new hours behind the same slot — is a new question:
         // back to page one, and fetched again even though the URL is unchanged.
-        expect(page).toContain('slotDefinitionKey(effectiveSlot, slotCatalogue?.slots ?? [])');
+        // …keyed with the bucket actually SENT, so "By session" re-asks when any
+        // preset is saved, All day included.
+        expect(page).toContain('const sentBucket = def?.timeWise ? effectiveBucket : undefined');
+        expect(page).toContain('slotDefinitionKey(effectiveSlot, slotCatalogue?.slots ?? [], sentBucket)');
+        expect(base).toMatch(/bucket: sentBucket,/);
         expect(page).toMatch(/setOffset\(0\) \}, \[[^\]]*slotDefKey\]/);
         expect(page).toMatch(/getMisReport\(rid, def\.path[\s\S]*?\}, \[[^\]]*slotDefKey\]\)/);
         // …remembered like the range, and on the URL.
