@@ -165,7 +165,7 @@ import {
 import { useCurrency } from "@/hooks/use-currency";
 import { useToast } from "@/hooks/use-toast";
 import { ToastAction } from "@/components/ui/toast";
-import { tableOptionLabel, type BillPrintedRefusal } from "@/lib/next-party";
+import { billPrintedOf, nextPartyRetryKey, readReprintNeeded, reprintAnchorOrder, singleFlight, tableOptionLabel, type BillPrintedRefusal } from "@/lib/next-party";
 import { useHighlightRow } from "@/hooks/use-highlight-row";
 import { dayKeyInZone, formatDate, formatDateTime, formatFullDateTime, formatTime, timezoneAbbreviation, todayInZone } from "@/lib/tz";
 import { useTimezone } from "@/lib/use-timezone";
@@ -1161,6 +1161,36 @@ function OrdersDashboard() {
   }
   
   /*
+    CLIENT ITEM 6 — A SENIOR ROLE'S ADDITION TO A PRINTED BILL.
+
+    A manager, cashier or captain may add to a table whose bill is printed; the
+    server writes it and answers `reprint_needed`, because the guest is holding
+    paper that no longer covers the bill — they would pay the printed total and
+    the settle would book the larger one. So the answer is said, in the
+    server's words, with a Reprint that prints that table exactly as its Print
+    Bill button does (the claim, then the page). The owner app says the same
+    words with the same action.
+  */
+  const offerReprint = (resp: unknown, fallbackTable: string, fresh: readonly Order[]): void => {
+    const notice = readReprintNeeded(resp, fallbackTable);
+    if (!notice) {return;}
+    const anchor = reprintAnchorOrder(fresh, notice.table);
+    toast({
+      title: "Reprint the bill?",
+      description: notice.message,
+      ...(anchor
+        ? {
+            action: (
+              <ToastAction altText="Reprint" onClick={() => { void triggerPrint(anchor); }}>
+                Reprint
+              </ToastAction>
+            ),
+          }
+        : {}),
+    });
+  };
+
+  /*
     Answers the server's refusal when an order was NOT added because its bill
     is already printed (client item 6), and null otherwise — the caller,
     submitNewOrder below, decides what to show.
@@ -1225,7 +1255,7 @@ function OrdersDashboard() {
       // draft sent twice is ONE order to the server, not two.
       const resp: any = await addOrder(user.restaurantUsername, newOrder, { idempotencyKey: newOrderData.idempotencyKey });
       // Nothing was written; the dialog stays open with the draft as it was.
-      const refused = (resp as { bill_printed?: BillPrintedRefusal } | null)?.bill_printed;
+      const refused = billPrintedOf(resp);
       if (refused) {return refused;}
       const createdId = resp?.id ?? resp?._id ?? null;
 
@@ -1246,9 +1276,12 @@ function OrdersDashboard() {
         getOrders(user.restaurantUsername),
         getMonthlyApcInsight(user.restaurantUsername),
       ]);
-      setOrders(Array.isArray(updatedOrders) ? dedupeOrdersById(updatedOrders) : []);
+      const fresh = Array.isArray(updatedOrders) ? dedupeOrdersById(updatedOrders) : [];
+      setOrders(fresh);
       setMonthlyApcInsight(updatedApcInsight ?? null);
       setIsAddDialogOpen(false);
+      // A senior role's order on a printed table: the paper is now short.
+      offerReprint(resp, orderTableName, fresh);
     } catch (error) {
       console.error("Failed to add order", error);
     }
@@ -1262,8 +1295,16 @@ function OrdersDashboard() {
     named, with the covers already typed, which is what seats the new party
     there. The table is looked up in a FRESH floor read: the seat is opened by
     a print, quite possibly on another device after this page loaded its
-    tables. A fresh idempotency key too — the refused send released its own,
-    and this is a different write (another table).
+    tables.
+
+    ONE ORDER, HOWEVER OFTEN IT IS ASKED FOR. The key is derived from the
+    draft's own and the seat (nextPartyRetryKey) — a different write from the
+    refused one, so not the draft's key, but the same key on every click — and
+    the whole retry runs single-flight (nextPartyRetry below) with the dialog's
+    Send held while it does. A double click, or the dialog's Send pressed and a
+    second toast's action clicked while the first retry was still waiting on
+    its reloads, used to post two orders to "12 #2" under two keys: two KOTs,
+    and a next party charged twice.
   */
   const takeOrderOnNextParty = async (
     seat: string,
@@ -1284,10 +1325,29 @@ function OrdersDashboard() {
       });
       return null;
     }
-    const moved: NewOrderDraft = { ...draft, tableId: target.id, tableName: target.name, idempotencyKey: newIdempotencyKey() };
+    const moved: NewOrderDraft = {
+      ...draft,
+      tableId: target.id,
+      tableName: target.name,
+      idempotencyKey: draft.idempotencyKey ? nextPartyRetryKey(draft.idempotencyKey, target.name) : newIdempotencyKey(),
+    };
     const refusal = await handleAddOrder(moved);
     return refusal ? { refusal, draft: moved } : null;
   };
+
+  // The retry, one at a time — see takeOrderOnNextParty. The ref carries the
+  // latest render's closure to the guard, which is made once.
+  const [nextPartyBusy, setNextPartyBusy] = useState(false);
+  const takeOrderOnNextPartyRef = useRef(takeOrderOnNextParty);
+  useEffect(() => { takeOrderOnNextPartyRef.current = takeOrderOnNextParty; });
+  const [nextPartyRetry] = useState(() => singleFlight(async (seat: string, draft: NewOrderDraft) => {
+    setNextPartyBusy(true);
+    try {
+      return await takeOrderOnNextPartyRef.current(seat, draft);
+    } finally {
+      setNextPartyBusy(false);
+    }
+  }));
 
   /*
     The dialog's send. A refusal is said in the server's words, and when it
@@ -1295,6 +1355,8 @@ function OrdersDashboard() {
     cart, so a refusal the waiter ignores costs nothing.
   */
   const submitNewOrder = async (draft: NewOrderDraft): Promise<void> => {
+    // The same draft is already on its way to the next party's seat.
+    if (nextPartyRetry.busy()) {return;}
     const offer = (refusal: BillPrintedRefusal, sent: NewOrderDraft): void => {
       const seat = refusal.nextPartyTable;
       const label = refusal.actionLabel;
@@ -1308,7 +1370,7 @@ function OrdersDashboard() {
                 <ToastAction
                   altText={label}
                   onClick={() => {
-                    void takeOrderOnNextParty(seat, sent).then((again) => {
+                    void nextPartyRetry.run(seat, sent).then((again) => {
                       if (again) {offer(again.refusal, again.draft);}
                     });
                   }}
@@ -1478,7 +1540,13 @@ function OrdersDashboard() {
 
     try {
       // persist via AddOrder upsert endpoint
-      await addOrder(user.restaurantUsername, updatedOrder);
+      const saved: unknown = await addOrder(user.restaurantUsername, updatedOrder);
+      // A refusal (client item 6) writes nothing; the reload below puts the
+      // row back, and the sentence says why.
+      const refused = billPrintedOf(saved);
+      if (refused) {
+        toast({ title: "Not updated — the bill is printed", description: refused.message, variant: "destructive" });
+      }
       const refreshed = await getOrders(user.restaurantUsername);
       setOrders(Array.isArray(refreshed) ? refreshed : []);
     } catch (err) {
@@ -1538,7 +1606,11 @@ function OrdersDashboard() {
       });
       // update order status via upsert
       const updatedOrder: Order = { ...order, status: 'Bill Verification' };
-      await addOrder(user.restaurantUsername, updatedOrder);
+      const saved: unknown = await addOrder(user.restaurantUsername, updatedOrder);
+      const refused = billPrintedOf(saved);
+      if (refused) {
+        toast({ title: "Not updated — the bill is printed", description: refused.message, variant: "destructive" });
+      }
       const updatedOrders = await getOrders(user.restaurantUsername);
       setOrders(Array.isArray(updatedOrders) ? dedupeOrdersById(updatedOrders) : []);
     } catch (err) {
@@ -2039,6 +2111,7 @@ function OrdersDashboard() {
           </DialogHeader>
           <OrderForm
             onSubmit={submitNewOrder}
+            busy={nextPartyBusy}
             menuItems={menuItems}
             variationsByMenuId={variationsByMenuId}
             tables={tables}
@@ -2855,6 +2928,9 @@ function OrdersDashboard() {
         }}
         onSave={async (updatedOrder) => {
           if (!user?.restaurantUsername) {return;}
+          // Left open when the server refused the edit, so the lines typed are
+          // still there to take out or take elsewhere.
+          let keepOpen = false;
           try {
             // detect removed item ids and call delete endpoint for each
             try {
@@ -2869,19 +2945,36 @@ function OrdersDashboard() {
               console.error('Failed to call delete-item endpoints', e);
             }
 
-            await addOrder(user.restaurantUsername, updatedOrder);
+            const saved: unknown = await addOrder(user.restaurantUsername, updatedOrder);
+            // CLIENT ITEM 6 — THE EDIT ADDED TO A PRINTED BILL, AND WAS REFUSED.
+            // Nothing was written. It used to close as if it had saved, and the
+            // line was simply missing. The sentence is the server's; no seat is
+            // offered from here, because an edit is this party's own order — a
+            // NEXT party's order starts in Add New Order, where its covers are
+            // asked.
+            const refused = billPrintedOf(saved);
+            if (refused) {
+              keepOpen = true;
+              toast({ title: "Not saved — the bill is printed", description: refused.message, variant: "destructive" });
+              return;
+            }
             const [updatedOrders, updatedApcInsight] = await Promise.all([
               getOrders(user.restaurantUsername),
               getMonthlyApcInsight(user.restaurantUsername),
             ]);
-            setOrders(Array.isArray(updatedOrders) ? dedupeOrdersById(updatedOrders) : []);
+            const fresh = Array.isArray(updatedOrders) ? dedupeOrdersById(updatedOrders) : [];
+            setOrders(fresh);
             setMonthlyApcInsight(updatedApcInsight ?? null);
+            // A senior role's edit that grew a printed bill: reprint it.
+            offerReprint(saved, updatedOrder.table, fresh);
           } catch (err) {
             console.error('Failed to save order', err);
             alert('Unable to save order.');
           } finally {
-            setSelectedOrder(null);
-            setIsDetailsOpen(false);
+            if (!keepOpen) {
+              setSelectedOrder(null);
+              setIsDetailsOpen(false);
+            }
           }
         }}
         menuItems={menuItems}
@@ -3734,7 +3827,7 @@ interface NewOrderDraft {
   idempotencyKey?: string;
 }
 
-function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSelectedTable, variationsByMenuId }: { onSubmit: (data: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null; course_hold?: boolean; variation_id?: string }[]; covers?: number; idempotencyKey?: string }) => Promise<void> | void; menuItems: MenuItem[]; tables: { id: number; name: string; capacity: number; parent_table?: string | null }[]; selectedTableName?: string; onClearSelectedTable?: () => void; variationsByMenuId?: Map<string, MenuVariationRecord[]> }) {
+function OrderForm({ onSubmit, busy = false, menuItems, tables, selectedTableName, onClearSelectedTable, variationsByMenuId }: { onSubmit: (data: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null; course_hold?: boolean; variation_id?: string }[]; covers?: number; idempotencyKey?: string }) => Promise<void> | void; /** True while this draft is being sent to the next party's seat (client item 6): Send is held. */ busy?: boolean; menuItems: MenuItem[]; tables: { id: number; name: string; capacity: number; parent_table?: string | null }[]; selectedTableName?: string; onClearSelectedTable?: () => void; variationsByMenuId?: Map<string, MenuVariationRecord[]> }) {
   const { currencySymbol } = useCurrency();
   // C4's gate, from the session and therefore from the server. Read here rather
   // than passed in as a prop: a prop could be forgotten at one of the call
@@ -3864,6 +3957,8 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
   */
   const handleSubmit = async () => {
     if (sendingRef.current) {return;}
+    // This draft is already on its way to the next party's seat (client item 6).
+    if (busy) {return;}
     const tableIdNum = Number(selectedTableId);
     if (!selectedTableId || Number.isNaN(tableIdNum) || itemsList.length === 0) {return;}
     // `variation_label` is stripped here (toOrderItems): the server stamps its own.
@@ -3920,7 +4015,7 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
             <Button variant="outline" size="lg" className="h-12 shrink-0 text-base" onClick={() => { setReviewing(false); }} disabled={sending}>
               Back to menu
             </Button>
-            <Button size="lg" className="h-12 flex-1 text-base" onClick={() => { void handleSubmit(); }} disabled={!canSend || sending}>
+            <Button size="lg" className="h-12 flex-1 text-base" onClick={() => { void handleSubmit(); }} disabled={!canSend || sending || busy}>
               {sending ? "Sending…" : "Send to kitchen"}
             </Button>
           </div>
@@ -3981,7 +4076,7 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
           <Button variant="outline" size="lg" className="h-12 shrink-0 text-base" onClick={() => { setReviewing(true); }} disabled={itemsList.length === 0 || sending}>
             View order
           </Button>
-          <Button size="lg" className="h-12 flex-1 text-base" onClick={() => { void handleSubmit(); }} disabled={!canSend || sending}>
+          <Button size="lg" className="h-12 flex-1 text-base" onClick={() => { void handleSubmit(); }} disabled={!canSend || sending || busy}>
             {sending ? "Sending…" : itemCount > 0 ? `Send order · ${String(itemCount)} item${itemCount === 1 ? "" : "s"}` : "Send order"}
           </Button>
         </div>

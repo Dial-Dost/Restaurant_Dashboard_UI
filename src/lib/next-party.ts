@@ -41,8 +41,17 @@
 /** The chip on a next-party seat's tile. */
 export const NEXT_PARTY_CHIP = 'Next party';
 
-/** The machine-readable code on the server's 409 for an order added to a printed bill. */
+/** The machine-readable code on the server's refusal of an order added to a printed bill. */
 export const BILL_PRINTED_CODE = 'bill_printed';
+
+/**
+ * The status that refusal arrives with — 423, and deliberately NOT 409. The
+ * till's offline queue reads a 409 as "this Idempotency-Key is still in
+ * flight, retry", so a 409 refusal was retried over and over while every later
+ * write from that device waited behind it. This page reads the refusal by its
+ * CODE, whatever the status (an older server sent 409).
+ */
+export const BILL_PRINTED_STATUS = 423;
 
 /** Between the root's name and the party number: never "-" (the print ledger's prefix). */
 export const NEXT_PARTY_SEPARATOR = ' #';
@@ -174,7 +183,7 @@ export const withNextPartySeats = <T extends NextPartyAware & { party_no?: numbe
     return out;
 };
 
-/** The action beside a 409: "Take it on 12 (next party)". */
+/** The action beside that refusal: "Take it on 12 (next party)". */
 export const takeItOnLabel = (nextPartyTable: string): string => `Take it on ${tableSentenceName(nextPartyTable)}`;
 
 /** The line after a print, when the server named a seat for the next party. */
@@ -197,7 +206,7 @@ export const nextPartyAfterPrint = (body: unknown): { table: string | null; mess
     return { table, message: said || nextPartyAfterPrintMessage(table) };
 };
 
-/** The server's 409 for an order added to a printed bill, read. */
+/** The server's refusal of an order added to a printed bill, read. */
 export interface BillPrintedRefusal {
     /** The server's sentence, shown as it stands. */
     message: string;
@@ -224,5 +233,123 @@ export const readBillPrintedRefusal = (body: unknown): BillPrintedRefusal | null
         table,
         nextPartyTable: elsewhere ? next : null,
         actionLabel: elsewhere ? (label || takeItOnLabel(next)) : null,
+    };
+};
+
+/**
+ * What `addOrder` hands back when the server refused the write: the refusal,
+ * or null for anything else (an order, an acknowledgement, nothing).
+ */
+export const billPrintedOf = (resp: unknown): BillPrintedRefusal | null => {
+    if (!resp || typeof resp !== 'object' || Array.isArray(resp)) { return null; }
+    const refused = (resp as { bill_printed?: unknown }).bill_printed;
+    return refused && typeof refused === 'object' ? (refused as BillPrintedRefusal) : null;
+};
+
+// ============================================================================
+// A SENIOR ROLE'S ADDITION TO A PRINTED BILL
+// ============================================================================
+
+/**
+ * "12's bill was already printed, so the paper no longer shows this. Reprint
+ * the bill before the guest pays." — the server's reprintNeededMessage, word
+ * for word, for a server that flagged the reprint without the sentence.
+ */
+export const reprintNeededMessage = (table: string, parentTable?: string | null): string =>
+    `${tableSentenceName(table, parentTable)}'s bill was already printed, so the paper no longer shows this. Reprint the bill before the guest pays.`;
+
+/** The reprint a write's answer asks for. `table` is the handle to print. */
+export interface ReprintNeeded {
+    table: string;
+    message: string;
+}
+
+/**
+ * A manager, cashier or captain may add to a printed bill; the server then
+ * answers `reprint_needed: true`, the sentence, and `reprint_table`, because
+ * the guest is holding paper that no longer covers the bill. Null unless the
+ * answer says so. `fallbackTable` is the table the write was for, used only
+ * when the server did not name one.
+ */
+export const readReprintNeeded = (body: unknown, fallbackTable?: string | null): ReprintNeeded | null => {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) { return null; }
+    const b = body as { reprint_needed?: unknown; reprint_table?: unknown; reprint_message?: unknown };
+    if (b.reprint_needed !== true) { return null; }
+    const named = typeof b.reprint_table === 'string' ? b.reprint_table.trim() : '';
+    const table = named || (fallbackTable ?? '').trim();
+    if (!table) { return null; }
+    const said = typeof b.reprint_message === 'string' ? b.reprint_message.trim() : '';
+    return { table, message: said || reprintNeededMessage(table) };
+};
+
+/**
+ * The order a Reprint is printed FROM: the newest one on that table that is
+ * still open. The print claims the whole table's bill whichever order it
+ * starts from; this only has to be one of that table's own.
+ */
+export const reprintAnchorOrder = <T extends { table: string; status: string; created_at?: string | null }>(
+    orders: readonly T[],
+    table: string,
+): T | null => {
+    const key = table.trim().toLowerCase();
+    const open = orders.filter((o) => (o.table ?? '').trim().toLowerCase() === key
+        && !['Paid', 'Closed', 'Cancelled'].includes(o.status));
+    if (open.length === 0) { return null; }
+    const at = (o: T): number => (o.created_at ? Date.parse(o.created_at) : Number.NaN);
+    return [...open].sort((a, z) => (Number.isFinite(at(z)) ? at(z) : 0) - (Number.isFinite(at(a)) ? at(a) : 0))[0];
+};
+
+// ============================================================================
+// "TAKE IT ON 12 (NEXT PARTY)" — ONCE
+// ============================================================================
+
+/** FNV-1a, 32 bit, hex: a short, stable, printable digest of a table name. */
+const fnv1a = (text: string): string => {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < text.length; i += 1) {
+        h ^= text.charCodeAt(i);
+        h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return h.toString(16).padStart(8, '0');
+};
+
+/**
+ * THE IDEMPOTENCY-KEY FOR "SEND THIS DRAFT TO THAT SEAT".
+ *
+ * The retry is a different write from the refused one (another table), so it
+ * cannot reuse the draft's key — the server would call that a key reused for a
+ * different request. But it is ONE write however often it is asked for: a
+ * double click, or a second refusal toast's action while the first retry is
+ * still on its way, must reach the server as the same key, or the next party
+ * gets two orders and two KOTs, and is charged for both. So the key is derived
+ * from the draft's key and the seat, never minted per click. The seat is
+ * digested because a table name has spaces ("12 #2") and the server accepts
+ * only printable ASCII without them.
+ */
+export const nextPartyRetryKey = (draftKey: string, seat: string): string =>
+    `${draftKey}:np:${fnv1a(seat.trim().toLowerCase())}`;
+
+/**
+ * One run at a time: a call made while the previous one is still running is
+ * dropped (it answers null) rather than queued, and `busy()` says whether one
+ * is running. The retry is guarded with this for the whole of its run — the
+ * floor read, the seat's occupy, the order, the reloads — which the order
+ * form's own send guard does not cover once the refusal has come back.
+ */
+export const singleFlight = <A extends unknown[], R>(
+    run: (...args: A) => Promise<R>,
+): { run: (...args: A) => Promise<R | null>; busy: () => boolean } => {
+    let running = false;
+    return {
+        run: async (...args: A): Promise<R | null> => {
+            if (running) { return null; }
+            running = true;
+            try {
+                return await run(...args);
+            } finally {
+                running = false;
+            }
+        },
+        busy: () => running,
     };
 };

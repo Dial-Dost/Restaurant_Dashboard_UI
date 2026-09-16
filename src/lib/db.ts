@@ -2416,8 +2416,9 @@ export const addMenuItem = async (restaurantId: string, item: MenuItem) => {
 // that use this route as a status upsert pass none and are unchanged.
 //
 // CLIENT ITEM 6 — A PRINTED BILL TAKES NO MORE FROM A WAITER. The server answers
-// 409 `bill_printed` (and writes nothing) when a waiter-only login adds to a
-// table whose bill has been printed. That refusal comes back as a VALUE,
+// `bill_printed` (and writes nothing) when a waiter-only login adds to a table
+// whose bill has been printed — as 423, never 409 (see BILL_PRINTED_STATUS), and
+// an older server as 409, so any 4xx is read for the code. That refusal comes back as a VALUE,
 // `{ bill_printed }`, never as the silent local "acknowledged" below — which
 // would tell a waiter the order was placed when the kitchen never saw it — and
 // never as a throw, whose message Next redacts across this "use server"
@@ -2433,7 +2434,7 @@ export const addOrder = async (restaurantId: string, order: Order, opts?: { idem
         body: JSON.stringify(order),
     });
 
-    if (response?.status === 409) {
+    if (response && !response.ok && response.status >= 400 && response.status < 500) {
         let body: unknown = null;
         try { body = await response.json(); } catch { body = null; }
         const refusal = readBillPrintedRefusal(body);

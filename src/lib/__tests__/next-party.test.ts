@@ -4,9 +4,12 @@
 //
 //   1. AN ORDER FOR THE NEXT GUESTS NEVER LANDS ON THE PRINTED BILL. The tile
 //      and the picker say "12", but everything that is SENT names "12 #2". And
-//      the server's 409 comes back to the page as a value it can act on — not
-//      as the local "acknowledged" addOrder answers every other failure with,
-//      which would tell a waiter the kitchen had an order it never saw.
+//      the server's refusal (423) comes back to the page as a value it can act
+//      on — not as the local "acknowledged" addOrder answers every other
+//      failure with, which would tell a waiter the kitchen had an order it
+//      never saw. "Take it on 12 (next party)" sends ONE order however often it
+//      is clicked, and a manager's addition to a printed bill is told to
+//      reprint it.
 //   2. THE ROOM HAS NO "12 #2" IN IT: not in the floor plan, not in the stored
 //      layout, not in a zone's table count.
 //   3. ONE VOCABULARY with the server and the till: read here off the
@@ -18,6 +21,8 @@ import { join } from 'node:path';
 
 import {
     BILL_PRINTED_CODE,
+    BILL_PRINTED_STATUS,
+    billPrintedOf,
     countRoomsInUse,
     NEXT_PARTY_CHIP,
     RESERVED_TABLE_NAME_ERROR,
@@ -26,10 +31,15 @@ import {
     nextPartyAfterPrint,
     nextPartyAfterPrintMessage,
     nextPartyLabel,
+    nextPartyRetryKey,
     nextPartyRowFields,
     parseNextPartyName,
     readBillPrintedRefusal,
+    readReprintNeeded,
+    reprintAnchorOrder,
+    reprintNeededMessage,
     roomTables,
+    singleFlight,
     tableDisplayName,
     tableOptionLabel,
     tableSentenceName,
@@ -159,6 +169,44 @@ describe('what the server answers', () => {
         expect(readBillPrintedRefusal(null)).toBeNull();
     });
 
+    test('what addOrder hands back is read for the refusal, and for nothing else', () => {
+        const refusal = { message: 'x', table: '12', nextPartyTable: '12 #2', actionLabel: 'Take it on 12 (next party)' };
+        expect(billPrintedOf({ bill_printed: refusal })).toBe(refusal);
+        for (const other of [null, undefined, 'x', [], { id: 'o-1' }, { acknowledged: true }, { bill_printed: null }, { bill_printed: 'yes' }]) {
+            expect(billPrintedOf(other)).toBeNull();
+        }
+    });
+
+    test('a manager\'s addition to a printed bill is read for the reprint, in the server\'s words', () => {
+        const said = "12's bill was already printed, so the paper no longer shows this. Reprint the bill before the guest pays.";
+        expect(readReprintNeeded({ id: 'o-1', reprint_needed: true, reprint_message: said, reprint_table: '12' }, '15'))
+            .toEqual({ table: '12', message: said });
+        expect(reprintNeededMessage('12')).toBe(said);
+        // A server that flagged it without the sentence or the table.
+        expect(readReprintNeeded({ reprint_needed: true }, '12 #2')).toEqual({
+            table: '12 #2',
+            message: "12 (next party)'s bill was already printed, so the paper no longer shows this. Reprint the bill before the guest pays.",
+        });
+        for (const none of [null, 'x', [], {}, { reprint_needed: false }, { reprint_needed: 'true' }]) {
+            expect(readReprintNeeded(none, '12')).toBeNull();
+        }
+        expect(readReprintNeeded({ reprint_needed: true })).toBeNull();
+    });
+
+    test('the Reprint is printed from the newest OPEN order on that table', () => {
+        const o = (id: string, table: string, status: string, created_at: string | null) => ({ id, table, status, created_at });
+        const list = [
+            o('old', '12', 'Served', '2026-09-16T08:00:00Z'),
+            o('new', '12', 'Preparing', '2026-09-16T08:30:00Z'),
+            o('paid', '12', 'Paid', '2026-09-16T09:00:00Z'),
+            o('next', '12 #2', 'Preparing', '2026-09-16T09:10:00Z'),
+        ];
+        expect(reprintAnchorOrder(list, '12')?.id).toBe('new');
+        expect(reprintAnchorOrder(list, ' 12 #2 ')?.id).toBe('next');
+        expect(reprintAnchorOrder([o('x', '12', 'Cancelled', null), o('y', '12', 'Closed', null)], '12')).toBeNull();
+        expect(reprintAnchorOrder([o('a', '12', 'Served', null)], '12')?.id).toBe('a');
+    });
+
     test('the waiver print ends by naming the seat — only when paper came out', () => {
         const printed = serviceChargeRemovalSentence({
             waiver_created: true, printed: true, service_charge_removed: true,
@@ -176,6 +224,67 @@ describe('what the server answers', () => {
         // No seat named: the 2.0.0 sentence, byte for byte.
         expect(serviceChargeRemovalSentence({ printed: true, grand_total_after: 1050 }, money).message)
             .toBe('Reprinting without the service charge — total ₹1050.00.');
+    });
+});
+
+describe('"Take it on 12 (next party)" sends ONE order', () => {
+    test('the retry\'s key: the same for the same draft and seat, another for another seat, and a key the server accepts', () => {
+        const draft = '0123456789abcdef0123456789abcdef';
+        const k = nextPartyRetryKey(draft, '12 #2');
+        expect(nextPartyRetryKey(draft, '12 #2')).toBe(k);
+        expect(nextPartyRetryKey(draft, ' 12 #2 ')).toBe(k);
+        expect(nextPartyRetryKey(draft, '12 #3')).not.toBe(k);
+        expect(nextPartyRetryKey('fedcba9876543210fedcba9876543210', '12 #2')).not.toBe(k);
+        // Not the draft's own key: the refused send and the retry are two writes.
+        expect(k).not.toBe(draft);
+        // idempotency.ts: 8-200 printable ASCII, no space.
+        for (const seat of ['12 #2', 'Patio 4 #13', 'बाग़ #2']) {
+            expect(nextPartyRetryKey(draft, seat)).toMatch(/^[\x21-\x7e]{8,200}$/);
+        }
+    });
+
+    test('one run at a time: a second call while the first is running is dropped, and the guard frees itself', async () => {
+        let release: () => void = () => undefined;
+        const run = jest.fn(async (n: number) => {
+            await new Promise<void>((r) => { release = r; });
+            return n * 2;
+        });
+        const guard = singleFlight(run);
+        const first = guard.run(1);
+        expect(guard.busy()).toBe(true);
+        await expect(guard.run(2)).resolves.toBeNull();
+        release();
+        await expect(first).resolves.toBe(2);
+        expect(guard.busy()).toBe(false);
+        expect(run).toHaveBeenCalledTimes(1);
+        // …and a failure frees it too.
+        const failing = singleFlight(async () => { throw new Error('offline'); });
+        await expect(failing.run()).rejects.toThrow('offline');
+        expect(failing.busy()).toBe(false);
+    });
+
+    test('TWO CLICKS, ONE POST, ONE KEY — the page\'s retry composed from its two parts', async () => {
+        const posts: string[] = [];
+        let landed: () => void = () => undefined;
+        // What takeOrderOnNextParty does, reduced to what reaches the server.
+        const retry = singleFlight(async (seat: string, draftKey: string) => {
+            await new Promise<void>((r) => { landed = r; });
+            posts.push(nextPartyRetryKey(draftKey, seat));
+            return null;
+        });
+        const draftKey = '0123456789abcdef0123456789abcdef';
+        const click1 = retry.run('12 #2', draftKey);
+        const click2 = retry.run('12 #2', draftKey); // the double click
+        landed();
+        await Promise.all([click1, click2]);
+        expect(posts).toHaveLength(1);
+        // A later click (a second toast's action) reaches the server under the
+        // SAME key, which the server answers with the stored order.
+        const click3 = retry.run('12 #2', draftKey);
+        landed();
+        await click3;
+        expect(posts).toHaveLength(2);
+        expect(new Set(posts).size).toBe(1);
     });
 });
 
@@ -205,6 +314,13 @@ describe('the same words as the server (Restaurant_Backend/next_party.ts)', () =
         expect(src).toContain('return `${String(root ?? "").trim()} (next party)`;');
         expect(src).toContain('return `Take it on ${tableSentenceName(next, parent)}`;');
         expect(src).toContain('return `Seat the next party at ${');
+        expect(src).toContain("was already printed, so the paper no longer shows this. Reprint the bill before the guest pays.`;");
+        expect(reprintNeededMessage('12')).toMatch(/was already printed, so the paper no longer shows this\. Reprint the bill before the guest pays\.$/);
+    });
+
+    maybe('the refusal\'s status is the server\'s — and never 409', () => {
+        expect(src).toContain(`export const BILL_PRINTED_STATUS = ${String(BILL_PRINTED_STATUS)};`);
+        expect(BILL_PRINTED_STATUS).not.toBe(409);
     });
 });
 
@@ -223,13 +339,15 @@ describe('the wiring — nothing here is built and never called', () => {
         expect(body).toContain('...nextPartyRowFields(item, String(name))');
     });
 
-    test('addOrder returns the 409 as a value BEFORE its silent local fallback', () => {
+    test('addOrder returns the refusal as a value BEFORE its silent local fallback — for any 4xx, not only 409', () => {
         const at = db.indexOf('export const addOrder = ');
         const body = db.slice(at, db.indexOf('\n};', at));
         const refusal = body.indexOf('readBillPrintedRefusal(body)');
         expect(refusal).toBeGreaterThan(-1);
         expect(refusal).toBeLessThan(body.indexOf("addToLocalField(restaurantId, 'orders', order)"));
         expect(body).toMatch(/\{ bill_printed: refusal \}/);
+        expect(body).toContain('if (response && !response.ok && response.status >= 400 && response.status < 500) {');
+        expect(body).not.toMatch(/status === 409/);
     });
 
     test('the print claim carries the seat, and the orders page says it', () => {
@@ -238,13 +356,46 @@ describe('the wiring — nothing here is built and never called', () => {
         expect(orders).toMatch(/if \(claim\.nextParty\.message\) \{/);
         // The refusal reaches the page — returned by the send, before anything
         // else happens — and its action sends the same draft to the seat.
-        expect(orders).toMatch(/const refused = \(resp as \{ bill_printed\?: BillPrintedRefusal \} \| null\)\?\.bill_printed;\s*if \(refused\) \{return refused;\}/);
-        expect(orders).toMatch(/const moved: NewOrderDraft = \{ \.\.\.draft, tableId: target\.id, tableName: target\.name/);
+        expect(orders).toMatch(/const refused = billPrintedOf\(resp\);\s*if \(refused\) \{return refused;\}/);
+        expect(orders).toMatch(/const moved: NewOrderDraft = \{\s*\.\.\.draft,\s*tableId: target\.id,\s*tableName: target\.name,\s*idempotencyKey: draft\.idempotencyKey \? nextPartyRetryKey\(draft\.idempotencyKey, target\.name\) : newIdempotencyKey\(\),/);
         expect(orders).toMatch(/const refusal = await handleAddOrder\(draft\);\s*if \(refusal\) \{offer\(refusal, draft\);\}/);
         expect(orders).toMatch(/onSubmit=\{submitNewOrder\}/);
         // The picker and the table-wise report use the shared words and label.
         expect(orders).toMatch(/label: tableOptionLabel\(t\)/);
         expect(orders).toMatch(/\(item\.table_label \?\? item\.table_name\)\.trim\(\)/);
+    });
+
+    test('the retry is single-flight, the form\'s Send is held while it runs, and the toast goes through the guard', () => {
+        const orders = read('src/app/dashboard/orders/page.tsx');
+        expect(orders).toMatch(/const \[nextPartyRetry\] = useState\(\(\) => singleFlight\(async \(seat: string, draft: NewOrderDraft\) => \{\s*setNextPartyBusy\(true\);/);
+        expect(orders).toMatch(/return await takeOrderOnNextPartyRef\.current\(seat, draft\);\s*\} finally \{\s*setNextPartyBusy\(false\);/);
+        expect(orders).toMatch(/void nextPartyRetry\.run\(seat, sent\)\.then/);
+        expect(orders).not.toMatch(/void takeOrderOnNextParty\(/);
+        expect(orders).toMatch(/const submitNewOrder = async \(draft: NewOrderDraft\): Promise<void> => \{\s*\/\/[^\n]*\n\s*if \(nextPartyRetry\.busy\(\)\) \{return;\}/);
+        expect(orders).toMatch(/onSubmit=\{submitNewOrder\}\s*busy=\{nextPartyBusy\}/);
+        expect(orders).toMatch(/if \(sendingRef\.current\) \{return;\}\s*\/\/[^\n]*\n\s*if \(busy\) \{return;\}/);
+        expect(orders.match(/disabled=\{!canSend \|\| sending \|\| busy\}/g)).toHaveLength(2);
+    });
+
+    test('every upsert says a refusal, and a senior role\'s addition offers the reprint', () => {
+        const orders = read('src/app/dashboard/orders/page.tsx');
+        // The status change, Bill Verification, and the details dialog.
+        expect(orders.match(/const saved: unknown = await addOrder\(user\.restaurantUsername, updatedOrder\);\s*(?:\/\/[^\n]*\s*)*const refused = billPrintedOf\(saved\);/g)).toHaveLength(3);
+        // The dialog stays open on a refusal.
+        expect(orders).toMatch(/if \(refused\) \{\s*keepOpen = true;/);
+        expect(orders).toMatch(/finally \{\s*if \(!keepOpen\) \{\s*setSelectedOrder\(null\);\s*setIsDetailsOpen\(false\);/);
+        // The reprint: after the add and after the edit, through one helper.
+        expect(orders).toContain('offerReprint(resp, orderTableName, fresh);');
+        expect(orders).toContain('offerReprint(saved, updatedOrder.table, fresh);');
+        expect(orders).toMatch(/const notice = readReprintNeeded\(resp, fallbackTable\);/);
+        expect(orders).toMatch(/<ToastAction altText="Reprint" onClick=\{\(\) => \{ void triggerPrint\(anchor\); \}\}>/);
+    });
+
+    test('the Tables screen draws the Next party badge exactly on a next-party seat', () => {
+        const tablesPage = read('src/app/dashboard/tables/page.tsx');
+        expect(tablesPage).toContain('const nextParty = isNextPartyTable(table);');
+        expect(tablesPage).toMatch(/\{nextParty \? \(\s*<Badge[\s\S]{0,400}?\{NEXT_PARTY_CHIP\}\s*<\/Badge>\s*\) : null\}/);
+        expect(tablesPage).toMatch(/nextParty \? `\$\{spoken\} — its bill reads \$\{table\.name\}`/);
     });
 
     test('the floor plan is the room; the Tables screen puts each seat beside its table', () => {
