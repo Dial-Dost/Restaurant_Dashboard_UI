@@ -22,7 +22,15 @@ import { readErrorMessage, refusalSentence, type RefusedAction } from '@/lib/err
 import { billPrintRefusal, billPrintStateFields, type BillPrintState } from '@/lib/bill-print-state';
 import { UNREACHABLE_MESSAGE, billCustomerPayload, billCustomerSaveOutcome, type BillCustomerRequest, type BillCustomerSaveOutcome } from '@/lib/bill-customer';
 import { SELECTED_OUTLET_KEY } from '@/lib/outlet';
-import { KOT_PRINT_STYLE_DEFAULT, readKotPrintStyle, type KotPrintStyle } from '@/lib/kot-print-style';
+import {
+    KOT_PRINT_STYLE_DEFAULT,
+    KOT_TEXT_SIZE_DEFAULT,
+    readKotDocketSettings,
+    readKotPrintStyle,
+    readKotTextSize,
+    type KotPrintStyle,
+    type KotTextSize,
+} from '@/lib/kot-print-style';
 import { readPaymentMethods, type PaymentMethodConfig } from '@/lib/payment-methods';
 import type { BrandConfig } from '@/lib/brand-fonts';
 import type { RolePermission } from '@/lib/role-permissions';
@@ -5195,12 +5203,17 @@ export const setFeedbackValetEnabled = async (restaurantId: string, enabled: boo
 // the card renders the real value for whoever can open Settings; WRITING is
 // gated on "Manage Restaurant Settings" server-side, which is what canEdit
 // mirrors on the card.
-export const getKotPrintStyle = async (restaurantId: string): Promise<KotPrintStyle> => {
+//
+// BOTH DOCKET SETTINGS COME FROM ONE READ — the style and, since the client
+// asked for smaller type, the reference docket's text size (kot_text_size).
+export const getKotDocketSettings = async (restaurantId: string): Promise<{ style: KotPrintStyle; textSize: KotTextSize }> => {
+    const fallback = { style: KOT_PRINT_STYLE_DEFAULT, textSize: KOT_TEXT_SIZE_DEFAULT };
     const res = await backendCall('/restaurant/settings', restaurantId, { method: 'GET' });
-    // A backend that cannot be read, or one from before this setting existed,
-    // only ever prints the reference docket — so that is what the card shows.
-    if (!res?.ok) {return KOT_PRINT_STYLE_DEFAULT;}
-    try { return readKotPrintStyle(await res.json()); } catch { return KOT_PRINT_STYLE_DEFAULT; }
+    // A backend that cannot be read, or one from before these settings existed,
+    // only ever prints the reference docket at the standard size — so that is
+    // what the card shows.
+    if (!res?.ok) {return fallback;}
+    try { return readKotDocketSettings(await res.json()); } catch { return fallback; }
 };
 
 export const setKotPrintStyle = async (restaurantId: string, style: KotPrintStyle): Promise<KotPrintStyle> => {
@@ -5218,6 +5231,19 @@ export const setKotPrintStyle = async (restaurantId: string, style: KotPrintStyl
     // Echo what the server stored, not what was asked for — the two can differ
     // only if something is wrong, and that is worth seeing.
     try { return readKotPrintStyle(await res.json()); } catch { return style; }
+};
+
+// The reference docket's type size — one key in, one key out, on exactly the
+// terms of setKotPrintStyle above: a refused save RAISES (the backend 400s a
+// size it does not know), and the card shows what the server stored.
+export const setKotTextSize = async (restaurantId: string, size: KotTextSize): Promise<KotTextSize> => {
+    const res = await backendCall('/restaurant/settings', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kot_text_size: size }),
+    });
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to save the KOT text size');}
+    try { return readKotTextSize(await res.json()); } catch { return size; }
 };
 
 // --- Printed-bill identity + the sentence above the bill QR ------------------

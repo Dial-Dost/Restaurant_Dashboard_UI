@@ -30,8 +30,16 @@ import {
     KOT_PRINT_STYLE_DEFAULT,
     KOT_PRINT_STYLE_HELP,
     KOT_PRINT_STYLE_OPTIONS,
+    KOT_TEXT_SIZES,
+    KOT_TEXT_SIZE_CLASSIC_NOTE,
+    KOT_TEXT_SIZE_DEFAULT,
+    KOT_TEXT_SIZE_HELP,
+    KOT_TEXT_SIZE_OPTIONS,
     isKotPrintStyle,
+    isKotTextSize,
+    readKotDocketSettings,
     readKotPrintStyle,
+    readKotTextSize,
 } from '../kot-print-style';
 
 function readSource(relative: string): string {
@@ -130,8 +138,10 @@ describe('the save goes through the settings document, and the card is wired to 
     });
 
     it('the card reads and writes through db.ts rather than fetching for itself', () => {
-        expect(card).toContain('getKotPrintStyle');
-        expect(card).toContain('setKotPrintStyle');
+        expect(card).toContain('getKotDocketSettings(restaurantId)');
+        expect(card).toContain('setKotPrintStyle(restaurantId, next)');
+        expect(card).toContain('setKotTextSize(restaurantId, next)');
+        expect(card).not.toMatch(/\bfetch\(/);
     });
 
     it('the card is rendered on the Settings screen, gated on the settings permission', () => {
@@ -148,12 +158,110 @@ describe('the save goes through the settings document, and the card is wired to 
 
     it('the card refuses to save for someone without the permission', () => {
         // The backend 403s them anyway; this is so the screen says why instead of
-        // flipping the radio and then flipping it back.
-        expect(card).toContain('if (!canEdit) {');
+        // flipping the radio and then flipping it back. One refusal, shared by
+        // both controls.
+        expect(card).toMatch(/const refuseWithoutPermission = \(\): boolean => \{\s*if \(canEdit\) \{return false\}\s*toast\(/);
+        expect(card).toMatch(/const handleChange = async[\s\S]*?if \(refuseWithoutPermission\(\)\) \{return\}/);
     });
 
     it('the copy on screen comes from the shared module, so these tests are pinning what is rendered', () => {
         expect(card).toContain('KOT_PRINT_STYLE_OPTIONS');
         expect(card).toContain('{KOT_PRINT_STYLE_HELP}');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// KOT TEXT SIZE — the second control on the card.
+//
+// The client: "The font sizes must be smaller in the KOT." Standard is their
+// reference ticket exactly; Small and Large are a step either side. What can go
+// wrong while looking fine: a backend without the key showing a size it is not
+// printing, a save that sends a word the backend refuses, a control that is
+// imported and never rendered, and an owner on the classic docket being told
+// nothing about why Small changed nothing.
+// ---------------------------------------------------------------------------
+
+describe('reading the text size out of /restaurant/settings', () => {
+    it('a document that does not mention it is the standard size', () => {
+        expect(readKotTextSize({})).toBe('standard');
+        expect(readKotTextSize(null)).toBe('standard');
+        expect(readKotTextSize({ kot_print_style: 'classic' })).toBe('standard');
+        expect(KOT_TEXT_SIZE_DEFAULT).toBe('standard');
+    });
+
+    it('reads each of the three sizes, and nothing else', () => {
+        for (const size of ['small', 'standard', 'large']) { expect(readKotTextSize({ kot_text_size: size })).toBe(size); }
+        for (const value of [null, '', 'medium', 'Small', ' large', 24, true, {}]) {
+            expect(readKotTextSize({ kot_text_size: value })).toBe('standard');
+        }
+    });
+
+    it('only the three exact words the backend accepts are sizes, smallest first', () => {
+        expect([...KOT_TEXT_SIZES]).toEqual(['small', 'standard', 'large']);
+        for (const size of KOT_TEXT_SIZES) { expect(isKotTextSize(size)).toBe(true); }
+        for (const value of ['SMALL', ' small', '', null, undefined, 1, {}]) { expect(isKotTextSize(value)).toBe(false); }
+    });
+
+    it('both settings come out of one document', () => {
+        expect(readKotDocketSettings({ kot_print_style: 'classic', kot_text_size: 'small' })).toEqual({ style: 'classic', textSize: 'small' });
+        expect(readKotDocketSettings({})).toEqual({ style: 'reference', textSize: 'standard' });
+    });
+});
+
+describe('what the size control says', () => {
+    it('offers Small / Standard — matches your reference docket / Large, in that order', () => {
+        expect(KOT_TEXT_SIZE_OPTIONS.map((o) => o.value)).toEqual(['small', 'standard', 'large']);
+        expect(KOT_TEXT_SIZE_OPTIONS.map((o) => o.label)).toEqual([
+            'Small',
+            'Standard — matches your reference docket',
+            'Large',
+        ]);
+        for (const option of KOT_TEXT_SIZE_OPTIONS) { expect(option.detail.length).toBeGreaterThan(10); }
+    });
+
+    it('says the classic text docket ignores it', () => {
+        expect(KOT_TEXT_SIZE_HELP).toMatch(/new docket only/i);
+        expect(KOT_TEXT_SIZE_HELP).toMatch(/classic text docket/i);
+        expect(KOT_TEXT_SIZE_HELP).toMatch(/ignores/i);
+        expect(KOT_TEXT_SIZE_CLASSIC_NOTE).toMatch(/classic text docket/i);
+    });
+
+    it('the style copy no longer promises LARGER type — the size is now the owner\'s choice', () => {
+        expect(KOT_PRINT_STYLE_OPTIONS[0]!.detail).not.toMatch(/larger/i);
+    });
+});
+
+describe('the size is saved through the settings document, and the card renders it', () => {
+    const db = code(readSource('src/lib/db.ts'));
+    const card = code(readSource('src/app/dashboard/settings/kot-print-settings.tsx'));
+
+    it('writes the one key POST /restaurant/settings accepts', () => {
+        expect(db).toContain('JSON.stringify({ kot_text_size: size })');
+    });
+
+    it('a refused save raises, and the card puts the old size back', () => {
+        expect(db).toMatch(/if \(!res\?\.ok\) \{throw new Error\(res \? await readErrorMessage\(res\) : 'Unable to save the KOT text size'\);\}/);
+        expect(card).toContain('setTextSize(previous)');
+    });
+
+    it('one read fills both controls', () => {
+        expect(db).toMatch(/export const getKotDocketSettings = async[\s\S]*?readKotDocketSettings\(await res\.json\(\)\)/);
+        expect(card).toContain('setTextSize(s.textSize)');
+        // The old single-purpose read is gone rather than left uncalled.
+        expect(db).not.toContain('export const getKotPrintStyle');
+    });
+
+    it('the size control is RENDERED, from the shared options, bound to the save', () => {
+        expect(card).toContain('KOT_TEXT_SIZE_OPTIONS.map(');
+        expect(card).toContain('onValueChange={(v) => { void handleSizeChange(v) }}');
+        expect(card).toContain('value={textSize}');
+        expect(card).toContain('{KOT_TEXT_SIZE_HELP}');
+    });
+
+    it('it is gated like the style, and says so while classic is selected', () => {
+        expect(card).toMatch(/const handleSizeChange = async[\s\S]*?if \(refuseWithoutPermission\(\)\) \{return\}/);
+        expect(card).toMatch(/style === "classic" \? \([\s\S]*?\{KOT_TEXT_SIZE_CLASSIC_NOTE\}/);
+        // Disabled on the same terms as the style's radio group.
+        expect((card.match(/disabled=\{!canEdit \|\| loading \|\| saving\}/g) ?? []).length).toBe(2);
     });
 });

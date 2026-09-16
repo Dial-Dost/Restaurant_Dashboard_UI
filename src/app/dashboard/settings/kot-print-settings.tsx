@@ -26,6 +26,13 @@
 // EDITABLE WITH THE PERMISSION THE SAVE NEEDS, not the admin role: POST
 // /restaurant/settings checks "Manage Restaurant Settings", so a manager holding
 // it can flip this. Same gate as the feedback and billing-counter cards.
+//
+// KOT TEXT SIZE, the second control. The client, having printed the reference
+// docket: "The font sizes must be smaller in the KOT." Small / Standard (their
+// reference ticket exactly) / Large, saved on pick like the style and for the
+// same reason — whoever changes it is comparing paper. It sizes the reference
+// docket only; the classic text docket ignores it, which the copy says and the
+// card repeats while classic is selected.
 
 import { useEffect, useState } from "react"
 import { Printer } from "lucide-react"
@@ -34,41 +41,51 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Label } from "@/components/ui/label"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { useToast } from "@/hooks/use-toast"
-import { getKotPrintStyle, setKotPrintStyle } from "@/lib/db"
+import { getKotDocketSettings, setKotPrintStyle, setKotTextSize } from "@/lib/db"
 import {
   KOT_PRINT_STYLE_DEFAULT,
   KOT_PRINT_STYLE_HELP,
   KOT_PRINT_STYLE_OPTIONS,
+  KOT_TEXT_SIZE_CLASSIC_NOTE,
+  KOT_TEXT_SIZE_DEFAULT,
+  KOT_TEXT_SIZE_HELP,
+  KOT_TEXT_SIZE_OPTIONS,
   isKotPrintStyle,
+  isKotTextSize,
   type KotPrintStyle,
+  type KotTextSize,
 } from "@/lib/kot-print-style"
 
 export function KotPrintSettingsCard({ restaurantId, canEdit }: { restaurantId: string; canEdit: boolean }) {
   const { toast } = useToast()
   const [style, setStyle] = useState<KotPrintStyle>(KOT_PRINT_STYLE_DEFAULT)
+  const [textSize, setTextSize] = useState<KotTextSize>(KOT_TEXT_SIZE_DEFAULT)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     if (!restaurantId) {return}
     let active = true
-    getKotPrintStyle(restaurantId)
-      .then((s) => { if (active) {setStyle(s)} })
-      .catch(() => {/* the default is what an unreadable backend is printing */})
+    getKotDocketSettings(restaurantId)
+      .then((s) => { if (active) { setStyle(s.style); setTextSize(s.textSize) } })
+      .catch(() => {/* the defaults are what an unreadable backend is printing */})
       .finally(() => { if (active) {setLoading(false)} })
     return () => { active = false }
   }, [restaurantId])
 
+  const refuseWithoutPermission = (): boolean => {
+    if (canEdit) {return false}
+    toast({
+      title: "Access denied",
+      description: "You do not have permission to change printing settings.",
+      variant: "destructive",
+    })
+    return true
+  }
+
   const handleChange = async (next: string) => {
     if (!isKotPrintStyle(next) || next === style) {return}
-    if (!canEdit) {
-      toast({
-        title: "Access denied",
-        description: "You do not have permission to change printing settings.",
-        variant: "destructive",
-      })
-      return
-    }
+    if (refuseWithoutPermission()) {return}
     const previous = style
     // Moved first so the radio answers the click, then put back if the save
     // fails — a control that sat on the old value while the request was in
@@ -89,6 +106,34 @@ export function KotPrintSettingsCard({ restaurantId, canEdit }: { restaurantId: 
       toast({
         title: "Couldn't save the KOT print style",
         description: error?.message ?? "Unable to update the KOT print style.",
+        variant: "destructive",
+      })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleSizeChange = async (next: string): Promise<void> => {
+    if (!isKotTextSize(next) || next === textSize) {return}
+    if (refuseWithoutPermission()) {return}
+    const previous = textSize
+    // Moved first, put back on a failed save — the same rule as the style.
+    setTextSize(next)
+    setSaving(true)
+    try {
+      const saved = await setKotTextSize(restaurantId, next)
+      setTextSize(saved)
+      toast({
+        title: "KOT text size updated",
+        description: style === "classic"
+          ? "Saved. It applies when the kitchen is back on the new docket."
+          : `The next kitchen docket prints at the ${saved} size.`,
+      })
+    } catch (error: unknown) {
+      setTextSize(previous)
+      toast({
+        title: "Couldn't save the KOT text size",
+        description: error instanceof Error ? error.message : "Unable to update the KOT text size.",
         variant: "destructive",
       })
     } finally {
@@ -128,6 +173,33 @@ export function KotPrintSettingsCard({ restaurantId, canEdit }: { restaurantId: 
         </RadioGroup>
 
         <p className="text-xs text-muted-foreground">{KOT_PRINT_STYLE_HELP}</p>
+
+        <div className="space-y-2 border-t pt-4">
+          <Label className="font-medium" id="kot-text-size-label">KOT text size</Label>
+          <RadioGroup
+            value={textSize}
+            onValueChange={(v) => { void handleSizeChange(v) }}
+            disabled={!canEdit || loading || saving}
+            aria-labelledby="kot-text-size-label"
+            className="grid gap-2 sm:grid-cols-3"
+          >
+            {KOT_TEXT_SIZE_OPTIONS.map((option) => (
+              <div key={option.value} className="flex items-start gap-3 rounded-md border p-3">
+                <RadioGroupItem value={option.value} id={`kot-text-size-${option.value}`} className="mt-1" />
+                <div className="space-y-1">
+                  <Label htmlFor={`kot-text-size-${option.value}`} className="font-medium">
+                    {option.label}
+                  </Label>
+                  <p className="text-xs text-muted-foreground">{option.detail}</p>
+                </div>
+              </div>
+            ))}
+          </RadioGroup>
+          <p className="text-xs text-muted-foreground">{KOT_TEXT_SIZE_HELP}</p>
+          {style === "classic" ? (
+            <p className="text-xs font-medium text-muted-foreground">{KOT_TEXT_SIZE_CLASSIC_NOTE}</p>
+          ) : null}
+        </div>
 
         {!canEdit ? (
           <p className="text-xs text-muted-foreground">
