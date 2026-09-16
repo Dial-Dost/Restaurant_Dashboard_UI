@@ -15,10 +15,15 @@
 // estate, so the only honest answer is to let the owner switch back, from this
 // screen, in the minute after the first blank ticket.
 //
-// A MISSING KEY READS AS THE REFERENCE DOCKET, never as classic. A dashboard
-// talking to a backend from before this setting existed is talking to one that
-// only knows the reference docket, so that is what it must show — the two deploy
-// separately and roll back separately.
+// A BACKEND WITHOUT THE SETTING IS NOT "THE DEFAULT". The backend that was live
+// before this setting (and any backend rolled back to it) sends no
+// kot_print_style and prints ONLY the classic text docket; its POST
+// /restaurant/settings ignores keys it does not know, answering 200 with
+// nothing stored. The dashboard and the backend deploy and roll back
+// separately, so the card asks first (kotDocketSettingsSupported) and is not
+// shown against such a backend, and a save whose reply lacks the key raises
+// (savedKotPrintStyle / savedKotTextSize) instead of confirming. The owner app
+// does the same, in the same words (models/kot_docket_settings.dart).
 
 export type KotPrintStyle = 'reference' | 'classic';
 
@@ -32,9 +37,10 @@ export const isKotPrintStyle = (value: unknown): value is KotPrintStyle =>
 /**
  * Read the style out of a /restaurant/settings document.
  *
- * FORGIVING, like the backend's own read: a NULL column, a column the database
- * does not have yet, a backend too old to send the key, and an unreadable
- * response all mean the same thing here — show the default.
+ * FORGIVING, like the backend's own read: a NULL column and a value this
+ * dashboard does not know both mean the default. (This backend sends the key
+ * even while the column does not exist yet; a document WITHOUT it is a backend
+ * that does not have the setting — see kotDocketSettingsSupported.)
  */
 export const readKotPrintStyle = (settings: unknown): KotPrintStyle => {
     const value = (settings as { kot_print_style?: unknown } | null | undefined)?.kot_print_style;
@@ -88,8 +94,8 @@ export const KOT_PRINT_STYLE_HELP =
 // while the classic docket is the one selected, so an owner on the fallback is
 // never left wondering why Small changed nothing.
 //
-// A MISSING KEY READS AS STANDARD, for the reason a missing style reads as the
-// reference docket: a backend that does not send it prints standard.
+// A NULL OR UNKNOWN VALUE READS AS STANDARD, the client's reference ticket. A
+// document without the key is a backend without the setting, as for the style.
 // ---------------------------------------------------------------------------
 
 export type KotTextSize = 'small' | 'standard' | 'large';
@@ -110,14 +116,56 @@ export const readKotTextSize = (settings: unknown): KotTextSize => {
     return isKotTextSize(value) ? value : KOT_TEXT_SIZE_DEFAULT;
 };
 
+/** A parsed JSON object — what a settings document is, as opposed to null, a list or a word. */
+const isDocument = (value: unknown): value is Record<string, unknown> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/**
+ * Whether this backend has the two docket settings at all: its settings
+ * document carries BOTH keys. The one live before them sends neither and prints
+ * only the classic docket, so the card is not shown against it.
+ */
+export const kotDocketSettingsSupported = (settings: unknown): boolean =>
+    isDocument(settings) && 'kot_print_style' in settings && 'kot_text_size' in settings;
+
 /**
  * Both KOT docket settings, read out of ONE /restaurant/settings document — the
- * card needs both, and one request is one answer about one moment.
+ * card needs both, and one request is one answer about one moment — and whether
+ * the backend that sent it has them at all.
  */
-export const readKotDocketSettings = (settings: unknown): { style: KotPrintStyle; textSize: KotTextSize } => ({
+export const readKotDocketSettings = (settings: unknown): { style: KotPrintStyle; textSize: KotTextSize; supported: boolean } => ({
     style: readKotPrintStyle(settings),
     textSize: readKotTextSize(settings),
+    supported: kotDocketSettingsSupported(settings),
 });
+
+/**
+ * What a save shows when the server stored nothing. The owner app shows the
+ * same sentence (kotDocketNotSupported).
+ */
+export const KOT_DOCKET_NOT_SUPPORTED = 'This server does not support this setting yet, so nothing was saved.';
+
+/**
+ * What a save actually stored, read back from the settings document the POST
+ * answers with.
+ *
+ * A document WITHOUT the key comes from a backend that ignored it — an older
+ * one, or one rolled back since the card loaded — so nothing was stored and
+ * this RAISES rather than confirming the pick. A reply that is not a document
+ * at all says nothing either way, so the value that was sent stands (the save
+ * was answered 2xx, and the backend refuses a value it does not accept).
+ */
+const savedKotSetting = <T>(reply: unknown, key: 'kot_print_style' | 'kot_text_size', sent: T, read: (settings: unknown) => T): T => {
+    if (!isDocument(reply)) {return sent;}
+    if (!(key in reply)) {throw new Error(KOT_DOCKET_NOT_SUPPORTED);}
+    return read(reply);
+};
+
+export const savedKotPrintStyle = (reply: unknown, sent: KotPrintStyle): KotPrintStyle =>
+    savedKotSetting(reply, 'kot_print_style', sent, readKotPrintStyle);
+
+export const savedKotTextSize = (reply: unknown, sent: KotTextSize): KotTextSize =>
+    savedKotSetting(reply, 'kot_text_size', sent, readKotTextSize);
 
 /**
  * The size choices, in the owner's words. The owner app's Settings screen

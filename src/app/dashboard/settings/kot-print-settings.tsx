@@ -33,6 +33,13 @@
 // same reason — whoever changes it is comparing paper. It sizes the reference
 // docket only; the classic text docket ignores it, which the copy says and the
 // card repeats while classic is selected.
+//
+// NOT SHOWN AGAINST A BACKEND WITHOUT THE SETTINGS. The one live before them
+// sends neither key, prints only the classic docket, and answers a save of them
+// with 200 and nothing stored. Showing "Match the reference docket" there would
+// describe paper that kitchen never gets, so the card renders nothing once the
+// read says so — and a save whose reply lacks the key (a backend rolled back
+// since the read) raises, and is put back like any refused save.
 
 import { useEffect, useState } from "react"
 import { Printer } from "lucide-react"
@@ -62,13 +69,14 @@ export function KotPrintSettingsCard({ restaurantId, canEdit }: { restaurantId: 
   const [textSize, setTextSize] = useState<KotTextSize>(KOT_TEXT_SIZE_DEFAULT)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [supported, setSupported] = useState(true)
 
   useEffect(() => {
     if (!restaurantId) {return}
     let active = true
     getKotDocketSettings(restaurantId)
-      .then((s) => { if (active) { setStyle(s.style); setTextSize(s.textSize) } })
-      .catch(() => {/* the defaults are what an unreadable backend is printing */})
+      .then((s) => { if (active) { setStyle(s.style); setTextSize(s.textSize); setSupported(s.supported) } })
+      .catch(() => {/* cannot tell: the card stays, on the defaults — see getKotDocketSettings */})
       .finally(() => { if (active) {setLoading(false)} })
     return () => { active = false }
   }, [restaurantId])
@@ -140,6 +148,8 @@ export function KotPrintSettingsCard({ restaurantId, canEdit }: { restaurantId: 
       setSaving(false)
     }
   }
+
+  if (!supported) {return null}
 
   return (
     <Card>

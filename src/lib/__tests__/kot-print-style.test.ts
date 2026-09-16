@@ -10,10 +10,13 @@
 // That is what makes the cases below worth having. Each is a way this card could
 // fail while looking fine:
 //
-//   * a backend that does not send the key (an older one, or one whose column
-//     migration 050 has not created yet) must render as the REFERENCE docket —
-//     showing "classic" there would tell an owner their kitchen is already on
-//     the fallback when it is not;
+//   * a backend that does not send the keys (the one live before them, or one
+//     rolled back to it) prints ONLY the classic docket and ignores a save of
+//     them — so the card is not shown against it, and a save it answered
+//     without the key RAISES rather than confirming a change nothing stored;
+//   * a value the dashboard does not know renders as the REFERENCE docket, the
+//     default — never as classic, which would tell an owner their kitchen is
+//     already on the fallback when it is not;
 //   * the save must send the one key the backend accepts, and must RAISE when it
 //     fails rather than leaving the card showing the choice that was refused;
 //   * the card has to actually be on the Settings screen, gated on the
@@ -27,6 +30,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import {
+    KOT_DOCKET_NOT_SUPPORTED,
     KOT_PRINT_STYLE_DEFAULT,
     KOT_PRINT_STYLE_HELP,
     KOT_PRINT_STYLE_OPTIONS,
@@ -37,9 +41,12 @@ import {
     KOT_TEXT_SIZE_OPTIONS,
     isKotPrintStyle,
     isKotTextSize,
+    kotDocketSettingsSupported,
     readKotDocketSettings,
     readKotPrintStyle,
     readKotTextSize,
+    savedKotPrintStyle,
+    savedKotTextSize,
 } from '../kot-print-style';
 
 function readSource(relative: string): string {
@@ -56,9 +63,10 @@ function readSource(relative: string): string {
 const code = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
 describe('reading the setting out of /restaurant/settings', () => {
-    it('a document that does not mention it is the reference docket', () => {
-        // The deploy window, and an older backend. Both only ever print the
-        // reference docket, so that is what the card must show.
+    it('the reader is forgiving: a document that does not mention it reads as the default', () => {
+        // The reader never throws and never lands on classic by accident. (A
+        // document without the key is a backend WITHOUT the setting; the card
+        // asks kotDocketSettingsSupported before it shows any of this.)
         expect(readKotPrintStyle({})).toBe('reference');
         expect(readKotPrintStyle({ currency: '₹' })).toBe('reference');
         expect(readKotPrintStyle(null)).toBe('reference');
@@ -202,9 +210,62 @@ describe('reading the text size out of /restaurant/settings', () => {
         for (const value of ['SMALL', ' small', '', null, undefined, 1, {}]) { expect(isKotTextSize(value)).toBe(false); }
     });
 
-    it('both settings come out of one document', () => {
-        expect(readKotDocketSettings({ kot_print_style: 'classic', kot_text_size: 'small' })).toEqual({ style: 'classic', textSize: 'small' });
-        expect(readKotDocketSettings({})).toEqual({ style: 'reference', textSize: 'standard' });
+    it('both settings come out of one document, with whether the backend has them', () => {
+        expect(readKotDocketSettings({ kot_print_style: 'classic', kot_text_size: 'small' }))
+            .toEqual({ style: 'classic', textSize: 'small', supported: true });
+        expect(readKotDocketSettings({ kot_print_style: 'reference', kot_text_size: 'standard' }))
+            .toEqual({ style: 'reference', textSize: 'standard', supported: true });
+        expect(readKotDocketSettings({ currency: '₹' })).toEqual({ style: 'reference', textSize: 'standard', supported: false });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// A BACKEND WITHOUT THE SETTINGS — the one live before them, or one rolled back
+// to it. It sends neither key, prints ONLY the classic docket, and answers a
+// save of either key with 200 and its settings document, having stored
+// nothing. The card must neither describe a docket that kitchen does not get
+// nor confirm a change that was not made. The owner app holds the same rules
+// (restaurant_owner_app test/kot_docket_settings_test.dart).
+// ---------------------------------------------------------------------------
+
+describe('a backend that does not have the settings', () => {
+    it('is recognised by its settings document lacking the keys — both must be there', () => {
+        // This backend sends both even before migration 050 is applied by hand.
+        expect(kotDocketSettingsSupported({ kot_print_style: 'reference', kot_text_size: 'standard' })).toBe(true);
+        expect(kotDocketSettingsSupported({ kot_print_style: 'classic', kot_text_size: null })).toBe(true);
+        expect(kotDocketSettingsSupported({})).toBe(false);
+        expect(kotDocketSettingsSupported({ currency: '₹', kot_auto_print: true })).toBe(false);
+        expect(kotDocketSettingsSupported({ kot_print_style: 'reference' })).toBe(false);
+        expect(kotDocketSettingsSupported({ kot_text_size: 'small' })).toBe(false);
+        for (const value of [null, undefined, 'kot_print_style', 0, ['kot_print_style', 'kot_text_size']]) {
+            expect(kotDocketSettingsSupported(value)).toBe(false);
+        }
+    });
+
+    it('a save answered with a document WITHOUT the key raises — nothing was stored', () => {
+        expect(() => savedKotTextSize({ currency: '₹' }, 'small')).toThrow(KOT_DOCKET_NOT_SUPPORTED);
+        expect(() => savedKotPrintStyle({}, 'classic')).toThrow(KOT_DOCKET_NOT_SUPPORTED);
+        // The OTHER key being there does not count.
+        expect(() => savedKotTextSize({ kot_print_style: 'reference' }, 'large')).toThrow(KOT_DOCKET_NOT_SUPPORTED);
+        expect(() => savedKotPrintStyle({ kot_text_size: 'small' }, 'classic')).toThrow(KOT_DOCKET_NOT_SUPPORTED);
+    });
+
+    it('a document WITH the key is what was stored — even when it disagrees with what was sent', () => {
+        expect(savedKotTextSize({ kot_text_size: 'large' }, 'large')).toBe('large');
+        expect(savedKotTextSize({ kot_text_size: 'standard' }, 'small')).toBe('standard');
+        expect(savedKotPrintStyle({ kot_print_style: 'classic' }, 'classic')).toBe('classic');
+        expect(savedKotPrintStyle({ kot_print_style: 'reference' }, 'classic')).toBe('reference');
+    });
+
+    it('a reply that is not a document says nothing either way, so the value sent stands', () => {
+        for (const reply of [null, 'ok', 1, ['kot_text_size']]) {
+            expect(savedKotTextSize(reply, 'small')).toBe('small');
+            expect(savedKotPrintStyle(reply, 'classic')).toBe('classic');
+        }
+    });
+
+    it('says so in the owner app\'s words', () => {
+        expect(KOT_DOCKET_NOT_SUPPORTED).toBe('This server does not support this setting yet, so nothing was saved.');
     });
 });
 
@@ -245,7 +306,7 @@ describe('the size is saved through the settings document, and the card renders 
     });
 
     it('one read fills both controls', () => {
-        expect(db).toMatch(/export const getKotDocketSettings = async[\s\S]*?readKotDocketSettings\(await res\.json\(\)\)/);
+        expect(db).toMatch(/export const getKotDocketSettings = async[\s\S]*?settings = await res\.json\(\)[\s\S]*?return readKotDocketSettings\(settings\);/);
         expect(card).toContain('setTextSize(s.textSize)');
         // The old single-purpose read is gone rather than left uncalled.
         expect(db).not.toContain('export const getKotPrintStyle');
@@ -256,6 +317,33 @@ describe('the size is saved through the settings document, and the card renders 
         expect(card).toContain('onValueChange={(v) => { void handleSizeChange(v) }}');
         expect(card).toContain('value={textSize}');
         expect(card).toContain('{KOT_TEXT_SIZE_HELP}');
+    });
+
+    it('the card shows WHAT THE SERVER STORED after a save, not only what was sent', () => {
+        // Both saves echo the server's word through db.ts; a card that dropped
+        // it would show the pick while the server holds something else.
+        expect(card).toMatch(/const saved = await setKotTextSize\(restaurantId, next\)\s*setTextSize\(saved\)/);
+        expect(card).toMatch(/const saved = await setKotPrintStyle\(restaurantId, next\)\s*setStyle\(saved\)/);
+        // …and the toasts name the stored word.
+        expect(card).toContain('prints at the ${saved} size.');
+        expect(card).toMatch(/description: saved === "classic"/);
+    });
+
+    it('a save the server did not store raises, from both setters, through the shared reader', () => {
+        // The reply is parsed once; a document without the key throws
+        // KOT_DOCKET_NOT_SUPPORTED, which the card's catch puts back and shows.
+        expect(db).toMatch(/export const setKotPrintStyle = async[\s\S]*?try \{ reply = await res\.json\(\); \} catch \{ return style; \}\s*return savedKotPrintStyle\(reply, style\);/);
+        expect(db).toMatch(/export const setKotTextSize = async[\s\S]*?try \{ reply = await res\.json\(\); \} catch \{ return size; \}\s*return savedKotTextSize\(reply, size\);/);
+        expect(card).toMatch(/catch \(error: unknown\) \{\s*setTextSize\(previous\)[\s\S]*?error instanceof Error \? error\.message/);
+        expect(card).toMatch(/catch \(error: any\) \{\s*setStyle\(previous\)[\s\S]*?error\?\.message/);
+    });
+
+    it('the card is not shown against a backend without the settings', () => {
+        expect(db).toMatch(/const fallback = \{ style: KOT_PRINT_STYLE_DEFAULT, textSize: KOT_TEXT_SIZE_DEFAULT, supported: true \};/);
+        expect(card).toContain('setSupported(s.supported)');
+        // Rendered nothing, before the Card, once the read says so.
+        expect(card).toMatch(/if \(!supported\) \{return null\}\s*return \(\s*<Card>/);
+        expect(card).toContain('const [supported, setSupported] = useState(true)');
     });
 
     it('it is gated like the style, and says so while classic is selected', () => {

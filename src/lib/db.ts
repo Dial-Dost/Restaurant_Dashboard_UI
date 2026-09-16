@@ -26,8 +26,8 @@ import {
     KOT_PRINT_STYLE_DEFAULT,
     KOT_TEXT_SIZE_DEFAULT,
     readKotDocketSettings,
-    readKotPrintStyle,
-    readKotTextSize,
+    savedKotPrintStyle,
+    savedKotTextSize,
     type KotPrintStyle,
     type KotTextSize,
 } from '@/lib/kot-print-style';
@@ -5206,14 +5206,20 @@ export const setFeedbackValetEnabled = async (restaurantId: string, enabled: boo
 //
 // BOTH DOCKET SETTINGS COME FROM ONE READ — the style and, since the client
 // asked for smaller type, the reference docket's text size (kot_text_size).
-export const getKotDocketSettings = async (restaurantId: string): Promise<{ style: KotPrintStyle; textSize: KotTextSize }> => {
-    const fallback = { style: KOT_PRINT_STYLE_DEFAULT, textSize: KOT_TEXT_SIZE_DEFAULT };
+//
+// `supported` is false only for a settings document that lacks the keys — a
+// backend from before these settings, which prints only the classic docket and
+// ignores a save of them; the card is not shown against it. A read that FAILED
+// cannot tell, and this card is the recovery control somebody may be reaching
+// for while the backend is having a bad minute, so it stays on screen with the
+// defaults; a save to a backend without the setting still raises (below).
+export const getKotDocketSettings = async (restaurantId: string): Promise<{ style: KotPrintStyle; textSize: KotTextSize; supported: boolean }> => {
+    const fallback = { style: KOT_PRINT_STYLE_DEFAULT, textSize: KOT_TEXT_SIZE_DEFAULT, supported: true };
     const res = await backendCall('/restaurant/settings', restaurantId, { method: 'GET' });
-    // A backend that cannot be read, or one from before these settings existed,
-    // only ever prints the reference docket at the standard size — so that is
-    // what the card shows.
     if (!res?.ok) {return fallback;}
-    try { return readKotDocketSettings(await res.json()); } catch { return fallback; }
+    let settings: unknown;
+    try { settings = await res.json(); } catch { return fallback; }
+    return readKotDocketSettings(settings);
 };
 
 export const setKotPrintStyle = async (restaurantId: string, style: KotPrintStyle): Promise<KotPrintStyle> => {
@@ -5229,13 +5235,17 @@ export const setKotPrintStyle = async (restaurantId: string, style: KotPrintStyl
     // rather than coercing it, and readErrorMessage carries that sentence up.
     if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to save the KOT print style');}
     // Echo what the server stored, not what was asked for — the two can differ
-    // only if something is wrong, and that is worth seeing.
-    try { return readKotPrintStyle(await res.json()); } catch { return style; }
+    // only if something is wrong, and that is worth seeing. A settings document
+    // WITHOUT the key is a backend that ignored it: savedKotPrintStyle raises.
+    let reply: unknown;
+    try { reply = await res.json(); } catch { return style; }
+    return savedKotPrintStyle(reply, style);
 };
 
 // The reference docket's type size — one key in, one key out, on exactly the
 // terms of setKotPrintStyle above: a refused save RAISES (the backend 400s a
-// size it does not know), and the card shows what the server stored.
+// size it does not know), so does a reply that shows nothing was stored, and
+// the card shows what the server stored.
 export const setKotTextSize = async (restaurantId: string, size: KotTextSize): Promise<KotTextSize> => {
     const res = await backendCall('/restaurant/settings', restaurantId, {
         method: 'POST',
@@ -5243,7 +5253,9 @@ export const setKotTextSize = async (restaurantId: string, size: KotTextSize): P
         body: JSON.stringify({ kot_text_size: size }),
     });
     if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to save the KOT text size');}
-    try { return readKotTextSize(await res.json()); } catch { return size; }
+    let reply: unknown;
+    try { reply = await res.json(); } catch { return size; }
+    return savedKotTextSize(reply, size);
 };
 
 // --- Printed-bill identity + the sentence above the bill QR ------------------
