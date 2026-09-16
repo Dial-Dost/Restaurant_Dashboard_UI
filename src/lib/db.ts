@@ -6076,10 +6076,13 @@ export interface WaiveServiceChargeResult {
  * running the real charge computation twice and differencing, and hands back
  * both totals. A browser that multiplied a percentage would be right for one
  * tenant and wrong for the other, and would look right in both.
+ *
+ * The reason is optional (app 2.0.1): a blank one is left out of the body, as
+ * removeServiceChargeAndPrint does, and the server records none.
  */
 export const waiveServiceCharge = async (
     restaurantId: string,
-    body: BillTarget & { waiver_kind: string; reason: string; authorised_by: string },
+    body: BillTarget & { waiver_kind: string; reason?: string | null; authorised_by: string },
 ): Promise<WaiveServiceChargeResult> =>
     captureWrite<WaiveServiceChargeResult>(
         '/bills/service-charge-waiver',
@@ -6088,7 +6091,7 @@ export const waiveServiceCharge = async (
         {
             ...billTargetBody(body),
             waiver_kind: body.waiver_kind,
-            reason: body.reason,
+            ...(body.reason?.trim() ? { reason: body.reason.trim() } : {}),
             authorised_by: body.authorised_by,
         },
         'Unable to waive the service charge',
@@ -6113,7 +6116,7 @@ export const reverseServiceChargeWaiver = async (
  *
  * POST /bills/service-charge-waiver/print with `render: "client"`: the server
  * answers every refusal (C3's reprint rule, no charge to remove, no waive
- * permission, a missing reason or authoriser) BEFORE it writes anything, records
+ * permission, a missing kind or authoriser) BEFORE it writes anything, records
  * the waiver exactly as POST /bills/service-charge-waiver does, then CLAIMS the
  * print the way POST /print/bill/claim does and hands back `printable_bill`
  * priced after the waiver. A bill that already carries a waiver is only
@@ -6141,6 +6144,8 @@ export const removeServiceChargeAndPrint = async (
 ): Promise<{ ok: true; result: RemoveServiceChargeAndPrintResult } | { ok: false; status: number; message: string }> => {
     const payload: Record<string, string> = { table_name: body.table_name.trim(), render: 'client' };
     if (body.waiver_kind?.trim()) {payload.waiver_kind = body.waiver_kind.trim();}
+    // Optional (app 2.0.1). Blank is ABSENT, never "": a server before the
+    // change refused "" in its schema, and absent gets its clean refusal.
     if (body.reason?.trim()) {payload.reason = body.reason.trim();}
     if (body.authorised_by?.trim()) {payload.authorised_by = body.authorised_by.trim();}
     const response = await backendCall('/bills/service-charge-waiver/print', restaurantId, {

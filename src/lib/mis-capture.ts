@@ -117,7 +117,9 @@ export const SERVICE_CHARGE_WAIVER_KINDS: readonly VocabularyOption[] = [
     { value: 'goodwill', label: 'Goodwill', hint: 'A gesture the house chose to make.' },
     { value: 'staff_meal', label: 'Staff meal', hint: 'Staff eating in — no service charge applies.' },
     { value: 'policy', label: 'House policy', hint: 'This order type never carries a service charge.' },
-    { value: 'other', label: 'Other', hint: 'None of the above — say what happened in the reason.' },
+    // The reason is optional on a waiver (2.0.1), so "Other" asks for one
+    // rather than requiring it. The void's "Other" above still requires one.
+    { value: 'other', label: 'Other', hint: 'None of the above — a line in the reason helps whoever reads the report.' },
 ] as const;
 
 /** How a tip arrived. 037's `tip_mode`. */
@@ -246,7 +248,8 @@ export interface ServiceChargeWaiverRecord {
     /** amount_waived + tax_on_waived — what the guest does not pay. The server's own figure. */
     grand_total_reduction: number;
     waiver_kind: string;
-    reason: string;
+    /** Optional since migration 051 (app 2.0.1): null when the waiver was recorded without one. Never ''. */
+    reason: string | null;
     waived_by_username: string;
     authorised_by_username: string;
     reversed_at: string | null;
@@ -446,6 +449,36 @@ export const serviceChargeRemovalTrouble = (
  */
 export const serviceChargeWaivedPrintLabel = (printedBefore: boolean | null): string =>
     printedBefore === true ? 'Reprint without the charge' : 'Print without the charge';
+
+// --- The waiver's reason is optional (client item, app 2.0.1) ------------------
+//
+// "When waiving a service charge, the reason should not be mandatory and should
+// be left as optional." ONLY the waiver's: the comp, the void, the cancel, the
+// tender void and "Put the charge back" still require one. The kind (chosen
+// already) and the authoriser stay required, because the kind is now the only
+// "why" a waiver is guaranteed to carry and the authoriser is the control.
+// A blank reason is sent as no reason at all, and the server stores NULL where
+// migration 051 allows it and refuses as before where it does not.
+
+/** The reason box's label on the waiver form. The till says the same words. */
+export const OPTIONAL_REASON_LABEL = 'Reason (optional)';
+
+/** May "Remove service charge & print" be pressed? The reason is not asked. */
+export const serviceChargeWaiverFormReady = (form: { kind: string; authorisedBy: string }): boolean =>
+    form.kind.trim().length > 0 && form.authorisedBy.trim().length > 0;
+
+/**
+ * The live-waiver panel's attribution line: `Long wait · authorised by manager01`,
+ * or just `authorised by manager01` when the waiver was recorded without a
+ * reason — never an empty lead or a dash standing in for one.
+ */
+export const serviceChargeWaiverAttribution = (
+    waiver: { reason?: string | null; authorised_by_username?: string | null },
+): string => {
+    const reason = String(waiver.reason ?? '').trim();
+    const by = `authorised by ${String(waiver.authorised_by_username ?? '').trim() || '—'}`;
+    return reason ? `${reason} · ${by}` : by;
+};
 
 export interface BillTenderRecord {
     id: string;
