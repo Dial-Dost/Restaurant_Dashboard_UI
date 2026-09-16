@@ -387,6 +387,31 @@ describe('the dashboard reaches the route', () => {
         expect(panels).toContain('settlementSummaryNc(totals)');
         expect(panels).toContain('ncSummaryByScope(payload)');
     });
+
+    it('every other screen that names a settled method or lists settled lines uses the same words', () => {
+        // The report drill-down (GET /reports/mis/bill/:id and /kot/:id): the
+        // marker by its name, and each comped line marked — as the app's
+        // reportWords body and the closed-bill panel already do.
+        const drill = code(readSource('src/app/dashboard/reports/drill-down.tsx'));
+        expect(drill).toContain('value={isNcSettleMethod(bill.payment_method) ? NC_SETTLE_LABEL : (bill.payment_method ?? "—")}');
+        expect(drill).not.toContain('value={bill.payment_method ?? "—"}');
+        expect(drill.match(/\{item\.quantity\} ×<\/span> \{billItemLabel\(item\.name, item\.nc\)\}/g)).toHaveLength(2);
+        expect(drill).not.toMatch(/\{item\.quantity\} ×<\/span> \{item\.name\}/);
+        expect(db).toMatch(/export interface MisOrderItem \{[^}]*nc\?: boolean;/);
+        // The orders grid's settled-method line.
+        expect(orders).toContain('Payment Method: {paymentMethodLabel(order.payment_method, paymentMethods)}');
+        expect(orders).not.toContain('Payment Method: {order.payment_method}');
+    });
+
+    it('the label the drill-down shows for each stored method', () => {
+        const shown = (m: string | null) => (isNcSettleMethod(m) ? NC_SETTLE_LABEL : (m ?? '—'));
+        expect(shown('NC')).toBe('Non-chargeable (NC)');
+        expect(shown(' nc ')).toBe('Non-chargeable (NC)');
+        expect(shown('Cash')).toBe('Cash');
+        expect(shown(null)).toBe('—');
+        expect(billItemLabel('Gulab Jamun', true)).toBe('Gulab Jamun (NC)');
+        expect(billItemLabel('Gulab Jamun', undefined)).toBe('Gulab Jamun');
+    });
 });
 
 describe('the same words as the backend and the app', () => {

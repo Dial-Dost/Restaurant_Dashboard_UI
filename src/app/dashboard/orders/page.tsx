@@ -2198,7 +2198,7 @@ function OrdersDashboard() {
                     <div className="font-medium">{(order as any).items_flattened?.length ? (order as any).items_flattened.map((i: any) => `${i.quantity}x ${i.name}${i.note ? ` (${i.note})` : ""}`).join(', ') : order.items.map(i => `${i.quantity}x ${i.name}${i.note ? ` (${i.note})` : ""}`).join(', ')}</div>
                     {order.payment_method ? (
                       <div className="text-xs text-muted-foreground">
-                        Payment Method: {order.payment_method}
+                        Payment Method: {paymentMethodLabel(order.payment_method, paymentMethods)}
                       </div>
                     ) : null}
                     {order.payment_proof_screenshot_url ? (

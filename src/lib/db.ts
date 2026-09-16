@@ -5849,6 +5849,8 @@ export interface MisOrderItem {
     line_total: number;
     note: string | null;
     station: string | null;
+    /** Backend migration 034: a comped line. Labelled "(NC)"; its value is still the ticket's. Absent otherwise. */
+    nc?: boolean;
 }
 
 /**
