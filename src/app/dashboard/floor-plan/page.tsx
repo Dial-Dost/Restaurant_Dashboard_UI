@@ -83,6 +83,7 @@ import { requestBackend, updateTableSeating } from "@/lib/db";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import { useFloorTables, type TableOccupancy } from "@/hooks/use-floor-tables";
+import { RESERVED_TABLE_NAME_ERROR, isReservedPartyName } from "@/lib/next-party";
 import { can } from "@/lib/session-scope";
 import type { CollisionDetection, DragEndEvent, DragStartEvent } from "@dnd-kit/core";
 import { DndContext, closestCenter, pointerWithin, useSensor, useSensors, PointerSensor, DragOverlay, useDroppable } from "@dnd-kit/core";
@@ -392,7 +393,10 @@ export default function FloorPlanPage() {
     const canEditLayout = can(user, "edit_table");
     const canDeleteTables = can(user, "delete_table");
 
-    const floor = useFloorTables(user);
+    // THE ROOM ONLY (client item 6): the next party's seat at a printed table
+    // ("12 #2") is not furniture — the server opens and retires it — so it is
+    // never listed, dragged, counted or offered for deletion here.
+    const floor = useFloorTables(user, { roomOnly: true });
     const {
         tables: tablesData,
         occupancyByName,
@@ -467,6 +471,11 @@ export default function FloorPlanPage() {
         if (!newTableName || !newTableCapacity || !user?.restaurantUsername) { return; }
 
         const trimmedName = newTableName.trim();
+        // "12 #2" is the server's to make; its own sentence, before the request.
+        if (isReservedPartyName(trimmedName)) {
+            toast({ title: "Pick another name", description: RESERVED_TABLE_NAME_ERROR, variant: "destructive" });
+            return;
+        }
         const existingTable = tablesData.find((table) => table.name.toLowerCase() === trimmedName.toLowerCase());
         if (existingTable) {
             toast({

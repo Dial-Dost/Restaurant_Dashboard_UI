@@ -26,12 +26,13 @@
   the read is not allowed to look like a deletion.
 */
 
-import { useCallback, useEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
 
 import { getBookings, getTableStatus, getTables, requestBackend } from "@/lib/db";
 import { applyServerSections, loadLayout, saveLayout, type TableLayout } from "@/app/dashboard/tables/sections";
 import type { Table } from "@/app/dashboard/tables/data";
 import { hasPermission, PERM_MANAGE_SECTIONS } from "@/lib/session-scope";
+import { roomTables } from "@/lib/next-party";
 
 /**
  * A table that is part of a clubbed ("combined") reservation, as derived from
@@ -56,6 +57,10 @@ export interface FloorSession {
 }
 
 export interface FloorTables {
+    /**
+     * Every table the server listed — including a next-party seat ("12 #2",
+     * client item 6) unless the hook was asked for `roomOnly`.
+     */
     tables: Table[];
     /** Keyed by LOWERCASED table name, the way every caller looks a table up. */
     occupancyByName: Record<string, TableOccupancy>;
@@ -82,8 +87,14 @@ export interface FloorTables {
  *   screen needs it too, but only to WARN before it destroys an occupied table.
  *   Kept as a switch anyway so a future read-only consumer can skip N status
  *   calls it would never draw.
+ * @param roomOnly  the LAYOUT screen's view: a next-party seat is a second name
+ *   for a table already in the room, opened when its bill printed and retired
+ *   minutes later, so the floor-plan editor never lists, drags or deletes it.
  */
-export function useFloorTables(session: FloorSession | null | undefined, { withOccupancy = true } = {}): FloorTables {
+export function useFloorTables(
+    session: FloorSession | null | undefined,
+    { withOccupancy = true, roomOnly = false }: { withOccupancy?: boolean; roomOnly?: boolean } = {},
+): FloorTables {
     const restaurantId = session?.restaurantUsername;
     const outletId = session?.outlet_id;
     /*
@@ -129,9 +140,14 @@ export function useFloorTables(session: FloorSession | null | undefined, { withO
     // decides which zones exist, the column decides which zone each table is in,
     // and the stored layout only decides the order. Deleted tables drop out; new
     // ones land under whatever their row says.
+    // THE REMEMBERED ARRANGEMENT IS THE ROOM'S. It is shared with the floor-plan
+    // screen and kept in storage, so a next-party seat must never enter it: the
+    // Tables screen would append "12 #2" to a zone and the floor plan would drop
+    // it again on every visit. Seats are placed beside their table at render
+    // time instead (withNextPartySeats).
     useEffect(() => {
         if (!restaurantId || tables.length === 0) { return; }
-        const reconciled = applyServerSections(layoutRef.current, tables, serverZones);
+        const reconciled = applyServerSections(layoutRef.current, roomTables(tables), serverZones);
         if (JSON.stringify(reconciled) === JSON.stringify(layoutRef.current)) { return; }
         commitLayout(reconciled);
     }, [tables, serverZones, restaurantId, commitLayout]);
@@ -288,8 +304,11 @@ export function useFloorTables(session: FloorSession | null | undefined, { withO
         };
     }, [restaurantId, reload]);
 
+    // One array per load, not per render: both screens key memos and effects on it.
+    const shownTables = useMemo(() => (roomOnly ? roomTables(tables) : tables), [roomOnly, tables]);
+
     return {
-        tables,
+        tables: shownTables,
         occupancyByName,
         combinedByName,
         serverZones,

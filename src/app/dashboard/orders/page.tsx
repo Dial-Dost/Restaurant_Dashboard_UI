@@ -164,6 +164,8 @@ import {
 } from "@/lib/service-clock";
 import { useCurrency } from "@/hooks/use-currency";
 import { useToast } from "@/hooks/use-toast";
+import { ToastAction } from "@/components/ui/toast";
+import { tableOptionLabel, type BillPrintedRefusal } from "@/lib/next-party";
 import { useHighlightRow } from "@/hooks/use-highlight-row";
 import { dayKeyInZone, formatDate, formatDateTime, formatFullDateTime, formatTime, timezoneAbbreviation, todayInZone } from "@/lib/tz";
 import { useTimezone } from "@/lib/use-timezone";
@@ -679,7 +681,9 @@ function OrdersDashboard() {
     selector — is also the answer to "has this table's bill been printed", for
     every table on the floor, off one poll.
   */
-  const [tables, setTables] = useState<{ id: number; name: string; capacity: number; qr_token?: string | null; bill_print?: BillPrintState | null }[]>([]);
+  // `parent_table` (client item 6): set on the next party's seat at a printed
+  // table, so the picker can call "12 #2" by the words the floor uses.
+  const [tables, setTables] = useState<{ id: number; name: string; capacity: number; qr_token?: string | null; bill_print?: BillPrintState | null; parent_table?: string | null }[]>([]);
   const [monthlyApcInsight, setMonthlyApcInsight] = useState<MonthlyApcInsight | null>(null);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
@@ -806,7 +810,10 @@ function OrdersDashboard() {
     const summaryByTable = new Map<string, { table: string; revenue: number; covers: number; orders: number }>();
 
     for (const item of monthlyApcInsight?.orders ?? []) {
-      const tableName = item.table_name?.trim() || "Unassigned";
+      // TABLE-WISE, so the next party at 12 ("12 #2") is reported as 12 (client
+      // item 6). Only the label folds: each seating's own revenue and covers are
+      // added in as they always were.
+      const tableName = (item.table_label ?? item.table_name).trim() || "Unassigned";
       const current = summaryByTable.get(tableName) ?? {
         table: tableName,
         revenue: 0,
@@ -1109,6 +1116,12 @@ function OrdersDashboard() {
       }
       if (claim.outcome === "claimed") {
         printableBill = claim.printableBill;
+        // CLIENT ITEM 6: the print opened (or found) the next party's seat at
+        // this number. Said in the server's words; the floor re-read below is
+        // what puts its tile in front of everybody.
+        if (claim.nextParty.message) {
+          toast({ title: "Bill printed", description: claim.nextParty.message });
+        }
         // The ledger moved, so the floor this page is painting is now stale for
         // every waiter looking at it — including this one, whose Print Bill
         // button must disappear now and not in twenty seconds' time.
@@ -1147,8 +1160,16 @@ function OrdersDashboard() {
       if (printWindow) { printWindow.location.href = url; } else { window.open(url, '_blank'); }
   }
   
-  const handleAddOrder = async (newOrderData: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null; course_hold?: boolean; variation_id?: string }[]; covers?: number; idempotencyKey?: string }) => {
-    if (!user?.restaurantUsername) {return;}
+  /*
+    Answers the server's refusal when an order was NOT added because its bill
+    is already printed (client item 6), and null otherwise — the caller,
+    submitNewOrder below, decides what to show.
+  */
+  const handleAddOrder = async (newOrderData: NewOrderDraft): Promise<BillPrintedRefusal | null> => {
+    if (!user?.restaurantUsername) {return null;}
+    // Named by the caller when it has just re-read the floor (the next-party
+    // retry above); otherwise looked up in the list this page holds.
+    const orderTableName = newOrderData.tableName ?? String(tables.find(t => t.id === newOrderData.tableId)?.name ?? '');
     const items = newOrderData.items.map(it => ({
       id: it.id ?? `i${Date.now()}${Math.random().toString(36).slice(2,5)}`,
       name: it.name,
@@ -1168,7 +1189,7 @@ function OrdersDashboard() {
     const defaults = deriveDefaultsForCharges(defaultTax);
     const baseOrder: Omit<Order, "total"> = {
       id: (orders.length + 1).toString(),
-      table: String(tables.find(t => t.id === newOrderData.tableId)?.name ?? ''),
+      table: orderTableName,
       customer: "Guest",
       taken_by_employee_id: user.employeeId ?? null,
       taken_by_employee_name:
@@ -1191,7 +1212,7 @@ function OrdersDashboard() {
     const newOrder: Order = { ...baseOrder, total: baseOrder.subtotal };
     try {
       // Ensure table is occupied first (backend requires table to be occupied before adding order)
-      const tableName = String(tables.find(t => t.id === newOrderData.tableId)?.name ?? '');
+      const tableName = orderTableName;
       if (tableName) {
         try {
           await occupyTable(user.restaurantUsername, tableName, newOrderData.covers ?? null);
@@ -1203,6 +1224,9 @@ function OrdersDashboard() {
       // Keyed by the draft (see keyForDraftSend in the form): the identical
       // draft sent twice is ONE order to the server, not two.
       const resp: any = await addOrder(user.restaurantUsername, newOrder, { idempotencyKey: newOrderData.idempotencyKey });
+      // Nothing was written; the dialog stays open with the draft as it was.
+      const refused = (resp as { bill_printed?: BillPrintedRefusal } | null)?.bill_printed;
+      if (refused) {return refused;}
       const createdId = resp?.id ?? resp?._id ?? null;
 
       // Link the table to the created order id for quick access
@@ -1228,7 +1252,77 @@ function OrdersDashboard() {
     } catch (error) {
       console.error("Failed to add order", error);
     }
+    return null;
   }
+
+  /*
+    CLIENT ITEM 6 — THE NEXT PARTY'S SEAT, WHEN THE SERVER REFUSED THE ORDER.
+
+    "Take it on 12 (next party)" sends THE SAME DRAFT to the seat the server
+    named, with the covers already typed, which is what seats the new party
+    there. The table is looked up in a FRESH floor read: the seat is opened by
+    a print, quite possibly on another device after this page loaded its
+    tables. A fresh idempotency key too — the refused send released its own,
+    and this is a different write (another table).
+  */
+  const takeOrderOnNextParty = async (
+    seat: string,
+    draft: NewOrderDraft,
+  ): Promise<{ refusal: BillPrintedRefusal; draft: NewOrderDraft } | null> => {
+    if (!user?.restaurantUsername) {return null;}
+    let floor: typeof tables = [];
+    try {
+      floor = await getTables(user.restaurantUsername);
+      setTables(floor);
+    } catch { floor = []; }
+    const target = floor.find((t) => t.name.toLowerCase() === seat.toLowerCase());
+    if (!target) {
+      toast({
+        title: "Seat not found",
+        description: `${tableOptionLabel({ name: seat })} is no longer open. Refresh the tables and choose again.`,
+        variant: "destructive",
+      });
+      return null;
+    }
+    const moved: NewOrderDraft = { ...draft, tableId: target.id, tableName: target.name, idempotencyKey: newIdempotencyKey() };
+    const refusal = await handleAddOrder(moved);
+    return refusal ? { refusal, draft: moved } : null;
+  };
+
+  /*
+    The dialog's send. A refusal is said in the server's words, and when it
+    named a seat the toast carries the action; the dialog stays open with the
+    cart, so a refusal the waiter ignores costs nothing.
+  */
+  const submitNewOrder = async (draft: NewOrderDraft): Promise<void> => {
+    const offer = (refusal: BillPrintedRefusal, sent: NewOrderDraft): void => {
+      const seat = refusal.nextPartyTable;
+      const label = refusal.actionLabel;
+      toast({
+        title: "Not added — the bill is printed",
+        description: refusal.message,
+        variant: "destructive",
+        ...(seat && label
+          ? {
+              action: (
+                <ToastAction
+                  altText={label}
+                  onClick={() => {
+                    void takeOrderOnNextParty(seat, sent).then((again) => {
+                      if (again) {offer(again.refusal, again.draft);}
+                    });
+                  }}
+                >
+                  {label}
+                </ToastAction>
+              ),
+            }
+          : {}),
+      });
+    };
+    const refusal = await handleAddOrder(draft);
+    if (refusal) {offer(refusal, draft);}
+  };
 
   const handleEditOrder = (editedOrderData: Omit<Order, 'total'>) => {
     const total = calculateTotal(editedOrderData);
@@ -1940,11 +2034,11 @@ function OrdersDashboard() {
           <DialogHeader>
             <DialogTitle>Add New Order</DialogTitle>
             <DialogDescription>
-              {selectedTable ? `Taking orders for ${selectedTable.name}. Add items directly below.` : "Choose a table, then add items below."}
+              {selectedTable ? `Taking orders for ${tableOptionLabel(selectedTable)}. Add items directly below.` : "Choose a table, then add items below."}
             </DialogDescription>
           </DialogHeader>
           <OrderForm
-            onSubmit={handleAddOrder}
+            onSubmit={submitNewOrder}
             menuItems={menuItems}
             variationsByMenuId={variationsByMenuId}
             tables={tables}
@@ -3628,7 +3722,19 @@ function KitchenKioskDisplay({ station }: { station: string }) {
   JSX draws nothing at all; see `order-prices.ts` for why they do not
   distinguish the two.
 */
-function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSelectedTable, variationsByMenuId }: { onSubmit: (data: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null; course_hold?: boolean; variation_id?: string }[]; covers?: number; idempotencyKey?: string }) => Promise<void> | void; menuItems: MenuItem[]; tables: { id: number; name: string; capacity: number }[]; selectedTableName?: string; onClearSelectedTable?: () => void; variationsByMenuId?: Map<string, MenuVariationRecord[]> }) {
+/**
+ * One send from the Add New Order dialog. `tableName` is set only by the
+ * next-party retry, which has just re-read the floor (client item 6).
+ */
+interface NewOrderDraft {
+  tableId: number;
+  tableName?: string;
+  items: { id?: string; name: string; price: number; quantity?: number; note?: string | null; course_hold?: boolean; variation_id?: string }[];
+  covers?: number;
+  idempotencyKey?: string;
+}
+
+function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSelectedTable, variationsByMenuId }: { onSubmit: (data: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null; course_hold?: boolean; variation_id?: string }[]; covers?: number; idempotencyKey?: string }) => Promise<void> | void; menuItems: MenuItem[]; tables: { id: number; name: string; capacity: number; parent_table?: string | null }[]; selectedTableName?: string; onClearSelectedTable?: () => void; variationsByMenuId?: Map<string, MenuVariationRecord[]> }) {
   const { currencySymbol } = useCurrency();
   // C4's gate, from the session and therefore from the server. Read here rather
   // than passed in as a prop: a prop could be forgotten at one of the call
@@ -3677,7 +3783,9 @@ function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSele
   
 
   const menuOptions = menuItems.map(item => ({ value: item.name.toLowerCase(), label: item.name }));
-  const tableOptions = tables.map(t => ({ value: String(t.id), label: t.name }));
+  // "12 (next party)" for the seat the server opened beside a printed 12
+  // (client item 6); the value is still that seat's own table.
+  const tableOptions = tables.map(t => ({ value: String(t.id), label: tableOptionLabel(t) }));
 
   // The sizes this dish is sold in, if any. A dish with none behaves exactly as
   // it always has — no picker, no extra key on the line, no change anywhere.
