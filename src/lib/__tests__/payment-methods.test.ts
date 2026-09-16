@@ -67,11 +67,23 @@ describe('a mode saved in Settings reaches every picker that takes money', () =>
         expect(tender).not.toContain('Card');
     });
 
-    test('the closed-bills filter lists every configured mode, switched off or not, plus Split', () => {
+    test('the closed-bills filter lists every configured mode, switched off or not, plus Split and NC', () => {
         const filter = closedBillMethodFilterOptions(config);
         expect(filter).toContainEqual({ value: 'Swiggy Dineout', label: 'Swiggy (Dineout)' });
         expect(filter.map((o) => o.value)).toContain('Card');
-        expect(filter[filter.length - 1]).toEqual({ value: 'Split', label: 'Split' });
+        // Neither is a mode; both are stored on bills an owner looks for. NC is
+        // a bill settled as non-chargeable (backend migration 052).
+        expect(filter.slice(-2)).toEqual([
+            { value: 'Split', label: 'Split' },
+            { value: 'NC', label: 'Non-chargeable (NC)' },
+        ]);
+    });
+
+    test('the NC marker has one name wherever a stored method is shown, and is still never a mode', () => {
+        expect(paymentMethodLabel('NC', config)).toBe('Non-chargeable (NC)');
+        expect(paymentMethodLabel(' nc ', config)).toBe('Non-chargeable (NC)');
+        expect(tillPaymentOptions(config).map((o) => o.value)).not.toContain('NC');
+        expect(tenderPaymentOptions(config).map((o) => o.value)).not.toContain('NC');
     });
 
     test('its screenshot rule is its own, and the built-ins keep theirs through their aliases', () => {

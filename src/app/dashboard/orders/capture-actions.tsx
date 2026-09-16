@@ -180,7 +180,7 @@ export interface PrintBillHandoff {
  * document. The hint under it is what stops "Complimentary" and "Promotion"
  * being picked at random.
  */
-function KindPicker({ label, options, value, onChange, disabled }: {
+export function KindPicker({ label, options, value, onChange, disabled }: {
     label: string
     options: readonly VocabularyOption[]
     value: string
@@ -211,7 +211,7 @@ function KindPicker({ label, options, value, onChange, disabled }: {
  * manager acting alone types their own username and the row then honestly says
  * so.
  */
-function AuthoriserField({ value, onChange, act }: {
+export function AuthoriserField({ value, onChange, act }: {
     value: string
     onChange: (v: string) => void
     act: string
