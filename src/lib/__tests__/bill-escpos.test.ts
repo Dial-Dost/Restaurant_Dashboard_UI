@@ -774,8 +774,11 @@ describe('the print page draws and encodes this bill', () => {
     });
 
     it('an item whose figures fill their columns gets the whole width, and its figures their own line', () => {
-        expect(print).toContain('billItemRow(item.quantity, item.price, RECEIPT_TEXT_COLUMNS)');
-        expect(print).toMatch(/if \(!row\.fits\) \{[\s\S]*?<td colSpan=\{4\}[^>]*>\{item\.name\}<\/td>[\s\S]*?<td colSpan=\{4\} className="[^"]*text-right[^"]*">\{`\$\{row\.qtyText\} x \$\{row\.priceText\}  \$\{row\.amountText\}`\}<\/td>/);
+        // A comped line's Amount is 0.00 and its name carries "(NC)" — on the
+        // screen as on the roll (billItemRow's `nc`, billItemLabel).
+        expect(print).toContain('billItemRow(item.quantity, item.price, RECEIPT_TEXT_COLUMNS, item.nc === true)');
+        expect(print).toContain('const label = billItemLabel(item.name, item.nc);');
+        expect(print).toMatch(/if \(!row\.fits\) \{[\s\S]*?<td colSpan=\{4\}[^>]*>\{label\}<\/td>[\s\S]*?<td colSpan=\{4\} className="[^"]*text-right[^"]*">\{`\$\{row\.qtyText\} x \$\{row\.priceText\}  \$\{row\.amountText\}`\}<\/td>/);
     });
 
     it('Date / Dine In and Cashier / Bill No. wrap onto a second line rather than squeezing a value', () => {
