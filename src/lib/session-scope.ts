@@ -91,6 +91,13 @@ export interface SessionScope {
     manage_roles?: boolean;
     /** PATCH /menu/:id/availability — H4's "86 a dish" sidebar. */
     edit_menu?: boolean;
+    /**
+     * Cancel KOT — cancelling food the kitchen has been told about. FALSE for a
+     * waiter-only login whatever it was granted (client item 3, 2026-09-17): the
+     * server refuses every such cancel with `cancel_needs_senior`. A Pending
+     * order's decline does not read it.
+     */
+    cancel_kot?: boolean;
 }
 
 /** One of the server's per-control answers. */
@@ -213,6 +220,9 @@ const CAPABILITY_FALLBACK_ACTION: Record<Capability, string> = {
     void_order: PERM_VOID_ORDER,
     view_roles: PERM_VIEW_ROLES,
     manage_roles: PERM_EDIT_ROLES,
+    // The plain cancel's gate. Only ever reached for a session stored before the
+    // flag shipped — and `cancelKotRoute` asks `waiter_only` before it asks this.
+    cancel_kot: PERM_ORDER_ADD,
 };
 
 /**

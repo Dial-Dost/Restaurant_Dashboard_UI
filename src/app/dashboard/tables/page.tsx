@@ -85,12 +85,19 @@ import { canMoveOrderToTable, canMoveTableParty, canOpenFloorPlan } from "@/lib/
 import {
     isTableMoveEvent,
     kotTicketLabel,
+    moveOrderKitchenSentence,
+    moveOrderTitle,
+    moveReprints,
+    movedDishesOf,
+    movedFromLabel,
     movedOrderSentence,
     movedPartySentence,
+    orderDishLines,
     orderMoveDestinations,
     partyMoveDestinations,
     refreshAfterTableMove,
 } from "@/lib/table-move";
+import { ToastAction } from "@/components/ui/toast";
 import {
     elapsedSincePlaced,
     elapsedToSettlement,
@@ -126,6 +133,15 @@ interface TableOrder extends ServiceClockCarrier {
     */
     id: string;
     kot_nos?: number[] | null;
+    /*
+      CLIENT ITEM 4 — what the ticket IS, so the dialog can say so: its dishes
+      (name, size, quantity — the price is never read here, and a waiter-only
+      session's feed has none), whether the kitchen has it, and where it was
+      moved from. All optional: an older backend sends none of the last two.
+    */
+    items?: { name?: string; quantity?: number; variation?: string | null }[];
+    barked_at?: string | null;
+    moved_from?: string | null;
 }
 
 /** The two clocks a table card shows, already reduced from its orders. */
@@ -247,7 +263,8 @@ function MoveTableDialog({
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="sm:max-w-lg">
+            {/* Scrolls: every order now lists its dishes, and a phone is short. */}
+            <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
                 <DialogHeader>
                     <DialogTitle>Move from {table.name}</DialogTitle>
                     <DialogDescription>
@@ -319,15 +336,32 @@ function MoveTableDialog({
                             orders.map((order) => {
                                 const kot = kotTicketLabel(order.kot_nos);
                                 const destination = orderDestinations[order.id] ?? "";
+                                const dishes = orderDishLines(order);
+                                const from = movedFromLabel(order);
+                                // Undefined (an older backend) reads as barked, as the orders page reads it.
+                                const barked = order.barked_at !== null;
                                 return (
-                                    <div key={order.id} className="space-y-1.5 rounded-md border p-2">
+                                    <div key={order.id} className="space-y-1.5 rounded-md border p-2" data-testid="move-order-card">
                                         <div className="flex items-center justify-between gap-2 text-xs">
                                             {/* The KOT number, where there is one. This is the handle
                                                 the pass quotes; picking an order by its position in a
-                                                list is how the wrong ticket gets moved. */}
-                                            <span className="font-medium">{kot || `Order ${order.id}`}</span>
-                                            <Badge variant="outline" className="text-[10px]">{order.status}</Badge>
+                                                list is how the wrong ticket gets moved. Never a UUID
+                                                (client item 4): "No KOT number" when there is none. */}
+                                            <span className="min-w-0 truncate font-medium">
+                                                {moveOrderTitle(order)}
+                                                {from ? <span className="font-normal text-muted-foreground"> · {from}</span> : null}
+                                            </span>
+                                            <Badge variant="outline" className="shrink-0 text-[10px]">{order.status}</Badge>
                                         </div>
+                                        {/* CLIENT ITEM 4 — WHAT is on the ticket, dish by dish, the
+                                            same "2 × Paneer Tikka" lines the table preview draws. */}
+                                        {dishes.length > 0 ? (
+                                            <ul className="space-y-0.5 text-xs" data-testid="move-order-dishes">
+                                                {dishes.map((dish, index) => (
+                                                    <li key={`${order.id}-${String(index)}`} className="break-words">{dish}</li>
+                                                ))}
+                                            </ul>
+                                        ) : null}
                                         <Select
                                             value={destination}
                                             onValueChange={(value) => {
@@ -356,9 +390,7 @@ function MoveTableDialog({
                                             number so the two can be paired. If it was never printed
                                             there is nothing to correct and nothing prints. */}
                                         <p className="text-[11px] leading-snug text-muted-foreground">
-                                            {kot
-                                                ? `The kitchen already has ${kot} for ${table.name}, so a correction docket prints at the new table with the same number. ${table.name} keeps its guests and its other orders.`
-                                                : `The kitchen has not been sent this order yet, so nothing prints now — it will print at the new table when it is sent.`}
+                                            {moveOrderKitchenSentence(table.name, destination || "the new table", kot !== "" || barked)}
                                         </p>
                                         <Button
                                             size="sm"
@@ -901,9 +933,11 @@ export default function TablesPage() {
                 (order.table || "").toLowerCase() === tableName.toLowerCase()
                 // A cancelled or closed ticket is not something that can be
                 // moved: the first is terminal (the server refuses every
-                // modification) and the second belongs to a settled bill.
-                && order.status !== "Cancelled"
-                && order.status !== "Closed",
+                // modification) and the second belongs to a settled bill. A
+                // paid one, and one whose payment is awaiting approval, are
+                // refused by the server for the same reason (MoveOrderToTable),
+                // so they are not offered either.
+                && !["Cancelled", "Closed", "Paid", "Payment Pending Approval"].includes(order.status),
         );
 
     const handleMoveParty = async (toTable: string): Promise<void> => {
@@ -945,7 +979,29 @@ export default function TablesPage() {
             // The correction docket's outcome is the SERVER's and it is not a
             // detail: "KOT-26 is printing, tell the pass" and "nothing was on the
             // pass for it" are two different things for staff to go and do.
-            toast({ title: "Order moved", description: movedOrderSentence(result.to_table, result.print) });
+            // CLIENT ITEM 4: and WHAT moved — the server's dishes, else the ones
+            // this page already had for the order.
+            const moved = orders.find((order) => order.id === orderId);
+            const served = movedDishesOf(result);
+            toast({
+                title: "Order moved",
+                description: movedOrderSentence(result.to_table, result.print, served.length > 0 ? served : orderDishLines(moved)),
+            });
+            // A MOVE CHANGES TWO BILLS. A senior role moving between printed bills
+            // is told which papers to reprint, in the server's words, with the way
+            // to that table's Print Bill (a waiter-only session was refused before
+            // anything moved).
+            for (const reprint of moveReprints(result)) {
+                toast({
+                    title: "Reprint the bill",
+                    description: reprint.message,
+                    action: (
+                        <ToastAction altText={`Open table ${reprint.table}`} onClick={() => { openOrdersForTable(reprint.table, null, true); }}>
+                            Open {reprint.table}
+                        </ToastAction>
+                    ),
+                });
+            }
             setMoveTableName(null);
             await refreshAfterTableMove({ tables: loadTables, orders: reloadOrders });
         } catch (error: unknown) {
