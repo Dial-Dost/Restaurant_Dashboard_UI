@@ -9,7 +9,7 @@
 //     layout would bounce — pinned to the keyword lists the layout carried;
 //   * WHAT THE PAGES PARSE: every href carries only report/from/to/slot/method,
 //     and the pages that receive them read them (Accounting ?method=, History
-//     ?from=&to=);
+//     and Analytics ?from=&to=);
 //   * and the card calls all of it — the project's most repeated defect is a
 //     correct helper nothing calls.
 
@@ -97,6 +97,21 @@ describe('the table is the backend\'s, and the app\'s', () => {
         }
     });
 
+    it('glanceParamsFor gives each module the same window as glance_drill.ts', () => {
+        const backend = sibling('Restaurant_Backend', 'glance_drill.ts');
+        if (backend === null) { return; }
+        // From the first statement to the function's closing brace, quotes and
+        // whitespace normalised: the signatures differ only in their types.
+        const body = (src: string): string => {
+            const s = code(src.replace(/\r\n/g, '\n'));
+            const start = s.indexOf('const from = ', s.indexOf('export function glanceParamsFor'));
+            return s.slice(start, s.indexOf('\n}', start)).replace(/'/g, '"').replace(/\s+/g, '');
+        };
+        const web = body(readSource('src/lib/glance-destinations.ts'));
+        expect(web).toContain('case"History":case"Analytics":returnwindowed?{from,to}:{};');
+        expect(web).toBe(body(backend));
+    });
+
     it('every module the table names is one the app shell registers', () => {
         const shell = sibling('restaurant_owner_app', 'lib/screens/home_shell.dart');
         const modules = new Set(Object.values(GLANCE_ROUTES).flatMap((r) => [r.module, ...r.fallbacks, ...(r.secondary ? [r.secondary.module] : [])]));
@@ -175,8 +190,16 @@ describe('hrefs', () => {
         expect(must(glanceFallbackDrill('month', DAY)).fallbacks.map((f) => f.href)).toEqual([
             '/dashboard/accounting?from=2026-09-01&to=2026-09-17',
             '/dashboard/history?from=2026-09-01&to=2026-09-17',
-            '/dashboard/analytics',
+            '/dashboard/analytics?from=2026-09-01&to=2026-09-17',
         ]);
+        // Analytics is a fallback that lands on the tapped day too.
+        expect(must(glanceFallbackDrill('today_net', DAY)).fallbacks.map((f) => f.href)).toEqual([
+            '/dashboard/accounting?from=2026-09-17&to=2026-09-17',
+            '/dashboard/analytics?from=2026-09-17&to=2026-09-17',
+        ]);
+        // Only the Sales Summary cuts trade by order type: online has no fallback.
+        expect(must(glanceFallbackDrill('online_net', DAY)).fallbacks).toEqual([]);
+        expect(must(glanceFallbackDrill('online_gross', DAY)).fallbacks).toEqual([]);
         expect(must(glanceFallbackDrill('cash_collection', DAY)).fallbacks[0].href)
             .toBe('/dashboard/accounting?from=2026-09-17&to=2026-09-17&method=Cash#settled-bills');
         expect(must(must(glanceFallbackDrill('by_method_row', DAY, 'Unallocated')).secondary).href)
@@ -321,10 +344,20 @@ describe('who is offered which link', () => {
         // A manager who also holds a report-named action opens the Reports tab itself.
         const withReport: SectionSession = { ...apcManager, action_names: ['View Order APC', 'Monthly Report'] };
         expect(glancePath(must(resolveGlanceDrill('month_to_date', h, gate(withReport))).href)).toBe('/dashboard/reports');
+        const day = '/dashboard/analytics?from=2026-09-17&to=2026-09-17';
+        const want: Record<string, string | undefined> = {
+            today_net: day,
+            today_gross: day,
+            cash_collection: day,
+            month_to_date: '/dashboard/analytics?from=2026-09-01&to=2026-09-17',
+            // No screen they can open shows online trade: the dialog explains it alone.
+            online_net: undefined,
+            online_gross: undefined,
+        };
         for (const key of GLANCE_FIGURE_KEYS) {
             const link = resolveGlanceDrill(key, h, gate(apcManager));
-            expect([key, link?.href]).toEqual([key, '/dashboard/analytics']);
-            expect(canOpenDashboardSection(apcManager, glancePath(must(link).href))).toBe(true);
+            expect([key, link?.href]).toEqual([key, want[key]]);
+            if (link) { expect(canOpenDashboardSection(apcManager, glancePath(link.href))).toBe(true); }
         }
         // Nowhere to go: no link, and the dialog still opens (the card's job).
         expect(resolveGlanceDrill('nc', h, gate(apcManager))).toBeNull();
@@ -396,6 +429,16 @@ describe('the card, the page and the destinations are wired', () => {
         expect(history).toMatch(/const search = useSearchParams\(\)/);
         expect(history).toMatch(/useDateRange\("history", \{ params: search, fallback: historyDefault \}\)/);
         expect(history).toMatch(/export default function HistoryPage\(\): React\.JSX\.Element \{\s*return \(\s*<Suspense[\s\S]*?<HistoryInner \/>/);
+    });
+
+    it('Analytics opens on a linked window, counts it as chosen, inside a Suspense boundary', () => {
+        const analytics = code(readSource('src/app/dashboard/analytics/page.tsx'));
+        expect(analytics).toMatch(/import \{ useSearchParams \} from "next\/navigation"/);
+        expect(analytics).toMatch(/const search = useSearchParams\(\);/);
+        expect(analytics).toMatch(/const \{ range, setRange, query, label \} = useDateRange\("analytics", \{ params: search \}\);/);
+        // A window the link named cuts the two wider cards too.
+        expect(analytics).toMatch(/const \[rangeChosen, setRangeChosen\] = useState\(\(\) => rangeFromParams\(search, timezone\) !== null\);/);
+        expect(analytics).toMatch(/export default function AnalyticsPage\(\): React\.JSX\.Element \{\s*return \(\s*<Suspense[\s\S]*?<AnalyticsInner \/>/);
     });
 
     it('Reports already reads report, from, to and slot=all', () => {

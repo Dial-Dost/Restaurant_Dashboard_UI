@@ -92,8 +92,9 @@ export const GLANCE_ROUTES: Readonly<Record<string, GlanceRoute>> = {
     month: { module: 'Reports', report: 'sales_summary', window: 'month', fallbacks: ['Accounting', 'History', 'Analytics'] },
     today_net: { module: 'Reports', report: 'sales_summary', window: 'day', fallbacks: ['Accounting', 'Analytics'] },
     today_gross: { module: 'Reports', report: 'sales_summary', window: 'day', fallbacks: ['Accounting', 'Analytics'] },
-    online_net: { module: 'Reports', report: 'sales_summary', window: 'day', fallbacks: ['Accounting', 'Analytics'] },
-    online_gross: { module: 'Reports', report: 'sales_summary', window: 'day', fallbacks: ['Accounting', 'Analytics'] },
+    // No fallback: only the Sales Summary's order-type split shows online trade.
+    online_net: { module: 'Reports', report: 'sales_summary', window: 'day', fallbacks: [] },
+    online_gross: { module: 'Reports', report: 'sales_summary', window: 'day', fallbacks: [] },
     cash_collection: {
         module: 'Reports', report: 'settlement_summary', window: 'day', method: 'Cash', bills: true,
         fallbacks: ['Accounting', 'Analytics'],
@@ -125,7 +126,12 @@ export const glanceRowMethod = (method: string): string =>
 
 const isDayKey = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
 
-/** glance_drill.ts `glanceParamsFor`: which of the window, report and method a module takes. */
+/**
+ * glance_drill.ts `glanceParamsFor`: which of the window, report and method a
+ * module takes. Reports, Accounting, History and Analytics read ?from=&to=
+ * (Analytics since item 10's fallbacks had to land on today too); the rest
+ * read nothing.
+ */
 export function glanceParamsFor(
     module: string,
     route: Pick<GlanceRoute, 'report' | 'window' | 'method'>,
@@ -144,6 +150,7 @@ export function glanceParamsFor(
         case 'Accounting':
             return { ...(windowed ? { from, to } : {}), ...(method ? { method } : {}) };
         case 'History':
+        case 'Analytics':
             return windowed ? { from, to } : {};
         default:
             return {};
@@ -323,6 +330,44 @@ export function resolveGlanceDrill(
     rowMethod?: string,
 ): GlanceLink | null {
     return resolveGlanceLink(glanceDrillOf(headline, key, rowMethod), canOpen);
+}
+
+// ------------------------------------------------------------ the refresh ----
+
+/** What one refresh of the card reads. */
+export interface GlanceRefresh<H> {
+    /** Null when the read failed: the card keeps its last good figures. */
+    headline: H | null;
+    /** The open bills behind the empty-day sentence, or null when not asked or not known. */
+    openBills: number | null;
+}
+
+/**
+ * One refresh of the card: the headline, and — on an empty day, for a session
+ * that could go to the floor — how many bills are still open there.
+ *
+ * BOTH ON EVERY REFRESH. The count used to be read once, when the day first
+ * turned empty, and then repeated all morning: a dashboard left open past
+ * midnight said "No bill is open on the floor either." while tables filled up.
+ * Read with the figures, it is as fresh as they are — the app's rule, where the
+ * sentence and the figures come from one Overview load. A failed headline read
+ * clears the count rather than keep an old one beside stale figures, and a
+ * failed or nonsensical count is left out, never guessed.
+ */
+export async function readGlanceRefresh<H extends { today_bills: number }>(
+    rid: string,
+    floorOpen: boolean,
+    read: {
+        headline: (rid: string) => Promise<H | null>;
+        openBills: (rid: string, opts: { limit: number }) => Promise<{ total: number } | null>;
+    },
+): Promise<GlanceRefresh<H>> {
+    const headline = await read.headline(rid);
+    if (!headline || headline.today_bills !== 0 || !floorOpen) { return { headline, openBills: null }; }
+    // One row: the page's total counts every open bill.
+    const page = await read.openBills(rid, { limit: 1 }).catch(() => null);
+    const total = page ? page.total : NaN;
+    return { headline, openBills: Number.isInteger(total) && total >= 0 ? total : null };
 }
 
 // --------------------------------------------------------------- the copy ----

@@ -66,6 +66,11 @@
  * may open that page — never one the layout would bounce. With nowhere to go the
  * dialog still opens, so no element is a dead click. No card-wide click: nested
  * controls would fight for the same pixel.
+ *
+ * The card is two functions: HeadlineStats holds the reads and the state, and
+ * HeadlineCard draws them with no hooks at all — so a test can call it and
+ * press every control (headline-card-controls.test.ts). A dead click is
+ * invisible to a pin that only reads the markup.
  */
 
 import Link from "next/link"
@@ -82,7 +87,7 @@ import { getOpenBills, getOverviewHeadline, type OverviewHeadline, type Headline
 import { canOpenDashboardSection } from "@/lib/dashboard-sections"
 import {
   GLANCE_COPY, GLANCE_FIGURE_KEYS, GLANCE_LADDER, glanceDaySentence, glanceDrillOf, glanceMonthSentence,
-  glanceOpenBillsSentence, glanceZoneCaption, resolveGlanceLink, resolveGlanceSecondary,
+  glanceOpenBillsSentence, glanceZoneCaption, readGlanceRefresh, resolveGlanceLink, resolveGlanceSecondary,
   type GlanceDrill, type GlanceFigureKey, type GlanceHeadline, type GlanceLink,
 } from "@/lib/glance-destinations"
 import {
@@ -101,7 +106,7 @@ const ORDER: readonly GlanceFigureKey[] = GLANCE_FIGURE_KEYS
 const REFRESH_MS = 60_000
 
 /** One dialog: a heading, label/value rows, sentences, and where it leads. */
-interface GlanceSheet {
+export interface GlanceSheet {
   eyebrow: string
   title: string
   rows: { label: string; value: string; trailing?: string }[]
@@ -149,51 +154,26 @@ function GlanceGo({ link, label, glance, onFallback, className, children }: {
   return <GlanceTap label={label} glance={glance} onClick={onFallback} className={className}>{children}</GlanceTap>
 }
 
-export function HeadlineStats({ rid }: { rid: string }) {
-  const { currencySymbol } = useCurrency()
-  const { user } = useAuth()
-  const money = (n: number) =>
+/** What the card draws, and its one way of changing anything: the open dialog. */
+export interface HeadlineCardProps {
+  data: OverviewHeadline | null
+  loading: boolean
+  failed: boolean
+  /** Open bills for the empty-day sentence; null leaves the count out. */
+  openBills: number | null
+  /** The nav's rule over a page path (canOpenDashboardSection). */
+  canOpen: (path: string) => boolean
+  currencySymbol: string
+  sheet: GlanceSheet | null
+  setSheet: (sheet: GlanceSheet | null) => void
+}
+
+/** The box. No hooks: everything it knows arrives as props. */
+export function HeadlineCard({
+  data, loading, failed, openBills, canOpen, currencySymbol, sheet, setSheet,
+}: HeadlineCardProps): React.JSX.Element {
+  const money = (n: number): string =>
     `${currencySymbol}${Number(n ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-
-  const [data, setData] = useState<OverviewHeadline | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [failed, setFailed] = useState(false)
-  const [sheet, setSheet] = useState<GlanceSheet | null>(null)
-  const [openBills, setOpenBills] = useState<number | null>(null)
-
-  // The nav's own rule, over a page path: a link here never lands on a redirect.
-  const canOpen = useCallback((path: string) => canOpenDashboardSection(user, path), [user])
-  const floorOpen = canOpen("/dashboard/tables") || canOpen("/dashboard/orders")
-
-  const load = useCallback(async () => {
-    if (!rid) { return }
-    const h = await getOverviewHeadline(rid)
-    // A failed refresh keeps the LAST GOOD FIGURES on screen rather than
-    // blanking them: a momentary network blip must not make a restaurant think
-    // its takings vanished. The banner below says the numbers are stale.
-    setFailed(h === null)
-    if (h) { setData(h) }
-    setLoading(false)
-  }, [rid])
-
-  useEffect(() => {
-    void load()
-    const id = setInterval(() => { void load() }, REFRESH_MS)
-    return () => { clearInterval(id) }
-  }, [load])
-
-  // The empty-day sentence names the bills still on the floor — one row of
-  // /bills/open, whose total counts every open bill. Asked only on an empty day
-  // and only of a session that could go to the floor to settle them (the app's
-  // rule too); a failed read simply leaves the count out.
-  const emptyDay = data?.today_bills === 0
-  const wantsOpenBills = Boolean(rid) && emptyDay && floorOpen
-  useEffect(() => {
-    if (!wantsOpenBills) { return }
-    let active = true
-    void getOpenBills(rid, { limit: 1 }).then((page) => { if (active) { setOpenBills(page ? page.total : null) } })
-    return () => { active = false }
-  }, [rid, wantsOpenBills])
 
   const drillOf = (h: OverviewHeadline, key: string, row?: string): GlanceDrill | null =>
     glanceDrillOf(h as unknown as GlanceHeadline, key, row)
@@ -579,7 +559,7 @@ export function HeadlineStats({ rid }: { rid: string }) {
                 className="text-sm text-muted-foreground"
                 onFallback={() => { setSheet(daySheet(data, "day")) }}>
                 Nothing has been settled yet today. Month to date still counts every earlier day.
-                {wantsOpenBills && openBills !== null ? ` ${glanceOpenBillsSentence(openBills)}` : ""}
+                {openBills !== null ? ` ${glanceOpenBillsSentence(openBills)}` : ""}
               </GlanceGo>
             )}
             {tiles(data)}
@@ -646,5 +626,49 @@ export function HeadlineStats({ rid }: { rid: string }) {
         </DialogContent>
       </Dialog>
     </Card>
+  )
+}
+
+/** The Overview's headline box: today's reads, refreshed every minute, drawn by HeadlineCard. */
+export function HeadlineStats({ rid }: { rid: string }): React.JSX.Element {
+  const { currencySymbol } = useCurrency()
+  const { user } = useAuth()
+
+  const [data, setData] = useState<OverviewHeadline | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [failed, setFailed] = useState(false)
+  const [sheet, setSheet] = useState<GlanceSheet | null>(null)
+  const [openBills, setOpenBills] = useState<number | null>(null)
+
+  // The nav's own rule, over a page path: a link here never lands on a redirect.
+  const canOpen = useCallback((path: string) => canOpenDashboardSection(user, path), [user])
+  // The empty-day sentence counts the open bills only for a session that could
+  // go to the floor to settle them (the app's rule too).
+  const floorOpen = canOpen("/dashboard/tables") || canOpen("/dashboard/orders")
+
+  const load = useCallback(async () => {
+    if (!rid) { return }
+    // The figures and, on an empty day, the open-bill count — read together on
+    // every refresh, so the sentence is never older than the tiles beside it.
+    const next = await readGlanceRefresh(rid, floorOpen, { headline: getOverviewHeadline, openBills: getOpenBills })
+    // A failed refresh keeps the LAST GOOD FIGURES on screen rather than
+    // blanking them: a momentary network blip must not make a restaurant think
+    // its takings vanished. The banner below says the numbers are stale. The
+    // count is not kept: it comes back null and the sentence leaves it out.
+    setFailed(next.headline === null)
+    if (next.headline) { setData(next.headline) }
+    setOpenBills(next.openBills)
+    setLoading(false)
+  }, [rid, floorOpen])
+
+  useEffect(() => {
+    void load()
+    const id = setInterval(() => { void load() }, REFRESH_MS)
+    return () => { clearInterval(id) }
+  }, [load])
+
+  return (
+    <HeadlineCard data={data} loading={loading} failed={failed} openBills={openBills}
+      canOpen={canOpen} currencySymbol={currencySymbol} sheet={sheet} setSheet={setSheet} />
   )
 }
