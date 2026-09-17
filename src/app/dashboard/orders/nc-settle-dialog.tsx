@@ -47,6 +47,7 @@ import {
     ncSettleDoneSentence,
     ncSettleFormReady,
     ncSettleHeadline,
+    ncSettleTrouble,
     type NcOpenBill,
     type NcQuote,
 } from "@/lib/nc-settle"
@@ -95,17 +96,30 @@ export function NcSettleDialog({ restaurantId, order, onClose, onSettled }: {
         if (!ready || !quote) {return}
         setBusy(true)
         try {
-            const r = await settleBillAsNonChargeable(restaurantId, order.id, ncSettleBody({
+            const answer = await settleBillAsNonChargeable(restaurantId, order.id, ncSettleBody({
                 kind, reason, authorisedBy, expectedValue: quote.value,
             }))
-            toast({ title: "Settled as NC", description: ncSettleDoneSentence(r, money) })
-            onSettled()
-            onClose()
-        } catch (e) {
+            if (answer.ok) {
+                toast({ title: "Settled as NC", description: ncSettleDoneSentence(answer.result, money) })
+                onSettled()
+                onClose()
+                return
+            }
             // The server's own sentence, verbatim (a moved quote, a payment already
-            // taken, an authoriser who may not approve this). The bill is read
-            // again so the form shows what the refusal was about.
-            toast({ title: "Not settled", description: String((e as Error)?.message ?? e), variant: "destructive" })
+            // taken, an authoriser who may not approve this) — RETURNED by the
+            // action, because a thrown one is redacted in production. The bill is
+            // read again so the form shows what the refusal was about; an outcome
+            // nobody knows refreshes the grid too, since the bill may have closed.
+            const trouble = ncSettleTrouble(answer)
+            toast({ title: trouble.title, description: trouble.message, variant: "destructive" })
+            if (!answer.refused) { onSettled() }
+            void load()
+        } catch {
+            // The action itself did not answer (the dashboard's own server was
+            // unreachable): nothing is known about the bill.
+            const trouble = ncSettleTrouble({ refused: false, message: "" })
+            toast({ title: trouble.title, description: trouble.message, variant: "destructive" })
+            onSettled()
             void load()
         } finally {
             setBusy(false)

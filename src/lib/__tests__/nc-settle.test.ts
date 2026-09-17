@@ -32,6 +32,8 @@ import {
     ncSettleDoneSentence,
     ncSettleFormReady,
     ncSettleHeadline,
+    ncSettleTrouble,
+    ncSettleWasRefused,
     ncSummaryByScope,
     readHeadlineNc,
     salesSummaryNc,
@@ -40,6 +42,7 @@ import {
 import { BILL_SERVICE_CHARGE_NOTE, billItemLabel, billItemRow, billTotals, buildBillEscPos, type BillEscPosInput } from '../bill-escpos';
 import { billCustomerLines } from '../bill-customer';
 import { escposLines, latin1 } from './escpos-text';
+import { refusalSentence } from '../error-message';
 
 const money = (n: number): string => `₹${n.toFixed(2)}`;
 
@@ -324,6 +327,56 @@ describe('a bill SETTLED AS NC prints its settlement under a 0.00 total', () => 
 });
 
 // ---------------------------------------------------------------------------
+// A settle that did not come back done
+// ---------------------------------------------------------------------------
+
+describe('a settle that did not come back done — the server\'s sentence, and only "Not settled" when nothing was written', () => {
+    // The route's own 503 (nc_settle.ts), word for word.
+    const NO_052 = 'Settling a bill as non-chargeable is not available yet on this server — an administrator has to finish an update (migration 052). Comp the dishes individually in the meantime.';
+
+    it('refused before anything was written: every 4xx, and the 503 that says retryable: false', () => {
+        for (const status of [400, 403, 404, 409, 423, 499]) {
+            expect(ncSettleWasRefused(status, { error: 'x' })).toBe(true);
+            expect(ncSettleWasRefused(status, null)).toBe(true);
+        }
+        expect(ncSettleWasRefused(503, { error: NO_052, retryable: false })).toBe(true);
+        // Not known: a proxy's answer can arrive after the bill closed.
+        for (const [status, body] of [
+            [0, null], [200, {}], [399, {}], [500, {}], [500, { retryable: false }], [502, null],
+            [503, null], [503, {}], [503, { retryable: true }], [503, { retryable: 'false' }], [504, { retryable: false }],
+        ] as const) {
+            expect(ncSettleWasRefused(status, body)).toBe(false);
+        }
+    });
+
+    it('the sentence a refusal carries is the route\'s own', () => {
+        expect(refusalSentence({ error: NO_052, retryable: false })).toBe(NO_052);
+        const moved = 'The bill changed while you were deciding: its food now comes to ₹1,300.00, not ₹1,200.00. Check it and settle again.';
+        expect(refusalSentence({ error: moved, code: 'quote_moved' })).toBe(moved);
+        // The schema refusal names no person-sentence in `details`, so `error` stands.
+        expect(refusalSentence({ error: 'Invalid request body.', details: [{ path: 'reason', message: 'Required' }] }))
+            .toBe('Invalid request body.');
+    });
+
+    it('"Not settled" with the server\'s words when refused; "Check the bill" when nobody knows', () => {
+        expect(ncSettleTrouble({ refused: true, message: ' The bill changed while you were deciding. ' }))
+            .toEqual({ title: 'Not settled', message: 'The bill changed while you were deciding.' });
+        expect(ncSettleTrouble({ refused: true, message: '' }))
+            .toEqual({ title: 'Not settled', message: 'Unable to settle this bill as non-chargeable.' });
+        const lost = ncSettleTrouble({ refused: false, message: 'The server could not be reached, or its answer was lost on the way back.' });
+        expect(lost.title).toBe('Check the bill');
+        expect(lost.message).toBe(
+            'The server could not be reached, or its answer was lost on the way back. '
+            + 'The server did not confirm what happened, so this bill may already be settled as non-chargeable. '
+            + 'The bill has been read again: if it is no longer open, it was settled — find it under settled bills instead of settling it again.',
+        );
+        expect(ncSettleTrouble({ refused: false, message: 'Unable to settle this bill as non-chargeable (504)' }).message)
+            .toMatch(/^Unable to settle this bill as non-chargeable \(504\)\. The server did not confirm what happened/);
+        expect(ncSettleTrouble({ refused: false, message: '  ' }).message).toMatch(/^The server did not confirm what happened/);
+    });
+});
+
+// ---------------------------------------------------------------------------
 // The wiring
 // ---------------------------------------------------------------------------
 
@@ -335,6 +388,28 @@ describe('the dashboard reaches the route', () => {
     it('db.ts posts to /bills/order/:orderId/settle-nc', () => {
         expect(db).toMatch(/export const settleBillAsNonChargeable = async \(/);
         expect(db).toContain('`/bills/order/${encodeURIComponent(orderId)}/settle-nc`');
+    });
+
+    it('a refusal reaches the manager as a VALUE — never a thrown Error, whose message production redacts', () => {
+        const src = code(db);
+        const at = src.indexOf('export const settleBillAsNonChargeable = async (');
+        const body = src.slice(at, src.indexOf('\n};', at));
+        expect(at).toBeGreaterThan(-1);
+        expect(body).not.toContain('captureWrite');
+        expect(body).not.toMatch(/\bthrow\b/);
+        expect(body).toContain('refused: ncSettleWasRefused(response.status, payload),');
+        expect(body).toContain('message: refusalSentence(payload) ?? `Unable to settle this bill as non-chargeable (${String(response.status)})`,');
+        expect(body).toMatch(/if \(!response\) \{\s*return \{ ok: false, status: 0, refused: false,/);
+        expect(body).toContain('return { ok: true, result: (await response.json()) as SettleBillNonChargeableResult };');
+        // An unreadable 2xx is not a refusal: the bill most likely closed.
+        expect(body).toMatch(/\} catch \{\s*return \{ ok: false, status: response\.status, refused: false,/);
+        // The dialog branches on the answer and says it through ncSettleTrouble.
+        expect(dialog).toMatch(/if \(answer\.ok\) \{\s*toast\(\{ title: "Settled as NC", description: ncSettleDoneSentence\(answer\.result, money\) \}\)\s*onSettled\(\)\s*onClose\(\)\s*return\s*\}/);
+        expect(dialog).toContain('const trouble = ncSettleTrouble(answer)');
+        expect(dialog).toContain('toast({ title: trouble.title, description: trouble.message, variant: "destructive" })');
+        expect(dialog).toContain('if (!answer.refused) { onSettled() }');
+        expect(dialog).not.toContain('(e as Error)?.message');
+        expect(dialog).not.toContain('title: "Not settled"');
     });
 
     it('the Confirm Payment submenu offers it, below Split payment, only to a session holding both gates', () => {

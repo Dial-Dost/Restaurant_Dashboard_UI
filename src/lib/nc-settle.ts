@@ -176,6 +176,41 @@ export const ncSettleDoneSentence = (
     return why ? `${head} The NC bill did not print: ${why}` : head;
 };
 
+/**
+ * Did the server turn the settle down BEFORE writing anything? Every 4xx the
+ * route answers is such a refusal, and so is its 503 for a database without
+ * migration 052, which it marks `retryable: false`. Any other 5xx is not: a
+ * proxy's 502/504 can arrive after the bill closed.
+ */
+export const ncSettleWasRefused = (status: number, payload: unknown): boolean => {
+    if (status >= 400 && status < 500) { return true; }
+    if (status !== 503 || !payload || typeof payload !== 'object') { return false; }
+    return (payload as { retryable?: unknown }).retryable === false;
+};
+
+/**
+ * What the dialog says when the settle did not come back done — the answer
+ * settleBillAsNonChargeable returned instead of throwing, so the server's
+ * sentence reaches the manager in a production build.
+ *
+ * "Not settled" ONLY when the server refused before writing (`refused`). With
+ * no answer, or a 5xx a proxy may have sent after the bill closed, nothing here
+ * knows whether the table was given away, so it says so and points at the
+ * re-read bill rather than inviting a second attempt.
+ */
+export const ncSettleTrouble = (t: { refused: boolean; message: string }): { title: string; message: string } => {
+    const said = t.message.trim();
+    if (t.refused) {
+        return { title: 'Not settled', message: said || 'Unable to settle this bill as non-chargeable.' };
+    }
+    const lead = said ? `${said}${/[.!?…]$/.test(said) ? '' : '.'} ` : '';
+    return {
+        title: 'Check the bill',
+        message: `${lead}The server did not confirm what happened, so this bill may already be settled as non-chargeable. `
+            + 'The bill has been read again: if it is no longer open, it was settled — find it under settled bills instead of settling it again.',
+    };
+};
+
 // ---------------------------------------------------------------------------
 // Reading the NC figures back — paper, closed bill, overview, reports
 // ---------------------------------------------------------------------------

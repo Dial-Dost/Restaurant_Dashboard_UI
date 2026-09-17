@@ -23,6 +23,7 @@ import { billPrintRefusal, billPrintStateFields, type BillPrintState } from '@/l
 // Client item 6. Pure, like the C3 readers above: this module only carries the
 // next party's seat and the 409 between the routes and the screens.
 import { nextPartyAfterPrint, nextPartyRowFields, readBillPrintedRefusal, type BillPrintedRefusal } from '@/lib/next-party';
+import { ncSettleWasRefused } from '@/lib/nc-settle';
 import { UNREACHABLE_MESSAGE, billCustomerPayload, billCustomerSaveOutcome, type BillCustomerRequest, type BillCustomerSaveOutcome } from '@/lib/bill-customer';
 import { SELECTED_OUTLET_KEY } from '@/lib/outlet';
 import {
@@ -6189,19 +6190,50 @@ export interface SettleBillNonChargeableResult {
  * is the chargeable subtotal the form showed, so a bill that changed while the
  * manager was deciding is refused rather than given away at a different size.
  * The route refuses an amount — whole bills only (lib/nc-settle.ts).
+ *
+ * RETURNED, NOT THROWN, for the reason removeServiceChargeAndPrint gives: this
+ * module is "use server", Next redacts a thrown Error's message in a production
+ * build, and the refusal's sentence — a moved quote, a payment already taken,
+ * an authoriser who may not approve this — is what the manager needs.
+ *
+ * `refused` says the server turned the settle down BEFORE writing anything
+ * (ncSettleWasRefused). No answer, an unreadable 2xx and any other 5xx are not
+ * refusals — a proxy's 504 can arrive after the bill closed — so the dialog
+ * (ncSettleTrouble) says to check the bill rather than "Not settled".
  */
 export const settleBillAsNonChargeable = async (
     restaurantId: string,
     orderId: string,
     body: { nc_kind: string; reason: string; authorised_by: string; expected_value: number; print: boolean },
-): Promise<SettleBillNonChargeableResult> =>
-    captureWrite<SettleBillNonChargeableResult>(
-        `/bills/order/${encodeURIComponent(orderId)}/settle-nc`,
-        restaurantId,
-        'POST',
-        body,
-        'Unable to settle this bill as non-chargeable',
-    );
+): Promise<{ ok: true; result: SettleBillNonChargeableResult } | { ok: false; status: number; refused: boolean; message: string }> => {
+    const response = await backendCall(`/bills/order/${encodeURIComponent(orderId)}/settle-nc`, restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    });
+    if (!response) {
+        // Not "nothing was recorded": fetch throws for a reset AFTER the request
+        // was sent as readily as for a server that was never reached.
+        return { ok: false, status: 0, refused: false, message: 'The server could not be reached, or its answer was lost on the way back.' };
+    }
+    if (!response.ok) {
+        let payload: unknown = null;
+        try { payload = await response.json(); } catch { payload = null; }
+        return {
+            ok: false,
+            status: response.status,
+            refused: ncSettleWasRefused(response.status, payload),
+            message: refusalSentence(payload) ?? `Unable to settle this bill as non-chargeable (${String(response.status)})`,
+        };
+    }
+    try {
+        return { ok: true, result: (await response.json()) as SettleBillNonChargeableResult };
+    } catch {
+        // A 2xx whose body could not be read: the bill most likely closed, but
+        // nothing here can say which bill or what was given away.
+        return { ok: false, status: response.status, refused: false, message: 'The answer from the server could not be read.' };
+    }
+};
 
 // --- 035: VOID REASON + STAGE ------------------------------------------------
 
