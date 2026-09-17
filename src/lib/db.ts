@@ -4502,11 +4502,22 @@ export interface ReportSchedule {
     consecutive_failures: number;
     created_at: string;
     updated_at: string;
+    /** Client item 9 (migration 057). Absent from a 2.0.1 backend. */
+    report_keys?: string[];
+    formats?: string[];
+    /** 'calendar' | 'trading_day' */
+    window_mode?: string;
+    /** 'outlet' | 'all' */
+    outlet_scope?: string;
+    /** When it next fires and what that run covers — the server's own arithmetic. */
+    next_run_at?: string | null;
+    next_window?: { from: string; to: string; day_close: string | null; start_at: string; end_at: string } | null;
 }
 
 export interface ReportDelivery {
     id: string;
-    schedule_id: string;
+    /** Null for a Send now or a test email (migration 058). */
+    schedule_id: string | null;
     outlet_id: string;
     /** The tenant-local day the occurrence was due; null for a manual "run now". */
     occurrence_key: string | null;
@@ -4514,7 +4525,7 @@ export interface ReportDelivery {
     period_from: string;
     period_to: string;
     timezone: string;
-    /** 'claimed' | 'rendered' | 'delivered' | 'failed' | 'abandoned' */
+    /** 'claimed' | 'rendered' | 'sending' | 'delivered' | 'failed' | 'abandoned' */
     status: string;
     attempts: number;
     channel: string | null;
@@ -4526,6 +4537,24 @@ export interface ReportDelivery {
     error: string | null;
     delivered_at: string | null;
     created_at: string;
+    /** Client item 9 (migration 058). Absent from a 2.0.1 backend. */
+    kind?: 'scheduled' | 'manual' | 'adhoc';
+    report_keys?: string[];
+    formats?: string[];
+    outlet_scope?: string;
+    day_close?: string | null;
+    window_start_at?: string | null;
+    window_end_at?: string | null;
+    /** The addresses a Send now was addressed to. */
+    recipients?: string[] | null;
+    rejected_to?: string[];
+    skipped_to?: string[];
+    provider?: string | null;
+    maybe_duplicate?: boolean;
+    files?: {
+        id: string; report_key: string; format: string; filename: string; mime: string;
+        bytes: number; rows: number; truncated: boolean; purged: boolean;
+    }[];
 }
 
 /** Create and edit share one shape — the backend fills every omitted key from
@@ -4651,6 +4680,164 @@ export const getReportDeliveryCsv = async (restaurantId: string, deliveryId: str
     );
     if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to download this report');}
     return res.text();
+};
+
+// --- Email reports (client item 9) -------------------------------------------
+// The address book, Send now, the test email and one delivery's detail and
+// files. Every write RETURNS its refusal instead of throwing it: Next redacts
+// an Error thrown out of a Server Action in production, and "Email is not set
+// up on this server" is exactly the sentence the owner needs to read. `code`
+// is the server's machine word (mail_not_configured, rate_limited, …) so the
+// screen can branch without parsing prose.
+
+export type EmailResult<T> = { ok: true; data: T } | { ok: false; error: string; code: string | null; status: number };
+
+const EMAIL_UNREACHABLE = 'Could not reach the server — check the connection and try again.';
+
+const emailRefusal = async (res: Response | null, fallback: string): Promise<{ ok: false; error: string; code: string | null; status: number }> => {
+    if (!res) {return { ok: false, error: EMAIL_UNREACHABLE, code: null, status: 0 };}
+    const text = await res.text().catch(() => '');
+    let code: string | null = null;
+    try {
+        const parsed = JSON.parse(text) as { code?: unknown };
+        code = typeof parsed?.code === 'string' ? parsed.code : null;
+    } catch { /* not JSON — the sentence reader below handles it */ }
+    const error = await readErrorMessage({ status: res.status, text: () => Promise.resolve(text) }, fallback);
+    return { ok: false, error, code, status: res.status };
+};
+
+const emailJson = async <T>(res: Response | null, fallback: string): Promise<EmailResult<T>> => {
+    if (!res?.ok) {return emailRefusal(res, fallback);}
+    try { return { ok: true, data: (await res.json()) as T }; }
+    catch { return { ok: false, error: 'The server answered with something this screen cannot read — reload and try again.', code: null, status: res.status }; }
+};
+
+/** GET /reports/email/config, raw — read it with readReportEmailConfig. `null` = could not ask. */
+export const getReportEmailConfig = async (restaurantId: string): Promise<unknown | null> => {
+    return backendJson<unknown>(`/reports/email/config?restaurantId=${encodeURIComponent(restaurantId)}`, restaurantId, { method: 'GET' });
+};
+
+/** GET /reports/email/recipients, raw — read it with readBook. */
+export const getReportEmailRecipients = async (restaurantId: string): Promise<unknown | null> => {
+    return backendJson<unknown>(`/reports/email/recipients?restaurantId=${encodeURIComponent(restaurantId)}`, restaurantId, { method: 'GET' });
+};
+
+export const addReportEmailRecipient = async (
+    restaurantId: string,
+    input: { email: string; label?: string },
+): Promise<EmailResult<{ recipient: { id: string; email: string } }>> => {
+    const res = await backendCall(`/reports/email/recipients?restaurantId=${encodeURIComponent(restaurantId)}`, restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: input.email, label: input.label ?? null }),
+    });
+    return emailJson(res, 'Unable to add the address');
+};
+
+export const removeReportEmailRecipient = async (restaurantId: string, id: string): Promise<EmailResult<{ removed: boolean }>> => {
+    const res = await backendCall(
+        `/reports/email/recipients/${encodeURIComponent(id)}?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        { method: 'DELETE' },
+    );
+    return emailJson(res, 'Unable to remove the address');
+};
+
+/** A message with no figures to one address in the book. 202 + the delivery id to poll. */
+export const sendReportTestEmail = async (
+    restaurantId: string,
+    input: { recipientId: string; clientRequestId: string },
+): Promise<EmailResult<{ delivery_id: string; replayed: boolean }>> => {
+    const res = await backendCall(`/reports/email/test?restaurantId=${encodeURIComponent(restaurantId)}`, restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipient_id: input.recipientId, client_request_id: input.clientRequestId }),
+    });
+    return emailJson(res, 'Unable to send the test email');
+};
+
+/**
+ * Send now. `outletId` is the outlet the request runs as — ALWAYS a real one:
+ * the backend refuses every write made in the all-outlets mode, so the
+ * combined scope travels in the body (`outlet_scope: 'all'`), never the header.
+ */
+export const sendReportEmail = async (
+    restaurantId: string,
+    body: unknown,
+    outletId?: string,
+): Promise<EmailResult<{ delivery_id: string; replayed: boolean }>> => {
+    const path = `/reports/email/send?restaurantId=${encodeURIComponent(restaurantId)}`;
+    let res: Response | null = null;
+    try {
+        const hdrs = await headersForRestaurant(path, restaurantId, { 'Content-Type': 'application/json' }, outletId);
+        res = await fetch(`${apiBaseUrl()}${path}`, { method: 'POST', headers: hdrs, body: JSON.stringify(body) });
+    } catch (error) {
+        console.warn(`Backend request failed for ${path}`, error);
+        return { ok: false, error: EMAIL_UNREACHABLE, code: null, status: 0 };
+    }
+    enforceSessionAlive(path, res.status);
+    return emailJson(res, 'Unable to send these reports');
+};
+
+/** One delivery with its per-address outcome and files (GET /reports/deliveries/:id), raw. */
+export const getReportDelivery = async (restaurantId: string, deliveryId: string): Promise<ReportDelivery | null> => {
+    const data = await backendJson<{ delivery?: ReportDelivery }>(
+        `/reports/deliveries/${encodeURIComponent(deliveryId)}?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+    return data?.delivery ?? null;
+};
+
+/**
+ * One stored attachment, as base64 — a Server Action can only hand plain data
+ * back to the browser, and an .xlsx is binary.
+ */
+export const getReportDeliveryFile = async (
+    restaurantId: string,
+    deliveryId: string,
+    fileId: string,
+): Promise<EmailResult<{ base64: string; mime: string }>> => {
+    const res = await backendCall(
+        `/reports/deliveries/${encodeURIComponent(deliveryId)}/files/${encodeURIComponent(fileId)}?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+    if (!res?.ok) {return emailRefusal(res, 'Unable to download this file');}
+    const buf = Buffer.from(await res.arrayBuffer());
+    return { ok: true, data: { base64: buf.toString('base64'), mime: res.headers.get('content-type') ?? 'application/octet-stream' } };
+};
+
+/** A schedule write that returns its refusal (see the note above) — the email editor's path. */
+export const saveReportSchedule = async (
+    restaurantId: string,
+    id: string | null,
+    input: Record<string, unknown>,
+): Promise<EmailResult<ReportSchedule>> => {
+    const res = await backendCall(id ? `/reports/schedules/${encodeURIComponent(id)}` : '/reports/schedules', restaurantId, {
+        method: id ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+    });
+    return emailJson(res, id ? 'Unable to update the scheduled report' : 'Unable to create the scheduled report');
+};
+
+/** Run now, for a day the owner picks (a daily schedule) — refusal returned, not thrown. */
+export const runReportScheduleFor = async (
+    restaurantId: string,
+    id: string,
+    businessDate?: string,
+): Promise<EmailResult<{ queued: boolean; delivery_id: string | null; started?: boolean; note?: string }>> => {
+    const res = await backendCall(`/reports/schedules/${encodeURIComponent(id)}/run-now`, restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(businessDate ? { business_date: businessDate } : {}),
+    });
+    if (res?.status === 409) {
+        const refusal = await emailRefusal(res, 'This report is already queued for this minute.');
+        return { ok: true, data: { queued: false, delivery_id: null, started: false, note: refusal.error } };
+    }
+    return emailJson(res, 'Unable to queue this report');
 };
 
 // --- Cash register / day-close ----------------------------------------------

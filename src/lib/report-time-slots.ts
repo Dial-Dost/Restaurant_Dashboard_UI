@@ -317,6 +317,18 @@ const SLOT_CLAMP_NOTICE: Readonly<Record<string, string>> = {
 };
 
 /**
+ * The clamp names that are about the trading-day close (client item 9), not the
+ * dates: a close that could not be read, or one sent with a session, is dropped
+ * and the report is on calendar days. Neither shortens the range.
+ */
+export const DAY_CLOSE_CLAMPS: readonly string[] = ['day_close_unparseable', 'day_close_with_slot'];
+
+const DAY_CLOSE_CLAMP_NOTICE: Readonly<Record<string, string>> = {
+    day_close_unparseable: 'That closing time could not be read — showing calendar days',
+    day_close_with_slot: 'A session is on calendar days — closing time not applied',
+};
+
+/**
  * What `meta.window.clamped` means for the toolbar.
  *
  * THE BUG THIS REPLACES. The server sends an ARRAY — `[]` when nothing was
@@ -328,9 +340,11 @@ const SLOT_CLAMP_NOTICE: Readonly<Record<string, string>> = {
 export const clampNotices = (clamped: unknown): { range: boolean; slot: string | null } => {
     if (!Array.isArray(clamped)) {return { range: clamped === true, slot: null };}
     const names = clamped.filter((c): c is string => typeof c === 'string');
-    const range = names.some((c) => !SLOT_CLAMPS.includes(c));
+    const range = names.some((c) => !SLOT_CLAMPS.includes(c) && !DAY_CLOSE_CLAMPS.includes(c));
     const slotName = names.find((c) => SLOT_CLAMPS.includes(c));
-    return { range, slot: slotName ? SLOT_CLAMP_NOTICE[slotName] ?? null : null };
+    const closeName = names.find((c) => DAY_CLOSE_CLAMPS.includes(c));
+    const notice = slotName ? SLOT_CLAMP_NOTICE[slotName] ?? null : closeName ? DAY_CLOSE_CLAMP_NOTICE[closeName] ?? null : null;
+    return { range, slot: notice };
 };
 
 // --- The time-wise segment ---------------------------------------------------

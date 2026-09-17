@@ -24,6 +24,11 @@
 //  * THE SESSION (Lunch, Dinner, custom times) sits beside the date range and is
 //    kept exactly like it — for the session, and on the URL — because it is half
 //    of the same question: which hours of which days. See `time-slot-picker.tsx`.
+//  * EMAIL (client item 9) lives here too: an Email button beside Export sends
+//    the report on screen for the days on screen (`email-dialog.tsx`), and the
+//    "Email reports" view (`?view=email`, `email-reports.tsx`) holds the address
+//    book, the schedules and the delivery history. Same permission as every
+//    report on this page, so a waiter never reaches either.
 //
 // EVERY NUMBER ON THIS SCREEN IS THE SERVER'S. The money ladder — Item total →
 // Discount → Net → Service Charge → Tax → Round Off → Gross — is pinned
@@ -42,6 +47,7 @@ import {
     Info,
     Layers,
     Loader2,
+    Mail,
     Printer,
     Search,
     Store,
@@ -114,6 +120,9 @@ import { DrillDownDialog, type DrillRequest } from "./drill-down"
 import { ReportTable } from "./report-table"
 import { runExport, exportSummary, type ExportContext, type ExportFormat } from "./export"
 import { TimeSlotPicker } from "./time-slot-picker"
+import { EmailReportDialog } from "./email-dialog"
+import { EmailReportsPanel } from "./email-reports"
+import { EMAIL_AREA_TITLE, EMAIL_BUTTON_LABEL, EMAIL_BUTTON_TOOLTIP } from "@/lib/report-email"
 
 /** Server's own ceiling (MIS_MAX_PAGE). Asking for more just gets clamped. */
 const MAX_PAGE_SIZE = 500
@@ -130,6 +139,21 @@ function ReportsInner() {
     const userKey = user?.employeeId ?? user?.restaurantUsername ?? "anon"
 
     const { range, setRange, query, timezone } = useDateRange("reports", { params })
+
+    // --- Which view: the reports, or Email reports ----------------------------
+    // On the URL like the session, so a link (and the bell's "Open Reports →
+    // Email reports") reopens the right one.
+    const [view, setView] = useState<"report" | "email">(() => (params?.get("view") === "email" ? "email" : "report"))
+    const [emailOpen, setEmailOpen] = useState(false)
+    const chooseView = useCallback((next: "report" | "email") => {
+        setView(next)
+        if (typeof window !== "undefined") {
+            const qs = new URLSearchParams(window.location.search)
+            if (next === "email") {qs.set("view", "email")} else {qs.delete("view")}
+            const search = qs.toString()
+            window.history.replaceState(window.history.state, "", `${window.location.pathname}${search ? `?${search}` : ""}${window.location.hash}`)
+        }
+    }, [])
 
     // --- Which part of the day ------------------------------------------------
     // Seeded like the range: the URL first (a link to "Dinner, 1–15 Aug" opens on
@@ -433,7 +457,27 @@ function ReportsInner() {
                     <p className="text-xs text-muted-foreground">
                         Control &amp; MIS documents · all dates on the restaurant&apos;s calendar · {timezoneCaption(timezone)}
                     </p>
+                    <div className="mt-2 flex w-max items-center gap-1 rounded-lg border bg-muted/40 p-1" role="tablist" aria-label="Reports or email">
+                        {([["report", "Reports"], ["email", EMAIL_AREA_TITLE]] as const).map(([value, label]) => (
+                            <button
+                                key={value}
+                                type="button"
+                                role="tab"
+                                aria-selected={view === value}
+                                onClick={() => { chooseView(value) }}
+                                className={cn(
+                                    "inline-flex items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1 text-sm transition-colors",
+                                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                                    view === value ? "bg-background font-semibold text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+                                )}
+                            >
+                                {value === "email" && <Mail className="h-3.5 w-3.5" />}
+                                {label}
+                            </button>
+                        ))}
+                    </div>
                 </div>
+                {view === "report" && (
                 <div className="flex flex-wrap items-center gap-2">
                     {canSwitchOutlet && outlets.length > 1 ? (
                         <Select
@@ -473,7 +517,14 @@ function ReportsInner() {
                         />
                     )}
                 </div>
+                )}
             </div>
+
+            {view === "email" ? (
+                rid
+                    ? <EmailReportsPanel rid={rid} timezone={timezone} />
+                    : <p className="text-sm text-muted-foreground">No restaurant on this session.</p>
+            ) : (<>
 
             {/* The tab strip. Fifteen reports, scrollable rather than wrapped, so
                 the strip stays one line and the grid below never shifts down as
@@ -608,6 +659,18 @@ function ReportsInner() {
                     </DropdownMenuContent>
                 </DropdownMenu>
 
+                {/* Email: the server builds and sends the files, for whole days —
+                    so it waits for a restaurant, not for rows on screen. */}
+                <Button
+                    variant="outline" size="sm" className="h-9"
+                    disabled={!rid}
+                    title={EMAIL_BUTTON_TOOLTIP}
+                    aria-label={EMAIL_BUTTON_TOOLTIP}
+                    onClick={() => { setEmailOpen(true) }}
+                >
+                    <Mail className="mr-1.5 h-4 w-4" /> {EMAIL_BUTTON_LABEL}
+                </Button>
+
                 <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
                     {meta && clamp.range && (
                         <Badge variant="outline" className="border-amber-500/50 text-amber-600 dark:text-amber-400">
@@ -714,6 +777,21 @@ function ReportsInner() {
                 timezone={timezone}
                 currencySymbol={currencySymbol}
             />
+
+            <EmailReportDialog
+                open={emailOpen}
+                onOpenChange={setEmailOpen}
+                rid={rid}
+                reportKey={def.key}
+                from={query.from}
+                to={query.to}
+                slotPhrase={slotPhrase}
+                outletId={outletId}
+                fallbackOutletId={outlets.find((o) => o.is_active)?.id ?? outlets[0]?.id}
+                outletLabel={outletLabel}
+                onOpenArea={() => { chooseView("email") }}
+            />
+            </>)}
         </div>
     )
 }
