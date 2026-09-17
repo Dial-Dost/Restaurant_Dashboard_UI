@@ -368,8 +368,8 @@ describe('who can go where', () => {
 });
 
 describe('the refresh behind the empty-day sentence', () => {
+    type Page = { total: number } | null;
     const page = (total: number): { total: number } => ({ total });
-type Page = { total: number } | null;
     interface Reader {
         read: { headline: () => Promise<OverviewHeadline | null>; openBills: jest.Mock<Promise<Page>, [string, { limit: number }]> };
         openBills: jest.Mock<Promise<Page>, [string, { limit: number }]>;
