@@ -533,6 +533,35 @@ describe('the wiring — nothing here is built and never called', () => {
         expect(orders).toContain('const [coversChosen, setCoversChosen] = useState(false);');
     });
 
+    test('a merge onto a printed bill offers the Reprint; a refused merge says why; a split print names the seat', () => {
+        const actions = read('src/app/dashboard/orders/bill-actions.tsx');
+        const merge = actions.slice(actions.indexOf('const doMerge = async'), actions.indexOf('const doRefund = async'));
+        expect(merge).toContain('const r = await mergeTables(restaurantId, from, tableName)');
+        expect(merge).toMatch(/if \(isRefusedAction\(r\)\) \{\s*(?:\/\/[^\n]*\s*)*toast\(\{ title: "Not merged", description: r\.error, variant: "destructive" \}\)\s*return\s*\}/);
+        expect(merge).toMatch(/if \(readReprintNeeded\(r, tableName\)\) \{\s*onReprintNeeded\(r, `\$\{merged\}\.`\)\s*\} else \{\s*toast\(\{ title: merged \}\)/);
+        const split = actions.slice(actions.indexOf('const doPrintSplit = async'), actions.indexOf('const doMerge = async'));
+        expect(split).toContain('const nextParty = nextPartyAfterPrint(r)');
+        expect(split).toContain('description: nextParty.message ? `${where} ${nextParty.message}` : where,');
+        expect(split).toMatch(/\}\)\s*onChanged\(\)\s*\} catch/);
+        // The page wires the offer to its own Reprint, from a fresh order list.
+        const orders = read('src/app/dashboard/orders/page.tsx');
+        expect(orders).toContain('onReprintNeeded={(resp, lead) => { void offerReprintAfterBillAction(resp, order.table, lead); }}');
+        expect(orders).toContain('onChanged={() => { void refreshOrders(); void refreshFloor(); }}');
+        expect(orders).toMatch(/const offerReprintAfterBillAction = async \(resp: unknown, table: string, lead: string\): Promise<void> => \{[\s\S]{0,400}?await getOrders\(user\.restaurantUsername\)[\s\S]{0,200}?offerReprint\(resp, table, fresh, lead\);/);
+        expect(orders).toContain('description: lead ? `${lead} ${notice.message}` : notice.message,');
+        // db.ts: the merge's refusal is a VALUE (redacted if thrown), and its 2xx body is returned.
+        const at = db.indexOf('export const mergeTables = async');
+        const body = db.slice(at, db.indexOf('\n};', at));
+        expect(body).not.toContain('postJson');
+        const refusedAt = body.indexOf('if (response.status >= 400 && response.status < 500) {');
+        expect(refusedAt).toBeGreaterThan(-1);
+        expect(body.indexOf('return { refused: true, status: response.status, error: await readErrorMessage(response,')).toBeGreaterThan(refusedAt);
+        expect(refusedAt).toBeLessThan(body.indexOf('if (!response.ok) {throw'));
+        expect(body).toContain('return (await response.json()) as MergeTablesResult;');
+        expect(db).toMatch(/export interface PrintSplitBillsResult \{[\s\S]*?next_party_table\?: string \| null;\s*next_party_message\?: string \| null;\s*\}/);
+        expect(db).toContain('): Promise<PrintSplitBillsResult> => {');
+    });
+
     test('the Tables screen draws the Next party badge exactly on a next-party seat', () => {
         const tablesPage = read('src/app/dashboard/tables/page.tsx');
         expect(tablesPage).toContain('const nextParty = isNextPartyTable(table);');

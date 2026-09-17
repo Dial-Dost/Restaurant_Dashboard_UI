@@ -1179,14 +1179,17 @@ function OrdersDashboard() {
     server's words, with a Reprint that prints that table exactly as its Print
     Bill button does (the claim, then the page). The owner app says the same
     words with the same action.
+
+    `lead` is what the write itself did ("Merged 12 #2 into 12."), said first:
+    this toast takes the place of that write's own confirmation.
   */
-  const offerReprint = (resp: unknown, fallbackTable: string, fresh: readonly Order[]): void => {
+  const offerReprint = (resp: unknown, fallbackTable: string, fresh: readonly Order[], lead?: string): void => {
     const notice = readReprintNeeded(resp, fallbackTable);
     if (!notice) {return;}
     const anchor = reprintAnchorOrder(fresh, notice.table);
     toast({
       title: "Reprint the bill?",
-      description: notice.message,
+      description: lead ? `${lead} ${notice.message}` : notice.message,
       ...(anchor
         ? {
             action: (
@@ -1197,6 +1200,25 @@ function OrdersDashboard() {
           }
         : {}),
     });
+  };
+
+  /*
+    The same offer after a bill operation — a manager merging "12 #2" into a
+    printed 12 (BillActions). Made from a FRESH order list: the merge has just
+    moved the source table's orders onto this one, and the Reprint prints from
+    one of this table's own orders.
+  */
+  const offerReprintAfterBillAction = async (resp: unknown, table: string, lead: string): Promise<void> => {
+    if (!user?.restaurantUsername) {return;}
+    let fresh: Order[] = orders;
+    try {
+      const updated = await getOrders(user.restaurantUsername);
+      if (Array.isArray(updated)) {
+        fresh = dedupeOrdersById(updated);
+        setOrders(fresh);
+      }
+    } catch { /* offer from the list this page holds */ }
+    offerReprint(resp, table, fresh, lead);
   };
 
   /*
@@ -2003,6 +2025,16 @@ function OrdersDashboard() {
     }
   };
 
+  // The floor, re-read after a bill operation: a merge frees the source table,
+  // and a split print opens the next party's seat (client item 6).
+  const refreshFloor = async () => {
+    if (!user?.restaurantUsername) {return;}
+    try {
+      const refreshed = await getTables(user.restaurantUsername);
+      setTables(Array.isArray(refreshed) ? refreshed : []);
+    } catch { /* the poll will catch up */ }
+  };
+
   /*
     6.7 — PRINT BILL IN THE TABLE PREVIEW, full size beside Add Order.
 
@@ -2565,7 +2597,8 @@ function OrdersDashboard() {
                         restaurantId={user?.restaurantUsername ?? ''}
                         tableName={order.table}
                         isAdmin={isAdmin}
-                        onChanged={() => { void refreshOrders(); }}
+                        onChanged={() => { void refreshOrders(); void refreshFloor(); }}
+                        onReprintNeeded={(resp, lead) => { void offerReprintAfterBillAction(resp, order.table, lead); }}
                       />
                     )}
                     {captureActions}

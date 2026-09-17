@@ -5734,6 +5734,19 @@ export const renameInventoryCategory = async (restaurantId: string, from: string
     postJson('/inventory-categories/rename', restaurantId, { from, to });
 
 export interface SplitPart { label: string; subtotal: number; total: number }
+/** POST /print/bill/split's answer. */
+export interface PrintSplitBillsResult {
+    success: boolean;
+    parts: number;
+    jobs: { index: number; of: number; label: string; grandTotal: number; destination: string | null }[];
+    /**
+     * CLIENT ITEM 6 — a split print is a print of the bill, so the server opens
+     * (or finds) the next party's seat and names it, with its sentence. Absent
+     * on a backend older than migration 053. Read with nextPartyAfterPrint.
+     */
+    next_party_table?: string | null;
+    next_party_message?: string | null;
+}
 /**
  * F3 — print the split, one document per part.
  *
@@ -5747,7 +5760,7 @@ export const printSplitBills = async (
     restaurantId: string,
     tableName: string,
     input: { mode?: 'even' | 'item' | 'section'; parts?: number; groups?: unknown[]; axis?: string },
-): Promise<{ success: boolean; parts: number; jobs: { index: number; of: number; label: string; grandTotal: number; destination: string | null }[] }> => {
+): Promise<PrintSplitBillsResult> => {
     const response = await backendCall('/print/bill/split', restaurantId, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -5756,13 +5769,47 @@ export const printSplitBills = async (
     if (!response?.ok) {
         throw new Error(response ? await readErrorMessage(response) : 'Unable to print the split bills');
     }
-    return (await response.json()) as { success: boolean; parts: number; jobs: { index: number; of: number; label: string; grandTotal: number; destination: string | null }[] };
+    return (await response.json()) as PrintSplitBillsResult;
 };
 
 export const splitBill = async (restaurantId: string, tableName: string, parts: number): Promise<{ grand_total: number; parts: SplitPart[] }> =>
     postJson('/bills/split', restaurantId, { table_name: tableName, mode: 'even', parts });
-export const mergeTables = async (restaurantId: string, fromTable: string, toTable: string) =>
-    postJson('/bills/merge', restaurantId, { from_table: fromTable, to_table: toTable });
+/** POST /bills/merge's answer. */
+export interface MergeTablesResult {
+    success?: boolean;
+    total_amt?: number;
+    moved_orders?: number;
+    /**
+     * CLIENT ITEM 6 — the orders went onto a bill the guest is already holding
+     * (a manager merging "12 #2" into a printed 12): the paper is short. Read
+     * with readReprintNeeded, which also takes reprint_message / reprint_table.
+     */
+    reprint_needed?: boolean;
+    reprint_message?: string;
+    reprint_table?: string;
+}
+/**
+ * Merge one table's open orders into another's bill.
+ *
+ * A 4xx comes back as a RefusedAction carrying the server's sentence — a
+ * printed bill a waiter may not merge into (423), a locked bill, a table that
+ * cannot take the party — because this module is "use server" and a thrown
+ * Error's message is redacted in production. The merge route refuses before it
+ * writes. No answer and a 5xx still throw: a merge may have landed behind them.
+ */
+export const mergeTables = async (restaurantId: string, fromTable: string, toTable: string): Promise<MergeTablesResult | RefusedAction> => {
+    const response = await backendCall('/bills/merge', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from_table: fromTable, to_table: toTable }),
+    });
+    if (!response) {throw new Error('Could not reach the server. Check the bill before merging again.');}
+    if (response.status >= 400 && response.status < 500) {
+        return { refused: true, status: response.status, error: await readErrorMessage(response, 'Unable to merge the bills') };
+    }
+    if (!response.ok) {throw new Error(await readErrorMessage(response, 'Unable to merge the bills'));}
+    try { return (await response.json()) as MergeTablesResult; } catch { return {}; }
+};
 export const refundBill = async (restaurantId: string, opts: { table_name?: string; bill_id?: string; amount?: number; reason?: string }): Promise<{ amount: number; gateway: string }> =>
     postJson('/bills/refund', restaurantId, opts);
 
