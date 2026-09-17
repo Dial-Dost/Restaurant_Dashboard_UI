@@ -22,6 +22,15 @@ import { readErrorMessage, refusalSentence, type RefusedAction } from '@/lib/err
 import { billPrintRefusal, billPrintStateFields, type BillPrintState } from '@/lib/bill-print-state';
 import { UNREACHABLE_MESSAGE, billCustomerPayload, billCustomerSaveOutcome, type BillCustomerRequest, type BillCustomerSaveOutcome } from '@/lib/bill-customer';
 import { SELECTED_OUTLET_KEY } from '@/lib/outlet';
+import {
+    KOT_PRINT_STYLE_DEFAULT,
+    KOT_TEXT_SIZE_DEFAULT,
+    readKotDocketSettings,
+    savedKotPrintStyle,
+    savedKotTextSize,
+    type KotPrintStyle,
+    type KotTextSize,
+} from '@/lib/kot-print-style';
 import { readPaymentMethods, type PaymentMethodConfig } from '@/lib/payment-methods';
 import type { BrandConfig } from '@/lib/brand-fonts';
 import type { RolePermission } from '@/lib/role-permissions';
@@ -5177,6 +5186,76 @@ export const setFeedbackValetEnabled = async (restaurantId: string, enabled: boo
     });
     if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to save the valet setting');}
     try { const j = await res.json(); return j?.feedback_config?.valet_enabled === true; } catch { return enabled; }
+};
+
+// --- Which kitchen docket this restaurant prints (kot_print_style) -----------
+// The reference docket is drawn as a raster image; a thermal printer that cannot
+// draw one answers it with BLANK PAPER rather than an error, and on a kitchen
+// printer that is an order nobody cooks. This is the owner's switch back to the
+// plain text docket, and it travels in the same /restaurant/settings document as
+// the bill printing fields below.
+//
+// ONE KEY IN, ONE KEY OUT. Unlike the feedback form beside it, this is a scalar
+// the backend writes only when it is present, so there is nothing to read first
+// and nothing a one-key body can clobber.
+//
+// READABLE BY ANY SIGNED-IN STAFF (it is not in SETTINGS_PRIVILEGED_FIELDS), so
+// the card renders the real value for whoever can open Settings; WRITING is
+// gated on "Manage Restaurant Settings" server-side, which is what canEdit
+// mirrors on the card.
+//
+// BOTH DOCKET SETTINGS COME FROM ONE READ — the style and, since the client
+// asked for smaller type, the reference docket's text size (kot_text_size).
+//
+// `supported` is false only for a settings document that lacks the keys — a
+// backend from before these settings, which prints only the classic docket and
+// ignores a save of them; the card is not shown against it. A read that FAILED
+// cannot tell, and this card is the recovery control somebody may be reaching
+// for while the backend is having a bad minute, so it stays on screen with the
+// defaults; a save to a backend without the setting still raises (below).
+export const getKotDocketSettings = async (restaurantId: string): Promise<{ style: KotPrintStyle; textSize: KotTextSize; supported: boolean }> => {
+    const fallback = { style: KOT_PRINT_STYLE_DEFAULT, textSize: KOT_TEXT_SIZE_DEFAULT, supported: true };
+    const res = await backendCall('/restaurant/settings', restaurantId, { method: 'GET' });
+    if (!res?.ok) {return fallback;}
+    let settings: unknown;
+    try { settings = await res.json(); } catch { return fallback; }
+    return readKotDocketSettings(settings);
+};
+
+export const setKotPrintStyle = async (restaurantId: string, style: KotPrintStyle): Promise<KotPrintStyle> => {
+    const res = await backendCall('/restaurant/settings', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kot_print_style: style }),
+    });
+    // THE FAILURE IS RAISED, never swallowed into a "saved" state. The person
+    // clicking this is usually trying to stop a kitchen printer producing blank
+    // tickets; a card that showed the new choice after a failed save would tell
+    // them the problem is elsewhere. The backend 400s a value it does not know
+    // rather than coercing it, and readErrorMessage carries that sentence up.
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to save the KOT print style');}
+    // Echo what the server stored, not what was asked for — the two can differ
+    // only if something is wrong, and that is worth seeing. A settings document
+    // WITHOUT the key is a backend that ignored it: savedKotPrintStyle raises.
+    let reply: unknown;
+    try { reply = await res.json(); } catch { return style; }
+    return savedKotPrintStyle(reply, style);
+};
+
+// The reference docket's type size — one key in, one key out, on exactly the
+// terms of setKotPrintStyle above: a refused save RAISES (the backend 400s a
+// size it does not know), so does a reply that shows nothing was stored, and
+// the card shows what the server stored.
+export const setKotTextSize = async (restaurantId: string, size: KotTextSize): Promise<KotTextSize> => {
+    const res = await backendCall('/restaurant/settings', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kot_text_size: size }),
+    });
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to save the KOT text size');}
+    let reply: unknown;
+    try { reply = await res.json(); } catch { return size; }
+    return savedKotTextSize(reply, size);
 };
 
 // --- Printed-bill identity + the sentence above the bill QR ------------------
