@@ -562,6 +562,19 @@ describe('the wiring — nothing here is built and never called', () => {
         expect(db).toContain('): Promise<PrintSplitBillsResult> => {');
     });
 
+    test('the reservation form offers the room only — never a next-party seat', () => {
+        const bookings = read('src/app/dashboard/bookings/page.tsx');
+        expect(bookings).toContain('const availableTables = roomTables(tables).filter((t) => t.status === "Available");');
+        expect(bookings).not.toContain('const availableTables = tables.filter(');
+        // What that list is, for a floor with a seat on it.
+        const floor = [
+            { ...t('12'), status: 'Occupied' },
+            { ...seat('12', 2), status: 'Available' },
+            { ...t('15'), status: 'Available' },
+        ];
+        expect(roomTables(floor).filter((r) => r.status === 'Available').map((r) => r.name)).toEqual(['15']);
+    });
+
     test('the Tables screen draws the Next party badge exactly on a next-party seat', () => {
         const tablesPage = read('src/app/dashboard/tables/page.tsx');
         expect(tablesPage).toContain('const nextParty = isNextPartyTable(table);');
