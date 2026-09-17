@@ -40,7 +40,11 @@
 // one tap is one slip; a refusal shows the server's sentence. The handler is
 // kotTestPrintHandler in src/lib/kot-print-style.ts, where the web suite can
 // press it. Not gated on canEdit: the route checks the PRINT permission, not
-// the settings one, and says so itself when it refuses.
+// the settings one, and says so itself when it refuses. It IS off while a style
+// or size save is out (the server reads both when it builds the slip, and the
+// card has already moved), and the choices are off while a test is out:
+// kotDocketCardLocks. Under a slip no device printed, the toast says the server
+// keeps it for a few minutes for a kitchen device that connects late.
 //
 // NOT SHOWN AGAINST A BACKEND WITHOUT THE SETTINGS. The one live before them
 // sends neither key, prints only the classic docket, and answers a save of them
@@ -71,6 +75,7 @@ import {
   KOT_TEXT_SIZE_OPTIONS,
   isKotPrintStyle,
   isKotTextSize,
+  kotDocketCardLocks,
   kotTestPrintHandler,
   type KotPrintStyle,
   type KotTextSize,
@@ -115,8 +120,13 @@ export function KotPrintSettingsCard({ restaurantId, canEdit }: { restaurantId: 
     return true
   }
 
+  // Which controls are off this render. The handlers below repeat the
+  // save/test half, as a second lock behind the disabled radio groups.
+  const locks = kotDocketCardLocks({ canEdit, loading, saving, testing })
+
   const handleChange = async (next: string) => {
     if (!isKotPrintStyle(next) || next === style) {return}
+    if (saving || testing) {return}
     if (refuseWithoutPermission()) {return}
     const previous = style
     // Moved first so the radio answers the click, then put back if the save
@@ -147,6 +157,7 @@ export function KotPrintSettingsCard({ restaurantId, canEdit }: { restaurantId: 
 
   const handleSizeChange = async (next: string): Promise<void> => {
     if (!isKotTextSize(next) || next === textSize) {return}
+    if (saving || testing) {return}
     if (refuseWithoutPermission()) {return}
     const previous = textSize
     // Moved first, put back on a failed save — the same rule as the style.
@@ -190,7 +201,7 @@ export function KotPrintSettingsCard({ restaurantId, canEdit }: { restaurantId: 
         <RadioGroup
           value={style}
           onValueChange={(v) => { void handleChange(v) }}
-          disabled={!canEdit || loading || saving}
+          disabled={locks.choicesDisabled}
           aria-label="KOT print style"
         >
           {KOT_PRINT_STYLE_OPTIONS.map((option) => (
@@ -213,7 +224,7 @@ export function KotPrintSettingsCard({ restaurantId, canEdit }: { restaurantId: 
           <RadioGroup
             value={textSize}
             onValueChange={(v) => { void handleSizeChange(v) }}
-            disabled={!canEdit || loading || saving}
+            disabled={locks.choicesDisabled}
             aria-labelledby="kot-text-size-label"
             className="grid gap-2 sm:grid-cols-3"
           >
@@ -241,7 +252,7 @@ export function KotPrintSettingsCard({ restaurantId, canEdit }: { restaurantId: 
             variant="outline"
             className="w-full sm:w-auto"
             onClick={() => { void printTest() }}
-            disabled={loading || testing}
+            disabled={locks.testDisabled}
             data-testid="kot-test-print"
           >
             <Printer className="h-4 w-4" />

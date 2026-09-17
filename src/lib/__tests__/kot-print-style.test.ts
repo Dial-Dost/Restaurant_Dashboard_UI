@@ -47,8 +47,10 @@ import {
     KOT_TEST_PRINT_PATH,
     KOT_TEST_PRINT_SENDING,
     KOT_TEST_PRINT_SENT_TITLE,
+    kotDocketCardLocks,
     kotTestPrintHandler,
     kotTestPrintOutcome,
+    kotTestPrintReplayNote,
     type KotTestPrintResult,
     isKotPrintStyle,
     isKotTextSize,
@@ -360,8 +362,9 @@ describe('the size is saved through the settings document, and the card renders 
     it('it is gated like the style, and says so while classic is selected', () => {
         expect(card).toMatch(/const handleSizeChange = async[\s\S]*?if \(refuseWithoutPermission\(\)\) \{return\}/);
         expect(card).toMatch(/style === "classic" \? \([\s\S]*?\{KOT_TEXT_SIZE_CLASSIC_NOTE\}/);
-        // Disabled on the same terms as the style's radio group.
-        expect((card.match(/disabled=\{!canEdit \|\| loading \|\| saving\}/g) ?? []).length).toBe(2);
+        // Disabled on the same terms as the style's radio group — the card's
+        // shared locks (pinned below).
+        expect((card.match(/disabled=\{locks\.choicesDisabled\}/g) ?? []).length).toBe(2);
     });
 });
 
@@ -419,15 +422,100 @@ describe('what the test button says', () => {
         expect(kotTestPrintOutcome(reply({ mode: 'directed', reason: 'routed', destination: null })))
             .toBe('Sent to the kitchen printer. Check the paper there.');
         expect(kotTestPrintOutcome(reply({ mode: 'broadcast', reason: 'no_device_online', destination: 'Kitchen Epson' })))
-            .toBe('Kitchen Epson is not online, so every connected device with a kitchen printer was asked to print it. Check the paper.');
+            .toBe('Kitchen Epson is not online, so every connected device with a kitchen printer was asked to print it. '
+                + 'Check the paper. If nothing came out, it may still print when a kitchen device connects.');
         for (const reason of ['no_route', 'flag_off', 'schema_missing', 'unpersisted', 'route_lookup_failed']) {
             expect(kotTestPrintOutcome(reply({ mode: 'broadcast', reason, destination: null })))
-                .toBe('Every connected device with a kitchen printer was asked to print it. Check the paper.');
+                .toBe('Every connected device with a kitchen printer was asked to print it. Check the paper. '
+                    + 'If nothing came out, it may still print when a kitchen device connects.');
         }
         expect(kotTestPrintOutcome({ results: [], skipped: 0 })).toBe('Nothing was sent to print.');
         for (const odd of [null, 'ok', 1, [], {}, { results: 'x' }]) {
             expect(kotTestPrintOutcome(odd)).toBe("Sent. Check the kitchen printer's paper.");
         }
+    });
+});
+
+// A SLIP NO DEVICE PRINTED IS NOT GONE. The server keeps it for the minutes its
+// reply names (replayMinutes) for a kitchen device that connects late, and
+// never after — so "the kitchen PC is off" is answered with what will happen
+// when somebody switches it on, and nobody expects it mid-service.
+describe('what a broadcast slip says about later', () => {
+    const broadcast = (r: Record<string, unknown>, extra: Record<string, unknown> = {}): unknown => ({
+        results: [{ role: 'kot', jobId: 'j1', mode: 'broadcast', ...r }], skipped: 0, ...extra,
+    });
+
+    it('names the window the server reported', () => {
+        expect(kotTestPrintOutcome(broadcast({ reason: 'no_device_online', destination: 'Kitchen Epson' }, { replayMinutes: 5 })))
+            .toBe('Kitchen Epson is not online, so every connected device with a kitchen printer was asked to print it. '
+                + 'Check the paper. If nothing came out, it prints on the first kitchen device to connect within 5 minutes, '
+                + 'and not after that.');
+        expect(kotTestPrintOutcome(broadcast({ reason: 'no_route', destination: null }, { replayMinutes: 5 })))
+            .toBe('Every connected device with a kitchen printer was asked to print it. Check the paper. '
+                + 'If nothing came out, it prints on the first kitchen device to connect within 5 minutes, and not after that.');
+        expect(kotTestPrintReplayNote({ replayMinutes: 1 }))
+            .toBe('If nothing came out, it prints on the first kitchen device to connect within 1 minute, and not after that.');
+    });
+
+    it('a reply without a usable window says only that it may still print', () => {
+        for (const odd of [undefined, null, 0, -5, 2.5, '5', Number.NaN, Number.POSITIVE_INFINITY]) {
+            expect(kotTestPrintReplayNote({ results: [], replayMinutes: odd }))
+                .toBe('If nothing came out, it may still print when a kitchen device connects.');
+        }
+        expect(kotTestPrintReplayNote(null)).toBe('If nothing came out, it may still print when a kitchen device connects.');
+    });
+
+    it('a slip sent to a named, online printer says nothing about later', () => {
+        const directed = { results: [{ mode: 'directed', destination: 'Kitchen Epson' }], replayMinutes: 5 };
+        expect(kotTestPrintOutcome(directed)).toBe('Sent to Kitchen Epson. Check the paper there.');
+    });
+});
+
+// A TEST PRESSED MID-SAVE PRINTS THE OLD SETTING. The server reads the style
+// and size when it builds the slip; the card moves before its save lands. So
+// the button waits out a save, and the choices wait out a test.
+describe('the card\'s controls lock each other out', () => {
+    const all = [true, false];
+
+    it('the test button is off while loading, saving or testing — and never for want of the settings permission', () => {
+        for (const canEdit of all) {
+            for (const loading of all) {
+                for (const saving of all) {
+                    for (const testing of all) {
+                        const locks = kotDocketCardLocks({ canEdit, loading, saving, testing });
+                        expect([{ canEdit, loading, saving, testing }, locks.testDisabled])
+                            .toEqual([{ canEdit, loading, saving, testing }, loading || saving || testing]);
+                        expect([{ canEdit, loading, saving, testing }, locks.choicesDisabled])
+                            .toEqual([{ canEdit, loading, saving, testing }, !canEdit || loading || saving || testing]);
+                    }
+                }
+            }
+        }
+    });
+
+    it('the cases the review found, by name', () => {
+        // A size pick is saving: no test slip until it lands.
+        expect(kotDocketCardLocks({ canEdit: true, loading: false, saving: true, testing: false }).testDisabled).toBe(true);
+        // A test is out: no style or size pick until it answers.
+        expect(kotDocketCardLocks({ canEdit: true, loading: false, saving: false, testing: true }).choicesDisabled).toBe(true);
+        // Idle: both on.
+        expect(kotDocketCardLocks({ canEdit: true, loading: false, saving: false, testing: false }))
+            .toEqual({ choicesDisabled: false, testDisabled: false });
+    });
+
+    it('the card draws every control from those locks, and its handlers refuse mid-save and mid-test', () => {
+        const card = code(readSource('src/app/dashboard/settings/kot-print-settings.tsx'));
+        expect(card).toContain('const locks = kotDocketCardLocks({ canEdit, loading, saving, testing })');
+        expect((card.match(/disabled=\{locks\.choicesDisabled\}/g) ?? []).length).toBe(2);
+        expect((card.match(/disabled=\{locks\.testDisabled\}/g) ?? []).length).toBe(1);
+        // No control is disabled on any other terms.
+        expect((card.match(/disabled=\{/g) ?? []).length).toBe(3);
+        expect(card).toMatch(/const handleChange = async \(next: string\) => \{\s*if \(!isKotPrintStyle\(next\) \|\| next === style\) \{return\}\s*if \(saving \|\| testing\) \{return\}/);
+        expect(card).toMatch(/const handleSizeChange = async \(next: string\): Promise<void> => \{\s*if \(!isKotTextSize\(next\) \|\| next === textSize\) \{return\}\s*if \(saving \|\| testing\) \{return\}/);
+        // `saving` is set in the same tick the pick moves the card, before the
+        // request is awaited — which is what makes the button's lock cover it.
+        expect(card).toMatch(/setTextSize\(next\)\s*setSaving\(true\)\s*try \{\s*const saved = await setKotTextSize/);
+        expect(card).toMatch(/setStyle\(next\)\s*setSaving\(true\)\s*try \{\s*const saved = await setKotPrintStyle/);
     });
 });
 
@@ -521,7 +609,7 @@ describe('the test button is built AND called', () => {
     it('the card renders the button, bound to the one handler, disabled while it sends', () => {
         expect(card).toContain('send: () => printTestKot(restaurantId),');
         expect(card).toMatch(/const printTest = useMemo\(\(\) => kotTestPrintHandler\(\{/);
-        expect(card).toMatch(/<Button[\s\S]*?onClick=\{\(\) => \{ void printTest\(\) \}\}[\s\S]*?disabled=\{loading \|\| testing\}[\s\S]*?\{testing \? KOT_TEST_PRINT_SENDING : KOT_TEST_PRINT_LABEL\}[\s\S]*?<\/Button>/);
+        expect(card).toMatch(/<Button[\s\S]*?onClick=\{\(\) => \{ void printTest\(\) \}\}[\s\S]*?disabled=\{locks\.testDisabled\}[\s\S]*?\{testing \? KOT_TEST_PRINT_SENDING : KOT_TEST_PRINT_LABEL\}[\s\S]*?<\/Button>/);
         expect(card).toContain('{KOT_TEST_PRINT_HELP}');
         expect(card).toContain('busy: setTesting,');
         expect(card).toContain('window.navigator.onLine');

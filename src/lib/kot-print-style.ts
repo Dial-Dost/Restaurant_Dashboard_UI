@@ -204,10 +204,21 @@ export const KOT_TEXT_SIZE_CLASSIC_NOTE =
 // ONLINE ONLY. A test slip printed from a queue an hour later is not a test of
 // anything, and every /print write is refused offline by design (the owner app's
 // OutboxPolicy denies the prefix). The card checks before it sends and says so.
+// The SERVER's queue is the one exception, and the card says that too: a slip
+// that went to every device and none printed is kept for `replayMinutes` (five)
+// for a kitchen device that connects late — one per role, the newest — and is
+// dropped after that (Restaurant_Backend print_jobs.ts, "test slips").
 //
 // ONE TAP, ONE SLIP. The handler below ignores a tap while one is in flight,
 // and the card disables the button for the same window, so a double click is
 // one request — two test slips would read as a printer that duplicates jobs.
+//
+// NEVER DURING A SAVE, AND NO SAVE DURING A TEST. The server reads the style
+// and size when it builds the slip, and a save moves the card before its
+// request lands — so a test pressed mid-save prints the setting the card has
+// already moved away from, under help text that says "the style and size chosen
+// above". kotDocketCardLocks turns the button off while a save is out and the
+// choices off while a test is.
 //
 // A REFUSAL IS SHOWN IN THE SERVER'S WORDS. The route 403s without the print
 // permission and 400s a role it does not know; db.ts RETURNS that sentence (a
@@ -230,6 +241,25 @@ export const KOT_TEST_PRINT_FAILED_TITLE = "Couldn't print a test KOT";
 export const KOT_TEST_PRINT_OFFLINE = 'A test KOT needs a connection — reconnect and try again.';
 
 /**
+ * What becomes of a broadcast slip that no device printed, in one sentence.
+ *
+ * The server keeps it for the `replayMinutes` its reply names, for the first
+ * kitchen device that connects late, and never after — so an owner whose
+ * kitchen PC is off learns that switching it on in the next few minutes still
+ * prints the slip, and that it will not appear mid-service. A reply without
+ * the number (a backend before the window) may keep it far longer, so this
+ * says only that it may still print.
+ */
+export const kotTestPrintReplayNote = (reply: unknown): string => {
+    const minutes = isDocument(reply) ? reply.replayMinutes : undefined;
+    if (typeof minutes === 'number' && Number.isInteger(minutes) && minutes > 0) {
+        return 'If nothing came out, it prints on the first kitchen device to connect within '
+            + `${String(minutes)} minute${minutes === 1 ? '' : 's'}, and not after that.`;
+    }
+    return 'If nothing came out, it may still print when a kitchen device connects.';
+};
+
+/**
  * What the server did with the slip, in one sentence.
  *
  * POST /print/test answers `{ results: [{ role, mode, reason, destination, … }] }`.
@@ -250,10 +280,35 @@ export const kotTestPrintOutcome = (reply: unknown): string => {
         : null;
     if (first.mode === 'directed') {return `Sent to ${destination ?? 'the kitchen printer'}. Check the paper there.`;}
     if (first.reason === 'no_device_online' && destination) {
-        return `${destination} is not online, so every connected device with a kitchen printer was asked to print it. Check the paper.`;
+        return `${destination} is not online, so every connected device with a kitchen printer was asked to print it. `
+            + `Check the paper. ${kotTestPrintReplayNote(reply)}`;
     }
-    return 'Every connected device with a kitchen printer was asked to print it. Check the paper.';
+    return `Every connected device with a kitchen printer was asked to print it. Check the paper. ${kotTestPrintReplayNote(reply)}`;
 };
+
+/** Which of the card's controls are off. */
+export interface KotDocketCardLocks {
+    /** The style and size choices. */
+    choicesDisabled: boolean;
+    /** "Print a test KOT". */
+    testDisabled: boolean;
+}
+
+/**
+ * THE CARD'S CONTROLS LOCK EACH OTHER OUT (see "never during a save" above).
+ * The test button is not gated on the settings permission — the route checks
+ * the print one — but it waits out the load, any save, and its own request;
+ * the choices wait out the load, any save, and a test in flight.
+ */
+export const kotDocketCardLocks = (state: {
+    canEdit: boolean;
+    loading: boolean;
+    saving: boolean;
+    testing: boolean;
+}): KotDocketCardLocks => ({
+    choicesDisabled: !state.canEdit || state.loading || state.saving || state.testing,
+    testDisabled: state.loading || state.saving || state.testing,
+});
 
 /** What the card's send returns: the reply, or the server's refusal. */
 export type KotTestPrintResult = { sent: true; reply: unknown } | RefusedAction;
