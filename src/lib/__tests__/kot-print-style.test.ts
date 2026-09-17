@@ -39,6 +39,17 @@ import {
     KOT_TEXT_SIZE_DEFAULT,
     KOT_TEXT_SIZE_HELP,
     KOT_TEXT_SIZE_OPTIONS,
+    KOT_TEST_PRINT_BODY,
+    KOT_TEST_PRINT_FAILED_TITLE,
+    KOT_TEST_PRINT_HELP,
+    KOT_TEST_PRINT_LABEL,
+    KOT_TEST_PRINT_OFFLINE,
+    KOT_TEST_PRINT_PATH,
+    KOT_TEST_PRINT_SENDING,
+    KOT_TEST_PRINT_SENT_TITLE,
+    kotTestPrintHandler,
+    kotTestPrintOutcome,
+    type KotTestPrintResult,
     isKotPrintStyle,
     isKotTextSize,
     kotDocketSettingsSupported,
@@ -351,5 +362,164 @@ describe('the size is saved through the settings document, and the card renders 
         expect(card).toMatch(/style === "classic" \? \([\s\S]*?\{KOT_TEXT_SIZE_CLASSIC_NOTE\}/);
         // Disabled on the same terms as the style's radio group.
         expect((card.match(/disabled=\{!canEdit \|\| loading \|\| saving\}/g) ?? []).length).toBe(2);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// CLIENT ITEM 5 — "the font looks elongated and stretched vertically".
+//
+// The classic text docket no longer prints double height, so its copy says it
+// prints at the printer's normal size, and no longer calls itself "the ticket
+// this system printed before" (that one was the stretched one).
+// ---------------------------------------------------------------------------
+
+describe('the classic docket is described as it now prints', () => {
+    it('plain text, in the printer\'s own font, at its normal size', () => {
+        expect(KOT_PRINT_STYLE_OPTIONS[1]!.detail).toBe(
+            "Plain text in the printer's own font, at its normal size. Use it if the new one does not print.",
+        );
+        expect(KOT_TEXT_SIZE_HELP).toBe(
+            "Applies to the new docket only. The classic text docket prints in the printer's own font "
+            + 'at its normal size, and ignores this setting.',
+        );
+    });
+});
+
+// ---------------------------------------------------------------------------
+// "PRINT A TEST KOT" — the card's third control, and the first caller POST
+// /print/test has ever had. What can go wrong while looking fine: a button that
+// is never rendered or never posts; a double click that prints two slips; an
+// offline tap that queues or hangs; a refusal shown as "Something went wrong"
+// instead of the server's sentence; an outcome that hides where the slip went.
+// ---------------------------------------------------------------------------
+
+describe('what the test button says', () => {
+    it('in the owner app\'s words', () => {
+        expect(KOT_TEST_PRINT_LABEL).toBe('Print a test KOT');
+        expect(KOT_TEST_PRINT_SENDING).toBe('Sending a test KOT…');
+        expect(KOT_TEST_PRINT_HELP).toBe(
+            'Sends one test docket to the kitchen printer in the style and size chosen above, '
+            + 'so you can check the paper before service.',
+        );
+        expect(KOT_TEST_PRINT_SENT_TITLE).toBe('Test KOT sent');
+        expect(KOT_TEST_PRINT_FAILED_TITLE).toBe("Couldn't print a test KOT");
+        expect(KOT_TEST_PRINT_OFFLINE).toBe('A test KOT needs a connection — reconnect and try again.');
+    });
+
+    it('posts the existing route with the one role it tests', () => {
+        expect(KOT_TEST_PRINT_PATH).toBe('/print/test');
+        expect(KOT_TEST_PRINT_BODY).toEqual({ role: 'kot' });
+        expect(Object.isFrozen(KOT_TEST_PRINT_BODY)).toBe(true);
+    });
+
+    it('names where the slip went', () => {
+        const reply = (r: Record<string, unknown>) => ({ results: [{ role: 'kot', jobId: 'j1', ...r }], skipped: 0 });
+        expect(kotTestPrintOutcome(reply({ mode: 'directed', reason: 'routed', destination: 'Kitchen Epson' })))
+            .toBe('Sent to Kitchen Epson. Check the paper there.');
+        expect(kotTestPrintOutcome(reply({ mode: 'directed', reason: 'routed', destination: null })))
+            .toBe('Sent to the kitchen printer. Check the paper there.');
+        expect(kotTestPrintOutcome(reply({ mode: 'broadcast', reason: 'no_device_online', destination: 'Kitchen Epson' })))
+            .toBe('Kitchen Epson is not online, so every connected device with a kitchen printer was asked to print it. Check the paper.');
+        for (const reason of ['no_route', 'flag_off', 'schema_missing', 'unpersisted', 'route_lookup_failed']) {
+            expect(kotTestPrintOutcome(reply({ mode: 'broadcast', reason, destination: null })))
+                .toBe('Every connected device with a kitchen printer was asked to print it. Check the paper.');
+        }
+        expect(kotTestPrintOutcome({ results: [], skipped: 0 })).toBe('Nothing was sent to print.');
+        for (const odd of [null, 'ok', 1, [], {}, { results: 'x' }]) {
+            expect(kotTestPrintOutcome(odd)).toBe("Sent. Check the kitchen printer's paper.");
+        }
+    });
+});
+
+describe('pressing the test button', () => {
+    type Notice = { title: string; description: string; failed: boolean };
+    const harness = (opts: { online?: boolean; send?: () => Promise<KotTestPrintResult> } = {}) => {
+        const sends: number[] = [];
+        const notices: Notice[] = [];
+        const busy: boolean[] = [];
+        let release: (value: KotTestPrintResult) => void = () => {};
+        const press = kotTestPrintHandler({
+            online: () => opts.online ?? true,
+            send: () => {
+                sends.push(1);
+                return opts.send ? opts.send() : new Promise<KotTestPrintResult>((resolve) => { release = resolve; });
+            },
+            notify: (n) => { notices.push(n); },
+            busy: (b) => { busy.push(b); },
+        });
+        return { press, sends, notices, busy, release: (v: KotTestPrintResult) => release(v) };
+    };
+    const directed: KotTestPrintResult = { sent: true, reply: { results: [{ mode: 'directed', destination: 'Kitchen Epson' }] } };
+
+    it('ONE TAP IS ONE REQUEST — a second tap while the first is in flight sends nothing', async () => {
+        const h = harness();
+        const first = h.press();
+        const second = h.press();
+        await second;
+        expect(h.sends).toHaveLength(1);
+        h.release(directed);
+        await first;
+        expect(h.sends).toHaveLength(1);
+        expect(h.notices).toEqual([{ title: 'Test KOT sent', description: 'Sent to Kitchen Epson. Check the paper there.', failed: false }]);
+        // The button was disabled for exactly the request.
+        expect(h.busy).toEqual([true, false]);
+        // …and pressing again afterwards is a new slip.
+        const third = h.press();
+        h.release(directed);
+        await third;
+        expect(h.sends).toHaveLength(2);
+    });
+
+    it('offline, nothing is sent and the owner is told it needs a connection', async () => {
+        const h = harness({ online: false });
+        await h.press();
+        expect(h.sends).toHaveLength(0);
+        expect(h.busy).toEqual([]);
+        expect(h.notices).toEqual([{ title: "Couldn't print a test KOT", description: KOT_TEST_PRINT_OFFLINE, failed: true }]);
+    });
+
+    it('a refusal is shown in the server\'s own sentence', async () => {
+        const h = harness({
+            send: async () => ({ refused: true, status: 403, error: 'You need the "Print" permission to print a test slip.' }),
+        });
+        await h.press();
+        expect(h.sends).toHaveLength(1);
+        expect(h.notices).toEqual([
+            { title: "Couldn't print a test KOT", description: 'You need the "Print" permission to print a test slip.', failed: true },
+        ]);
+        expect(h.busy).toEqual([true, false]);
+    });
+
+    it('a request that never completed says it needs a connection, and frees the button', async () => {
+        const h = harness({ send: async () => { throw new Error('Failed to fetch'); } });
+        await h.press();
+        expect(h.notices).toEqual([{ title: "Couldn't print a test KOT", description: KOT_TEST_PRINT_OFFLINE, failed: true }]);
+        expect(h.busy).toEqual([true, false]);
+    });
+});
+
+describe('the test button is built AND called', () => {
+    const db = code(readSource('src/lib/db.ts'));
+    const card = code(readSource('src/app/dashboard/settings/kot-print-settings.tsx'));
+
+    it('db.ts posts the shared body to the shared path, and RETURNS a refusal', () => {
+        expect(db).toMatch(/export const printTestKot = async \(restaurantId: string\): Promise<KotTestPrintResult> => \{\s*const res = await backendCall\(KOT_TEST_PRINT_PATH, restaurantId, \{\s*method: 'POST',[\s\S]*?body: JSON\.stringify\(KOT_TEST_PRINT_BODY\),/);
+        expect(db).toMatch(/if \(!res\) \{return \{ refused: true, status: 0, error: KOT_TEST_PRINT_OFFLINE \};\}/);
+        expect(db).toMatch(/if \(!res\.ok\) \{return \{ refused: true, status: res\.status, error: await readErrorMessage\(res, 'Unable to print a test KOT\.'\) \};\}/);
+        // Exactly one caller of the route in the dashboard, and it is this one.
+        expect((db.match(/backendCall\(KOT_TEST_PRINT_PATH, restaurantId/g) ?? []).length).toBe(1);
+        expect(db).not.toMatch(/print\/test/);
+    });
+
+    it('the card renders the button, bound to the one handler, disabled while it sends', () => {
+        expect(card).toContain('send: () => printTestKot(restaurantId),');
+        expect(card).toMatch(/const printTest = useMemo\(\(\) => kotTestPrintHandler\(\{/);
+        expect(card).toMatch(/<Button[\s\S]*?onClick=\{\(\) => \{ void printTest\(\) \}\}[\s\S]*?disabled=\{loading \|\| testing\}[\s\S]*?\{testing \? KOT_TEST_PRINT_SENDING : KOT_TEST_PRINT_LABEL\}[\s\S]*?<\/Button>/);
+        expect(card).toContain('{KOT_TEST_PRINT_HELP}');
+        expect(card).toContain('busy: setTesting,');
+        expect(card).toContain('navigator.onLine !== false');
+        // Rendered inside the card that is itself rendered on Settings (pinned above).
+        expect(card.indexOf('void printTest()')).toBeGreaterThan(card.indexOf('if (!supported) {return null}'));
+        expect(card).not.toMatch(/\bfetch\(/);
     });
 });

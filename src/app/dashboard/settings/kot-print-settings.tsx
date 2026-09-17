@@ -4,8 +4,8 @@
 // one does not come out.
 //
 // THE FAILURE THIS CARD EXISTS FOR. The reference docket is drawn as a RASTER
-// IMAGE, because the printed ticket the client approved is a proportional
-// Arial-metric face and a thermal printer's built-in fonts are monospaced. Very
+// IMAGE, because the printed ticket the client approved is set in a
+// proportional face and a thermal printer's built-in fonts are monospaced. Very
 // nearly every thermal printer draws a raster. The ones that do not DO NOT SAY
 // SO — they swallow the image and feed blank paper. On a bill printer somebody
 // notices in seconds. On a KITCHEN printer it is an order nobody cooks, while
@@ -34,6 +34,14 @@
 // docket only; the classic text docket ignores it, which the copy says and the
 // card repeats while classic is selected.
 //
+// "PRINT A TEST KOT", the third control (client item 5): one test docket in the
+// style and size above, via the existing POST /print/test, so whoever changed
+// either can read the paper instead of waiting for the next order. Online only;
+// one tap is one slip; a refusal shows the server's sentence. The handler is
+// kotTestPrintHandler in src/lib/kot-print-style.ts, where the web suite can
+// press it. Not gated on canEdit: the route checks the PRINT permission, not
+// the settings one, and says so itself when it refuses.
+//
 // NOT SHOWN AGAINST A BACKEND WITHOUT THE SETTINGS. The one live before them
 // sends neither key, prints only the classic docket, and answers a save of them
 // with 200 and nothing stored. Showing "Match the reference docket" there would
@@ -41,24 +49,29 @@
 // read says so — and a save whose reply lacks the key (a backend rolled back
 // since the read) raises, and is put back like any refused save.
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Printer } from "lucide-react"
 
+import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { useToast } from "@/hooks/use-toast"
-import { getKotDocketSettings, setKotPrintStyle, setKotTextSize } from "@/lib/db"
+import { getKotDocketSettings, printTestKot, setKotPrintStyle, setKotTextSize } from "@/lib/db"
 import {
   KOT_PRINT_STYLE_DEFAULT,
   KOT_PRINT_STYLE_HELP,
   KOT_PRINT_STYLE_OPTIONS,
+  KOT_TEST_PRINT_HELP,
+  KOT_TEST_PRINT_LABEL,
+  KOT_TEST_PRINT_SENDING,
   KOT_TEXT_SIZE_CLASSIC_NOTE,
   KOT_TEXT_SIZE_DEFAULT,
   KOT_TEXT_SIZE_HELP,
   KOT_TEXT_SIZE_OPTIONS,
   isKotPrintStyle,
   isKotTextSize,
+  kotTestPrintHandler,
   type KotPrintStyle,
   type KotTextSize,
 } from "@/lib/kot-print-style"
@@ -70,6 +83,17 @@ export function KotPrintSettingsCard({ restaurantId, canEdit }: { restaurantId: 
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [supported, setSupported] = useState(true)
+  const [testing, setTesting] = useState(false)
+
+  // Made once per restaurant, so its in-flight guard outlives a re-render.
+  const printTest = useMemo(() => kotTestPrintHandler({
+    online: () => typeof navigator === "undefined" || navigator.onLine !== false,
+    send: () => printTestKot(restaurantId),
+    notify: ({ title, description, failed }) => {
+      toast(failed ? { title, description, variant: "destructive" } : { title, description })
+    },
+    busy: setTesting,
+  }), [restaurantId, toast])
 
   useEffect(() => {
     if (!restaurantId) {return}
@@ -209,6 +233,21 @@ export function KotPrintSettingsCard({ restaurantId, canEdit }: { restaurantId: 
           {style === "classic" ? (
             <p className="text-xs font-medium text-muted-foreground">{KOT_TEXT_SIZE_CLASSIC_NOTE}</p>
           ) : null}
+        </div>
+
+        <div className="space-y-2 border-t pt-4">
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full sm:w-auto"
+            onClick={() => { void printTest() }}
+            disabled={loading || testing}
+            data-testid="kot-test-print"
+          >
+            <Printer className="h-4 w-4" />
+            {testing ? KOT_TEST_PRINT_SENDING : KOT_TEST_PRINT_LABEL}
+          </Button>
+          <p className="text-xs text-muted-foreground">{KOT_TEST_PRINT_HELP}</p>
         </div>
 
         {!canEdit ? (
