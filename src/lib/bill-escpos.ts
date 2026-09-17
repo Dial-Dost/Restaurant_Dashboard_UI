@@ -33,7 +33,7 @@
 // browser-only jobs (turning the logo PNG into pixels, building the feedback
 // URL) and hands the results in.
 
-import { REPRINT_MARKER } from './bill-print-state';
+import { REPRINT_MARKER, UPDATED_BILL_MARKER } from './bill-print-state';
 
 const ESC = 0x1b;
 const GS = 0x1d;
@@ -414,6 +414,13 @@ export interface BillEscPosInput extends BillTotalsSource {
     /** Columns across the roll: 48 for 80mm (the default), 32 for 58mm. */
     width?: number;
     reprint?: boolean;
+    /**
+     * Client items 1 and 2: this print REPLACES out-of-date paper — the server's
+     * line ("Replaces the bill printed 13:32", billRevisedNoteOf). Set, the
+     * banner is "** UPDATED BILL **" with this under it, in REPRINT's place,
+     * byte-for-byte what escpos.ts prints. Absent, null or "" changes nothing.
+     */
+    revisedNote?: string | null;
     /** A GS v 0 logo raster (billLogoRaster), printed centred at the top. */
     logo?: Uint8Array | null;
     restaurantName: string;
@@ -490,7 +497,11 @@ export function buildBillEscPos(bill: BillEscPosInput): Uint8Array {
     raw(ESC, 0x61, 0x01);
     // The first thing on a reprinted roll is that it is a reprint — above the
     // logo, in the backend's own spelling.
-    if (bill.reprint) { big(REPRINT_MARKER, W); }
+    const revisedNote = (bill.revisedNote ?? '').trim();
+    if (revisedNote) {
+        big(UPDATED_BILL_MARKER, W);
+        for (const l of wrapText(asciiSafe(revisedNote), W)) { line(l); }
+    } else if (bill.reprint) { big(REPRINT_MARKER, W); }
     if (bill.logo && bill.logo.length > 0) {
         chunks.push(bill.logo);
         line();

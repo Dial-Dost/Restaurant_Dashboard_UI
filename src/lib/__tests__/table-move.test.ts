@@ -35,7 +35,9 @@ import {
     movedPartySentence,
     orderMoveDestinations,
     partyMoveDestinations,
+    printedPartyMoveNote,
     refreshAfterTableMove,
+    sameTableFamily,
     type MoveCandidateTable,
 } from '../table-move';
 
@@ -217,5 +219,55 @@ describe('after a move, the clocks are re-read along with the grid', () => {
         for (const event of TABLE_MOVE_EVENTS) {
             expect([event, ctx.includes(`"${event}"`)]).toEqual([event, true]);
         }
+    });
+});
+
+// ---------------------------------------------------------------------------
+// CLIENT ITEMS 1 AND 2 — a waiter moves tables, printed ones included.
+// ---------------------------------------------------------------------------
+describe('the family: "12" and its "12 #2" are one table', () => {
+    const FAMILY: MoveCandidateTable[] = [
+        { name: '12', capacity: 4, max_capacity: 4 },
+        { name: '12 #2', capacity: 4, max_capacity: 4, parent_table: '12' },
+        { name: '12 #3', capacity: 4, max_capacity: 4, parent_table: '12' },
+        { name: '15', capacity: 4, max_capacity: 4 },
+        { name: '15 #2', capacity: 4, max_capacity: 4, parent_table: '15' },
+        { name: '120', capacity: 4, max_capacity: 4 },
+    ];
+    const nobodySeated = (): boolean => false;
+    const names = (rows: MoveCandidateTable[]): string[] => rows.map((t) => t.name);
+
+    it('moving the printed 12 never offers its own green seats', () => {
+        expect(names(partyMoveDestinations(FAMILY, nobodySeated, '12', 2))).toEqual(['15', '15 #2', '120']);
+    });
+
+    it('moving the next party at "12 #2" never offers 12 or "12 #3" — the parent is read off the floor when not given', () => {
+        expect(names(partyMoveDestinations(FAMILY, nobodySeated, '12 #2', 2))).toEqual(['15', '15 #2', '120']);
+        expect(names(partyMoveDestinations(FAMILY, nobodySeated, '12 #2', 2, '12'))).toEqual(['15', '15 #2', '120']);
+    });
+
+    it('another family\'s free seat IS a destination, and a name that merely starts with 12 is another table', () => {
+        expect(names(partyMoveDestinations(FAMILY, nobodySeated, '15', 2))).toEqual(['12', '12 #2', '12 #3', '120']);
+        expect(sameTableFamily({ name: '12' }, { name: '120' })).toBe(false);
+    });
+
+    it('sameTableFamily is case-insensitive and needs a name', () => {
+        expect(sameTableFamily({ name: 'Patio 4' }, { name: 'Patio 4 #2', parent_table: 'patio 4' })).toBe(true);
+        expect(sameTableFamily({ name: '' }, { name: '' })).toBe(false);
+    });
+
+    it('the printed party\'s paper still names the table it left — the words the app says', () => {
+        expect(printedPartyMoveNote('12', '20'))
+            .toBe("The printed bill moves with them. The guest's paper still says 12; the bill will show as 20 (printed as 12).");
+    });
+
+    it('the Tables page offers only the other families, warns on a printed party, and says where the green seat is', () => {
+        const page = readFileSync(join(__dirname, '..', '..', 'app', 'dashboard', 'tables', 'page.tsx'), 'utf8').replace(/\r\n/g, '\n');
+        expect(page).toContain('partyMoveDestinations(allTables, isSeated, sourceName, covers, table?.parent_table ?? null)');
+        expect(page).toMatch(/\{sourcePrinted \? \([\s\S]{0,200}?printedPartyMoveNote\(/);
+        expect(page).toContain('result.next_party_message ?? ""');
+        // Move table is offered on ANY seated tile (orange included) to whoever the server lets move.
+        expect(page).toContain('{isOccupied && canMove ? (');
+        expect(page).toContain('const mayMoveParty = canMoveTableParty(user);');
     });
 });

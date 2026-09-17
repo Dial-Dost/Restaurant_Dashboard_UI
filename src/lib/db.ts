@@ -19,10 +19,11 @@ import { readErrorMessage, refusalSentence, type RefusedAction } from '@/lib/err
 // C3. The two readers are pure and live beside the rule they implement, so this
 // module holds no second opinion about what "already printed" means — it only
 // carries the bytes between the route and the screens.
-import { billPrintRefusal, billPrintStateFields, type BillPrintState } from '@/lib/bill-print-state';
+import { billPaperJobIdOf, billPrintRefusal, billPrintStateFields, billRevisedNoteOf, type BillPrintState } from '@/lib/bill-print-state';
 // Client item 6. Pure, like the C3 readers above: this module only carries the
 // next party's seat and the 409 between the routes and the screens.
-import { nextPartyAfterPrint, nextPartyRowFields, readBillPrintedRefusal, type BillPrintedRefusal } from '@/lib/next-party';
+import { ADD_TO_PRINTED_BILL_KEY, nextPartyAfterPrint, nextPartyRowFields, readBillPrintedRefusal, type BillPrintedRefusal } from '@/lib/next-party';
+import { hasOrderField } from '@/lib/floor-state';
 import { ncSettleWasRefused } from '@/lib/nc-settle';
 import { UNREACHABLE_MESSAGE, billCustomerPayload, billCustomerSaveOutcome, type BillCustomerRequest, type BillCustomerSaveOutcome } from '@/lib/bill-customer';
 import { SELECTED_OUTLET_KEY } from '@/lib/outlet';
@@ -822,6 +823,10 @@ const mapTable = (item: any, index: number): Table => {
         // src/lib/next-party.ts for who reads these and why the handle, never
         // the display name, is what every request sends.
         ...nextPartyRowFields(item, String(name)),
+        // CLIENT ITEMS 1 AND 2 — "a party is seated but has not ordered" and "food
+        // is on its way" are different colours on the floor (src/lib/floor-state.ts).
+        // Absent on an older server, which reads as "not known" rather than false.
+        ...hasOrderField(item),
     };
 };
 
@@ -1635,7 +1640,11 @@ export type BillPrintClaimResult =
     // no amounts and refuses — which is how no waiter on the web could ever print.
     // `nextParty` (client item 6): the seat the server opened, or found, for the
     // next guests at this number — both null when there is none.
-    | { outcome: 'claimed'; state: BillPrintState | null; printableBill: Record<string, unknown> | null; nextParty: { table: string | null; message: string | null } }
+    // `revisedNote` (client items 1 and 2): this print replaces out-of-date
+    // paper — the line under "** UPDATED BILL **", in the server's words — or
+    // null when it replaces nothing. `paperJobId`: the claim's own ledger row, which
+    // the print page names if it also sends this paper to a thermal printer.
+    | { outcome: 'claimed'; state: BillPrintState | null; printableBill: Record<string, unknown> | null; nextParty: { table: string | null; message: string | null }; revisedNote: string | null; paperJobId: string | null }
     | { outcome: 'unavailable'; reason: string }
     | { outcome: 'refused'; status: number; message: string; reprintNeedsSenior: boolean; state: BillPrintState | null };
 
@@ -1720,6 +1729,8 @@ export const claimBillPrint = async (
                 ? (printable as Record<string, unknown>)
                 : null,
             nextParty: nextPartyAfterPrint(body),
+            revisedNote: billRevisedNoteOf(body),
+            paperJobId: billPaperJobIdOf(body),
         };
     }
 
@@ -1770,6 +1781,13 @@ export interface MoveTablePartyResult {
     covers: number;
     moved_orders: number;
     moved_bill: boolean;
+    /** Client items 1 and 2: the party's bill had been printed; its paper came with them. Absent on an older server. */
+    printed?: boolean;
+    /** The table name on that paper ("12"), when known. */
+    printed_as?: string | null;
+    /** The green seat the server opened for the next guests at the destination. */
+    next_party_table?: string | null;
+    next_party_message?: string | null;
 }
 
 /**
@@ -2460,14 +2478,19 @@ export const addMenuItem = async (restaurantId: string, item: MenuItem) => {
 // never as a throw, whose message Next redacts across this "use server"
 // boundary. The caller shows the sentence and the "Take it on 12 (next party)"
 // action.
-export const addOrder = async (restaurantId: string, order: Order, opts?: { idempotencyKey?: string }) => {
+//
+// CLIENT ITEMS 1 AND 2 (2.0.2) — `addToPrintedBill`: the operator confirmed these
+// items go on the table's PRINTED bill ("Add to printed bill"). Sent as
+// `add_to_printed_bill: true`, which is the only thing that lets a waiter-only
+// login add to printed paper; never sent without that confirm.
+export const addOrder = async (restaurantId: string, order: Order, opts?: { idempotencyKey?: string; addToPrintedBill?: boolean }) => {
     const response = await backendCall('/orders', restaurantId, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             ...(opts?.idempotencyKey ? { 'Idempotency-Key': opts.idempotencyKey } : {}),
         },
-        body: JSON.stringify(order),
+        body: JSON.stringify(opts?.addToPrintedBill === true ? { ...order, [ADD_TO_PRINTED_BILL_KEY]: true } : order),
     });
 
     if (response && !response.ok && response.status >= 400 && response.status < 500) {
@@ -2577,6 +2600,12 @@ export const confirmBillPaymentByWaiter = async (
     payment_method: PaymentMethod,
     payment_proof_screenshot_url?: string | null,
     splits?: PaymentSplit[],
+    /**
+     * Client items 1 and 2: the cashier was warned the printed bill is out of
+     * date and pressed "Settle anyway". Recorded in the audit log; the settle
+     * itself is unchanged.
+     */
+    opts?: { settledWithStalePaper?: boolean },
 ) => {
     const response = await backendCall(`/bills/order/${encodeURIComponent(orderId)}/waiter-confirm-payment`, restaurantId, {
         method: 'POST',
@@ -2588,6 +2617,7 @@ export const confirmBillPaymentByWaiter = async (
             payment_method,
             payment_proof_screenshot_url: payment_proof_screenshot_url ?? null,
             ...(splits && splits.length > 0 ? { splits } : {}),
+            ...(opts?.settledWithStalePaper === true ? { settled_with_stale_paper: true } : {}),
         }),
     });
 
@@ -2608,6 +2638,8 @@ export const approveBillPaymentByAdmin = async (
     restaurantId: string,
     employeeId: string,
     orderId: string,
+    /** "Settle anyway" against out-of-date paper — see confirmBillPaymentByWaiter. */
+    opts?: { settledWithStalePaper?: boolean },
 ) => {
     const response = await backendCall(`/bills/order/${encodeURIComponent(orderId)}/admin-approve-payment`, restaurantId, {
         method: 'POST',
@@ -2615,6 +2647,7 @@ export const approveBillPaymentByAdmin = async (
             'Content-Type': 'application/json',
             'X-Employee-Id': employeeId,
         },
+        ...(opts?.settledWithStalePaper === true ? { body: JSON.stringify({ settled_with_stale_paper: true }) } : {}),
     });
 
     if (!response) {

@@ -21,9 +21,16 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
+    ADD_TO_PRINTED_BILL_ACTION,
+    ADD_TO_PRINTED_BILL_KEY,
     BILL_PRINTED_CODE,
     BILL_PRINTED_STATUS,
+    addToPrintedBillConfirm,
+    addToPrintedBillLabel,
+    addingToPrintedBillStrip,
     billPrintedOf,
+    greenSeatFor,
+    useGreenTableLabel,
     countRoomsInUse,
     NEXT_PARTY_CHIP,
     RESERVED_TABLE_NAME_ERROR,
@@ -160,7 +167,19 @@ describe('what the server answers', () => {
             table: '12',
             nextPartyTable: '12 #2',
             actionLabel: 'Take it on 12 (next party)',
+            // A server before 2.0.2 offers no printed-bill action.
+            addToPrintedLabel: null,
         });
+        // 2.0.2's server does, and the page answers it with the confirm.
+        expect(readBillPrintedRefusal({ ...body, add_to_printed_action: "Add to 12's printed bill" })?.addToPrintedLabel)
+            .toBe("Add to 12's printed bill");
+        // ...and its 2.0.2 sentence, which names that choice instead of sending
+        // the waiter to a manager for it, is the one shown beside the button.
+        const said = "12's bill has already been printed. Take a new party's order on 12 (next party), or, if it is for the same guests, add it to 12's printed bill and print the updated bill.";
+        expect(readBillPrintedRefusal({ ...body, add_to_printed_action: "Add to 12's printed bill", add_to_printed_message: said })?.message).toBe(said);
+        // Without the action the old sentence stands, whatever else was sent.
+        expect(readBillPrintedRefusal({ ...body, add_to_printed_message: said })?.message).toBe(body.error);
+        expect(readBillPrintedRefusal({ ...body, add_to_printed_action: "Add to 12's printed bill", add_to_printed_message: '  ' })?.message).toBe(body.error);
         // Nowhere else to go, or the seat IS the table: a sentence and no action.
         expect(readBillPrintedRefusal({ ...body, next_party_table: null })).toMatchObject({ nextPartyTable: null, actionLabel: null });
         expect(readBillPrintedRefusal({ ...body, next_party_table: '12' })).toMatchObject({ nextPartyTable: null, actionLabel: null });
@@ -404,6 +423,40 @@ describe('a refused order has written nothing — the seating around the send', 
 });
 
 // ============================================================================
+// CLIENT ITEMS 1 AND 2 — ADDING TO A PRINTED BILL, ON PURPOSE
+// ============================================================================
+describe('adding to a printed bill — the words and the green seat', () => {
+    test('the label, the confirm, the strip and the two actions', () => {
+        expect(ADD_TO_PRINTED_BILL_KEY).toBe('add_to_printed_bill');
+        expect(addToPrintedBillLabel('12')).toBe("Add to 12's printed bill");
+        expect(addToPrintedBillLabel('12 #2', '12')).toBe("Add to 12 (next party)'s printed bill");
+        expect(addToPrintedBillConfirm({ table: '12', printedClock: '13:32', hasGreen: true }))
+            .toBe("12's bill was printed at 13:32. These items go on that bill and it must be printed again. New guests? Use the green 12.");
+        expect(addToPrintedBillConfirm({ table: '12', printedClock: '', hasGreen: false }))
+            .toBe("12's bill has been printed. These items go on that bill and it must be printed again.");
+        expect(addToPrintedBillConfirm({ table: '12 #2', parentTable: '12', printedClock: '14:05', hasGreen: true }))
+            .toBe("12 (next party)'s bill was printed at 14:05. These items go on that bill and it must be printed again. New guests? Use the green 12.");
+        expect(addingToPrintedBillStrip('12')).toBe("Adding to 12's printed bill");
+        expect(ADD_TO_PRINTED_BILL_ACTION).toBe('Add to printed bill');
+        expect(useGreenTableLabel('12')).toBe('Use green 12');
+    });
+
+    test('the green seat is the family\'s free member: the root first, then the lowest free party', () => {
+        const rows = [t('12'), seat('12', 2), seat('12', 3), t('15'), seat('15', 2)];
+        const free = (names: string[]) => (row: Row): boolean => names.includes(row.name);
+        // 12 is printed (busy); its "12 #2" is free.
+        expect(greenSeatFor(rows[0], rows, free(['12 #2', '12 #3', '15']))?.name).toBe('12 #2');
+        expect(greenSeatFor(rows[0], rows, free(['12 #3']))?.name).toBe('12 #3');
+        // The printed party is the SEAT; the room table is free again: that is the green one.
+        expect(greenSeatFor(rows[1], rows, free(['12', '12 #3']))?.name).toBe('12');
+        // Another family's free seat is never offered.
+        expect(greenSeatFor(rows[0], rows, free(['15', '15 #2']))).toBeNull();
+        // The printed table itself is never its own green seat.
+        expect(greenSeatFor(rows[0], rows, free(['12']))).toBeNull();
+    });
+});
+
+// ============================================================================
 // ONE VOCABULARY — the server's own source, when it is beside this checkout.
 // ============================================================================
 describe('the same words as the server (Restaurant_Backend/next_party.ts)', () => {
@@ -431,6 +484,16 @@ describe('the same words as the server (Restaurant_Backend/next_party.ts)', () =
         expect(src).toContain('return `Seat the next party at ${');
         expect(src).toContain("was already printed, so the paper no longer shows this. Reprint the bill before the guest pays.`;");
         expect(reprintNeededMessage('12')).toMatch(/was already printed, so the paper no longer shows this\. Reprint the bill before the guest pays\.$/);
+    });
+
+    maybe('client items 1-2: the flag\'s key and the action\'s words are the server\'s', () => {
+        expect(src).toContain(`export const ADD_TO_PRINTED_BILL_KEY = "${ADD_TO_PRINTED_BILL_KEY}";`);
+        expect(src).toContain("return `Add to ${tableSentenceName(table, parentTable ?? null)}'s printed bill`;");
+        expect(src).toContain('`${named(toTable)} is the same table as ${named(fromTable)} — pick a different table to move to.`');
+        // The 2.0.2 refusal sentence this page shows beside that action.
+        expect(src).toContain("add_to_printed_message: addToPrinted ? addToPrintedBillRefusalMessage(named, elsewhere ? nextNamed : null) : null,");
+        expect(src).toContain("? `${named}'s bill has already been printed. Take a new party's order on ${next}, or, if it is for the same guests, add it to ${named}'s printed bill and print the updated bill.`");
+        expect(src).toContain(": `${named}'s bill has already been printed. If it is for the same guests, add it to ${named}'s printed bill and print the updated bill.`;");
     });
 
     maybe('the refusal\'s status is the server\'s — and never 409', () => {
@@ -578,7 +641,11 @@ describe('the wiring — nothing here is built and never called', () => {
     test('the Tables screen draws the Next party badge exactly on a next-party seat', () => {
         const tablesPage = read('src/app/dashboard/tables/page.tsx');
         expect(tablesPage).toContain('const nextParty = isNextPartyTable(table);');
-        expect(tablesPage).toMatch(/\{nextParty \? \(\s*<Badge[\s\S]{0,400}?\{NEXT_PARTY_CHIP\}\s*<\/Badge>\s*\) : null\}/);
+        // Client items 1-2: the chip reads "#2" (nextPartyBadge) with "Next party"
+        // as its title and accessible name; "Next party" itself only when the row
+        // carried no party number.
+        expect(tablesPage).toMatch(/\{nextParty \? \(\s*<Badge[\s\S]{0,500}?aria-label=\{`\$\{NEXT_PARTY_CHIP\} at[\s\S]{0,200}?\{partyBadge \?\? NEXT_PARTY_CHIP\}\s*<\/Badge>\s*\) : null\}/);
+        expect(tablesPage).toContain('const partyBadge = nextParty ? nextPartyBadge(table.party_no) : null;');
         expect(tablesPage).toMatch(/nextParty \? `\$\{spoken\} — its bill reads \$\{table\.name\}`/);
     });
 

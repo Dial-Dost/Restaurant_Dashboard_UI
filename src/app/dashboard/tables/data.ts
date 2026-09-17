@@ -43,4 +43,8 @@ export interface Table {
   parent_table?: string | null;
   party_no?: number | null;
   display_name?: string;
+  // CLIENT ITEMS 1 AND 2 — has anything been ORDERED here yet? Seated-but-not-
+  // ordered and running are different colours on the floor (src/lib/floor-state.ts).
+  // Absent on a backend older than the field.
+  has_order?: boolean;
 }

@@ -144,7 +144,7 @@ import {
     type TenderDraft,
     type VocabularyOption,
 } from "@/lib/mis-capture"
-import { serverBillPrintState } from "@/lib/bill-print-state"
+import { billPaperJobIdOf, serverBillPrintState } from "@/lib/bill-print-state"
 import { cancelKotRoute } from "@/lib/orders-grid"
 import { can } from "@/lib/session-scope"
 import { cn } from "@/lib/utils"
@@ -168,6 +168,8 @@ type Which = null | "comp" | "void" | "waiver" | "tenders" | "counter"
 export interface PrintBillHandoff {
     printWindow: Window | null
     printableBill: Record<string, unknown> | null
+    /** The claim's ledger row (client items 1-2): named again if the page also sends this paper to a thermal printer. */
+    paperJobId?: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -1049,7 +1051,7 @@ function WaiverDialog({
                 answered = answer.result
                 const said = serviceChargeRemovalSentence(answer.result, money)
                 if (answer.result.printed && printBill) {
-                    await printBill({ printWindow: tab, printableBill: answer.result.printable_bill ?? null })
+                    await printBill({ printWindow: tab, printableBill: answer.result.printable_bill ?? null, paperJobId: billPaperJobIdOf(answer.result) })
                 } else {
                     tab?.close()
                 }

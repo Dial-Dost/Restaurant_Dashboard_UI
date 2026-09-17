@@ -91,6 +91,10 @@ export interface SessionScope {
     manage_roles?: boolean;
     /** PATCH /menu/:id/availability — H4's "86 a dish" sidebar. */
     edit_menu?: boolean;
+    /** POST /tables/move — "Move table" (client items 1 and 2: a waiter moves tables too). */
+    move_table?: boolean;
+    /** POST /tables/move-order — "Move an order". Kept off a waiter-only floor by the clients. */
+    move_order?: boolean;
 }
 
 /** One of the server's per-control answers. */
@@ -213,6 +217,8 @@ const CAPABILITY_FALLBACK_ACTION: Record<Capability, string> = {
     void_order: PERM_VOID_ORDER,
     view_roles: PERM_VIEW_ROLES,
     manage_roles: PERM_EDIT_ROLES,
+    move_table: PERM_TABLE_SERVICE,
+    move_order: PERM_ORDER_ADD,
 };
 
 /**
@@ -363,12 +369,10 @@ export const showsMoney = (session: ScopedSession | null | undefined): boolean =
 
 // --- D3 / D4: moving a live party, and moving one mis-keyed ticket ----------
 //
-// Both are fully implemented, atomic and tested server-side; the dashboard
-// simply had no UI. Neither has a capability flag in the `scope` block yet, so
-// both read the server's own resolved `actions_set` for the uuid its route is
-// gated on — the same list `can()` falls back to, one hop less direct. They
-// should move into `scope` the moment the backend publishes them, for the drift
-// reason in this file's header.
+// Both are fully implemented, atomic and tested server-side. The backend now
+// publishes both answers in the `scope` block (`move_table`, `move_order` —
+// client items 1 and 2), so both are asked through `can()`, which falls back to
+// the route's own uuid only for a session stored before the flags existed.
 //
 // NO FALLBACK TO A ROLE, AND NO WILDCARD OF OUR OWN: `hasPermission` already
 // satisfies `"*"`, so an admin holds both without a special case.
@@ -383,7 +387,7 @@ export const showsMoney = (session: ScopedSession | null | undefined): boolean =
  * many words above the route).
  */
 export const canMoveTableParty = (session: ScopedSession | null | undefined): boolean =>
-    hasPermission(session?.actions_set, PERM_TABLE_SERVICE);
+    can(session, 'move_table');
 
 /**
  * May this session move ONE order/KOT to the table it should have been rung in
@@ -396,4 +400,7 @@ export const canMoveTableParty = (session: ScopedSession | null | undefined): bo
  * judgement made here.
  */
 export const canMoveOrderToTable = (session: ScopedSession | null | undefined): boolean =>
-    hasPermission(session?.actions_set, PERM_ORDER_ADD);
+    // CLIENT ITEMS 1 AND 2: "Move table" is the waiter's; "Move an order" stays a
+    // senior's on every client. The route's gate is "Add Orders", which a waiter
+    // holds, so the narrowing is the floor scope's — the same line the app draws.
+    can(session, 'move_order') && !isWaiterOnly(session);
