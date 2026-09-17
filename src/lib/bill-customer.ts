@@ -222,17 +222,21 @@ export type AddressField = string | undefined;
  *     not see, and one that DID see it has nothing new to say;
  *   * touched, and the address was known — sent only if it now differs from
  *     the seed (typing and undoing is not a change);
- *   * touched, and it was not known — sent: the person typed or pressed Clear.
+ *   * touched, and it was NOT known — sent only if something is in the box. An
+ *     empty box there is not "clear it": nobody on this screen saw an address
+ *     to clear, so Clear, or a line typed and deleted again, must not take one
+ *     off the bill.
  *
- * Stricter than the GSTIN's rule on purpose. An address sent unchanged is still
- * an address WRITE, and a database whose migration 054 column is not there yet
- * answers every address write 503 — which would make a plain name correction
- * fail for want of a field nobody touched.
+ * Stricter than the GSTIN's rule on purpose. Every address WRITE — an unchanged
+ * one, or an empty one — is answered 503 by a database whose migration 054
+ * column is not there yet, which would make a plain name correction fail for
+ * want of a field nobody meant to touch. The owner app's
+ * billCustomerAddressToSend is this rule, case for case.
  */
 export const addressToSend = (box: string, seed: string, known: boolean, touched: boolean): AddressField => {
     if (!touched) { return undefined; }
-    if (known && normalizeAddress(box) === normalizeAddress(seed)) { return undefined; }
-    return box;
+    if (known) { return normalizeAddress(box) === normalizeAddress(seed) ? undefined : box; }
+    return normalizeAddress(box) === null ? undefined : box;
 };
 
 export interface BillCustomerRequest {
@@ -306,7 +310,11 @@ export type BillCustomerSaveOutcome =
 export const OUTDATED_SERVER_MESSAGE =
     'This server has not finished updating, so the name, GSTIN and address cannot be changed from here yet. Ask your administrator to complete the update.';
 
-/** The sentence for an address the server did not keep — the app says the same words. */
+/**
+ * The sentence for an address the server did not keep — the owner app's
+ * billCustomerAddressNotSaved is these words exactly, and
+ * bill-customer-address.test.ts compares the two.
+ */
 export const ADDRESS_NOT_SAVED_MESSAGE =
     'The address was not saved: this server has not finished updating. Ask your administrator to complete the update.';
 

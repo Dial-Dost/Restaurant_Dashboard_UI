@@ -21,6 +21,7 @@ import {
     OUTDATED_SERVER_MESSAGE,
     addressError,
     addressToSend,
+    gstinToSend,
     addressUsage,
     billAddressLines,
     billCustomerLines,
@@ -53,6 +54,9 @@ function sibling(repo: string, relative: string): string {
     }
     return '';
 }
+
+/** `text` as a literal inside a RegExp. */
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /** Source with comments removed, so a pin reads the CODE rather than the prose beside it. */
 const code = (src: string): string => src.replace(/\{\/\*[\s\S]*?\*\/\}/g, '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
@@ -102,7 +106,8 @@ describe('the address rule — the server\'s, mirrored', () => {
         expect(ADDRESS_LIMIT_ERROR).toBe('Address can be at most 5 lines and 250 characters');
         expect(ADDRESS_HELP).toBe('Up to 5 lines. Leave it empty for none. Letters outside English print as "?".');
         expect(OUTDATED_SERVER_MESSAGE).toMatch(/name, GSTIN and address/);
-        expect(ADDRESS_NOT_SAVED_MESSAGE).toMatch(/^The address was not saved: this server has not finished updating/);
+        expect(ADDRESS_NOT_SAVED_MESSAGE).toBe(
+            'The address was not saved: this server has not finished updating. Ask your administrator to complete the update.');
     });
 
     it('is the backend\'s rule, word for word (customer_address.ts, when checked out beside this repo)', () => {
@@ -229,9 +234,27 @@ describe('what the dialog sends, and what came back', () => {
         expect(addressToSend('Tower B', ADDRESS, true, true)).toBe('Tower B');
         expect(addressToSend('', ADDRESS, true, true)).toBe('');
         expect(addressToSend('', '', true, true)).toBeUndefined();
-        // Not known (an older backend's payload): typing, or Clear, is the change.
+        // Not known (an older backend's payload, a failed read): only something
+        // TYPED goes out. Clear, or a line typed and deleted, leaves an address
+        // nobody saw exactly where it is.
         expect(addressToSend('Tower B', '', false, true)).toBe('Tower B');
-        expect(addressToSend('', '', false, true)).toBe('');
+        expect(addressToSend('', '', false, true)).toBeUndefined();
+        expect(addressToSend(' \n\t ', '', false, true)).toBeUndefined();
+    });
+
+    it('so Clear on a dialog that never saw an address is still a plain name write (no wipe, no 503 before 054)', () => {
+        // What the dialog holds after Clear against a payload with no
+        // `customer_address`: every box empty, every box touched.
+        const cleared = billCustomerPayload(
+            { kind: 'bill', billId: 'b1' }, '', gstinToSend('', false, true), addressToSend('', '', false, true));
+        expect(cleared.body).toEqual({ customer: '', customer_gstin: null });
+        const live = billCustomerPayload(
+            { kind: 'table', tableName: 'T4' }, 'Beta Corp', gstinToSend('', false, true), addressToSend('', '', false, true));
+        expect(live.body).toEqual({ table_name: 'T4', customer: 'Beta Corp', customer_gstin: null });
+        // …while Clear on a dialog that SHOWED one clears it.
+        const shown = billCustomerPayload(
+            { kind: 'bill', billId: 'b1' }, '', gstinToSend('', true, true), addressToSend('', ADDRESS, true, true));
+        expect(shown.body).toEqual({ customer: '', customer_gstin: null, customer_address: null });
     });
 
     it('so a name-only save from a dialog that saw the address is not an address write (no 503 before 054)', () => {
@@ -402,9 +425,19 @@ describe('cross-client parity with the owner app (when checked out beside this r
         expect(app).toContain('const int billCustomerAddressMaxLines = 5;');
         expect(app).toContain('const int billCustomerAddressMaxChars = 250;');
         expect(app).toContain("const String billCustomerEditLabel = 'Edit name / GSTIN / address';");
+        // The sentence for a server that ignored the address — both clients
+        // said "the same words" in a comment and showed different ones.
+        expect(app).toMatch(new RegExp(`const String billCustomerAddressNotSaved =\\s*'${escapeRegExp(ADDRESS_NOT_SAVED_MESSAGE)}';`));
         // The table header's button and both settled-bill controls use that one constant.
         expect(modules).toContain('label: billCustomerEditLabel');
         expect(app).toContain('tooltip: billCustomerEditLabel');
         expect(app).toContain("Text(_sending ? 'Saving…' : billCustomerEditLabel)");
+    });
+
+    it('the same rule for what goes out: an empty box nobody could see behind is never sent', () => {
+        if (!app) { return; }
+        const rule = app.slice(app.indexOf('bool billCustomerAddressToSend('));
+        expect(rule.slice(0, rule.indexOf('\n}\n'))).toMatch(
+            /if \(!touched\) return false;[\s\S]*return known \? now != normaliseBillCustomerAddress\(seed\) : now\.isNotEmpty;/);
     });
 });
