@@ -409,7 +409,8 @@ describe('the card, the page and the destinations are wired', () => {
 
     it('the row labels are the app\'s', () => {
         const app = sibling('restaurant_owner_app', 'lib/screens/modules.dart');
-        if (app === null) { return; }
+        // An app checkout from before item 10 has none of these sheets to compare.
+        if (app === null || sibling('restaurant_owner_app', 'lib/models/glance_drill.dart') === null) { return; }
         for (const label of ['Bills settled today', 'Online bills today', 'Bills settled this month', 'Time zone',
             'Month from', 'Collected', "Share of today's gross", 'NC bills', 'Given away', 'this figure']) {
             expect([label, card.includes(label)]).toEqual([label, true]);
