@@ -145,6 +145,10 @@ function ReportsInner() {
     // Email reports") reopens the right one.
     const [view, setView] = useState<"report" | "email">(() => (params?.get("view") === "email" ? "email" : "report"))
     const [emailOpen, setEmailOpen] = useState(false)
+    // A bell tapped while this page is already open pushes `?view=email` onto
+    // the same route; the page stays mounted, so follow the URL here too.
+    const viewParam = params?.get("view")
+    useEffect(() => { if (viewParam === "email") {setView("email")} }, [viewParam])
     const chooseView = useCallback((next: "report" | "email") => {
         setView(next)
         if (typeof window !== "undefined") {

@@ -65,6 +65,7 @@ import {
     type SendNowChoice,
 } from '../report-email';
 import { clampNotices } from '../report-time-slots';
+import { notificationHref } from '../notification-routing';
 
 function readSource(relative: string): string {
     for (const base of [process.cwd(), path.join(__dirname, '..', '..', '..')]) {
@@ -552,6 +553,19 @@ describe('the wiring', () => {
         ]) {
             expect(served).toContain(route);
         }
+    });
+
+    it('a report bell opens the Email reports view; a 2.0.1 one opens Accounting', () => {
+        const target = (module: string) => ({
+            notification_id: 'n1', type: 'report', module, entity: null, outlet_id: null, outlet_name: null,
+            still_exists: true, visible_here: true, switch_outlet_id: null, meta: {},
+        });
+        expect(notificationHref(target('Reports') as never)).toBe('/dashboard/reports?view=email');
+        expect(notificationHref(target('Accounting') as never)).toBe('/dashboard/accounting');
+        expect(page).toContain('useEffect(() => { if (viewParam === "email") {setView("email")} }, [viewParam])');
+        const src = sibling('Restaurant_Backend', 'database_supabase.ts');
+        if (!src) { return; }
+        expect(src).toContain('return { module: s("module") === "Accounting" ? "Accounting" : "Reports", entity: null };');
     });
 
     it('the Accounting card points at the new home', () => {
