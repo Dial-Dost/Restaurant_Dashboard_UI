@@ -217,7 +217,9 @@ describe('wiring', () => {
         const refusal = body.slice(body.indexOf('if (!answer.ok)'), body.indexOf('const said ='));
         expect(refusal).toContain('tab?.close()');
         // ...and hands the tab and the already-claimed bill to the page's print flow.
-        expect(body).toContain('await printBill({ printWindow: tab, printableBill: answer.result.printable_bill ?? null, paperJobId: billPaperJobIdOf(answer.result) })');
+        // (printBillHandoffOf: printable_bill, jobId AND the UPDATED BILL note.)
+        expect(body).toContain('await printBill(printBillHandoffOf(answer.result, tab))');
+        expect(body).not.toMatch(/printBill\(\{/);
     });
 
     it('both the removal form and the live-waiver reprint go through it; the old two-step is gone', () => {
@@ -278,7 +280,10 @@ describe('wiring', () => {
         const handedOff = flow.slice(flow.indexOf('if (restaurantId && tableName && handoff) {'), flow.indexOf('} else if (restaurantId && tableName) {'));
         expect(handedOff.length).toBeGreaterThan(0);
         expect(handedOff).not.toContain('claimBillPrint(');
-        expect(handedOff).toContain('printableBill = handoff.printableBill;');
+        expect(handedOff).toContain('const handed = handedOffPrint(handoff, priorPrintState);');
+        expect(handedOff).toContain('printableBill = handed.printableBill;');
+        // The claim's "Replaces the bill printed 13:32" reaches the print page too.
+        expect(handedOff).toContain('revisedNote = handed.revisedNote;');
         // The tab the dialog opened is the one used; no second open outside the gesture.
         expect(flow).toContain('? handoff.printWindow');
     });

@@ -423,6 +423,56 @@ export const billPaperJobIdOf = (claim: unknown): string | null => {
     return id || null;
 };
 
+/**
+ * What "Remove service charge & print" hands the orders page's print flow: the
+ * tab it opened inside its own click (a popup blocker would kill one opened
+ * later), and the bill the server has ALREADY claimed the print of — so the
+ * page renders it without claiming a second time.
+ */
+export interface PrintBillHandoff {
+    printWindow: Window | null;
+    printableBill: Record<string, unknown> | null;
+    /** The claim's ledger row (client items 1-2): named again if the page also sends this paper to a thermal printer. */
+    paperJobId?: string | null;
+    /**
+     * Client items 1-2: "Replaces the bill printed 13:32" when this paper
+     * replaces out-of-date paper. Without it the page stamps "** REPRINT **"
+     * where the thermal and app copies of the same bill say "** UPDATED BILL **".
+     */
+    revisedNote?: string | null;
+}
+
+/**
+ * THE HANDOFF, READ OFF POST /bills/service-charge-waiver/print (render
+ * 'client'). That answer carries the claim's own fields
+ * (claimClientRenderedBillPrint): `printable_bill`, `jobId`, `revised` and
+ * `revised_note` — all of which the page's own claim would have read.
+ */
+export const printBillHandoffOf = (answer: unknown, printWindow: Window | null): PrintBillHandoff => ({
+    printWindow,
+    printableBill: asRecord(asRecord(answer)?.printable_bill),
+    paperJobId: billPaperJobIdOf(answer),
+    revisedNote: billRevisedNoteOf(answer),
+});
+
+/**
+ * WHAT A HANDED-OFF PRINT PUTS ON THE PAPER — the same four things the page's
+ * own claim sets. `priorPrintState` comes off `printable_bill`, read BEFORE the
+ * claim was recorded, so it answers "was this already printed"; `fallback` is
+ * the floor's row when the bill carried no print state.
+ */
+export const handedOffPrint = (handoff: PrintBillHandoff, fallback: BillPrintState | null): {
+    printableBill: Record<string, unknown> | null;
+    paperJobId: string | null;
+    revisedNote: string | null;
+    priorPrintState: BillPrintState | null;
+} => ({
+    printableBill: handoff.printableBill,
+    paperJobId: handoff.paperJobId ?? null,
+    revisedNote: handoff.revisedNote ?? null,
+    priorPrintState: billPrintStateFields(handoff.printableBill) ?? fallback,
+});
+
 /** "Settle anyway" — the override on the stale-paper warning. The app says the same. */
 export const SETTLE_ANYWAY_LABEL = 'Settle anyway';
 
@@ -434,6 +484,12 @@ export const SETTLE_ANYWAY_LABEL = 'Settle anyway';
  * reader was not sent them. Null when the paper is not KNOWN to be stale: the
  * warning never fires on a guess. It never blocks: the till books the current
  * total either way, and "Settle anyway" is recorded (settled_with_stale_paper).
+ *
+ * THE TWO AMOUNTS ARE QUOTED ONLY WHEN THEY DIFFER. GET /bill-for-table's
+ * `paper_stale` fingerprints the WHOLE paper — the lines and charges, and also
+ * the guest's GSTIN and address — so a paper can be out of date with the
+ * total unchanged. "shows ₹2,100.00; the bill is now ₹2,100.00" would then be
+ * nonsense, so equal totals (to the paisa) get the sentence without amounts.
  */
 export const stalePaperSettleWarning = (input: {
     paperStale: boolean | null | undefined;
@@ -449,7 +505,8 @@ export const stalePaperSettleWarning = (input: {
     const paper = `The printed bill${when ? ` (${when})` : ''}`;
     const printed = typeof input.printedTotal === 'number' && Number.isFinite(input.printedTotal) ? input.printedTotal : null;
     const now = typeof input.grandTotal === 'number' && Number.isFinite(input.grandTotal) ? input.grandTotal : null;
-    const amounts = printed !== null && now !== null
+    const amountsDiffer = printed !== null && now !== null && Math.round(printed * 100) !== Math.round(now * 100);
+    const amounts = amountsDiffer
         ? `${paper} shows ${money(printed)}; the bill is now ${money(now)}.`
         : `${paper} no longer matches the bill.`;
     return `${amounts} Print the updated bill before taking payment.`;

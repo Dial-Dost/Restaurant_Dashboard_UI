@@ -45,8 +45,10 @@ import {
     billPaperJobIdOf,
     billReceiptIsReprint,
     billRevisedNoteOf,
+    handedOffPrint,
     isReprintOfPrintedBill,
     paperStaleOf,
+    printBillHandoffOf,
     serverBillPrintState,
     serverSaysBillPrinted,
     stalePaperSettleWarning,
@@ -365,6 +367,76 @@ describe('the UPDATED bill and the stale-paper settle (client items 1-2)', () =>
             expect(stalePaperSettleWarning({ paperStale, printedTotal: 2100, grandTotal: 2220 })).toBeNull();
         }
         expect(SETTLE_ANYWAY_LABEL).toBe('Settle anyway');
+    });
+
+    // INTEGRATION FINDING: /bill-for-table's paper_stale fingerprints the whole
+    // paper, GSTIN and address included, so a paper can be stale with the total
+    // unchanged — and the warning read "shows ₹2,100.00; the bill is now ₹2,100.00".
+    it('equal totals (to the paisa) get the sentence without amounts; a paisa of difference keeps them', () => {
+        const noAmounts = 'The printed bill (13:32) no longer matches the bill. Print the updated bill before taking payment.';
+        expect(stalePaperSettleWarning({ paperStale: true, printedClock: '13:32', printedTotal: 2100, grandTotal: 2100 })).toBe(noAmounts);
+        expect(stalePaperSettleWarning({ paperStale: true, printedClock: '13:32', printedTotal: 2100.001, grandTotal: 2099.999 })).toBe(noAmounts);
+        expect(stalePaperSettleWarning({ paperStale: true, printedClock: '13:32', printedTotal: 2100, grandTotal: 2100.01 }))
+            .toBe('The printed bill (13:32) shows ₹2,100.00; the bill is now ₹2,100.01. Print the updated bill before taking payment.');
+        expect(stalePaperSettleWarning({ paperStale: true, printedTotal: 0, grandTotal: 0 }))
+            .toBe('The printed bill no longer matches the bill. Print the updated bill before taking payment.');
+    });
+});
+
+// INTEGRATION FINDING: "Remove service charge & print" on printed paper printed
+// "** REPRINT **" on the web while the thermal and app copies said "** UPDATED
+// BILL **" — the handoff dropped the composite route's revised_note.
+describe('the service-charge handoff carries the whole claim (client items 1-2)', () => {
+    /** POST /bills/service-charge-waiver/print (render 'client') on a bill printed at 13:32. */
+    const answer = {
+        success: true,
+        waiver_created: true,
+        printed: true,
+        render: 'client',
+        billId: 'b-1',
+        recorded: true,
+        jobId: '9a000000-0000-4000-8000-000000000001',
+        print_count: 2,
+        revised: true,
+        revised_note: 'Replaces the bill printed 13:32',
+        printable_bill: { grand_total: 1932, print_count: 1, bill_printed_at: '2026-09-17T08:02:00.000Z', printed_at: '2026-09-17T08:02:00.000Z' },
+    };
+    const tab = null;
+
+    it('reads the note, the job and the priced bill off the answer', () => {
+        const handoff = printBillHandoffOf(answer, tab);
+        expect(handoff).toEqual({
+            printWindow: null,
+            printableBill: answer.printable_bill,
+            paperJobId: '9a000000-0000-4000-8000-000000000001',
+            revisedNote: 'Replaces the bill printed 13:32',
+        });
+    });
+
+    it('a paper that replaces nothing carries no note; a malformed answer carries nothing', () => {
+        expect(printBillHandoffOf({ ...answer, revised: false }, tab).revisedNote).toBeNull();
+        expect(printBillHandoffOf({ printed: true }, tab)).toEqual({ printWindow: null, printableBill: null, paperJobId: null, revisedNote: null });
+        expect(printBillHandoffOf(null, tab)).toEqual({ printWindow: null, printableBill: null, paperJobId: null, revisedNote: null });
+    });
+
+    it('the page takes all four from the handoff: UPDATED, not REPRINT, on a bill printed before', () => {
+        const fallback = payload(0);
+        const handed = handedOffPrint(printBillHandoffOf(answer, tab), fallback);
+        expect(handed.revisedNote).toBe('Replaces the bill printed 13:32');
+        expect(handed.paperJobId).toBe('9a000000-0000-4000-8000-000000000001');
+        expect(handed.printableBill).toBe(answer.printable_bill);
+        // The print state is the bill's (read before the claim): printed once.
+        expect(handed.priorPrintState).toEqual({ print_count: 1, bill_printed_at: '2026-09-17T08:02:00.000Z', printed_at: '2026-09-17T08:02:00.000Z' });
+        expect(billReceiptIsReprint('open', handed.priorPrintState)).toBe(true);
+        // ...and the note is what the print page puts in REPRINT's place.
+        expect(handed.revisedNote).not.toBeNull();
+    });
+
+    it('an older handoff (no note, no job) and a bill without print state fall back as before', () => {
+        const handed = handedOffPrint({ printWindow: null, printableBill: { grand_total: 10 } }, payload(0));
+        expect(handed.revisedNote).toBeNull();
+        expect(handed.paperJobId).toBeNull();
+        expect(handed.priorPrintState).toEqual(payload(0));
     });
 });
 

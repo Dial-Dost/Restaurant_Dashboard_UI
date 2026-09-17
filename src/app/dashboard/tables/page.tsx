@@ -83,6 +83,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useFloorTables, type CombinedInfo, type TableOccupancy } from "@/hooks/use-floor-tables";
 import { canMoveOrderToTable, canMoveTableParty, canOpenFloorPlan, isWaiterOnly } from "@/lib/session-scope";
 import { paperStaleOf, serverSaysBillPrinted } from "@/lib/bill-print-state";
+import { FLOOR_POLL_MS, isFloorRefreshEvent } from "@/lib/floor-refresh";
 import {
     FLOOR_STATE_WORDS,
     floorChipStyle,
@@ -705,7 +706,7 @@ export default function TablesPage() {
     const { timezone } = useTimezone();
 
     const floor = useFloorTables(user);
-    const { tables: tablesData, occupancyByName, combinedByName, serverZones, layout, reload: loadTables } = floor;
+    const { tables: tablesData, occupancyByName, combinedByName, serverZones, layout, reload: loadTables, refresh: refreshFloor } = floor;
 
     const [busyTableName, setBusyTableName] = useState<string | null>(null);
     const [orders, setOrders] = useState<TableOrder[]>([]);
@@ -775,9 +776,7 @@ export default function TablesPage() {
       this read is available to exactly the people who need the clocks. A failure
       leaves `orders` empty and the cards simply draw no clock — never a zero.
 
-      Polled on the same 20s beat the orders page uses, and refreshed on the
-      `tables:changed` broadcast, so seating a party or taking an order updates
-      the clock without a reload.
+      Polled on the same 20s beat the orders page uses.
 
       D3/D4 — and after a MOVE, here or anywhere else. The clocks are grouped by
       each ticket's table, so a grid-only refresh left a moved party's clock on
@@ -801,24 +800,33 @@ export default function TablesPage() {
         ordersActiveRef.current = true;
         const pull = (): void => { void reloadOrders(); };
         const onRealtime = (event: Event): void => {
-            if (!isTableMoveEvent((event as Event & { detail?: { event?: unknown } }).detail?.event)) { return; }
-            void refreshAfterTableMove({ tables: loadTables, orders: reloadOrders });
+            const name = (event as Event & { detail?: { event?: unknown } }).detail?.event;
+            if (isTableMoveEvent(name)) {
+                void refreshAfterTableMove({ tables: loadTables, orders: reloadOrders });
+                return;
+            }
+            // CLIENT ITEMS 1 AND 2: an order, a bill or a table changed, so the
+            // tiles' printed / "Updated — print again" / next-party state may
+            // have too. The light re-read: the full reload only on a change.
+            if (isFloorRefreshEvent(name)) { void refreshFloor(); }
         };
         pull();
         const id = setInterval(pull, 20000);
+        // A print claim emits no event at all, so a bill printed on another
+        // device (and the green seat it opened) reaches this floor by polling.
+        const floorId = setInterval(() => { void refreshFloor(); }, FLOOR_POLL_MS);
         if (typeof window !== "undefined") {
-            window.addEventListener("tables:changed", pull);
             window.addEventListener("realtime:event", onRealtime);
         }
         return () => {
             ordersActiveRef.current = false;
             clearInterval(id);
+            clearInterval(floorId);
             if (typeof window !== "undefined") {
-                window.removeEventListener("tables:changed", pull);
                 window.removeEventListener("realtime:event", onRealtime);
             }
         };
-    }, [user?.restaurantUsername, reloadOrders, loadTables]);
+    }, [user?.restaurantUsername, reloadOrders, loadTables, refreshFloor]);
 
     /*
       D1 + D2 per table, FROM THE SERVER'S CLOCKS.

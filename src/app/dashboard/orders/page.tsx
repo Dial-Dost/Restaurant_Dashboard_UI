@@ -115,6 +115,7 @@ import {
 import {
   billPrintScope,
   billPrintStateFields,
+  handedOffPrint,
   paperStaleOf,
   SETTLE_ANYWAY_LABEL,
   serverSaysBillPrinted,
@@ -140,7 +141,8 @@ import {
   type DraftSendKey,
 } from "@/lib/order-draft";
 import { canBarkFromBoard, cancelKotRoute, ordersGridColumns, showsTableApcSummary } from "@/lib/orders-grid";
-import { movedAwayLine } from "@/lib/table-move";
+import { isTableMoveEvent, movedAwayLine } from "@/lib/table-move";
+import { coalesceReloads, FLOOR_POLL_MS, floorSignature, isFloorRefreshEvent, whenFloorChanged } from "@/lib/floor-refresh";
 /*
   THE PREP TIMERS STAY LOCAL; THE SERVICE CLOCK DOES NOT.
 
@@ -780,6 +782,36 @@ function OrdersDashboard() {
   }, [tables]);
 
   /*
+    CLIENT ITEMS 1 AND 2 — THE FLOOR IS RE-READ, NOT REMEMBERED
+    (src/lib/floor-refresh.ts).
+
+    Every printed-bill control on this page ("Print updated bill", "Updated —
+    print again", the orange chip, the order dialog's printed-table question)
+    reads `tables`. So the floor is re-read after every order and settle write
+    this page makes, on the realtime events that can change it, and on a 20s
+    poll — the last because a print claim, here or on another device, emits no
+    event at all. One /get-tables read each time, coalesced, and `tables` is
+    only replaced when the read differs from what is painted.
+  */
+  // Set after every paint of `tables` (the effect below), so the initial value is never compared.
+  const paintedFloorRef = useRef<string>("");
+  useEffect(() => { paintedFloorRef.current = floorSignature(tables); }, [tables]);
+  const refreshFloor = useMemo(() => coalesceReloads(async () => {
+    const restaurantId = user?.restaurantUsername;
+    if (!restaurantId) {return;}
+    await whenFloorChanged(
+      async () => { const refreshed = await getTables(restaurantId); return Array.isArray(refreshed) ? refreshed : []; },
+      () => paintedFloorRef.current,
+      (next) => { setTables(next); },
+    );
+  }), [user?.restaurantUsername]);
+  useEffect(() => {
+    if (!user?.restaurantUsername) {return;}
+    const id = setInterval(() => { void refreshFloor(); }, FLOOR_POLL_MS);
+    return () => { clearInterval(id); };
+  }, [user?.restaurantUsername, refreshFloor]);
+
+  /*
     WHAT THIS SESSION MAY DO ABOUT ONE ORDER'S BILL. One object per row, asked by
     the button AND by the "clear from their view" filter below, so the control
     and the list cannot end up answering two slightly different questions — the
@@ -1007,11 +1039,13 @@ function OrdersDashboard() {
       try {
         const detail = e?.detail as { event: string } | undefined;
         if (!detail) {return;}
-        if (detail.event === 'table:added' || detail.event === 'table:deleted' || detail.event === 'table:updated') {
-          if (user?.restaurantUsername) {getTables(user.restaurantUsername).then(t => { setTables(Array.isArray(t) ? t : []); }).catch(() => {});}
-        }
-        // Keep the KDS/orders list live when items are fired or bills change.
-        if (detail.event === 'order:updated' || detail.event === 'bill:updated') {
+        // An order, a bill or a table changed, or a party or ticket moved: the
+        // floor's print state may have too (client items 1-2).
+        const moved = isTableMoveEvent(detail.event);
+        if (moved || isFloorRefreshEvent(detail.event)) {void refreshFloor();}
+        // Keep the KDS/orders list live when items are fired, bills change or
+        // tickets change tables.
+        if (moved || detail.event === 'order:updated' || detail.event === 'bill:updated') {
           if (user?.restaurantUsername) {getOrders(user.restaurantUsername).then(o => { setOrders(Array.isArray(o) ? dedupeOrdersById(o) : []); }).catch(() => {});}
         }
       } catch (err) {
@@ -1020,7 +1054,7 @@ function OrdersDashboard() {
     };
     window.addEventListener('realtime:event', handler as EventListener);
     return () => { window.removeEventListener('realtime:event', handler as EventListener); };
-  }, [user]);
+  }, [user, refreshFloor]);
 
   /*
     C3 — PRINT BILL NOW TELLS THE SERVER BEFORE IT OPENS ANY PAPER.
@@ -1120,9 +1154,14 @@ function OrdersDashboard() {
       // waiter's one print on nothing). Its `printable_bill` was read BEFORE
       // that claim was recorded, so its print state is the "was this already
       // printed" the reprint banner asks about.
-      printableBill = handoff.printableBill;
-      paperJobId = handoff.paperJobId ?? null;
-      priorPrintState = billPrintStateFields(handoff.printableBill) ?? priorPrintState;
+      // ...and it says, as the page's own claim would, whether this paper
+      // REPLACES out-of-date paper: a waiver on a printed bill changes the
+      // charges, so the paper is "** UPDATED BILL **", never "** REPRINT **".
+      const handed = handedOffPrint(handoff, priorPrintState);
+      printableBill = handed.printableBill;
+      paperJobId = handed.paperJobId;
+      revisedNote = handed.revisedNote;
+      priorPrintState = handed.priorPrintState;
       try {
         const refreshed = await getTables(restaurantId);
         setTables(Array.isArray(refreshed) ? refreshed : []);
@@ -1346,7 +1385,13 @@ function OrdersDashboard() {
       // this send (a printed bill's table is seated, so it was not touched
       // above). The dialog stays open with the draft as it was.
       const refused = billPrintedOf(resp);
-      if (refused) {return refused;}
+      if (refused) {
+        // The server says this bill is printed, which this page's floor may not
+        // know yet (a print on another device): re-read it, so the dialog's own
+        // check and the row's print control agree with the server.
+        void refreshFloor();
+        return refused;
+      }
       const createdId = resp?.id ?? resp?._id ?? null;
 
       // Link the table to the created order id for quick access
@@ -1374,6 +1419,9 @@ function OrdersDashboard() {
       const [updatedOrders, updatedApcInsight] = await Promise.all([
         getOrders(user.restaurantUsername),
         getMonthlyApcInsight(user.restaurantUsername),
+        // An addition to a printed bill makes its paper stale: the row's control
+        // becomes "Print updated bill" off this read, not the next poll.
+        refreshFloor(),
       ]);
       const fresh = Array.isArray(updatedOrders) ? dedupeOrdersById(updatedOrders) : [];
       setOrders(fresh);
@@ -1653,6 +1701,7 @@ function OrdersDashboard() {
         const [updatedOrders, updatedApcInsight] = await Promise.all([
           getOrders(user.restaurantUsername),
           getMonthlyApcInsight(user.restaurantUsername),
+          refreshFloor(),
         ]);
         setOrders(Array.isArray(updatedOrders) ? updatedOrders : []);
         setMonthlyApcInsight(updatedApcInsight ?? null);
@@ -1708,6 +1757,7 @@ function OrdersDashboard() {
       // A refusal (client item 6) writes nothing; the reload below puts the
       // row back, and the sentence says why.
       const refused = billPrintedOf(saved);
+      void refreshFloor();
       if (refused) {
         toast({ title: "Not updated — the bill is printed", description: refused.message, variant: "destructive" });
       }
@@ -1772,6 +1822,7 @@ function OrdersDashboard() {
       const updatedOrder: Order = { ...order, status: 'Bill Verification' };
       const saved: unknown = await addOrder(user.restaurantUsername, updatedOrder);
       const refused = billPrintedOf(saved);
+      void refreshFloor();
       if (refused) {
         toast({ title: "Not updated — the bill is printed", description: refused.message, variant: "destructive" });
       }
@@ -1823,6 +1874,7 @@ function OrdersDashboard() {
 
       const result = await replaceBill(user.restaurantUsername, payload);
       if (!result) {throw new Error('Replace failed');}
+      void refreshFloor();
 
       // update the existing order in local state instead of creating a new one
       setOrders((prev) => {
@@ -1940,6 +1992,7 @@ function OrdersDashboard() {
         undefined,
         { settledWithStalePaper: view.staleWarning !== null },
       );
+      void refreshFloor();
       const actorName = user.employeeUsername
         || `${user.emp_Fname ?? ''} ${user.emp_Lname ?? ''}`.trim()
         || user.employeeId
@@ -1982,6 +2035,7 @@ function OrdersDashboard() {
 
     try {
       await approveBillPaymentByAdmin(user.restaurantUsername, user.employeeId, order.id, { settledWithStalePaper: view.staleWarning !== null });
+      void refreshFloor();
       const actorName = user.employeeUsername
         || `${user.emp_Fname ?? ''} ${user.emp_Lname ?? ''}`.trim()
         || user.employeeId
@@ -2013,6 +2067,7 @@ function OrdersDashboard() {
 
     try {
       await closeBillByOrder(user.restaurantUsername, user.employeeId, order.id);
+      void refreshFloor();
       const actorName = user.employeeUsername
         || `${user.emp_Fname ?? ''} ${user.emp_Lname ?? ''}`.trim()
         || user.employeeId
@@ -2044,7 +2099,7 @@ function OrdersDashboard() {
         title: approve ? "Discount approved" : "Discount rejected",
         description: `Table ${request.table_name ?? "?"} · ${request.discount_value}${request.discount_type === "percent" ? "%" : ""} (≈${currencySymbol}${request.amount.toFixed(2)})`,
       });
-      await Promise.all([refreshDiscountRequests(), refreshOrders()]);
+      await Promise.all([refreshDiscountRequests(), refreshOrders(), refreshFloor()]);
     } catch (err: unknown) {
       toast({ title: "Failed", description: String((err as Error)?.message ?? err), variant: "destructive" });
       await refreshDiscountRequests();
@@ -2065,6 +2120,7 @@ function OrdersDashboard() {
     if (!confirmed) {return;}
     try {
       const r = await reopenBill(user.restaurantUsername, order.bill_id);
+      void refreshFloor();
       toast({ title: "Bill re-opened", description: `${r.restored_orders ?? 0} order(s) restored — approve the payment again to settle.` });
       await refreshOrders();
     } catch (err: unknown) {
@@ -2134,6 +2190,7 @@ function OrdersDashboard() {
     setSplitBusy(true);
     try {
       await confirmBillPaymentByWaiter(user.restaurantUsername, user.employeeId, splitPayOrder.id, "Split", splitProofUrl, splits, { settledWithStalePaper: view.staleWarning !== null });
+      void refreshFloor();
       toast({ title: "Split payment recorded", description: "Awaiting admin approval." });
       setSplitPayOrder(null);
       await refreshOrders();
@@ -2161,15 +2218,9 @@ function OrdersDashboard() {
     }
   };
 
-  // The floor, re-read after a bill operation: a merge frees the source table,
-  // and a split print opens the next party's seat (client item 6).
-  const refreshFloor = async () => {
-    if (!user?.restaurantUsername) {return;}
-    try {
-      const refreshed = await getTables(user.restaurantUsername);
-      setTables(Array.isArray(refreshed) ? refreshed : []);
-    } catch { /* the poll will catch up */ }
-  };
+  // The floor is re-read after a bill operation too — a merge frees the source
+  // table, and a split print opens the next party's seat (client item 6) — by
+  // the coalesced `refreshFloor` defined beside `billPrintByTable`.
 
   /*
     6.7 — PRINT BILL IN THE TABLE PREVIEW, full size beside Add Order.
@@ -2260,7 +2311,7 @@ function OrdersDashboard() {
           canEditCustomer={!isWaiterOnly}
           onAddOrder={() => { setIsAddDialogOpen(true); }}
           printControl={previewPrintControl}
-          onChanged={() => { void refreshOrders(); }}
+          onChanged={() => { void refreshOrders(); void refreshFloor(); }}
           onClose={() => { router.push("/dashboard/orders"); }}
         />
       ) : null}
@@ -2522,7 +2573,7 @@ function OrdersDashboard() {
                         nc_kind: i.nc_kind ?? null,
                       })),
                     }}
-                    onChanged={() => { void refreshOrders(); }}
+                    onChanged={() => { void refreshOrders(); void refreshFloor(); }}
                     printBill={(handoff) => triggerPrint(order, handoff)}
                   />
                 ) : null;
@@ -3209,7 +3260,7 @@ function OrdersDashboard() {
           restaurantId={user.restaurantUsername}
           order={{ id: ncSettleOrder.id, table: ncSettleOrder.table }}
           onClose={() => { setNcSettleOrder(null); }}
-          onSettled={() => { void refreshOrders(); }}
+          onSettled={() => { void refreshOrders(); void refreshFloor(); }}
         />
       ) : null}
 
@@ -3248,6 +3299,8 @@ function OrdersDashboard() {
             // NEXT party's order starts in Add New Order, where its covers are
             // asked.
             const refused = billPrintedOf(saved);
+            // Saved or refused, the floor's print state may be news to this page.
+            void refreshFloor();
             if (refused) {
               keepOpen = true;
               toast({ title: "Not saved — the bill is printed", description: refused.message, variant: "destructive" });

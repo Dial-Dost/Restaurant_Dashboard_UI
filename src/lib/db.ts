@@ -1544,15 +1544,10 @@ export const occupyTable = async (restaurantId: string, tableName: string, numCo
         let body: Partial<OccupyTableResult> | null = null;
         try { body = (await response.json()) as Partial<OccupyTableResult>; } catch { body = null; }
 
+        // Refresh the cached roster. No DOM event from here: this is a "use
+        // server" module, where `window` does not exist — every caller re-reads
+        // the floor itself (src/lib/floor-refresh.ts).
         await getTables(restaurantId);
-        // notify other UI parts (Tables page) that table data changed
-        try {
-            if (typeof window !== 'undefined') {
-                window.dispatchEvent(new CustomEvent('tables:changed'));
-            }
-        } catch {
-            // ignore
-        }
         return {
             acknowledged: true,
             table_id: body?.table_id,
@@ -1927,14 +1922,9 @@ export const updateTableSeating = async (
     }
 
     const updated = (await response.json()) as { table_name: string; capacity: number; max_capacity: number };
+    // The cached roster; the caller re-reads the floor itself (no DOM event from
+    // a "use server" module).
     await getTables(restaurantId);
-    try {
-        if (typeof window !== 'undefined') {
-            window.dispatchEvent(new CustomEvent('tables:changed'));
-        }
-    } catch {
-        // ignore
-    }
     return updated;
 };
 

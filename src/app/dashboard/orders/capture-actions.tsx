@@ -144,7 +144,7 @@ import {
     type TenderDraft,
     type VocabularyOption,
 } from "@/lib/mis-capture"
-import { billPaperJobIdOf, serverBillPrintState } from "@/lib/bill-print-state"
+import { printBillHandoffOf, serverBillPrintState, type PrintBillHandoff } from "@/lib/bill-print-state"
 import { cancelKotRoute } from "@/lib/orders-grid"
 import { answered, can, isWaiterOnly } from "@/lib/session-scope"
 import { cn } from "@/lib/utils"
@@ -159,18 +159,9 @@ export interface CaptureOrder {
 
 type Which = null | "comp" | "void" | "waiver" | "tenders" | "counter"
 
-/**
- * What "Remove service charge & print" hands the page's print flow: the tab it
- * opened inside its own click (a popup blocker would kill one opened later), and
- * the bill the server has ALREADY claimed the print of — so the page renders it
- * without claiming a second time.
- */
-export interface PrintBillHandoff {
-    printWindow: Window | null
-    printableBill: Record<string, unknown> | null
-    /** The claim's ledger row (client items 1-2): named again if the page also sends this paper to a thermal printer. */
-    paperJobId?: string | null
-}
+// What "Remove service charge & print" hands the page's print flow — defined
+// beside the claim readers it is built from (bill-print-state.ts).
+export type { PrintBillHandoff }
 
 // ---------------------------------------------------------------------------
 // Shared bits
@@ -1058,7 +1049,10 @@ function WaiverDialog({
                 answered = answer.result
                 const said = serviceChargeRemovalSentence(answer.result, money)
                 if (answer.result.printed && printBill) {
-                    await printBill({ printWindow: tab, printableBill: answer.result.printable_bill ?? null, paperJobId: billPaperJobIdOf(answer.result) })
+                    // The claim's fields travel whole — the paper's job id AND its
+                    // "Replaces the bill printed 13:32", or a waiver on printed
+                    // paper prints REPRINT where the thermal copy says UPDATED BILL.
+                    await printBill(printBillHandoffOf(answer.result, tab))
                 } else {
                     tab?.close()
                 }

@@ -534,7 +534,9 @@ describe('the wiring — nothing here is built and never called', () => {
         expect(orders).toMatch(/if \(claim\.nextParty\.message\) \{/);
         // The refusal reaches the page — returned by the send, before anything
         // else happens — and its action sends the same draft to the seat.
-        expect(orders).toMatch(/const refused = billPrintedOf\(resp\);\s*if \(refused\) \{return refused;\}/);
+        // Refused: nothing written, the floor re-read (the bill may have been
+        // printed on another device), and the refusal handed back.
+        expect(orders).toMatch(/const refused = billPrintedOf\(resp\);\s*if \(refused\) \{\s*(?:\/\/[^\n]*\s*)*void refreshFloor\(\);\s*return refused;\s*\}/);
         expect(orders).toMatch(/const moved: NewOrderDraft = \{\s*\.\.\.draft,\s*tableId: target\.id,\s*tableName: target\.name,\s*idempotencyKey: draft\.idempotencyKey \? nextPartyRetryKey\(draft\.idempotencyKey, target\.name\) : newIdempotencyKey\(\),/);
         expect(orders).toMatch(/const refusal = await handleAddOrder\(draft\);\s*if \(refusal\) \{offer\(refusal, draft\);\}/);
         expect(orders).toMatch(/onSubmit=\{submitNewOrder\}/);
@@ -578,7 +580,7 @@ describe('the wiring — nothing here is built and never called', () => {
         const before = body.indexOf('if (tableName && seating.before) {');
         const occupy = body.indexOf('await occupyTable(user.restaurantUsername, tableName, seating.before.covers);');
         const post = body.indexOf('await addOrder(user.restaurantUsername, newOrder,');
-        const refusal = body.indexOf('if (refused) {return refused;}');
+        const refusal = body.indexOf('return refused;');
         const coversAfter = body.indexOf('await updateTableCovers(user.restaurantUsername, tableName, seating.coversAfter);');
         expect(before).toBeGreaterThan(-1);
         expect(occupy).toBeGreaterThan(before);

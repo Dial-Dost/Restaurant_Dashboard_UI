@@ -166,8 +166,9 @@ describe('the ESC/POS copy of a claimed paper files the claim\'s record (POST /p
     it('the claim answers its job id, and both print doors carry it to the page', () => {
         expect(db).toContain('paperJobId: billPaperJobIdOf(body),');
         expect(orders).toContain('if (claim.outcome === "claimed") { revisedNote = claim.revisedNote; paperJobId = claim.paperJobId; }');
-        expect(capture).toContain('paperJobId: billPaperJobIdOf(answer.result)');
-        expect(orders).toContain('paperJobId = handoff.paperJobId ?? null;');
+        expect(capture).toContain('await printBill(printBillHandoffOf(answer.result, tab))');
+        expect(orders).toContain('paperJobId = handed.paperJobId;');
+        expect(orders).toContain('revisedNote = handed.revisedNote;');
         expect(orders).toContain('bill_paper_job_id: paperJobId,');
     });
 

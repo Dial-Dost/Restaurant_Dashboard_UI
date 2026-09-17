@@ -42,7 +42,7 @@ import {
     type BillEscPosInput,
 } from '../bill-escpos';
 import { billCustomerLines } from '../bill-customer';
-import { REPRINT_MARKER } from '../bill-print-state';
+import { REPRINT_MARKER, billReceiptIsReprint, handedOffPrint, printBillHandoffOf } from '../bill-print-state';
 import { escposLines, latin1 } from './escpos-text';
 
 function readSource(relative: string): string {
@@ -822,6 +822,23 @@ describe('the UPDATED bill banner (client items 1-2)', () => {
         const bytes = buildBillEscPos(gaia({ width: 32, revisedNote: 'Replaces the bill printed 13:32' }));
         expect(latin1(bytes)).toContain('\x1bE\x01** UPDATED BILL **\n\x1bE\x00');
         expect(escposLines(bytes).slice(0, 2)).toEqual(['** UPDATED BILL **', 'Replaces the bill printed 13:32']);
+    });
+
+    // INTEGRATION FINDING: "Remove service charge & print" on printed paper
+    // printed REPRINT here and UPDATED BILL off the till.
+    it('a service-charge removal on printed paper reaches the roll as UPDATED BILL, never REPRINT', () => {
+        const answer = {
+            success: true, printed: true, render: 'client', recorded: true, jobId: 'j-1',
+            revised: true, revised_note: 'Replaces the bill printed 13:32',
+            printable_bill: { grand_total: 5058.26, print_count: 1, bill_printed_at: '2026-09-14T08:02:00.000Z', printed_at: '2026-09-14T08:02:00.000Z' },
+        };
+        const handed = handedOffPrint(printBillHandoffOf(answer, null), null);
+        // What the print page hands generateEscPos: isReprint off the prior state, and the note.
+        const reprint = billReceiptIsReprint('open', handed.priorPrintState);
+        expect(reprint).toBe(true);
+        const lines = escposLines(buildBillEscPos(gaia({ reprint, revisedNote: handed.revisedNote, serviceCharge: null, grandTotal: 5058.26 })));
+        expect(lines.slice(0, 2)).toEqual(['** UPDATED BILL **', 'Replaces the bill printed 13:32']);
+        expect(lines).not.toContain(REPRINT_MARKER);
     });
 
     it('the print page stamps the claim\'s line and hands it to the encoder and the preview', () => {
