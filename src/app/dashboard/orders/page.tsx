@@ -53,6 +53,8 @@ import {
   addOrder,
   deleteOrder,
   occupyTable,
+  getTableStatus,
+  updateTableCovers,
   getMonthlyApcInsight,
   createBill,
   getTables,
@@ -165,7 +167,7 @@ import {
 import { useCurrency } from "@/hooks/use-currency";
 import { useToast } from "@/hooks/use-toast";
 import { ToastAction } from "@/components/ui/toast";
-import { billPrintedOf, nextPartyRetryKey, readReprintNeeded, reprintAnchorOrder, singleFlight, tableOptionLabel, type BillPrintedRefusal } from "@/lib/next-party";
+import { billPrintedOf, nextPartyRetryKey, planOrderSeating, readReprintNeeded, reprintAnchorOrder, seatedFromTableStatus, singleFlight, tableOptionLabel, type BillPrintedRefusal } from "@/lib/next-party";
 import { useHighlightRow } from "@/hooks/use-highlight-row";
 import { dayKeyInZone, formatDate, formatDateTime, formatFullDateTime, formatTime, timezoneAbbreviation, todayInZone } from "@/lib/tz";
 import { useTimezone } from "@/lib/use-timezone";
@@ -1248,11 +1250,29 @@ function OrdersDashboard() {
     // subtotal; calculateTotal stays for on-screen display only.
     const newOrder: Order = { ...baseOrder, total: baseOrder.subtotal };
     try {
-      // Ensure table is occupied first (backend requires table to be occupied before adding order)
       const tableName = orderTableName;
+      /*
+        NOTHING IS WRITTEN TO A SEATED TABLE BEFORE THE SERVER HAS TAKEN THE
+        ORDER (client item 6). A free table is seated first — the backend
+        refuses an order on an unoccupied table, and the seating must predate
+        its bill. A seated one is left alone: the old occupy-first wrote this
+        dialog's Guests figure over the seated party's covers and cleared its
+        linked order, and a waiter's order refused on a printed bill then left
+        the PRINTED party with the next guests' head count. See
+        planOrderSeating. An unknown state seats first, as it always did.
+      */
+      let seated: boolean | null = null;
       if (tableName) {
         try {
-          await occupyTable(user.restaurantUsername, tableName, newOrderData.covers ?? null);
+          seated = seatedFromTableStatus(await getTableStatus(user.restaurantUsername, tableName));
+        } catch {
+          seated = null;
+        }
+      }
+      const seating = planOrderSeating({ seated, covers: newOrderData.covers, coversChosen: newOrderData.coversChosen });
+      if (tableName && seating.before) {
+        try {
+          await occupyTable(user.restaurantUsername, tableName, seating.before.covers);
         } catch (e) {
           // ignore occupancy errors — addOrder will fail if necessary
         }
@@ -1261,7 +1281,9 @@ function OrdersDashboard() {
       // Keyed by the draft (see keyForDraftSend in the form): the identical
       // draft sent twice is ONE order to the server, not two.
       const resp: any = await addOrder(user.restaurantUsername, newOrder, { idempotencyKey: newOrderData.idempotencyKey });
-      // Nothing was written; the dialog stays open with the draft as it was.
+      // Refused on a printed bill: the server wrote nothing, and neither did
+      // this send (a printed bill's table is seated, so it was not touched
+      // above). The dialog stays open with the draft as it was.
       const refused = billPrintedOf(resp);
       if (refused) {return refused;}
       const createdId = resp?.id ?? resp?._id ?? null;
@@ -1276,6 +1298,15 @@ function OrdersDashboard() {
           }
         } catch (e) {
           console.error('occupyTable failed to link order', e);
+        }
+        // Guests the operator typed for a party already seated, now that the
+        // order is in.
+        if (seating.coversAfter !== null) {
+          try {
+            await updateTableCovers(user.restaurantUsername, tableName, seating.coversAfter);
+          } catch (e) {
+            console.warn('updateTableCovers after the order failed', e);
+          }
         }
       }
 
@@ -3853,10 +3884,12 @@ interface NewOrderDraft {
   tableName?: string;
   items: { id?: string; name: string; price: number; quantity?: number; note?: string | null; course_hold?: boolean; variation_id?: string }[];
   covers?: number;
+  /** True once the Guests box was typed in: only then do a seated party's covers change. */
+  coversChosen?: boolean;
   idempotencyKey?: string;
 }
 
-function OrderForm({ onSubmit, busy = false, menuItems, tables, selectedTableName, onClearSelectedTable, variationsByMenuId }: { onSubmit: (data: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null; course_hold?: boolean; variation_id?: string }[]; covers?: number; idempotencyKey?: string }) => Promise<void> | void; /** True while this draft is being sent to the next party's seat (client item 6): Send is held. */ busy?: boolean; menuItems: MenuItem[]; tables: { id: number; name: string; capacity: number; parent_table?: string | null }[]; selectedTableName?: string; onClearSelectedTable?: () => void; variationsByMenuId?: Map<string, MenuVariationRecord[]> }) {
+function OrderForm({ onSubmit, busy = false, menuItems, tables, selectedTableName, onClearSelectedTable, variationsByMenuId }: { onSubmit: (data: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null; course_hold?: boolean; variation_id?: string }[]; covers?: number; coversChosen?: boolean; idempotencyKey?: string }) => Promise<void> | void; /** True while this draft is being sent to the next party's seat (client item 6): Send is held. */ busy?: boolean; menuItems: MenuItem[]; tables: { id: number; name: string; capacity: number; parent_table?: string | null }[]; selectedTableName?: string; onClearSelectedTable?: () => void; variationsByMenuId?: Map<string, MenuVariationRecord[]> }) {
   const { currencySymbol } = useCurrency();
   // C4's gate, from the session and therefore from the server. Read here rather
   // than passed in as a prop: a prop could be forgotten at one of the call
@@ -3879,6 +3912,10 @@ function OrderForm({ onSubmit, busy = false, menuItems, tables, selectedTableNam
   const [selectedVariationId, setSelectedVariationId] = useState("");
   const [itemsList, setItemsList] = useState<DraftLine[]>([]);
   const [covers, setCovers] = useState<number>(1);
+  // Whether the Guests box was typed in. The 1 it opens with seats a FREE
+  // table, and never replaces the covers of a party already seated there
+  // (planOrderSeating in lib/next-party.ts).
+  const [coversChosen, setCoversChosen] = useState(false);
   // Item 5 — "View order": the draft read back before it goes to the kitchen.
   const [reviewing, setReviewing] = useState(false);
   // One send at a time, across BOTH send buttons. The ref is the guard (it is
@@ -3997,7 +4034,7 @@ function OrderForm({ onSubmit, busy = false, menuItems, tables, selectedTableNam
     sendingRef.current = true;
     setSending(true);
     try {
-      await onSubmit({ tableId: tableIdNum, items, covers, idempotencyKey: sendKey.key });
+      await onSubmit({ tableId: tableIdNum, items, covers, coversChosen, idempotencyKey: sendKey.key });
     } finally {
       sendingRef.current = false;
       setSending(false);
@@ -4144,7 +4181,7 @@ function OrderForm({ onSubmit, busy = false, menuItems, tables, selectedTableNam
       <div className="grid grid-cols-4 items-center gap-4">
       <Label htmlFor="covers" className="text-right">Guests</Label>
       <div className="col-span-3">
-        <Input id="covers" type="number" min={1} value={String(covers)} onChange={(e) => { setCovers(Math.max(1, Number(e.target.value) || 1)); }} placeholder="Number of guests (covers)" />
+        <Input id="covers" type="number" min={1} value={String(covers)} onChange={(e) => { setCovers(Math.max(1, Number(e.target.value) || 1)); setCoversChosen(true); }} placeholder="Number of guests (covers)" />
       </div>
       </div>
       <div className="grid grid-cols-4 items-center gap-4">

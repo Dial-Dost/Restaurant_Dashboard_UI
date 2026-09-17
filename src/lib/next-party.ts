@@ -247,6 +247,69 @@ export const billPrintedOf = (resp: unknown): BillPrintedRefusal | null => {
 };
 
 // ============================================================================
+// THE SEATING AROUND AN ORDER — A REFUSED ORDER HAS WRITTEN NOTHING
+// ============================================================================
+//
+// The Add New Order dialog used to post /occupy-table with its Guests figure
+// (1 unless someone typed) BEFORE every order, seated table or not. On a free
+// table that is required: the seating row is opened by the free -> occupied
+// flip, and an order sent first would be billed before the seating it belongs
+// to. On a SEATED table it was a write in its own right — OccupyTable replaces
+// num_covers and clears linked_order_id — made before the server had decided
+// anything. So a waiter's order refused because 12's bill is printed had
+// already written the NEXT party's head count onto the PRINTED party: the open
+// bill's covers, its APC and the covers its settle records, all wrong, under a
+// refusal that says nothing was written.
+//
+// The till never did this (order_entry.dart occupies only a free table), and
+// now neither does the dashboard: a seated table is left alone until the server
+// has ACCEPTED the order, and its covers change only when the operator typed
+// them — never to the dialog's untouched default of 1.
+
+/**
+ * GET /table-status, read for the one fact the send needs: is a party seated
+ * at this table right now? Null when the answer is unknown (no answer, an
+ * error, a table the read did not find) — the send then seats first, exactly
+ * as it always has, because an order on a free table is refused outright.
+ */
+export const seatedFromTableStatus = (status: unknown): boolean | null => {
+    if (!status || typeof status !== 'object' || Array.isArray(status)) { return null; }
+    const seated = (status as { is_occupied?: unknown }).is_occupied;
+    return typeof seated === 'boolean' ? seated : null;
+};
+
+/** What the send writes to the table around POST /orders. */
+export interface OrderSeatingPlan {
+    /**
+     * Seat the party BEFORE the order, with these covers (null keeps what the
+     * table has). Null: nothing is written to the table before the order.
+     */
+    before: { covers: number | null } | null;
+    /**
+     * The covers to set AFTER an order the server accepted, or null. Only on a
+     * table that was already seated, and only when the operator chose them.
+     */
+    coversAfter: number | null;
+}
+
+export const planOrderSeating = (draft: {
+    /** seatedFromTableStatus's answer. */
+    seated: boolean | null;
+    /** The dialog's Guests figure. */
+    covers?: number | null;
+    /** True once the operator has typed in the Guests box. */
+    coversChosen?: boolean;
+}): OrderSeatingPlan => {
+    const covers = typeof draft.covers === 'number' && Number.isFinite(draft.covers) && draft.covers >= 1
+        ? Math.round(draft.covers)
+        : null;
+    if (draft.seated === true) {
+        return { before: null, coversAfter: draft.coversChosen === true ? covers : null };
+    }
+    return { before: { covers }, coversAfter: null };
+};
+
+// ============================================================================
 // A SENIOR ROLE'S ADDITION TO A PRINTED BILL
 // ============================================================================
 

@@ -9,7 +9,8 @@
 //      failure with, which would tell a waiter the kitchen had an order it
 //      never saw. "Take it on 12 (next party)" sends ONE order however often it
 //      is clicked, and a manager's addition to a printed bill is told to
-//      reprint it.
+//      reprint it. A REFUSED ORDER HAS WRITTEN NOTHING: not the next guests'
+//      head count onto the printed party, not an unlinked order.
 //   2. THE ROOM HAS NO "12 #2" IN IT: not in the floor plan, not in the stored
 //      layout, not in a zone's table count.
 //   3. ONE VOCABULARY with the server and the till: read here off the
@@ -34,11 +35,13 @@ import {
     nextPartyRetryKey,
     nextPartyRowFields,
     parseNextPartyName,
+    planOrderSeating,
     readBillPrintedRefusal,
     readReprintNeeded,
     reprintAnchorOrder,
     reprintNeededMessage,
     roomTables,
+    seatedFromTableStatus,
     singleFlight,
     tableDisplayName,
     tableOptionLabel,
@@ -289,6 +292,118 @@ describe('"Take it on 12 (next party)" sends ONE order', () => {
 });
 
 // ============================================================================
+// A REFUSED ORDER HAS WRITTEN NOTHING — the seating around the send.
+// ============================================================================
+describe('a refused order has written nothing — the seating around the send', () => {
+    test('the table status, read for one fact: is a party seated there', () => {
+        expect(seatedFromTableStatus({ table_name: '12', is_occupied: true, num_covers: 6 })).toBe(true);
+        expect(seatedFromTableStatus({ table_name: '12 #2', is_occupied: false })).toBe(false);
+        // Unknown — the send then seats first, as it always did.
+        for (const v of [null, undefined, [], {}, 'x', { is_occupied: 'true' }, { is_occupied: 1 }]) {
+            expect(seatedFromTableStatus(v)).toBeNull();
+        }
+    });
+
+    test('the plan: a seated table is left alone before the order, and its covers change only when typed', () => {
+        expect(planOrderSeating({ seated: true, covers: 1, coversChosen: false })).toEqual({ before: null, coversAfter: null });
+        expect(planOrderSeating({ seated: true, covers: 1 })).toEqual({ before: null, coversAfter: null });
+        expect(planOrderSeating({ seated: true, covers: 8, coversChosen: true })).toEqual({ before: null, coversAfter: 8 });
+        // A free table, or one nobody could read, is seated first — with the covers.
+        expect(planOrderSeating({ seated: false, covers: 2 })).toEqual({ before: { covers: 2 }, coversAfter: null });
+        expect(planOrderSeating({ seated: false, covers: 2, coversChosen: true })).toEqual({ before: { covers: 2 }, coversAfter: null });
+        expect(planOrderSeating({ seated: null, covers: 3 })).toEqual({ before: { covers: 3 }, coversAfter: null });
+        // A figure that is no head count keeps what the table has.
+        for (const covers of [0, -2, Number.NaN, Number.POSITIVE_INFINITY, undefined, null]) {
+            expect(planOrderSeating({ seated: false, covers })).toEqual({ before: { covers: null }, coversAfter: null });
+            expect(planOrderSeating({ seated: true, covers, coversChosen: true })).toEqual({ before: null, coversAfter: null });
+        }
+        expect(planOrderSeating({ seated: false, covers: 2.6 }).before).toEqual({ covers: 3 });
+    });
+
+    // The backend's three writes a send can make, reduced to their effect on
+    // the table row (database_supabase.ts OccupyTable / UpdateTableCovers, and
+    // POST /orders' printed-bill guard, which refuses before AddOrder).
+    interface SeatRow { is_occupied: boolean; num_covers: number; linked_order_id: string | null }
+    const server = (row: SeatRow, opts: { printed: boolean; waiter: boolean }) => {
+        const writes: string[] = [];
+        return {
+            row,
+            writes,
+            status: (): unknown => ({ is_occupied: row.is_occupied, num_covers: row.num_covers }),
+            occupy: (covers: number | null, linked: string | null = null): void => {
+                writes.push(`occupy:${String(covers)}:${String(linked)}`);
+                row.is_occupied = true;
+                row.num_covers = covers === null ? row.num_covers : Math.max(1, covers);
+                row.linked_order_id = linked;
+            },
+            covers: (n: number): void => {
+                writes.push(`covers:${String(n)}`);
+                row.num_covers = n;
+            },
+            order: (): { bill_printed: true } | { id: string } => {
+                if (!row.is_occupied) { throw new Error('Cannot add order to unoccupied table. Please occupy the table first.'); }
+                if (opts.printed && opts.waiter) { return { bill_printed: true }; }
+                writes.push('order');
+                return { id: 'o2' };
+            },
+        };
+    };
+    type Server = ReturnType<typeof server>;
+    // handleAddOrder, reduced to what reaches the server, in its order.
+    const send = (srv: Server, draft: { covers: number; coversChosen: boolean }, statusRead = true): 'refused' | 'added' => {
+        const seated = statusRead ? seatedFromTableStatus(srv.status()) : null;
+        const seating = planOrderSeating({ seated, covers: draft.covers, coversChosen: draft.coversChosen });
+        if (seating.before) { srv.occupy(seating.before.covers); }
+        const resp = srv.order();
+        if ('bill_printed' in resp) { return 'refused'; }
+        srv.occupy(null, resp.id);
+        if (seating.coversAfter !== null) { srv.covers(seating.coversAfter); }
+        return 'added';
+    };
+    const printed12 = (): SeatRow => ({ is_occupied: true, num_covers: 6, linked_order_id: 'o1' });
+
+    test('A WAITER REFUSED ON A PRINTED 12: the printed party keeps its 6 covers and its order link', () => {
+        for (const coversChosen of [false, true]) {
+            const srv = server(printed12(), { printed: true, waiter: true });
+            expect(send(srv, { covers: 2, coversChosen })).toBe('refused');
+            expect(srv.row).toEqual(printed12());
+            expect(srv.writes).toEqual([]);
+        }
+        // The fake is not toothless: the old occupy-first send did damage it.
+        const old = server(printed12(), { printed: true, waiter: true });
+        old.occupy(2);
+        expect(old.order()).toEqual({ bill_printed: true });
+        expect(old.row).toEqual({ is_occupied: true, num_covers: 2, linked_order_id: null });
+    });
+
+    test('an addition to a seated table keeps its covers unless the Guests box was typed in', () => {
+        const kept = server(printed12(), { printed: true, waiter: false });
+        expect(send(kept, { covers: 1, coversChosen: false })).toBe('added');
+        expect(kept.row).toEqual({ is_occupied: true, num_covers: 6, linked_order_id: 'o2' });
+        expect(kept.writes).toEqual(['order', 'occupy:null:o2']);
+
+        const typed = server(printed12(), { printed: false, waiter: true });
+        expect(send(typed, { covers: 8, coversChosen: true })).toBe('added');
+        expect(typed.row).toEqual({ is_occupied: true, num_covers: 8, linked_order_id: 'o2' });
+        // After the server took the order, never before it.
+        expect(typed.writes).toEqual(['order', 'occupy:null:o2', 'covers:8']);
+    });
+
+    test('the next party\'s free seat is seated FIRST, with the covers typed — the seating predates its bill', () => {
+        const srv = server({ is_occupied: false, num_covers: 1, linked_order_id: null }, { printed: false, waiter: true });
+        expect(send(srv, { covers: 2, coversChosen: true })).toBe('added');
+        expect(srv.writes).toEqual(['occupy:2:null', 'order', 'occupy:null:o2']);
+        expect(srv.row).toEqual({ is_occupied: true, num_covers: 2, linked_order_id: 'o2' });
+        // …and so is a table whose state could not be read: an order on a free
+        // table is refused outright, so the send seats first as it always did.
+        const unread = server({ is_occupied: false, num_covers: 1, linked_order_id: null }, { printed: false, waiter: true });
+        expect(send(unread, { covers: 3, coversChosen: false }, false)).toBe('added');
+        expect(unread.writes[0]).toBe('occupy:3:null');
+        expect(unread.row.num_covers).toBe(3);
+    });
+});
+
+// ============================================================================
 // ONE VOCABULARY — the server's own source, when it is beside this checkout.
 // ============================================================================
 describe('the same words as the server (Restaurant_Backend/next_party.ts)', () => {
@@ -389,6 +504,33 @@ describe('the wiring — nothing here is built and never called', () => {
         expect(orders).toContain('offerReprint(saved, updatedOrder.table, fresh);');
         expect(orders).toMatch(/const notice = readReprintNeeded\(resp, fallbackTable\);/);
         expect(orders).toMatch(/<ToastAction altText="Reprint" onClick=\{\(\) => \{ void triggerPrint\(anchor\); \}\}>/);
+    });
+
+    test('the send leaves a seated table alone until the server has taken the order', () => {
+        const orders = read('src/app/dashboard/orders/page.tsx');
+        const at = orders.indexOf('const handleAddOrder = async (');
+        const body = orders.slice(at, orders.indexOf('\n  }\n', at));
+        expect(body).toContain('seated = seatedFromTableStatus(await getTableStatus(user.restaurantUsername, tableName));');
+        expect(body).toContain('const seating = planOrderSeating({ seated, covers: newOrderData.covers, coversChosen: newOrderData.coversChosen });');
+        const before = body.indexOf('if (tableName && seating.before) {');
+        const occupy = body.indexOf('await occupyTable(user.restaurantUsername, tableName, seating.before.covers);');
+        const post = body.indexOf('await addOrder(user.restaurantUsername, newOrder,');
+        const refusal = body.indexOf('if (refused) {return refused;}');
+        const coversAfter = body.indexOf('await updateTableCovers(user.restaurantUsername, tableName, seating.coversAfter);');
+        expect(before).toBeGreaterThan(-1);
+        expect(occupy).toBeGreaterThan(before);
+        expect(post).toBeGreaterThan(occupy);
+        expect(refusal).toBeGreaterThan(post);
+        expect(coversAfter).toBeGreaterThan(refusal);
+        // Exactly two occupy calls: the seating (free tables only) and the link.
+        expect(body.match(/occupyTable\(/g)).toHaveLength(2);
+        expect(body).toContain('await occupyTable(user.restaurantUsername, tableName, null, createdId);');
+        // The unconditional occupy-first is gone.
+        expect(body).not.toContain('newOrderData.covers ?? null');
+        // The form says whether the Guests box was typed in.
+        expect(orders).toContain('await onSubmit({ tableId: tableIdNum, items, covers, coversChosen, idempotencyKey: sendKey.key });');
+        expect(orders).toMatch(/<Input id="covers"[^\n]*onChange=\{\(e\) => \{ setCovers\([^\n]*\); setCoversChosen\(true\); \}\}/);
+        expect(orders).toContain('const [coversChosen, setCoversChosen] = useState(false);');
     });
 
     test('the Tables screen draws the Next party badge exactly on a next-party seat', () => {
