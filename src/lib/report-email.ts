@@ -745,12 +745,13 @@ export function cadenceCaption(s: { frequency: string; hour_local: number; minut
     return `Every day at ${at} · ${(s.window_mode === 'trading_day' ? WINDOW_MODE_LABELS.trading_day : WINDOW_MODE_LABELS.calendar).toLowerCase()}`;
 }
 
-/** "Next: 18 Sep, 02:00 — covers 17 Sep 02:00 → 18 Sep 02:00". */
+/** "Next: 18 Sep, 02:00 — covers 17 Sep, 02:00 → 18 Sep, 02:00". Empty for a
+ *  paused schedule: its chip already says so, and it has no next run. */
 export function nextRunCaption(
     s: { enabled: boolean; next_run_at?: string | null; next_window?: { from: string; to: string; day_close: string | null; start_at: string; end_at: string } | null },
     timeZone: string,
 ): string {
-    if (!s.enabled) {return 'Paused';}
+    if (!s.enabled) {return '';}
     if (!s.next_run_at) {return '';}
     const next = `Next: ${wallClock(s.next_run_at, timeZone)}`;
     const w = s.next_window;

@@ -446,7 +446,7 @@ describe('schedules', () => {
         expect(nextRunCaption(trading, 'Asia/Kolkata')).toBe('Next: 18 Sep, 02:00 — covers 17 Sep, 02:00 → 18 Sep, 02:00');
         const calendar = { enabled: true, next_run_at: '2026-09-18T02:30:00.000Z', next_window: { from: '2026-09-17', to: '2026-09-17', day_close: null, start_at: '', end_at: '' } };
         expect(nextRunCaption(calendar, 'Asia/Kolkata')).toBe('Next: 18 Sep, 08:00 — covers Thu 17 Sep');
-        expect(nextRunCaption({ ...trading, enabled: false }, 'Asia/Kolkata')).toBe('Paused');
+        expect(nextRunCaption({ ...trading, enabled: false }, 'Asia/Kolkata')).toBe('');
         expect(nextRunCaption({ enabled: true }, 'Asia/Kolkata')).toBe('');
         expect(cadenceCaption({ frequency: 'daily', hour_local: 2, minute_local: 0, weekday: null, day_of_month: null, window_mode: 'trading_day' }))
             .toBe('Every day at 02:00 · the day that just ended');
