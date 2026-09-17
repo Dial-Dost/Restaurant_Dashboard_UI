@@ -108,6 +108,7 @@ import { paymentMethodLabel, tenderPaymentOptions } from "@/lib/payment-methods"
 import {
     MAX_BILL_TENDERS,
     NON_CHARGEABLE_KINDS,
+    OPTIONAL_REASON_LABEL,
     PERM_RECORD_PAYMENT,
     SERVICE_CHARGE_WAIVER_KINDS,
     TIP_MODES,
@@ -129,6 +130,8 @@ import {
     serviceChargeRemovalSentence,
     serviceChargeRemovalTrouble,
     serviceChargeWaivedPrintLabel,
+    serviceChargeWaiverAttribution,
+    serviceChargeWaiverFormReady,
     tenderFormRefusal,
     tendersForWire,
     type BillTenderState,
@@ -180,7 +183,7 @@ export interface PrintBillHandoff {
  * document. The hint under it is what stops "Complimentary" and "Promotion"
  * being picked at random.
  */
-function KindPicker({ label, options, value, onChange, disabled }: {
+export function KindPicker({ label, options, value, onChange, disabled }: {
     label: string
     options: readonly VocabularyOption[]
     value: string
@@ -211,7 +214,7 @@ function KindPicker({ label, options, value, onChange, disabled }: {
  * manager acting alone types their own username and the row then honestly says
  * so.
  */
-function AuthoriserField({ value, onChange, act }: {
+export function AuthoriserField({ value, onChange, act }: {
     value: string
     onChange: (v: string) => void
     act: string
@@ -235,15 +238,20 @@ function AuthoriserField({ value, onChange, act }: {
     )
 }
 
-/** A reason box. Required everywhere; the server refuses an empty one. */
-function ReasonField({ value, onChange, placeholder }: {
+/**
+ * A reason box. Required for a comp and a void — the server refuses an empty
+ * one. `optional` is the service-charge waiver's alone (app 2.0.1): its kind is
+ * the required "why", and a blank reason is sent as none.
+ */
+function ReasonField({ value, onChange, placeholder, optional = false }: {
     value: string
     onChange: (v: string) => void
     placeholder: string
+    optional?: boolean
 }) {
     return (
         <div className="space-y-1.5">
-            <Label htmlFor="capture-reason">Reason</Label>
+            <Label htmlFor="capture-reason">{optional ? OPTIONAL_REASON_LABEL : "Reason"}</Label>
             <Textarea
                 id="capture-reason"
                 value={value}
@@ -385,7 +393,7 @@ export function CaptureActions({ restaurantId, order, onChanged, printBill }: {
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-64">
                     <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
-                        Recorded acts — every one names a reason and an authoriser.
+                        Recorded acts — every one names why and who authorised it.
                     </DropdownMenuLabel>
                     <DropdownMenuSeparator />
                     {item("comp", <Gift className="h-4 w-4" />, "Non-chargeable item…", canComp, "Mark Items Non-Chargeable")}
@@ -1106,7 +1114,7 @@ function WaiverDialog({
                             (charge and tax {money(live.grand_total_reduction)}, before round-off), recorded as{" "}
                             {humaniseToken(live.waiver_kind, SERVICE_CHARGE_WAIVER_KINDS)}.
                             <div className="mt-1 text-xs text-muted-foreground">
-                                {live.reason} · authorised by {live.authorised_by_username}
+                                {serviceChargeWaiverAttribution(live)}
                             </div>
                         </div>
                         <Note>
@@ -1172,7 +1180,7 @@ function WaiverDialog({
                                 server measures it when you confirm, and you are told both totals as the bill prints.
                             </Note>
                             <KindPicker label="Why is it coming off?" options={SERVICE_CHARGE_WAIVER_KINDS} value={kind} onChange={setKind} />
-                            <ReasonField value={reason} onChange={setReason} placeholder="e.g. Guest asked — long wait for the mains" />
+                            <ReasonField value={reason} onChange={setReason} optional placeholder="e.g. Guest asked — long wait for the mains" />
                             <AuthoriserField value={authorisedBy} onChange={setAuthorisedBy} act="this waiver" />
                             <DialogFooter>
                                 <Button variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
@@ -1184,7 +1192,7 @@ function WaiverDialog({
                                             authorised_by: authorisedBy.trim(),
                                         })
                                     }}
-                                    disabled={busy || !kind || reason.trim().length === 0 || authorisedBy.trim().length === 0}
+                                    disabled={busy || !serviceChargeWaiverFormReady({ kind, authorisedBy })}
                                 >
                                     {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Printer className="mr-2 h-4 w-4" />}
                                     Remove service charge &amp; print

@@ -29,6 +29,7 @@ import { getBookings, getCustomers, getTables, getMonthlyApcInsight } from '@/li
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { cn } from '@/lib/utils';
+import { countRoomsInUse, tableOptionLabel } from '@/lib/next-party';
 import type { Booking } from './bookings/data';
 import type { Customer } from './customers/page';
 import type { Table as TableType } from './tables/data';
@@ -145,8 +146,12 @@ export default function Dashboard() {
   const totalRevenue = dashboardRevenue ?? customerRevenueFallback;
   const totalBookings = bookings.length;
   const newCustomers = customers.filter(c => c.totalBookings === 1).length;
-  const activeTables = tables.filter(t => t.status !== "Available").length;
-  const totalTables = tables.length;
+  // THE ROOM'S TABLES (client item 6). The next party's seat at a printed 12
+  // ("12 #2") is a second name for a table already counted: 12 is in use if
+  // it, or its next party, is.
+  const roomUse = countRoomsInUse(tables, t => t.status !== "Available");
+  const activeTables = roomUse.inUse;
+  const totalTables = roomUse.rooms;
 
   // Section access mirrors the dashboard layout's nav gating, so we never offer
   // a link into a section the signed-in user would be redirected out of.
@@ -300,7 +305,7 @@ export default function Dashboard() {
             <div className="max-h-64 space-y-1 overflow-y-auto">
               {occupiedTables.map((t) => (
                 <div key={t.id} className="flex items-center justify-between border-b py-1 last:border-b-0">
-                  <span>{t.name} · {t.capacity} seats</span>
+                  <span>{tableOptionLabel(t)} · {t.capacity} seats</span>
                   <Badge variant="outline">{t.status}</Badge>
                 </div>
               ))}

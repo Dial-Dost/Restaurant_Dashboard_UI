@@ -33,6 +33,8 @@ import type { DateRange } from "@/lib/date-range"
 import { formatDateTime } from "@/lib/tz"
 import { useTimezone } from "@/lib/use-timezone"
 import { elapsedToSettlement, formatDuration, readServiceClock } from "@/lib/service-clock"
+import { billItemLabel } from "@/lib/bill-escpos"
+import { NC_SETTLE_LABEL, isNcSettleMethod } from "@/lib/nc-settle"
 
 const PAGE_SIZE = 25
 
@@ -423,7 +425,8 @@ function BillDetailBody({ detail, money }: { detail: ClosedBillDetail; money: (n
           ) : d.items.map((it, i) => (
             <div key={`${it.name}-${i}`} className="flex items-start gap-3 p-2 text-sm">
               <div className="min-w-0 flex-1">
-                <p className="font-medium">{it.name}</p>
+                {/* A comped line is its own line at 0.00 — the paper's words. */}
+                <p className="font-medium">{billItemLabel(it.name, it.nc)}</p>
                 <p className="text-xs text-muted-foreground">
                   {it.quantity} × {money(it.price)}{it.note ? ` · ${it.note}` : ""}
                 </p>
@@ -455,12 +458,26 @@ function BillDetailBody({ detail, money }: { detail: ClosedBillDetail; money: (n
           <Row label="Grand total" value={money(d.grand_total)} bold />
         </div>
         {d.refunded && <Row label="Refunded" value={`− ${money(d.refund_amount)}`} muted />}
+        {/* Beside the ladder, never in it: what the comped lines were worth. */}
+        {(d.nc_total ?? 0) > 0 && <Row label="NC value (not charged)" value={money(d.nc_total)} muted />}
       </div>
 
       <div>
         <p className="mb-2 text-xs font-semibold uppercase text-muted-foreground">Payment</p>
         <div className="space-y-1 rounded-md border p-3">
-          <Row label="Method" value={d.payment_method ?? "—"} />
+          <Row label="Method" value={isNcSettleMethod(d.payment_method) ? NC_SETTLE_LABEL : (d.payment_method ?? "—")} />
+          {/* A BILL SETTLED AS NC says why it took nothing, and on whose say-so. */}
+          {d.nc_settlement ? (
+            <div data-testid="closed-bill-nc-settlement" className="space-y-1 pt-1">
+              <Row label="Settled as" value={`Non-chargeable — ${d.nc_settlement.kind_label}`} muted />
+              <Row label="Authorised by" value={d.nc_settlement.authorised_by} muted />
+              {d.nc_settlement.reason ? <Row label="Reason" value={d.nc_settlement.reason} muted /> : null}
+              <Row label="Given away (before tax)" value={money(d.nc_settlement.value)} muted />
+              {d.nc_settlement.would_have_charged !== null && d.nc_settlement.would_have_charged > 0 ? (
+                <Row label="Would have been (incl. tax)" value={money(d.nc_settlement.would_have_charged)} muted />
+              ) : null}
+            </div>
+          ) : null}
           {d.payment_splits.map((s, i) => (
             <Row key={`${s.method}-${i}`} label={`↳ ${s.method}`} value={money(s.amount)} muted />
           ))}

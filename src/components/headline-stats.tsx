@@ -42,6 +42,15 @@
  * today), so the Cash row and the Cash collection tile are one number and the
  * rows add up to Today's gross sale. The Flutter Overview draws the same block
  * from the same fields. An older backend sends no rows and gets no block.
+ *
+ * ============================================================================
+ * NON-CHARGEABLE (NC), BESIDE THE MONEY
+ * ============================================================================
+ * Client item 5 asks for NC in the analytics. A bill settled as NC took 0.00,
+ * so it has no row among the modes (the server drops ₹0 rows there), and adding
+ * its value to them would put money in the drawer that never came in. So it is
+ * its own line under the block — `today_nc`, server-labelled — and it is shown
+ * even on a day where every bill was given away and no mode took anything.
  */
 
 import { useCallback, useEffect, useState } from "react"
@@ -52,6 +61,7 @@ import {
   hasSettlements, modeSharePct, readHeadlineByMethod, unallocatedWarning, UNALLOCATED_METHOD,
 } from "@/lib/settlement-breakdown"
 import { timezoneCaption } from "@/lib/tz"
+import { ncBesideLine, readHeadlineNc } from "@/lib/nc-settle"
 
 /** The order the requirement lists them in, which is also the order they read in. */
 const ORDER: (keyof Pick<OverviewHeadline,
@@ -175,6 +185,22 @@ export function HeadlineStats({ rid }: { rid: string }) {
     )
   }
 
+  const ncBeside = (h: OverviewHeadline) => {
+    const nc = readHeadlineNc(h)
+    if (!nc) { return null }
+    return (
+      <section data-testid="headline-nc" className="border-t border-border/60 pt-3" aria-label={nc.label}>
+        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+          <p className="text-xs font-medium text-muted-foreground">{nc.label}</p>
+          <p className="text-sm font-semibold tabular-nums">{ncBesideLine(nc, money)}</p>
+        </div>
+        {nc.hint && (
+          <p className="mt-1 text-[11px] leading-snug text-muted-foreground">{nc.hint}</p>
+        )}
+      </section>
+    )
+  }
+
   return (
     <Card className="border-primary/30 bg-muted/30">
       <CardHeader className="pb-3">
@@ -208,6 +234,7 @@ export function HeadlineStats({ rid }: { rid: string }) {
             )}
             {tiles(data)}
             {byMethod(data)}
+            {ncBeside(data)}
             {failed && (
               <p className="text-xs text-amber-600 dark:text-amber-400">
                 These figures could not be refreshed just now, so they may be a minute or two old.

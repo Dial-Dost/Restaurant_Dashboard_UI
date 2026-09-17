@@ -27,6 +27,10 @@
 // 500s at runtime. `src/lib/table-assignment.ts` set that precedent and
 // `src/lib/mis-reports.ts` follows it; so does this.
 
+// Client item 6: a print that says where the next party sits (see
+// serviceChargeRemovalSentence).
+import { nextPartyAfterPrint } from './next-party';
+
 // --- The three control permissions -------------------------------------------
 //
 // MANAGER ONLY BY DEFAULT, and that is the whole reason they exist. All three
@@ -117,7 +121,9 @@ export const SERVICE_CHARGE_WAIVER_KINDS: readonly VocabularyOption[] = [
     { value: 'goodwill', label: 'Goodwill', hint: 'A gesture the house chose to make.' },
     { value: 'staff_meal', label: 'Staff meal', hint: 'Staff eating in — no service charge applies.' },
     { value: 'policy', label: 'House policy', hint: 'This order type never carries a service charge.' },
-    { value: 'other', label: 'Other', hint: 'None of the above — say what happened in the reason.' },
+    // The reason is optional on a waiver (2.0.1), so "Other" asks for one
+    // rather than requiring it. The void's "Other" above still requires one.
+    { value: 'other', label: 'Other', hint: 'None of the above — a line in the reason helps whoever reads the report.' },
 ] as const;
 
 /** How a tip arrived. 037's `tip_mode`. */
@@ -246,7 +252,8 @@ export interface ServiceChargeWaiverRecord {
     /** amount_waived + tax_on_waived — what the guest does not pay. The server's own figure. */
     grand_total_reduction: number;
     waiver_kind: string;
-    reason: string;
+    /** Optional since migration 051 (app 2.0.1): null when the waiver was recorded without one. Never ''. */
+    reason: string | null;
     waived_by_username: string;
     authorised_by_username: string;
     reversed_at: string | null;
@@ -281,6 +288,9 @@ export interface RemoveServiceChargeAndPrintResult {
     /** The server's priced bill for the browser to render — the claim's own `printable_bill`. */
     printable_bill?: Record<string, unknown> | null;
     print_count?: number;
+    /** Client item 6: the next party's seat this print opened (or found), and its sentence. */
+    next_party_table?: string | null;
+    next_party_message?: string | null;
 }
 
 const SERVICE_CHARGE_LINE = /service\s*charge/i;
@@ -339,42 +349,50 @@ export const billCarriesServiceCharge = (bill: {
  *   * the print FAILED after the waiver landed — that the charge is off AND
  *     that no paper came out, with what to press (`tone: "warn"`);
  *   * paper that carries the charge after all — that, never "removed".
+ *
+ * CLIENT ITEM 6: a bill that PRINTED also opened (or found) the next party's
+ * seat at this number, and the sentence ends by saying where it is.
  */
 export const serviceChargeRemovalSentence = (
     result: Partial<RemoveServiceChargeAndPrintResult> | null | undefined,
     money: (v: unknown) => string,
 ): { message: string; tone: 'ok' | 'warn' } => {
-    const r = result ?? {};
-    const created = r.waiver_created === true;
-    const printed = r.printed === true;
-    const before = r.grand_total_before;
-    const after = r.grand_total_after;
-    const hasTotals = before !== null && before !== undefined && after !== null && after !== undefined;
-    if (printed && r.service_charge_removed === false) {
-        return { message: 'Printed WITH the service charge — the waiver was put back before the bill printed.', tone: 'warn' };
-    }
-    if (!printed) {
-        const why = (r.print_error ?? '').trim();
-        const notPrinted = `did not print${why ? `: ${why}` : ''}. Press Print bill.`;
+    const said = ((): { message: string; tone: 'ok' | 'warn' } => {
+        const r = result ?? {};
+        const created = r.waiver_created === true;
+        const printed = r.printed === true;
+        const before = r.grand_total_before;
+        const after = r.grand_total_after;
+        const hasTotals = before !== null && before !== undefined && after !== null && after !== undefined;
+        if (printed && r.service_charge_removed === false) {
+            return { message: 'Printed WITH the service charge — the waiver was put back before the bill printed.', tone: 'warn' };
+        }
+        if (!printed) {
+            const why = (r.print_error ?? '').trim();
+            const notPrinted = `did not print${why ? `: ${why}` : ''}. Press Print bill.`;
+            if (created && hasTotals) {
+                return { message: `Service charge removed (${money(before)} → ${money(after)}), but the bill ${notPrinted}`, tone: 'warn' };
+            }
+            return {
+                message: created || (r.waiver !== null && typeof r.waiver === 'object')
+                    ? `The service charge is off this bill, but the bill ${notPrinted}`
+                    : `The bill ${notPrinted}`,
+                tone: 'warn',
+            };
+        }
         if (created && hasTotals) {
-            return { message: `Service charge removed (${money(before)} → ${money(after)}), but the bill ${notPrinted}`, tone: 'warn' };
+            return { message: `Service charge removed — total ${money(before)} → ${money(after)}. Printing bill…`, tone: 'ok' };
         }
         return {
-            message: created || (r.waiver !== null && typeof r.waiver === 'object')
-                ? `The service charge is off this bill, but the bill ${notPrinted}`
-                : `The bill ${notPrinted}`,
-            tone: 'warn',
+            message: after !== null && after !== undefined
+                ? `Reprinting without the service charge — total ${money(after)}.`
+                : 'Reprinting without the service charge…',
+            tone: 'ok',
         };
-    }
-    if (created && hasTotals) {
-        return { message: `Service charge removed — total ${money(before)} → ${money(after)}. Printing bill…`, tone: 'ok' };
-    }
-    return {
-        message: after !== null && after !== undefined
-            ? `Reprinting without the service charge — total ${money(after)}.`
-            : 'Reprinting without the service charge…',
-        tone: 'ok',
-    };
+    })();
+    // Client item 6: paper came out, so the seat for the next party is named.
+    const seat = result?.printed === true ? nextPartyAfterPrint(result).message : null;
+    return seat ? { ...said, message: `${said.message} ${seat}` } : said;
 };
 
 /**
@@ -446,6 +464,36 @@ export const serviceChargeRemovalTrouble = (
  */
 export const serviceChargeWaivedPrintLabel = (printedBefore: boolean | null): string =>
     printedBefore === true ? 'Reprint without the charge' : 'Print without the charge';
+
+// --- The waiver's reason is optional (client item, app 2.0.1) ------------------
+//
+// "When waiving a service charge, the reason should not be mandatory and should
+// be left as optional." ONLY the waiver's: the comp, the void, the cancel, the
+// tender void and "Put the charge back" still require one. The kind (chosen
+// already) and the authoriser stay required, because the kind is now the only
+// "why" a waiver is guaranteed to carry and the authoriser is the control.
+// A blank reason is sent as no reason at all, and the server stores NULL where
+// migration 051 allows it and refuses as before where it does not.
+
+/** The reason box's label on the waiver form. The till says the same words. */
+export const OPTIONAL_REASON_LABEL = 'Reason (optional)';
+
+/** May "Remove service charge & print" be pressed? The reason is not asked. */
+export const serviceChargeWaiverFormReady = (form: { kind: string; authorisedBy: string }): boolean =>
+    form.kind.trim().length > 0 && form.authorisedBy.trim().length > 0;
+
+/**
+ * The live-waiver panel's attribution line: `Long wait · authorised by manager01`,
+ * or just `authorised by manager01` when the waiver was recorded without a
+ * reason — never an empty lead or a dash standing in for one.
+ */
+export const serviceChargeWaiverAttribution = (
+    waiver: { reason?: string | null; authorised_by_username?: string | null },
+): string => {
+    const reason = String(waiver.reason ?? '').trim();
+    const by = `authorised by ${String(waiver.authorised_by_username ?? '').trim() || '—'}`;
+    return reason ? `${reason} · ${by}` : by;
+};
 
 export interface BillTenderRecord {
     id: string;

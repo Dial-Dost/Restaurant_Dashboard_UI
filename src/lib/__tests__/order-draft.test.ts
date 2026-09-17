@@ -358,7 +358,9 @@ describe('the orders page is wired to all of it', () => {
 
     it('the draft\'s key travels from the form to POST /orders as an Idempotency-Key', () => {
         expect(form).toMatch(/keyForDraftSend\(sendKeyRef\.current, draftSignature\(tableIdNum, covers, itemsList\), newIdempotencyKey\)/);
-        expect(form).toMatch(/onSubmit\(\{ tableId: tableIdNum, items, covers, idempotencyKey: sendKey\.key \}\)/);
+        // `coversChosen` rides along (client item 6): a seated party's covers
+        // change only when the Guests box was typed in — see next-party.test.ts.
+        expect(form).toMatch(/onSubmit\(\{ tableId: tableIdNum, items, covers, coversChosen, idempotencyKey: sendKey\.key \}\)/);
         expect(page).toMatch(/await addOrder\(user\.restaurantUsername, newOrder, \{ idempotencyKey: newOrderData\.idempotencyKey \}\)/);
 
         const db = code(readSource('src/lib/db.ts'));

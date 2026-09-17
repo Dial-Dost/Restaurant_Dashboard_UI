@@ -13,6 +13,7 @@ import { getWaitlist, callWaitlistEntry, seatWaitlistEntry, cancelWaitlistEntry,
 import { seatingLeftTableUnattended } from "@/lib/table-assignment"
 import { getSelectedOutletId } from "@/lib/outlet"
 import { type Table } from "@/app/dashboard/tables/data"
+import { isNextPartyTable, tableOptionLabel } from "@/lib/next-party"
 
 function WaitlistPageInner() {
   const { user } = useAuth()
@@ -34,7 +35,13 @@ function WaitlistPageInner() {
   // Kept at page level so the 8s poll re-render doesn't collapse open rows.
   const [openRows, setOpenRows] = useState<Record<string, boolean>>({})
 
-  const freeTables = useMemo(() => tables.filter((t) => t.status === "Available").map((t) => t.name), [tables])
+  // Room tables first, so the default pick is never a next-party seat; a free
+  // seat beside a printed table (client item 6) is still offered, in its words.
+  const freeTables = useMemo(() => {
+    const free = tables.filter((t) => t.status === "Available")
+    return [...free.filter((t) => !isNextPartyTable(t)), ...free.filter((t) => isNextPartyTable(t))].map((t) => t.name)
+  }, [tables])
+  const freeTableLabel = useMemo(() => new Map(tables.map((t) => [t.name, tableOptionLabel(t)])), [tables])
 
   // A "new in queue" notification links here as ?highlightWaitlist=<id>; ring
   // and scroll to that party instead of leaving the user to find them.
@@ -204,7 +211,7 @@ function WaitlistPageInner() {
               onChange={(ev) => { setSeatPick((p) => ({ ...p, [e.id]: ev.target.value })); }}
             >
               <option value="">{freeTables.length ? "Table…" : "No free tables"}</option>
-              {freeTables.map((t) => <option key={t} value={t}>{t}</option>)}
+              {freeTables.map((t) => <option key={t} value={t}>{freeTableLabel.get(t) ?? t}</option>)}
             </select>
             <Button size="sm" disabled={busyId === e.id || freeTables.length === 0} onClick={() => { seat(e); }}>
               <Check className="mr-1 h-4 w-4" /> Seat

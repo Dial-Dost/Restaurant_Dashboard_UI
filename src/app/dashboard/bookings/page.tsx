@@ -70,6 +70,7 @@ import { formatDate, formatDateTime, formatFullDateTime, formatLongDate, formatT
 import { useTimezone } from "@/lib/use-timezone";
 import { type Booking } from "./data";
 import { type Table as TableType } from "../tables/data";
+import { roomTables } from "@/lib/next-party";
 
 const bookingSchema = z.object({
   customer: z.string().min(1, "Customer name is required."),
@@ -1199,7 +1200,11 @@ function BookingForm({ onSubmit, afterSubmit, tables }: { onSubmit: (data: Booki
   // until they pick — the form never fills this in on its own.
   const [seatingSelection, setSeatingSelection] = useState<string[]>([]);
 
-  const availableTables = tables.filter((t) => t.status === "Available");
+  // The ROOM only (client item 6): a next-party seat ("12 #2") is opened by a
+  // bill print and retired once idle, so a reservation on it would point at a
+  // deleted table by the time the guests arrive. The server's other booking
+  // doors (assign, combine, suggest) already leave it out.
+  const availableTables = roomTables(tables).filter((t) => t.status === "Available");
   const guests = Number(watch("guests")) || 0;
   const time = watch("time") ?? "";
   const startIso = bookingStartIso(time);

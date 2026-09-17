@@ -38,6 +38,7 @@ import {
     type MisReportPayload,
     type MisReportKey,
 } from "@/lib/mis-reports"
+import { NC_SETTLE_LABEL, ncBesideLine, ncSummaryByScope, salesSummaryNc, settlementSummaryNc } from "@/lib/nc-settle"
 
 interface Ctx {
     payload: MisReportPayload
@@ -250,6 +251,7 @@ export function ContextPanel({ reportKey, payload, currencySymbol }: Ctx & { rep
             const byType = Array.isArray(payload.by_order_type)
                 ? (payload.by_order_type as { order_type: string; bills: number; grand_total: number; share_pct: number | null }[])
                 : []
+            const salesNc = salesSummaryNc(totals)
             return (
                 <div className="space-y-2">
                     <Tiles>
@@ -266,6 +268,15 @@ export function ContextPanel({ reportKey, payload, currencySymbol }: Ctx & { rep
                         <Tile label="APC" value={money(totals.apc)} hint="Per cover, PRE-tax" />
                         <Tile label="Refunds" value={money(totals.refund)} tone={(num(totals.refund) ?? 0) > 0 ? "warn" : "default"} />
                     </Tiles>
+                    {salesNc && (
+                        // BESIDE the ladder, never a tile inside it: nothing here
+                        // was collected. The NC bills are already inside Bills.
+                        <Caveat>
+                            <b>{NC_SETTLE_LABEL} — not collected: {ncBesideLine(salesNc, money)}.</b>{" "}Bills settled as
+                            NC close at 0.00 and still count as bills (and their parties as covers), like a released
+                            table; the value given away is pre-tax, dishes comped one by one included.
+                        </Caveat>
+                    )}
                     {byType.length > 0 && (
                         <div className="flex flex-wrap items-center gap-2 pt-0.5">
                             <span className="text-xs text-muted-foreground">By order type:</span>
@@ -358,6 +369,7 @@ export function ContextPanel({ reportKey, payload, currencySymbol }: Ctx & { rep
         case "settlement_summary": {
             const unallocated = num(totals.unallocated) ?? 0
             const splitBills = num(totals.split_bills) ?? 0
+            const settleNc = settlementSummaryNc(totals)
             return (
                 <div className="space-y-2">
                     <Tiles>
@@ -383,6 +395,13 @@ export function ContextPanel({ reportKey, payload, currencySymbol }: Ctx & { rep
                         rows for the same window — the three are cut from one ladder and are tested against each
                         other.{splitBills > 0 ? ` ${String(splitBills)} bill(s) were settled across more than one mode.` : ""}
                     </Caveat>
+                    {settleNc && (
+                        <Caveat>
+                            <b>{NC_SETTLE_LABEL} — not collected: {ncBesideLine(settleNc, money)}.</b>{" "}The{" "}
+                            {NC_SETTLE_LABEL} row reads 0.00 and moves no total; the value beside it is what was given
+                            away in this window, before tax.
+                        </Caveat>
+                    )}
                 </div>
             )
         }
@@ -398,6 +417,7 @@ export function ContextPanel({ reportKey, payload, currencySymbol }: Ctx & { rep
             const reversed = num(totals.reversed_entries) ?? 0
             const loss = num(totals.loss) ?? 0
             const categoryExact = payload.category_exact === true
+            const byScope = ncSummaryByScope(payload)
             return (
                 <div className="space-y-2">
                     <Tiles>
@@ -417,6 +437,18 @@ export function ContextPanel({ reportKey, payload, currencySymbol }: Ctx & { rep
                             <span className="text-xs text-muted-foreground">By reason:</span>
                             {byKind.map((k) => (
                                 <Badge key={k.kind} variant="outline" className="font-normal">
+                                    {k.label} · <span className="ml-1 font-mono tabular-nums">{money(k.loss)}</span>
+                                    <span className="ml-1 text-muted-foreground">({k.entries})</span>
+                                </Badge>
+                            ))}
+                        </div>
+                    )}
+                    {byScope.length > 0 && (
+                        // Item = one dish comped; Bill = a line of a bill settled as NC.
+                        <div data-testid="nc-by-scope" className="flex flex-wrap items-center gap-2 pt-0.5">
+                            <span className="text-xs text-muted-foreground">By scope:</span>
+                            {byScope.map((k) => (
+                                <Badge key={k.scope} variant="outline" className="font-normal">
                                     {k.label} · <span className="ml-1 font-mono tabular-nums">{money(k.loss)}</span>
                                     <span className="ml-1 text-muted-foreground">({k.entries})</span>
                                 </Badge>

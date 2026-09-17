@@ -20,8 +20,21 @@ import { readErrorMessage, refusalSentence, type RefusedAction } from '@/lib/err
 // module holds no second opinion about what "already printed" means — it only
 // carries the bytes between the route and the screens.
 import { billPrintRefusal, billPrintStateFields, type BillPrintState } from '@/lib/bill-print-state';
+// Client item 6. Pure, like the C3 readers above: this module only carries the
+// next party's seat and the 409 between the routes and the screens.
+import { nextPartyAfterPrint, nextPartyRowFields, readBillPrintedRefusal, type BillPrintedRefusal } from '@/lib/next-party';
+import { ncSettleWasRefused } from '@/lib/nc-settle';
 import { UNREACHABLE_MESSAGE, billCustomerPayload, billCustomerSaveOutcome, type BillCustomerRequest, type BillCustomerSaveOutcome } from '@/lib/bill-customer';
 import { SELECTED_OUTLET_KEY } from '@/lib/outlet';
+import {
+    KOT_PRINT_STYLE_DEFAULT,
+    KOT_TEXT_SIZE_DEFAULT,
+    readKotDocketSettings,
+    savedKotPrintStyle,
+    savedKotTextSize,
+    type KotPrintStyle,
+    type KotTextSize,
+} from '@/lib/kot-print-style';
 import { readPaymentMethods, type PaymentMethodConfig } from '@/lib/payment-methods';
 import type { BrandConfig } from '@/lib/brand-fonts';
 import type { RolePermission } from '@/lib/role-permissions';
@@ -115,6 +128,12 @@ export type ApcZone = 'red' | 'yellow' | 'green';
 export interface OrderApcInsight {
     order_id: string;
     table_name: string;
+    /**
+     * What a table-wise view calls this seating: the ROOT's name for a
+     * next-party seating ("12" for "12 #2", client item 6), else table_name.
+     * A label only; the row is still its own seating. Absent on older backends.
+     */
+    table_label?: string;
     created_at: string;
     total: number;
     people_count: number;
@@ -798,6 +817,11 @@ const mapTable = (item: any, index: number): Table => {
         // the same as "not printed"; every reader downstream depends on being
         // able to tell those two apart, so nothing is defaulted here.
         bill_print: billPrintStateFields(item),
+        // CLIENT ITEM 6 — the next party at a printed table. A backend older than
+        // migration 053 maps exactly as before: every row a room table. See
+        // src/lib/next-party.ts for who reads these and why the handle, never
+        // the display name, is what every request sends.
+        ...nextPartyRowFields(item, String(name)),
     };
 };
 
@@ -1609,7 +1633,9 @@ export type BillPrintClaimResult =
     // `printableBill` is the SERVER'S PRICED BILL for this seating. A waiter's own
     // read of /bill-for-table is redacted by C4, so without this the print page has
     // no amounts and refuses — which is how no waiter on the web could ever print.
-    | { outcome: 'claimed'; state: BillPrintState | null; printableBill: Record<string, unknown> | null }
+    // `nextParty` (client item 6): the seat the server opened, or found, for the
+    // next guests at this number — both null when there is none.
+    | { outcome: 'claimed'; state: BillPrintState | null; printableBill: Record<string, unknown> | null; nextParty: { table: string | null; message: string | null } }
     | { outcome: 'unavailable'; reason: string }
     | { outcome: 'refused'; status: number; message: string; reprintNeedsSenior: boolean; state: BillPrintState | null };
 
@@ -1693,6 +1719,7 @@ export const claimBillPrint = async (
             printableBill: printable && typeof printable === 'object' && !Array.isArray(printable)
                 ? (printable as Record<string, unknown>)
                 : null,
+            nextParty: nextPartyAfterPrint(body),
         };
     }
 
@@ -1962,7 +1989,16 @@ export const getBillForTable = async (restaurantId: string, tableName: string) =
 // action. `/bill-for-table` only ever returns the OPEN bill, so these two reads
 // are the only way to browse or re-open a settled one.
 
-export interface ClosedBillItem { name: string; price: number; quantity: number; note: string | null; line_total: number }
+export interface ClosedBillItem {
+    name: string; price: number; quantity: number; note: string | null;
+    /** 0 on a comped line — what the guest was charged for it. */
+    line_total: number;
+    /**
+     * Backend migration 034: this line was comped. Its own line (the server
+     * keys the merge on it), printed "<name> (NC)" at 0.00. Absent otherwise.
+     */
+    nc?: boolean;
+}
 export interface BillTaxLine { name: string; percentage: number; amount: number }
 
 export interface ClosedBillSummary {
@@ -2043,6 +2079,23 @@ export interface ClosedBillDetail extends ClosedBillSummary {
       `service_clock.ts` sends none, and the fact is simply not drawn.
     */
     service?: ServiceClock | null;
+    /** Backend migration 034: the menu value of the comped lines. Beside the ladder, never in it. Optional: older backends. */
+    nc_total?: number;
+    /** Set on a bill SETTLED AS NC (payment_method 'NC', migration 052): how, why and on whose say-so. */
+    nc_settlement?: ClosedBillNcSettlement | null;
+}
+
+/** How a closed NC bill was settled — GetClosedBill's `nc_settlement`. */
+export interface ClosedBillNcSettlement {
+    kind: string;
+    kind_label: string;
+    authorised_by: string;
+    marked_by: string;
+    reason: string;
+    lines: number;
+    value: number;
+    /** What the guest would have paid. Information only, and null when unknown. */
+    would_have_charged: number | null;
 }
 
 export interface ClosedBillPage {
@@ -2397,6 +2450,16 @@ export const addMenuItem = async (restaurantId: string, item: MenuItem) => {
 // `idempotencyKey` — one per logical send (the Add New Order dialog mints it per
 // draft). POST /orders honours it: the same key is never applied twice. Callers
 // that use this route as a status upsert pass none and are unchanged.
+//
+// CLIENT ITEM 6 — A PRINTED BILL TAKES NO MORE FROM A WAITER. The server answers
+// `bill_printed` (and writes nothing) when a waiter-only login adds to a table
+// whose bill has been printed — as 423, never 409 (see BILL_PRINTED_STATUS), and
+// an older server as 409, so any 4xx is read for the code. That refusal comes back as a VALUE,
+// `{ bill_printed }`, never as the silent local "acknowledged" below — which
+// would tell a waiter the order was placed when the kitchen never saw it — and
+// never as a throw, whose message Next redacts across this "use server"
+// boundary. The caller shows the sentence and the "Take it on 12 (next party)"
+// action.
 export const addOrder = async (restaurantId: string, order: Order, opts?: { idempotencyKey?: string }) => {
     const response = await backendCall('/orders', restaurantId, {
         method: 'POST',
@@ -2406,6 +2469,16 @@ export const addOrder = async (restaurantId: string, order: Order, opts?: { idem
         },
         body: JSON.stringify(order),
     });
+
+    if (response && !response.ok && response.status >= 400 && response.status < 500) {
+        let body: unknown = null;
+        try { body = await response.json(); } catch { body = null; }
+        const refusal = readBillPrintedRefusal(body);
+        if (refusal) {
+            const refused: { bill_printed: BillPrintedRefusal } = { bill_printed: refusal };
+            return refused;
+        }
+    }
 
     if (response?.ok) {
         try {
@@ -4107,6 +4180,13 @@ export interface OverviewHeadline {
     today_unallocated?: number;
     /** The block's label and definition, written by the code that computes it. */
     by_method?: { label: string; hint: string };
+    /**
+     * NOT COLLECTED, and shown BESIDE the by-method block, never inside it: the
+     * bills settled as NC today (already in `today_bills`, adding 0.00 to every
+     * figure) and what was given away today, pre-tax. OPTIONAL — an older
+     * backend sends none. Read through readHeadlineNc (lib/nc-settle.ts).
+     */
+    today_nc?: { label: string; hint: string; bills: number; value: number };
 }
 
 /** null on an unreachable backend — never zeroes, which an owner would act on. */
@@ -5179,6 +5259,76 @@ export const setFeedbackValetEnabled = async (restaurantId: string, enabled: boo
     try { const j = await res.json(); return j?.feedback_config?.valet_enabled === true; } catch { return enabled; }
 };
 
+// --- Which kitchen docket this restaurant prints (kot_print_style) -----------
+// The reference docket is drawn as a raster image; a thermal printer that cannot
+// draw one answers it with BLANK PAPER rather than an error, and on a kitchen
+// printer that is an order nobody cooks. This is the owner's switch back to the
+// plain text docket, and it travels in the same /restaurant/settings document as
+// the bill printing fields below.
+//
+// ONE KEY IN, ONE KEY OUT. Unlike the feedback form beside it, this is a scalar
+// the backend writes only when it is present, so there is nothing to read first
+// and nothing a one-key body can clobber.
+//
+// READABLE BY ANY SIGNED-IN STAFF (it is not in SETTINGS_PRIVILEGED_FIELDS), so
+// the card renders the real value for whoever can open Settings; WRITING is
+// gated on "Manage Restaurant Settings" server-side, which is what canEdit
+// mirrors on the card.
+//
+// BOTH DOCKET SETTINGS COME FROM ONE READ — the style and, since the client
+// asked for smaller type, the reference docket's text size (kot_text_size).
+//
+// `supported` is false only for a settings document that lacks the keys — a
+// backend from before these settings, which prints only the classic docket and
+// ignores a save of them; the card is not shown against it. A read that FAILED
+// cannot tell, and this card is the recovery control somebody may be reaching
+// for while the backend is having a bad minute, so it stays on screen with the
+// defaults; a save to a backend without the setting still raises (below).
+export const getKotDocketSettings = async (restaurantId: string): Promise<{ style: KotPrintStyle; textSize: KotTextSize; supported: boolean }> => {
+    const fallback = { style: KOT_PRINT_STYLE_DEFAULT, textSize: KOT_TEXT_SIZE_DEFAULT, supported: true };
+    const res = await backendCall('/restaurant/settings', restaurantId, { method: 'GET' });
+    if (!res?.ok) {return fallback;}
+    let settings: unknown;
+    try { settings = await res.json(); } catch { return fallback; }
+    return readKotDocketSettings(settings);
+};
+
+export const setKotPrintStyle = async (restaurantId: string, style: KotPrintStyle): Promise<KotPrintStyle> => {
+    const res = await backendCall('/restaurant/settings', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kot_print_style: style }),
+    });
+    // THE FAILURE IS RAISED, never swallowed into a "saved" state. The person
+    // clicking this is usually trying to stop a kitchen printer producing blank
+    // tickets; a card that showed the new choice after a failed save would tell
+    // them the problem is elsewhere. The backend 400s a value it does not know
+    // rather than coercing it, and readErrorMessage carries that sentence up.
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to save the KOT print style');}
+    // Echo what the server stored, not what was asked for — the two can differ
+    // only if something is wrong, and that is worth seeing. A settings document
+    // WITHOUT the key is a backend that ignored it: savedKotPrintStyle raises.
+    let reply: unknown;
+    try { reply = await res.json(); } catch { return style; }
+    return savedKotPrintStyle(reply, style);
+};
+
+// The reference docket's type size — one key in, one key out, on exactly the
+// terms of setKotPrintStyle above: a refused save RAISES (the backend 400s a
+// size it does not know), so does a reply that shows nothing was stored, and
+// the card shows what the server stored.
+export const setKotTextSize = async (restaurantId: string, size: KotTextSize): Promise<KotTextSize> => {
+    const res = await backendCall('/restaurant/settings', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kot_text_size: size }),
+    });
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to save the KOT text size');}
+    let reply: unknown;
+    try { reply = await res.json(); } catch { return size; }
+    return savedKotTextSize(reply, size);
+};
+
 // --- Printed-bill identity + the sentence above the bill QR ------------------
 // The registered entity and GST number printed under the restaurant name, and
 // the tenant's own line above the feedback/valet QR. All three live on
@@ -5584,6 +5734,19 @@ export const renameInventoryCategory = async (restaurantId: string, from: string
     postJson('/inventory-categories/rename', restaurantId, { from, to });
 
 export interface SplitPart { label: string; subtotal: number; total: number }
+/** POST /print/bill/split's answer. */
+export interface PrintSplitBillsResult {
+    success: boolean;
+    parts: number;
+    jobs: { index: number; of: number; label: string; grandTotal: number; destination: string | null }[];
+    /**
+     * CLIENT ITEM 6 — a split print is a print of the bill, so the server opens
+     * (or finds) the next party's seat and names it, with its sentence. Absent
+     * on a backend older than migration 053. Read with nextPartyAfterPrint.
+     */
+    next_party_table?: string | null;
+    next_party_message?: string | null;
+}
 /**
  * F3 — print the split, one document per part.
  *
@@ -5597,7 +5760,7 @@ export const printSplitBills = async (
     restaurantId: string,
     tableName: string,
     input: { mode?: 'even' | 'item' | 'section'; parts?: number; groups?: unknown[]; axis?: string },
-): Promise<{ success: boolean; parts: number; jobs: { index: number; of: number; label: string; grandTotal: number; destination: string | null }[] }> => {
+): Promise<PrintSplitBillsResult> => {
     const response = await backendCall('/print/bill/split', restaurantId, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -5606,13 +5769,47 @@ export const printSplitBills = async (
     if (!response?.ok) {
         throw new Error(response ? await readErrorMessage(response) : 'Unable to print the split bills');
     }
-    return (await response.json()) as { success: boolean; parts: number; jobs: { index: number; of: number; label: string; grandTotal: number; destination: string | null }[] };
+    return (await response.json()) as PrintSplitBillsResult;
 };
 
 export const splitBill = async (restaurantId: string, tableName: string, parts: number): Promise<{ grand_total: number; parts: SplitPart[] }> =>
     postJson('/bills/split', restaurantId, { table_name: tableName, mode: 'even', parts });
-export const mergeTables = async (restaurantId: string, fromTable: string, toTable: string) =>
-    postJson('/bills/merge', restaurantId, { from_table: fromTable, to_table: toTable });
+/** POST /bills/merge's answer. */
+export interface MergeTablesResult {
+    success?: boolean;
+    total_amt?: number;
+    moved_orders?: number;
+    /**
+     * CLIENT ITEM 6 — the orders went onto a bill the guest is already holding
+     * (a manager merging "12 #2" into a printed 12): the paper is short. Read
+     * with readReprintNeeded, which also takes reprint_message / reprint_table.
+     */
+    reprint_needed?: boolean;
+    reprint_message?: string;
+    reprint_table?: string;
+}
+/**
+ * Merge one table's open orders into another's bill.
+ *
+ * A 4xx comes back as a RefusedAction carrying the server's sentence — a
+ * printed bill a waiter may not merge into (423), a locked bill, a table that
+ * cannot take the party — because this module is "use server" and a thrown
+ * Error's message is redacted in production. The merge route refuses before it
+ * writes. No answer and a 5xx still throw: a merge may have landed behind them.
+ */
+export const mergeTables = async (restaurantId: string, fromTable: string, toTable: string): Promise<MergeTablesResult | RefusedAction> => {
+    const response = await backendCall('/bills/merge', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from_table: fromTable, to_table: toTable }),
+    });
+    if (!response) {throw new Error('Could not reach the server. Check the bill before merging again.');}
+    if (response.status >= 400 && response.status < 500) {
+        return { refused: true, status: response.status, error: await readErrorMessage(response, 'Unable to merge the bills') };
+    }
+    if (!response.ok) {throw new Error(await readErrorMessage(response, 'Unable to merge the bills'));}
+    try { return (await response.json()) as MergeTablesResult; } catch { return {}; }
+};
 export const refundBill = async (restaurantId: string, opts: { table_name?: string; bill_id?: string; amount?: number; reason?: string }): Promise<{ amount: number; gateway: string }> =>
     postJson('/bills/refund', restaurantId, opts);
 
@@ -5816,6 +6013,8 @@ export interface MisOrderItem {
     line_total: number;
     note: string | null;
     station: string | null;
+    /** Backend migration 034: a comped line. Labelled "(NC)"; its value is still the ticket's. Absent otherwise. */
+    nc?: boolean;
 }
 
 /**
@@ -6007,6 +6206,82 @@ export const getOrderNonChargeables = async (
     return Array.isArray(data?.non_chargeables) ? data.non_chargeables : [];
 };
 
+/** What POST /bills/order/:orderId/settle-nc answers. Every figure is the server's. */
+export interface SettleBillNonChargeableResult {
+    success: true;
+    bill_id: string;
+    bill_no: string | null;
+    table_name: string | null;
+    payment_method: string;
+    total_amt: number;
+    /** Everything given away on the bill, pre-tax, dishes comped earlier included. */
+    nc_value: number;
+    /** The dishes THIS settle comped. */
+    nc_lines: number;
+    /** What the guest would have paid. Information only — in no report. */
+    would_have_charged: number;
+    non_chargeables: NonChargeableRecord[];
+    printed: boolean;
+    print_error?: string;
+    /** The bill was already settled as NC — a double click, or a lost answer. */
+    already?: true;
+}
+
+/**
+ * SETTLE AS NC (backend migration 052): close the table's bill as
+ * non-chargeable, in one step. Every remaining dish is comped into the NC ledger
+ * with this kind, reason and authoriser, the bill closes at 0.00 as 'NC' and the
+ * table is freed; the NC bill prints unless `print` is false.
+ *
+ * NOT a payment: there is no approve or close call after it. `expected_value`
+ * is the chargeable subtotal the form showed, so a bill that changed while the
+ * manager was deciding is refused rather than given away at a different size.
+ * The route refuses an amount — whole bills only (lib/nc-settle.ts).
+ *
+ * RETURNED, NOT THROWN, for the reason removeServiceChargeAndPrint gives: this
+ * module is "use server", Next redacts a thrown Error's message in a production
+ * build, and the refusal's sentence — a moved quote, a payment already taken,
+ * an authoriser who may not approve this — is what the manager needs.
+ *
+ * `refused` says the server turned the settle down BEFORE writing anything
+ * (ncSettleWasRefused). No answer, an unreadable 2xx and any other 5xx are not
+ * refusals — a proxy's 504 can arrive after the bill closed — so the dialog
+ * (ncSettleTrouble) says to check the bill rather than "Not settled".
+ */
+export const settleBillAsNonChargeable = async (
+    restaurantId: string,
+    orderId: string,
+    body: { nc_kind: string; reason: string; authorised_by: string; expected_value: number; print: boolean },
+): Promise<{ ok: true; result: SettleBillNonChargeableResult } | { ok: false; status: number; refused: boolean; message: string }> => {
+    const response = await backendCall(`/bills/order/${encodeURIComponent(orderId)}/settle-nc`, restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    });
+    if (!response) {
+        // Not "nothing was recorded": fetch throws for a reset AFTER the request
+        // was sent as readily as for a server that was never reached.
+        return { ok: false, status: 0, refused: false, message: 'The server could not be reached, or its answer was lost on the way back.' };
+    }
+    if (!response.ok) {
+        let payload: unknown = null;
+        try { payload = await response.json(); } catch { payload = null; }
+        return {
+            ok: false,
+            status: response.status,
+            refused: ncSettleWasRefused(response.status, payload),
+            message: refusalSentence(payload) ?? `Unable to settle this bill as non-chargeable (${String(response.status)})`,
+        };
+    }
+    try {
+        return { ok: true, result: (await response.json()) as SettleBillNonChargeableResult };
+    } catch {
+        // A 2xx whose body could not be read: the bill most likely closed, but
+        // nothing here can say which bill or what was given away.
+        return { ok: false, status: response.status, refused: false, message: 'The answer from the server could not be read.' };
+    }
+};
+
 // --- 035: VOID REASON + STAGE ------------------------------------------------
 
 /**
@@ -6076,10 +6351,13 @@ export interface WaiveServiceChargeResult {
  * running the real charge computation twice and differencing, and hands back
  * both totals. A browser that multiplied a percentage would be right for one
  * tenant and wrong for the other, and would look right in both.
+ *
+ * The reason is optional (app 2.0.1): a blank one is left out of the body, as
+ * removeServiceChargeAndPrint does, and the server records none.
  */
 export const waiveServiceCharge = async (
     restaurantId: string,
-    body: BillTarget & { waiver_kind: string; reason: string; authorised_by: string },
+    body: BillTarget & { waiver_kind: string; reason?: string | null; authorised_by: string },
 ): Promise<WaiveServiceChargeResult> =>
     captureWrite<WaiveServiceChargeResult>(
         '/bills/service-charge-waiver',
@@ -6088,7 +6366,7 @@ export const waiveServiceCharge = async (
         {
             ...billTargetBody(body),
             waiver_kind: body.waiver_kind,
-            reason: body.reason,
+            ...(body.reason?.trim() ? { reason: body.reason.trim() } : {}),
             authorised_by: body.authorised_by,
         },
         'Unable to waive the service charge',
@@ -6113,7 +6391,7 @@ export const reverseServiceChargeWaiver = async (
  *
  * POST /bills/service-charge-waiver/print with `render: "client"`: the server
  * answers every refusal (C3's reprint rule, no charge to remove, no waive
- * permission, a missing reason or authoriser) BEFORE it writes anything, records
+ * permission, a missing kind or authoriser) BEFORE it writes anything, records
  * the waiver exactly as POST /bills/service-charge-waiver does, then CLAIMS the
  * print the way POST /print/bill/claim does and hands back `printable_bill`
  * priced after the waiver. A bill that already carries a waiver is only
@@ -6141,6 +6419,8 @@ export const removeServiceChargeAndPrint = async (
 ): Promise<{ ok: true; result: RemoveServiceChargeAndPrintResult } | { ok: false; status: number; message: string }> => {
     const payload: Record<string, string> = { table_name: body.table_name.trim(), render: 'client' };
     if (body.waiver_kind?.trim()) {payload.waiver_kind = body.waiver_kind.trim();}
+    // Optional (app 2.0.1). Blank is ABSENT, never "": a server before the
+    // change refused "" in its schema, and absent gets its clean refusal.
     if (body.reason?.trim()) {payload.reason = body.reason.trim();}
     if (body.authorised_by?.trim()) {payload.authorised_by = body.authorised_by.trim();}
     const response = await backendCall('/bills/service-charge-waiver/print', restaurantId, {
