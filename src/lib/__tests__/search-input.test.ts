@@ -31,6 +31,7 @@ import {
     searchQueryOf,
     showSearchClear,
 } from '../search-input';
+import { scoreComboboxRow } from '../combobox-filter';
 
 const SRC = join(__dirname, '..', '..');
 /**
@@ -377,19 +378,105 @@ describe('the components call the logic', () => {
         expect(content).toMatch(/onEscapeKeyDown, \.\.\.props \}/);
     });
 
-    it('"Search tables..." finds a table by the name on its row, not by its uuid', () => {
-        // cmdk scores `value` and `keywords` only. The tables' values are uuids.
+    describe('"Search tables..." finds a table by the name on its row, never by its uuid', () => {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const { defaultFilter } = require('cmdk') as { defaultFilter: (value: string, search: string, keywords?: string[]) => number };
-        const id = 'b6a1c3e2-4f5d-4e6a-9c1b-2d3e4f5a6b7c';
-        expect(defaultFilter(id, 'T4')).toBe(0);
-        expect(defaultFilter(id, 'T4', ['T4'])).toBeGreaterThan(0);
-        expect(defaultFilter(id, 'patio', ['Patio 3'])).toBeGreaterThan(0);
-        expect(defaultFilter(id, 'T9', ['T4'])).toBe(0);
-        const combobox = read('components/ui/combobox.tsx');
-        const [item] = jsxTags(combobox, 'CommandItem');
-        expect(item).toContain('value={option.value}');
-        expect(item).toContain('keywords={[option.label]}');
+        type Score = (value: string, search: string, keywords?: string[]) => number;
+        /** cmdk as it ships: the value and the keywords, scored together. */
+        const cmdkDefault: Score = (value, search, keywords) => defaultFilter(value, search, keywords);
+
+        /** A uuid-shaped value, the same on every run, as full of digits as a real one. */
+        const uuidFor = (seed: number): string => {
+            let x = seed >>> 0;
+            let hex = '';
+            for (let i = 0; i < 32; i++) {
+                x = (Math.imul(x, 1664525) + 1013904223) >>> 0;
+                hex += (x >>> 28).toString(16);
+            }
+            return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+        };
+
+        /** A room like Gaia's and GGV's, where every table is a number. */
+        const names: string[] = [];
+        for (const tens of [0, 1, 2, 3, 4, 5]) {
+            for (let unit = 1; unit <= (tens === 0 ? 9 : 5); unit++) {names.push(String(tens * 10 + unit));}
+        }
+        type Row = { value: string; label: string };
+        const room: Row[] = names.map((label, i) => ({ value: uuidFor(i + 1), label }));
+
+        /**
+         * What cmdk does with a search: the rows that score above 0, best first,
+         * ties in list order. The first one is highlighted, and Enter takes it.
+         */
+        const ranked = (score: Score, search: string, rows: Row[] = room): string[] =>
+            rows
+                .map((r, i) => ({ label: r.label, i, s: score(r.value, search, [r.label]) }))
+                .filter((x) => x.s > 0)
+                .sort((a, b) => b.s - a.s || a.i - b.i)
+                .map((x) => x.label);
+
+        it('the fixture shows the bug: scored with the uuid, typing a name and Enter picks another table', () => {
+            const wrong = names.filter((n) => ranked(cmdkDefault, n)[0] !== n);
+            expect(wrong.length).toBeGreaterThan(0);
+            expect(ranked(cmdkDefault, '4').length).toBeGreaterThan(names.filter((n) => n.includes('4')).length);
+        });
+
+        it('every table’s exact name is its best match, strictly, so Enter takes that table', () => {
+            for (const table of room) {
+                const name = table.label;
+                const own = scoreComboboxRow(table.value, name, [name]);
+                const rivals = room.filter((r) => r !== table && scoreComboboxRow(r.value, name, [r.label]) >= own);
+                expect({ name, rivals: rivals.map((r) => r.label) }).toEqual({ name, rivals: [] });
+                expect(ranked(scoreComboboxRow, name)[0]).toBe(name);
+            }
+        });
+
+        it('a digit finds only the tables whose names have it, and "4" never finds 12', () => {
+            const four = ranked(scoreComboboxRow, '4');
+            expect(four[0]).toBe('4');
+            expect([...four].sort()).toEqual(names.filter((n) => n.includes('4')).sort());
+            expect(four).not.toContain('12');
+            // cmdk forgives a swapped pair, so 21 trails 12; nothing without a 1
+            // and a 2 in its name comes up at all.
+            const twelve = ranked(scoreComboboxRow, '12');
+            expect(twelve[0]).toBe('12');
+            expect(twelve.filter((n) => !(n.includes('1') && n.includes('2')))).toEqual([]);
+        });
+
+        it('12 comes before its next-party seat and the tables that merely contain 1 and 2', () => {
+            const rows: Row[] = [
+                { value: uuidFor(101), label: '112' },
+                { value: uuidFor(102), label: '12 (next party)' },
+                { value: uuidFor(103), label: '121' },
+                { value: uuidFor(104), label: '12' },
+            ];
+            const found = ranked(scoreComboboxRow, '12', rows);
+            expect(found[0]).toBe('12');
+            expect(found).toEqual(expect.arrayContaining(['112', '12 (next party)', '121']));
+        });
+
+        it('named tables and dishes are still found by their words; a row with no words falls back to its value', () => {
+            const id = 'b6a1c3e2-4f5d-4e6a-9c1b-2d3e4f5a6b7c';
+            expect(scoreComboboxRow(id, 'T4', ['T4'])).toBeGreaterThan(0);
+            expect(scoreComboboxRow(id, 'patio', ['Patio 3'])).toBeGreaterThan(0);
+            expect(scoreComboboxRow(id, 'T9', ['T4'])).toBe(0);
+            expect(scoreComboboxRow(id, '4f5d', ['T4'])).toBe(0);
+            expect(scoreComboboxRow('dal makhani', 'dal', ['Dal Makhani'])).toBeGreaterThan(0);
+            expect(scoreComboboxRow('dal makhani', 'naan', ['Dal Makhani'])).toBe(0);
+            expect(scoreComboboxRow('dal makhani', 'dal', [])).toBeGreaterThan(0);
+            expect(scoreComboboxRow('dal makhani', 'dal', [' '])).toBeGreaterThan(0);
+        });
+
+        it('the Combobox filters with it, and still hands back the value', () => {
+            const combobox = read('components/ui/combobox.tsx');
+            expect(combobox).toContain('import { scoreComboboxRow } from "@/lib/combobox-filter"');
+            const [command] = jsxTags(combobox, 'Command');
+            expect(command).toBe('<Command filter={scoreComboboxRow}>');
+            const [item] = jsxTags(combobox, 'CommandItem');
+            expect(item).toContain('value={option.value}');
+            expect(item).toContain('keywords={[option.label]}');
+            expect(item).toContain('onSelect={(currentValue) => {');
+        });
     });
 
     it('nothing reaches cmdk’s input except through CommandInput', () => {

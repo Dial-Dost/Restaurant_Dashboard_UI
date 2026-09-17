@@ -4,6 +4,7 @@ import * as React from "react"
 import { Check, ChevronsUpDown } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { scoreComboboxRow } from "@/lib/combobox-filter"
 import { Button } from "@/components/ui/button"
 import {
   Command,
@@ -54,7 +55,8 @@ export function Combobox({ options, value, onChange, placeholder, searchPlacehol
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-[--radix-popover-trigger-width] p-0">
-        <Command>
+        {/* Scored on the row's words, not its value (a table's uuid). */}
+        <Command filter={scoreComboboxRow}>
           <CommandInput placeholder={searchPlaceholder ?? "Search..."} />
           <CommandEmpty>{emptyPlaceholder ?? "No option found."}</CommandEmpty>
           <CommandList>
@@ -63,9 +65,10 @@ export function Combobox({ options, value, onChange, placeholder, searchPlacehol
                 <CommandItem
                   key={option.value}
                   value={option.value}
-                  // cmdk searches `value` and `keywords`, never the text on the
-                  // row. A table's value is its uuid, so "Search tables..." typed
-                  // "T4" matched nothing and "4" matched nearly every table.
+                  // The words the row is found by (see scoreComboboxRow). cmdk
+                  // never reads the row's text, and the value is a table's uuid,
+                  // so "Search tables..." found "T4" by nothing and "12" by its
+                  // uuid's digits too.
                   keywords={[option.label]}
                   onSelect={(currentValue) => {
                     onChange(currentValue === value ? "" : currentValue)
