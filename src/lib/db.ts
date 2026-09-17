@@ -1971,7 +1971,16 @@ export const getBillForTable = async (restaurantId: string, tableName: string) =
 // action. `/bill-for-table` only ever returns the OPEN bill, so these two reads
 // are the only way to browse or re-open a settled one.
 
-export interface ClosedBillItem { name: string; price: number; quantity: number; note: string | null; line_total: number }
+export interface ClosedBillItem {
+    name: string; price: number; quantity: number; note: string | null;
+    /** 0 on a comped line — what the guest was charged for it. */
+    line_total: number;
+    /**
+     * Backend migration 034: this line was comped. Its own line (the server
+     * keys the merge on it), printed "<name> (NC)" at 0.00. Absent otherwise.
+     */
+    nc?: boolean;
+}
 export interface BillTaxLine { name: string; percentage: number; amount: number }
 
 export interface ClosedBillSummary {
@@ -2052,6 +2061,23 @@ export interface ClosedBillDetail extends ClosedBillSummary {
       `service_clock.ts` sends none, and the fact is simply not drawn.
     */
     service?: ServiceClock | null;
+    /** Backend migration 034: the menu value of the comped lines. Beside the ladder, never in it. Optional: older backends. */
+    nc_total?: number;
+    /** Set on a bill SETTLED AS NC (payment_method 'NC', migration 052): how, why and on whose say-so. */
+    nc_settlement?: ClosedBillNcSettlement | null;
+}
+
+/** How a closed NC bill was settled — GetClosedBill's `nc_settlement`. */
+export interface ClosedBillNcSettlement {
+    kind: string;
+    kind_label: string;
+    authorised_by: string;
+    marked_by: string;
+    reason: string;
+    lines: number;
+    value: number;
+    /** What the guest would have paid. Information only, and null when unknown. */
+    would_have_charged: number | null;
 }
 
 export interface ClosedBillPage {
@@ -4116,6 +4142,13 @@ export interface OverviewHeadline {
     today_unallocated?: number;
     /** The block's label and definition, written by the code that computes it. */
     by_method?: { label: string; hint: string };
+    /**
+     * NOT COLLECTED, and shown BESIDE the by-method block, never inside it: the
+     * bills settled as NC today (already in `today_bills`, adding 0.00 to every
+     * figure) and what was given away today, pre-tax. OPTIONAL — an older
+     * backend sends none. Read through readHeadlineNc (lib/nc-settle.ts).
+     */
+    today_nc?: { label: string; hint: string; bills: number; value: number };
 }
 
 /** null on an unreachable backend — never zeroes, which an owner would act on. */
@@ -5895,6 +5928,8 @@ export interface MisOrderItem {
     line_total: number;
     note: string | null;
     station: string | null;
+    /** Backend migration 034: a comped line. Labelled "(NC)"; its value is still the ticket's. Absent otherwise. */
+    nc?: boolean;
 }
 
 /**
@@ -6085,6 +6120,51 @@ export const getOrderNonChargeables = async (
     );
     return Array.isArray(data?.non_chargeables) ? data.non_chargeables : [];
 };
+
+/** What POST /bills/order/:orderId/settle-nc answers. Every figure is the server's. */
+export interface SettleBillNonChargeableResult {
+    success: true;
+    bill_id: string;
+    bill_no: string | null;
+    table_name: string | null;
+    payment_method: string;
+    total_amt: number;
+    /** Everything given away on the bill, pre-tax, dishes comped earlier included. */
+    nc_value: number;
+    /** The dishes THIS settle comped. */
+    nc_lines: number;
+    /** What the guest would have paid. Information only — in no report. */
+    would_have_charged: number;
+    non_chargeables: NonChargeableRecord[];
+    printed: boolean;
+    print_error?: string;
+    /** The bill was already settled as NC — a double click, or a lost answer. */
+    already?: true;
+}
+
+/**
+ * SETTLE AS NC (backend migration 052): close the table's bill as
+ * non-chargeable, in one step. Every remaining dish is comped into the NC ledger
+ * with this kind, reason and authoriser, the bill closes at 0.00 as 'NC' and the
+ * table is freed; the NC bill prints unless `print` is false.
+ *
+ * NOT a payment: there is no approve or close call after it. `expected_value`
+ * is the chargeable subtotal the form showed, so a bill that changed while the
+ * manager was deciding is refused rather than given away at a different size.
+ * The route refuses an amount — whole bills only (lib/nc-settle.ts).
+ */
+export const settleBillAsNonChargeable = async (
+    restaurantId: string,
+    orderId: string,
+    body: { nc_kind: string; reason: string; authorised_by: string; expected_value: number; print: boolean },
+): Promise<SettleBillNonChargeableResult> =>
+    captureWrite<SettleBillNonChargeableResult>(
+        `/bills/order/${encodeURIComponent(orderId)}/settle-nc`,
+        restaurantId,
+        'POST',
+        body,
+        'Unable to settle this bill as non-chargeable',
+    );
 
 // --- 035: VOID REASON + STAGE ------------------------------------------------
 

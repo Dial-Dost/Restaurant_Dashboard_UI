@@ -13,12 +13,14 @@ import { useTimezone } from '@/lib/use-timezone';
 import { billReceiptIsReprint, REPRINT_MARKER, type BillPrintState } from '@/lib/bill-print-state';
 import { billCustomerLines } from '@/lib/bill-customer';
 import { roundOffOf } from '@/lib/bill-round-off';
+import { ncPrintSettlement, type NcPrintSettlement } from '@/lib/nc-settle';
 import {
     BILL_SERVICE_CHARGE_NOTE,
     DOTS_PER_COL,
     billColumns,
     billEscPosPreviewText,
     billFeedbackUrl,
+    billItemLabel,
     billItemRow,
     billLogoFit,
     billLogoRaster,
@@ -168,8 +170,12 @@ function billHeaderLines(profile: RestaurantProfile | null, billPrint: BillPrint
 // refusal an operator can read and act on is strictly better than a number no
 // one can tell is wrong.
 
-/** One line as this page prints it, whichever source supplied it. */
-interface PrintedLine { id: string; name: string; quantity: number; price: number }
+/**
+ * One line as this page prints it, whichever source supplied it. `nc` is the
+ * server's comp flag (backend migration 034): the line prints "<name> (NC)" at
+ * 0.00, on the screen and on the roll alike (bill-escpos.ts billItemLabel).
+ */
+interface PrintedLine { id: string; name: string; quantity: number; price: number; nc?: boolean }
 
 /** One printed bill, normalised — the ONLY thing either renderer below reads. */
 interface PrintedBill {
@@ -205,6 +211,12 @@ interface PrintedBill {
      */
     customer: string | null | undefined;
     customerGstin: string | null | undefined;
+    /**
+     * A bill SETTLED AS NON-CHARGEABLE (backend migration 052): the block printed
+     * under its 0.00 total — the kind and the authoriser, off the settled bill,
+     * exactly what the backend's settled reprint prints. null on every other bill.
+     */
+    settlement: NcPrintSettlement | null;
 }
 
 /** A field off a server document: the value when the key is there, `undefined` when it is not. */
@@ -365,6 +377,7 @@ function resolvePrintedBill(order: Order, settled: any | null, openBill: any | n
     if (settled && settled.closed_at && Number.isFinite(settledGrand) && Array.isArray(settled.items)) {
         const items: PrintedLine[] = settled.items.map((it: any, i: number) => ({
             id: `s${i}`, name: lineLabel(it?.name, it?.variation), quantity: Number(it?.quantity) || 1, price: Number(it?.price) || 0,
+            ...(it?.nc === true ? { nc: true } : {}),
         }));
         const discountAmt = Number(settled.discount_amount) || 0;
         const printed: PrintedBill = {
@@ -390,6 +403,7 @@ function resolvePrintedBill(order: Order, settled: any | null, openBill: any | n
             source: 'settled',
             customer: docField(settled as Record<string, unknown>, 'customer'),
             customerGstin: docField(settled as Record<string, unknown>, 'customer_gstin'),
+            settlement: ncPrintSettlement(settled),
         };
         return { ok: true, printed };
     }
@@ -415,6 +429,7 @@ function resolvePrintedBill(order: Order, settled: any | null, openBill: any | n
         }
         const items: PrintedLine[] = openBill.items.map((it: any, i: number) => ({
             id: `o${i}`, name: lineLabel(it?.name, it?.variation), quantity: Number(it?.quantity) || 1, price: Number(it?.price) || 0,
+            ...(it?.nc === true ? { nc: true } : {}),
         }));
         const discountAmt = Number(openBill.discount) || 0;
         // A live waiver (migration 036) has already been taken out of
@@ -444,6 +459,8 @@ function resolvePrintedBill(order: Order, settled: any | null, openBill: any | n
             source: 'open',
             customer: docField(openBill as Record<string, unknown>, 'customer'),
             customerGstin: docField(openBill as Record<string, unknown>, 'customer_gstin'),
+            // An open bill is never settled, as NC or otherwise.
+            settlement: null,
         };
         return { ok: true, printed };
     }
@@ -1046,13 +1063,16 @@ function PrintPageContents() {
                             // its neighbour, so, as on the thermal bill, the dish
                             // takes the whole width and "qty x price  amount"
                             // goes on its own right-aligned line under it.
-                            const row = billItemRow(item.quantity, item.price, RECEIPT_TEXT_COLUMNS);
+                            // A comped line reads "<name> (NC)" at 0.00, so the
+                            // Amount column adds up to the Sub Total under it.
+                            const row = billItemRow(item.quantity, item.price, RECEIPT_TEXT_COLUMNS, item.nc === true);
+                            const label = billItemLabel(item.name, item.nc);
                             const top = i === 0 ? 'pt-1.5' : 'pt-0.5';
                             if (!row.fits) {
                                 return (
                                     <Fragment key={item.id}>
                                         <tr className="align-top">
-                                            <td colSpan={4} className={`break-words ${top}`}>{item.name}</td>
+                                            <td colSpan={4} className={`break-words ${top}`}>{label}</td>
                                         </tr>
                                         <tr data-testid="receipt-item-figures">
                                             <td colSpan={4} className="whitespace-pre-wrap text-right">{`${row.qtyText} x ${row.priceText}  ${row.amountText}`}</td>
@@ -1062,7 +1082,7 @@ function PrintPageContents() {
                             }
                             return (
                                 <tr key={item.id} className="align-top">
-                                    <td className={`break-words pr-2 ${top}`}>{item.name}</td>
+                                    <td className={`break-words pr-2 ${top}`}>{label}</td>
                                     <td className={`text-right ${top}`}>{row.qtyText}</td>
                                     <td className={`text-right ${top}`}>{row.priceText}</td>
                                     <td className={`text-right ${top}`}>{row.amountText}</td>
@@ -1098,6 +1118,23 @@ function PrintPageContents() {
                         value={`${currencySymbol}${printed.grandTotal.toFixed(2)}`}
                     />
                     <ReceiptRule />
+                    {/* BESIDE THE LADDER, NEVER IN IT — escpos.ts's order: what
+                        was given away, then an NC settlement's own block. */}
+                    {totals.ncValue !== null && (
+                        <ReceiptLadderRow label="NC value (not charged)" value={totals.ncValue} />
+                    )}
+                    {printed.settlement ? (
+                        <div data-testid="receipt-nc-settlement" className="col-span-full">
+                            <p className="font-bold">
+                                Settled: Non-chargeable{printed.settlement.kind ? ` — ${printed.settlement.kind}` : ''}
+                            </p>
+                            {printed.settlement.authorisedBy ? <p>Authorised by: {printed.settlement.authorisedBy}</p> : null}
+                        </div>
+                    ) : null}
+                    {printed.settlement && printed.settlement.wouldHaveCharged !== null && Math.round(printed.settlement.wouldHaveCharged * 100) > 0 ? (
+                        <ReceiptLadderRow label="Would have been (incl. tax)" value={printed.settlement.wouldHaveCharged.toFixed(2)} />
+                    ) : null}
+                    {totals.ncValue !== null || printed.settlement ? <ReceiptRule /> : null}
                 </div>
 
                 {/* G2's mandatory sentence, on the browser-printed bill as
@@ -1319,6 +1356,9 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
             taxes: doc.taxes,
             roundOff: doc.roundOff,
             grandTotal: doc.grandTotal,
+            // An NC-settled bill's block under its 0.00 total — the backend's
+            // settled reprint prints the same one.
+            settlement: doc.settlement,
             // G2's sentence, and only when the guest is actually being charged
             // for service. It used to print unconditionally, so a bill with the
             // charge waived still told the guest a voluntary service charge was

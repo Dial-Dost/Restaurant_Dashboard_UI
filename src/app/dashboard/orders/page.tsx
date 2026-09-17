@@ -171,6 +171,8 @@ import type { MenuItem } from "../menu/data";
 import { type MenuVariationRecord } from "@/lib/mis-capture";
 import { BillActions } from "./bill-actions";
 import { CancelKotButton, CaptureActions, type PrintBillHandoff } from "./capture-actions";
+import { NcSettleDialog } from "./nc-settle-dialog";
+import { NC_SETTLE_MENU_LABEL, NC_SPLIT_NOTE, mayOfferNcSettle } from "@/lib/nc-settle";
 import { TableKotPreview } from "./table-kot-preview";
 import { OrdersScopeNotice } from "./orders-scope-notice";
 
@@ -561,6 +563,10 @@ function OrdersDashboard() {
   */
   const canSettleBill = can(user, "settle_bill");
   const canVoidOrder = can(user, "void_order");
+  // SETTLE AS NC asks for BOTH answers, because its route checks both: it is a
+  // comp and a settle. A cashier (Close Bill only) and a waiter (neither) are
+  // not shown it at all — the app's settle sheet applies the same two.
+  const canNcSettle = mayOfferNcSettle({ compItem: can(user, "comp_item"), settleBill: canSettleBill });
   /*
     MAY THIS SESSION PERFORM ANY OF THE THREE RECORDED CONTROL ACTS?
 
@@ -695,6 +701,7 @@ function OrdersDashboard() {
   const [discountRequests, setDiscountRequests] = useState<DiscountRequest[]>([]);
   // Split-tender dialog: the order being settled + its bill total + the rows.
   const [splitPayOrder, setSplitPayOrder] = useState<Order | null>(null);
+  const [ncSettleOrder, setNcSettleOrder] = useState<Order | null>(null);
   const [splitPayTotal, setSplitPayTotal] = useState<number | null>(null);
   const [splitRows, setSplitRows] = useState<{ method: string; amount: string }[]>([]);
   const [splitBusy, setSplitBusy] = useState(false);
@@ -2191,7 +2198,7 @@ function OrdersDashboard() {
                     <div className="font-medium">{(order as any).items_flattened?.length ? (order as any).items_flattened.map((i: any) => `${i.quantity}x ${i.name}${i.note ? ` (${i.note})` : ""}`).join(', ') : order.items.map(i => `${i.quantity}x ${i.name}${i.note ? ` (${i.note})` : ""}`).join(', ')}</div>
                     {order.payment_method ? (
                       <div className="text-xs text-muted-foreground">
-                        Payment Method: {order.payment_method}
+                        Payment Method: {paymentMethodLabel(order.payment_method, paymentMethods)}
                       </div>
                     ) : null}
                     {order.payment_proof_screenshot_url ? (
@@ -2513,6 +2520,18 @@ function OrdersDashboard() {
                             >
                               Split payment…
                             </DropdownMenuItem>
+                            {/* NOT A PAYMENT MODE (lib/nc-settle.ts): one step that
+                                comps the whole bill and closes it at 0.00. Hidden
+                                from anyone who does not hold both gates. */}
+                            {canNcSettle ? (
+                              <DropdownMenuItem
+                                onClick={() => { setNcSettleOrder(order); }}
+                                disabled={order.status !== "Bill Verification"}
+                                className="data-[disabled]:opacity-50 data-[disabled]:cursor-not-allowed"
+                              >
+                                {NC_SETTLE_MENU_LABEL}
+                              </DropdownMenuItem>
+                            ) : null}
                           </DropdownMenuSubContent>
                         </DropdownMenuSub>
                         {/* C2 — ONLY SOMEONE WHO MAY SETTLE SEES A SETTLE CONTROL.
@@ -2743,6 +2762,7 @@ function OrdersDashboard() {
                 <p className="text-xs text-muted-foreground">Amounts match the bill total.</p>
               );
             })() : null}
+            <p className="text-xs text-muted-foreground">{NC_SPLIT_NOTE}</p>
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => { setSplitPayOrder(null); }} disabled={splitBusy}>Cancel</Button>
@@ -2750,6 +2770,15 @@ function OrdersDashboard() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {ncSettleOrder && canNcSettle && user?.restaurantUsername ? (
+        <NcSettleDialog
+          restaurantId={user.restaurantUsername}
+          order={{ id: ncSettleOrder.id, table: ncSettleOrder.table }}
+          onClose={() => { setNcSettleOrder(null); }}
+          onSettled={() => { void refreshOrders(); }}
+        />
+      ) : null}
 
       {selectedOrder && <OrderDetailsDialog
         order={selectedOrder}

@@ -272,7 +272,8 @@ function escposQr(data: string, size = 6): Uint8Array {
 
 /** The document's money, as either renderer reads it. */
 export interface BillTotalsSource {
-    items: readonly { quantity: unknown }[];
+    /** `price` and `nc` are read only to disclose the value given away (ncValue). */
+    items: readonly { quantity: unknown; price?: unknown; nc?: boolean }[];
     subtotal: number;
     discount: { label: string; amount: number } | null;
     /** Printed only when `amount` is above zero — a removed charge prints no line. */
@@ -297,7 +298,7 @@ export interface BillLadderRung { key: string; label: string; value: string }
  * created — only a supplied, non-zero one, which since backend migration 048 is
  * every bill that was not already whole rupees.
  */
-export function billTotals(doc: BillTotalsSource): { totalQty: number; subtotal: string; rungs: BillLadderRung[]; roundOff: string | null } {
+export function billTotals(doc: BillTotalsSource): { totalQty: number; subtotal: string; rungs: BillLadderRung[]; roundOff: string | null; ncValue: string | null } {
     const totalQty = doc.items.reduce((s, it) => s + Math.max(1, Math.round(Number(it.quantity) || 1)), 0);
     const rungs: BillLadderRung[] = [];
     const discount = doc.discount && doc.discount.amount > 0 ? doc.discount : null;
@@ -317,7 +318,21 @@ export function billTotals(doc: BillTotalsSource): { totalQty: number; subtotal:
     const roundOff = disclosed !== null && Number.isFinite(disclosed) && Math.round(disclosed * 100) !== 0
         ? (disclosed > 0 ? '+' : '') + disclosed.toFixed(2)
         : null;
-    return { totalQty, subtotal: doc.subtotal.toFixed(2), rungs, roundOff };
+    // WHAT WAS GIVEN AWAY (backend migration 034): the comped lines at the
+    // quantity and price they print at, disclosed UNDER the total and never
+    // added into it — escpos.ts's "NC value (not charged)". null when nothing on
+    // the bill is comped, which is every bill of a tenant that never comps.
+    const nc = doc.items.reduce(
+        (s, it) => (it.nc === true ? s + (Number(it.price) || 0) * Math.max(1, Math.round(Number(it.quantity) || 1)) : s),
+        0,
+    );
+    const ncValue = Math.round(nc * 100) > 0 ? nc.toFixed(2) : null;
+    return { totalQty, subtotal: doc.subtotal.toFixed(2), rungs, roundOff, ncValue };
+}
+
+/** The words a comped line prints under, on the paper and on the screen alike. */
+export function billItemLabel(name: string, nc?: boolean): string {
+    return nc === true ? `${name} (NC)` : name;
 }
 
 // ---------------------------------------------------------------------------
@@ -337,13 +352,15 @@ export interface BillItemRow { qtyText: string; priceText: string; amountText: s
  * width and puts "qty x price  amount" on its own right-aligned line, and the
  * on-screen slip does the same — escpos.ts's rule.
  */
-export function billItemRow(quantity: unknown, price: unknown, textWidth: number): BillItemRow {
+export function billItemRow(quantity: unknown, price: unknown, textWidth: number, nc = false): BillItemRow {
     const { COL_QTY, COL_PRICE, COL_TOTAL } = billColumns(textWidth);
     const qty = Math.max(1, Math.round(Number(quantity) || 1));
     const unit = Number(price) || 0;
     const qtyText = String(qty);
     const priceText = unit.toFixed(2);
-    const amountText = (unit * qty).toFixed(2);
+    // A COMPED LINE IS CHARGED NOTHING (escpos.ts): its Amount reads 0.00 so the
+    // column adds up to the Sub Total under it.
+    const amountText = nc ? (0).toFixed(2) : (unit * qty).toFixed(2);
     const fits = qtyText.length < COL_QTY && priceText.length < COL_PRICE && amountText.length < COL_TOTAL;
     return { qtyText, priceText, amountText, fits };
 }
@@ -410,9 +427,15 @@ export interface BillEscPosInput extends BillTotalsSource {
     cashier: string;
     billNo: string;
     currency: string;
-    items: readonly { name: string; quantity: number; price: number }[];
+    /** `nc` — a comped line: "<name> (NC)" at 0.00 (escpos.ts ReceiptItem.nc). */
+    items: readonly { name: string; quantity: number; price: number; nc?: boolean }[];
     /** The server's grand total, printed verbatim — never recomputed here. */
     grandTotal: number;
+    /**
+     * A bill SETTLED AS NON-CHARGEABLE: the block under its 0.00 total, as
+     * escpos.ts's ReceiptOptions.settlement prints it. Absent on every other bill.
+     */
+    settlement?: { kind: string; authorisedBy: string; wouldHaveCharged?: number | null } | null;
     serviceChargeNote: string | null;
     /** null prints no QR sentence and no QR — the owner's switch off (billFeedbackUrl). */
     feedbackUrl: string | null;
@@ -543,8 +566,8 @@ export function buildBillEscPos(bill: BillEscPosInput): Uint8Array {
         // EVERY FIGURE KEEPS A SPACE IN FRONT OF IT. When any figure fills its
         // column, the name takes the full width and the figures move to their
         // own right-aligned line under it. See billItemRow.
-        const { qtyText, priceText, amountText, fits } = billItemRow(it.quantity, it.price, W);
-        const label = asciiSafe(it.name);
+        const { qtyText, priceText, amountText, fits } = billItemRow(it.quantity, it.price, W, it.nc === true);
+        const label = asciiSafe(billItemLabel(it.name, it.nc));
         if (fits) {
             const nameLines = wrapText(label, COL_ITEM - 1);
             line(
@@ -578,7 +601,12 @@ export function buildBillEscPos(bill: BillEscPosInput): Uint8Array {
     // rungs above it on every bill of Rs 1000 or more.
     const totals = billTotals(bill);
     const grandText = money(bill.grandTotal);
-    const amtW = Math.max(COL_TOTAL, ...[totals.subtotal, ...totals.rungs.map((r) => r.value), totals.roundOff ?? '', grandText]
+    const settlement = bill.settlement ?? null;
+    const wouldHave = Number(settlement?.wouldHaveCharged);
+    const wouldText = settlement && settlement.wouldHaveCharged != null && Number.isFinite(wouldHave) && Math.round(wouldHave * 100) > 0
+        ? wouldHave.toFixed(2)
+        : '';
+    const amtW = Math.max(COL_TOTAL, ...[totals.subtotal, ...totals.rungs.map((r) => r.value), totals.roundOff ?? '', grandText, totals.ncValue ?? '', wouldText]
         .filter((v) => v.length > 0)
         .map((v) => v.length + 1));
     const labelW = Math.max(1, W - amtW);
@@ -615,6 +643,19 @@ export function buildBillEscPos(bill: BillEscPosInput): Uint8Array {
     raw(ESC, 0x21, 0x00);
     raw(ESC, 0x45, 0x00);
     rule();
+
+    // --- Beside the ladder, never in it: comps, and an NC settlement ----------
+    if (totals.ncValue !== null) { ladder('NC value (not charged)', totals.ncValue); }
+    if (settlement) {
+        const kind = present(settlement.kind);
+        raw(ESC, 0x45, 0x01);
+        for (const l of wrapText(asciiSafe(`Settled: Non-chargeable${kind ? ` — ${kind}` : ''}`), W)) { line(l); }
+        raw(ESC, 0x45, 0x00);
+        const by = present(settlement.authorisedBy);
+        if (by) { for (const l of wrapText(asciiSafe(`Authorised by: ${by}`), W)) { line(l); } }
+        if (wouldText) { ladder('Would have been (incl. tax)', wouldText); }
+    }
+    if (totals.ncValue !== null || settlement) { rule(); }
 
     // --- Footer (centred): the disclaimer, bold, then the valet/feedback QR ---
     raw(ESC, 0x61, 0x01);

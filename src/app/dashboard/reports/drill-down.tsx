@@ -26,10 +26,12 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Separator } from "@/components/ui/separator"
+import { billItemLabel } from "@/lib/bill-escpos"
 import { formatRoundOff, roundOffOf } from "@/lib/bill-round-off"
 import { getMisBillDetail, getMisKotDetail, type ClosedBillDetail, type MisOrderDetail } from "@/lib/db"
 import { GROSS, ITEM_TOTAL, NET } from "@/lib/gross-net"
 import { formatMoney } from "@/lib/mis-reports"
+import { NC_SETTLE_LABEL, isNcSettleMethod } from "@/lib/nc-settle"
 import { formatFullDateTime } from "@/lib/tz"
 
 export interface DrillRequest {
@@ -129,7 +131,9 @@ export function DrillDownDialog({ request, onClose, restaurantId, outletId, time
                             <Field label="Table" value={bill.table_name ?? "—"} />
                             <Field label="Covers" value={bill.covers ?? "—"} />
                             <Field label="Settled" value={when(bill.settled_at ?? bill.closed_at)} />
-                            <Field label="Payment" value={bill.payment_method ?? "—"} />
+                            {/* The NC marker is not a mode, and has one name on every
+                                screen — the closed-bill panel's and the app's. */}
+                            <Field label="Payment" value={isNcSettleMethod(bill.payment_method) ? NC_SETTLE_LABEL : (bill.payment_method ?? "—")} />
                             <Field label="Waiter / closed by" value={bill.closed_by ?? "—"} />
                             <Field label="Customer" value={bill.customer ?? "—"} />
                             {"customer_gstin" in bill ? <Field label="Customer GSTIN" value={bill.customer_gstin?.trim() ? bill.customer_gstin.trim() : "—"} /> : null}
@@ -159,10 +163,12 @@ export function DrillDownDialog({ request, onClose, restaurantId, outletId, time
                                 Items ({bill.items.length})
                             </div>
                             <div className="rounded-md border">
+                                {/* A comped line reads "<dish> (NC)" beside its 0.00, as the bill
+                                    printed it — a bare 0.00 says nothing about why. */}
                                 {bill.items.map((item, i) => (
                                     <div key={`${item.name}-${String(i)}`} className="flex items-baseline justify-between gap-4 border-b px-3 py-1.5 text-sm last:border-b-0">
                                         <span className="min-w-0">
-                                            <span className="text-muted-foreground">{item.quantity} ×</span> {item.name}
+                                            <span className="text-muted-foreground">{item.quantity} ×</span> {billItemLabel(item.name, item.nc)}
                                             {item.note ? <span className="ml-1 text-xs text-muted-foreground">({item.note})</span> : null}
                                         </span>
                                         <span className="shrink-0 font-mono tabular-nums">{money(item.line_total)}</span>
@@ -256,10 +262,12 @@ export function DrillDownDialog({ request, onClose, restaurantId, outletId, time
                                 <span className="font-mono text-sm tabular-nums">{money(kot.value)}</span>
                             </div>
                             <div className="rounded-md border">
+                                {/* Marked, never re-priced: a ticket's value is what was cooked
+                                    (or voided), so a comped dish keeps its figure here. */}
                                 {kot.items.map((item, i) => (
                                     <div key={`${item.name}-${String(i)}`} className="flex items-baseline justify-between gap-4 border-b px-3 py-1.5 text-sm last:border-b-0">
                                         <span className="min-w-0">
-                                            <span className="text-muted-foreground">{item.quantity} ×</span> {item.name}
+                                            <span className="text-muted-foreground">{item.quantity} ×</span> {billItemLabel(item.name, item.nc)}
                                             {item.station ? <Badge variant="secondary" className="ml-1.5 text-[10px]">{item.station}</Badge> : null}
                                             {item.note ? <span className="ml-1 text-xs text-muted-foreground">({item.note})</span> : null}
                                         </span>
