@@ -78,12 +78,24 @@ interface Props {
   range?: DateRange
   onRangeChange?: (range: DateRange) => void
   description?: string
+  /**
+   * The payment-method filter to open on — a link from the Overview's "Today at
+   * a glance" box (item 10) naming a mode's own bills, or the Split bills. Only
+   * the FIRST value is used; after that the filter is the owner's.
+   */
+  initialMethod?: string
 }
 
-export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, range, onRangeChange, description }: Props) {
+export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, range, onRangeChange, description, initialMethod }: Props) {
   const { toast } = useToast()
   const { methods: paymentMethods } = usePaymentMethods(rid)
-  const methodOptions = useMemo(() => closedBillMethodFilterOptions(paymentMethods), [paymentMethods])
+  const methodOptions = useMemo(() => {
+    const options = closedBillMethodFilterOptions(paymentMethods)
+    // A linked filter this tenant's config does not list (a retired mode) is
+    // still shown, so the filter in force is always one the owner can see.
+    const wanted = initialMethod?.trim() ?? ""
+    return wanted && !options.some((o) => o.value === wanted) ? [...options, { value: wanted, label: wanted }] : options
+  }, [paymentMethods, initialMethod])
   const { timezone } = useTimezone()
   /** The bill currently being sent to a printer, so the button can say so. */
   const [reprinting, setReprinting] = useState<string | null>(null)
@@ -123,7 +135,7 @@ export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, range
   // debounces); the list asks the server with the settled ones.
   const [searchInput, setSearchInput] = useState("")
   const [search, setSearch] = useState("")
-  const [method, setMethod] = useState("")
+  const [method, setMethod] = useState(initialMethod?.trim() ?? "")
   const [tableInput, setTableInput] = useState("")
   const [table, setTable] = useState("")
 
