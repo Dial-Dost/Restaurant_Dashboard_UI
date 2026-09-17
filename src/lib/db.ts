@@ -4145,6 +4145,12 @@ export interface HeadlineFigure {
      * place to change a definition, and it is the place that computes it.
      */
     hint: string;
+    /**
+     * Where tapping it leads (client item 10) — Restaurant_Backend/glance_drill.ts.
+     * OPTIONAL: an older backend sends none, and the card falls back to its own
+     * copy of the same table (glance-destinations.ts). Read through glanceDrillOf.
+     */
+    drill?: unknown;
 }
 
 /** H1 — the six figures in the box at the top of the overview. */
@@ -4187,6 +4193,19 @@ export interface OverviewHeadline {
      * backend sends none. Read through readHeadlineNc (lib/nc-settle.ts).
      */
     today_nc?: { label: string; hint: string; bills: number; value: number };
+    /**
+     * Today's ladder, rung by rung — the Sales Summary's totals for today (no
+     * covers, APC or ABV: the headline read has no seating). OPTIONAL: an older
+     * backend sends none, and a missing ladder is left out, never drawn as zeros.
+     */
+    today_ladder?: Record<string, number>;
+    /** How many of today's bills are behind the two Online figures. OPTIONAL. */
+    today_online_bills?: number;
+    /**
+     * Where every non-figure element of the box leads (item 10). OPTIONAL; read
+     * through glanceDrillOf, which falls back to the mirrored table.
+     */
+    drills?: unknown;
 }
 
 /** null on an unreachable backend — never zeroes, which an owner would act on. */
