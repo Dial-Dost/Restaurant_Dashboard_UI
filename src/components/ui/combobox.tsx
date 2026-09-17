@@ -63,6 +63,10 @@ export function Combobox({ options, value, onChange, placeholder, searchPlacehol
                 <CommandItem
                   key={option.value}
                   value={option.value}
+                  // cmdk searches `value` and `keywords`, never the text on the
+                  // row. A table's value is its uuid, so "Search tables..." typed
+                  // "T4" matched nothing and "4" matched nearly every table.
+                  keywords={[option.label]}
                   onSelect={(currentValue) => {
                     onChange(currentValue === value ? "" : currentValue)
                     setOpen(false)

@@ -377,6 +377,21 @@ describe('the components call the logic', () => {
         expect(content).toMatch(/onEscapeKeyDown, \.\.\.props \}/);
     });
 
+    it('"Search tables..." finds a table by the name on its row, not by its uuid', () => {
+        // cmdk scores `value` and `keywords` only. The tables' values are uuids.
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { defaultFilter } = require('cmdk') as { defaultFilter: (value: string, search: string, keywords?: string[]) => number };
+        const id = 'b6a1c3e2-4f5d-4e6a-9c1b-2d3e4f5a6b7c';
+        expect(defaultFilter(id, 'T4')).toBe(0);
+        expect(defaultFilter(id, 'T4', ['T4'])).toBeGreaterThan(0);
+        expect(defaultFilter(id, 'patio', ['Patio 3'])).toBeGreaterThan(0);
+        expect(defaultFilter(id, 'T9', ['T4'])).toBe(0);
+        const combobox = read('components/ui/combobox.tsx');
+        const [item] = jsxTags(combobox, 'CommandItem');
+        expect(item).toContain('value={option.value}');
+        expect(item).toContain('keywords={[option.label]}');
+    });
+
     it('nothing reaches cmdk’s input except through CommandInput', () => {
         const offenders = sources().filter((f) => f !== 'components/ui/command.tsx' && read(f).includes('CommandPrimitive.Input'));
         expect(offenders).toEqual([]);
