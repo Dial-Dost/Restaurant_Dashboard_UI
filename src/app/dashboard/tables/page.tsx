@@ -60,6 +60,14 @@ import { cn } from "@/lib/utils";
 import { Users, Link2, LayoutGrid, Clock, Timer, ArrowRightLeft } from "lucide-react";
 import { type Table } from "./data";
 import { applyServerSections, isUnassignedSection } from "./sections";
+import {
+    NEXT_PARTY_CHIP,
+    isNextPartyTable,
+    roomTables,
+    tableDisplayName,
+    tableOptionLabel,
+    withNextPartySeats,
+} from "@/lib/next-party";
 import { seatingLeftTableUnattended } from "@/lib/table-assignment";
 import { isRefusedAction } from "@/lib/error-message";
 import {
@@ -270,7 +278,7 @@ function MoveTableDialog({
                                     <SelectContent>
                                         {partyOptions.map((option) => (
                                             <SelectItem key={option.name} value={option.name}>
-                                                {option.name} — seats {option.max_capacity}
+                                                {tableOptionLabel(option)} — seats {option.max_capacity}
                                             </SelectItem>
                                         ))}
                                     </SelectContent>
@@ -336,7 +344,7 @@ function MoveTableDialog({
                                                     seated either way. */}
                                                 {orderOptions.map((option) => (
                                                     <SelectItem key={option.name} value={option.name}>
-                                                        {option.name} — {isSeated(option.name) ? "seated" : "free, this will seat it"}
+                                                        {tableOptionLabel(option)} — {isSeated(option.name) ? "seated" : "free, this will seat it"}
                                                     </SelectItem>
                                                 ))}
                                             </SelectContent>
@@ -432,6 +440,11 @@ function ServiceTable({
     // and braces against a stale cached snapshot showing a dead code.
     const showOtp = isOccupied && table.otp_required === true && Boolean(table.order_otp);
     const tone = clocks ? waitTone(clocks.sincePlacedMs) : "calm";
+    // CLIENT ITEM 6 — the next party's seat at a printed table reads the ROOT's
+    // number, with a "Next party" badge. Every action below still sends
+    // `table.name` ("12 #2"), which is what its KOT and bill print.
+    const nextParty = isNextPartyTable(table);
+    const spoken = tableOptionLabel(table);
 
     return (
         <Card
@@ -451,10 +464,14 @@ function ServiceTable({
                     <button
                         type="button"
                         className="truncate text-left hover:underline"
-                        title={isOccupied ? `Preview ${table.name}'s KOTs` : table.name}
+                        title={
+                            isOccupied
+                                ? `Preview ${spoken}'s KOTs`
+                                : nextParty ? `${spoken} — its bill reads ${table.name}` : table.name
+                        }
                         onClick={() => { onOpenOrders(table.name, null, isOccupied); }}
                     >
-                        {table.name}
+                        {tableDisplayName(table)}
                     </button>
                 </CardTitle>
             </CardHeader>
@@ -471,6 +488,15 @@ function ServiceTable({
                         >
                             {isOccupied ? "Occupied" : isReserved ? "Reserved" : "Available"}
                         </Badge>
+                        {nextParty ? (
+                            <Badge
+                                variant="outline"
+                                className="text-[10px] sm:text-xs border-sky-600 text-sky-300"
+                                title={`The next party at ${tableDisplayName(table)}. Its bill reads ${table.name}.`}
+                            >
+                                {NEXT_PARTY_CHIP}
+                            </Badge>
+                        ) : null}
                         {occupancy ? (
                             <Badge variant="outline" className="text-[10px] sm:text-xs bg-slate-700/50">
                                 {occupancy.num_covers} covers
@@ -774,21 +800,38 @@ export default function TablesPage() {
 
     // Zones are read straight off the server's reconciliation — shown as
     // headings, never editable from here.
+    //
+    // CLIENT ITEM 6: the zones are the ROOM's, and each next-party seat is put
+    // straight after its own table, so "12" and the next party at 12 sit side
+    // by side. `rooms` is the count every heading and the summary use: a seat
+    // is a second name for a table already counted.
+    const rooms = useMemo(() => roomTables(tablesData), [tablesData]);
     const renderSections = useMemo(() => {
-        const reconciled = applyServerSections(layout, tablesData, serverZones);
-        return reconciled.sections.map((section) => ({
-            id: section.id,
-            name: section.name,
-            tables: section.tables
+        const reconciled = applyServerSections(layout, rooms, serverZones);
+        return reconciled.sections.map((section) => {
+            const zoneRooms = section.tables
                 .map((name) => tablesByKey.get(name))
-                .filter((table): table is Table => Boolean(table)),
-        }));
-    }, [layout, tablesData, tablesByKey, serverZones]);
+                .filter((table): table is Table => Boolean(table));
+            return {
+                id: section.id,
+                name: section.name,
+                rooms: zoneRooms,
+                tables: withNextPartySeats(zoneRooms, tablesData),
+            };
+        });
+    }, [layout, rooms, tablesData, tablesByKey, serverZones]);
 
     const hasCustomSections = renderSections.some((section) => !isUnassignedSection(section.id));
-    const totalTables = tablesData.length;
-    const occupiedCount = Object.values(occupancyByName).filter((entry) => entry.is_occupied).length;
-    const reservedCount = tablesData.filter((table) => {
+    const totalTables = rooms.length;
+    const isSeatedHere = (table: Table): boolean => {
+        const key = table.name.toLowerCase();
+        return key in occupancyByName && occupancyByName[key].is_occupied;
+    };
+    const occupiedCount = rooms.filter(isSeatedHere).length;
+    // A party at a next-party seat is counted in words of its own: "12" is one
+    // table, whether one party or two are paying at it.
+    const nextPartiesSeated = tablesData.filter((table) => isNextPartyTable(table) && isSeatedHere(table)).length;
+    const reservedCount = rooms.filter((table) => {
         const occupancy: TableOccupancy | undefined = occupancyByName[table.name.toLowerCase()];
         return !occupancy?.is_occupied && (table.status === "Reserved" || table.status === "Booked");
     }).length;
@@ -1043,7 +1086,10 @@ export default function TablesPage() {
                         {totalTables > 0
                             ? <>
                                 {occupiedCount} occupied · {reservedCount} reserved · {Math.max(0, totalTables - occupiedCount - reservedCount)} free,
-                                of {totalTables} table{totalTables === 1 ? "" : "s"}.
+                                of {totalTables} table{totalTables === 1 ? "" : "s"}
+                                {nextPartiesSeated > 0
+                                    ? `, and ${String(nextPartiesSeated)} next ${nextPartiesSeated === 1 ? "party" : "parties"} seated at a printed table`
+                                    : ""}.
                                 {" "}Each occupied table shows how long since its order went in, and how long its bill has been running.
                             </>
                             : "No tables have been added yet."}
@@ -1064,7 +1110,7 @@ export default function TablesPage() {
                                     // heading over nothing.
                                     return null;
                                 }
-                                const seats = section.tables.reduce((sum, table) => sum + (table.capacity || 0), 0);
+                                const seats = section.rooms.reduce((sum, table) => sum + (table.capacity || 0), 0);
                                 return (
                                     <div key={section.id}>
                                         {showHeader ? (
@@ -1072,7 +1118,7 @@ export default function TablesPage() {
                                                 <h3 className="text-lg font-semibold flex items-center md:text-xl">
                                                     <LayoutGrid className="mr-2 h-5 w-5" /> {section.name}
                                                     <span className="ml-3 text-xs font-normal text-muted-foreground">
-                                                        {section.tables.length} table{section.tables.length === 1 ? "" : "s"} · {seats} seats
+                                                        {section.rooms.length} table{section.rooms.length === 1 ? "" : "s"} · {seats} seats
                                                     </span>
                                                 </h3>
                                             </div>

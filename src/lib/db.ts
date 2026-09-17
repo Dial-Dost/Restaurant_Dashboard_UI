@@ -20,6 +20,9 @@ import { readErrorMessage, refusalSentence, type RefusedAction } from '@/lib/err
 // module holds no second opinion about what "already printed" means — it only
 // carries the bytes between the route and the screens.
 import { billPrintRefusal, billPrintStateFields, type BillPrintState } from '@/lib/bill-print-state';
+// Client item 6. Pure, like the C3 readers above: this module only carries the
+// next party's seat and the 409 between the routes and the screens.
+import { nextPartyAfterPrint, nextPartyRowFields, readBillPrintedRefusal, type BillPrintedRefusal } from '@/lib/next-party';
 import { UNREACHABLE_MESSAGE, billCustomerPayload, billCustomerSaveOutcome, type BillCustomerRequest, type BillCustomerSaveOutcome } from '@/lib/bill-customer';
 import { SELECTED_OUTLET_KEY } from '@/lib/outlet';
 import {
@@ -124,6 +127,12 @@ export type ApcZone = 'red' | 'yellow' | 'green';
 export interface OrderApcInsight {
     order_id: string;
     table_name: string;
+    /**
+     * What a table-wise view calls this seating: the ROOT's name for a
+     * next-party seating ("12" for "12 #2", client item 6), else table_name.
+     * A label only; the row is still its own seating. Absent on older backends.
+     */
+    table_label?: string;
     created_at: string;
     total: number;
     people_count: number;
@@ -807,6 +816,11 @@ const mapTable = (item: any, index: number): Table => {
         // the same as "not printed"; every reader downstream depends on being
         // able to tell those two apart, so nothing is defaulted here.
         bill_print: billPrintStateFields(item),
+        // CLIENT ITEM 6 — the next party at a printed table. A backend older than
+        // migration 053 maps exactly as before: every row a room table. See
+        // src/lib/next-party.ts for who reads these and why the handle, never
+        // the display name, is what every request sends.
+        ...nextPartyRowFields(item, String(name)),
     };
 };
 
@@ -1618,7 +1632,9 @@ export type BillPrintClaimResult =
     // `printableBill` is the SERVER'S PRICED BILL for this seating. A waiter's own
     // read of /bill-for-table is redacted by C4, so without this the print page has
     // no amounts and refuses — which is how no waiter on the web could ever print.
-    | { outcome: 'claimed'; state: BillPrintState | null; printableBill: Record<string, unknown> | null }
+    // `nextParty` (client item 6): the seat the server opened, or found, for the
+    // next guests at this number — both null when there is none.
+    | { outcome: 'claimed'; state: BillPrintState | null; printableBill: Record<string, unknown> | null; nextParty: { table: string | null; message: string | null } }
     | { outcome: 'unavailable'; reason: string }
     | { outcome: 'refused'; status: number; message: string; reprintNeedsSenior: boolean; state: BillPrintState | null };
 
@@ -1702,6 +1718,7 @@ export const claimBillPrint = async (
             printableBill: printable && typeof printable === 'object' && !Array.isArray(printable)
                 ? (printable as Record<string, unknown>)
                 : null,
+            nextParty: nextPartyAfterPrint(body),
         };
     }
 
@@ -2432,6 +2449,16 @@ export const addMenuItem = async (restaurantId: string, item: MenuItem) => {
 // `idempotencyKey` — one per logical send (the Add New Order dialog mints it per
 // draft). POST /orders honours it: the same key is never applied twice. Callers
 // that use this route as a status upsert pass none and are unchanged.
+//
+// CLIENT ITEM 6 — A PRINTED BILL TAKES NO MORE FROM A WAITER. The server answers
+// `bill_printed` (and writes nothing) when a waiter-only login adds to a table
+// whose bill has been printed — as 423, never 409 (see BILL_PRINTED_STATUS), and
+// an older server as 409, so any 4xx is read for the code. That refusal comes back as a VALUE,
+// `{ bill_printed }`, never as the silent local "acknowledged" below — which
+// would tell a waiter the order was placed when the kitchen never saw it — and
+// never as a throw, whose message Next redacts across this "use server"
+// boundary. The caller shows the sentence and the "Take it on 12 (next party)"
+// action.
 export const addOrder = async (restaurantId: string, order: Order, opts?: { idempotencyKey?: string }) => {
     const response = await backendCall('/orders', restaurantId, {
         method: 'POST',
@@ -2441,6 +2468,16 @@ export const addOrder = async (restaurantId: string, order: Order, opts?: { idem
         },
         body: JSON.stringify(order),
     });
+
+    if (response && !response.ok && response.status >= 400 && response.status < 500) {
+        let body: unknown = null;
+        try { body = await response.json(); } catch { body = null; }
+        const refusal = readBillPrintedRefusal(body);
+        if (refusal) {
+            const refused: { bill_printed: BillPrintedRefusal } = { bill_printed: refusal };
+            return refused;
+        }
+    }
 
     if (response?.ok) {
         try {
