@@ -650,6 +650,11 @@ describe('the wiring', () => {
         const layout = readSource('src/app/dashboard/layout.tsx');
         const waiter = layout.slice(layout.indexOf('if (isWaiterOnly) {'), layout.indexOf('return fullNavItems;'));
         expect(waiter).not.toContain('/dashboard/reports');
-        expect(layout).toContain("{ href: '/dashboard/reports', label: 'Reports', icon: <FileSpreadsheet className=\"h-6 w-6\" />, actionKeywords: ['report', 'accounting', 'finance'] }");
+        // The nav's keyword table lives in lib/dashboard-sections.ts since client
+        // item 10 (the Overview reads it too); the layout asks it by href.
+        expect(layout).toContain("{ href: '/dashboard/reports', label: 'Reports', icon: <FileSpreadsheet className=\"h-6 w-6\" />, actionKeywords: sectionKeywords('/dashboard/reports') }");
+        const sections = readSource('src/lib/dashboard-sections.ts');
+        expect(sections).toContain("'/dashboard/reports': ['report', 'accounting', 'finance'],");
+        expect(sections).toContain("export const WAITER_SECTIONS: readonly string[] = ['/dashboard/orders', '/dashboard/tables'];");
     });
 });
