@@ -410,6 +410,19 @@ export const billRevisedNoteOf = (claim: unknown): string | null => {
     return note || 'Replaces an earlier printed bill';
 };
 
+/**
+ * THE CLAIM'S OWN JOB — what the print page names when it also sends that paper
+ * to a thermal printer (POST /publish/bill `paperJobId`), so the server files
+ * the claim's record of the paper against the new job instead of leaving the
+ * seating's latest paper unknown. Null when the claim recorded nothing (no
+ * ledger) or answered no id.
+ */
+export const billPaperJobIdOf = (claim: unknown): string | null => {
+    const row = asRecord(claim);
+    const id = typeof row?.jobId === 'string' ? row.jobId.trim() : '';
+    return id || null;
+};
+
 /** "Settle anyway" — the override on the stale-paper warning. The app says the same. */
 export const SETTLE_ANYWAY_LABEL = 'Settle anyway';
 

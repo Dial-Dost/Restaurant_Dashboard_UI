@@ -95,6 +95,13 @@ interface Order {
    * Null or absent: it replaces nothing.
    */
   bill_revised_note?: string | null;
+  /**
+   * CLIENT ITEMS 1 AND 2 — the print claim's ledger row. "Print ESC/POS" names it
+   * to POST /publish/bill (`paperJobId`), whose job is a newer counted print of
+   * the same bill: the server copies the claim's record of this paper onto it,
+   * or the seating's paper reads unknown from then on.
+   */
+  bill_paper_job_id?: string | null;
   /** The server's PRICED bill from the print claim. Preferred by the print page
    *  over its own /bill-for-table read, which C4 redacts for a waiter. */
   printable_bill?: Record<string, unknown> | null;
@@ -830,6 +837,8 @@ function PrintPageContents() {
     // An UPDATED bill is marked for the same reason and on the same document
     // only: the claim that said so was made against this open table's bill.
     const revisedNote = printed.source === 'open' ? (order.bill_revised_note ?? '').trim() || null : null;
+    // The claim's paper record belongs to the same open bill, and to nothing else.
+    const paperJobId = printed.source === 'open' ? (order.bill_paper_job_id ?? '').trim() || null : null;
     const currencySymbol = order.currencySymbol || '₹';
     const cashierName = `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || '';
     const billId = bill?.id ?? settledBill?.id ?? openBill?.bill_id ?? '';
@@ -941,7 +950,7 @@ function PrintPageContents() {
                                         const resp = await requestBackend({
                                             path: '/publish/bill',
                                             method: 'POST',
-                                            body: { restaurantId: user?.res_id, outletId: user?.outlet_id, billId: billId || String(Date.now()), escBase64: b64 },
+                                            body: { restaurantId: user?.res_id, outletId: user?.outlet_id, billId: billId || String(Date.now()), escBase64: b64, ...(paperJobId ? { paperJobId } : {}) },
                                         });
 
                                         if (!resp.ok) {

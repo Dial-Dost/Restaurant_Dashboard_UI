@@ -831,7 +831,7 @@ describe('the UPDATED bill banner (client items 1-2)', () => {
         expect(printPage).toMatch(/\{revisedNote \? \([\s\S]{0,200}?\{UPDATED_BILL_MARKER\}/);
         expect(printPage).toContain('revisedNote,');
         const orders = code(readSource('src/app/dashboard/orders/page.tsx'));
-        expect(orders).toContain('if (claim.outcome === "claimed") { revisedNote = claim.revisedNote; }');
+        expect(orders).toContain('if (claim.outcome === "claimed") { revisedNote = claim.revisedNote; paperJobId = claim.paperJobId; }');
         expect(orders).toContain('bill_revised_note: revisedNote,');
         expect(code(readSource('src/lib/db.ts'))).toContain('revisedNote: billRevisedNoteOf(body),');
     });

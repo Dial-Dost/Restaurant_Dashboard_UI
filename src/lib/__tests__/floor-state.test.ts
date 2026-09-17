@@ -25,8 +25,10 @@ import {
     floorTileStyle,
     hasOrderField,
     nextPartyBadge,
+    printedBacklogFilterOn,
     printedClockLabel,
     printedTileChips,
+    type FloorState,
 } from '../floor-state';
 
 // --- colour science, as the investigation measured it -----------------------
@@ -212,6 +214,18 @@ describe('the legend, the badge and the printed chips', () => {
     it('a senior reads counts, busiest first, empty states left out', () => {
         expect(floorLegend(['free', 'printed', 'running', 'printed', 'free', 'free'], true).map((r) => r.label))
             .toEqual(['1 Running', '2 Bill printed', '3 Free']);
+    });
+
+    it('the "only printed" filter narrows the floor only while a printed table is there — the last settle ends it', () => {
+        expect(printedBacklogFilterOn(true, ['printed', 'free'])).toBe(true);
+        expect(printedBacklogFilterOn(false, ['printed', 'free'])).toBe(false);
+        // The night settle took the last one: the "N Bill printed" chip that
+        // turns the filter off is gone from the counted legend, so the filter
+        // must not leave the floor blank.
+        const settled: FloorState[] = ['free', 'free', 'running'];
+        expect(floorLegend(settled, true).some((r) => r.state === 'printed')).toBe(false);
+        expect(printedBacklogFilterOn(true, settled)).toBe(false);
+        expect(printedBacklogFilterOn(true, [])).toBe(false);
     });
 
     it('a waiter reads the key, every state, no counts', () => {

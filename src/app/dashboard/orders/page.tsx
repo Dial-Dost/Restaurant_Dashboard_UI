@@ -253,6 +253,8 @@ export interface Order {
   printable_bill?: Record<string, unknown> | null;
   // Client items 1-2: the print claim's "Replaces the bill printed 13:32" — see the print page.
   bill_revised_note?: string | null;
+  // Client items 1-2: the claim's ledger row, named again by the print page's "Print ESC/POS".
+  bill_paper_job_id?: string | null;
   // Order channel: dine_in (default) / takeaway / delivery / swiggy / zomato.
   order_type?: string | null;
   taken_by_employee_id?: string | null;
@@ -1086,6 +1088,8 @@ function OrdersDashboard() {
     // CLIENT ITEMS 1 AND 2: the claim says whether this paper REPLACES
     // out-of-date paper, and in which words ("Replaces the bill printed 13:32").
     let revisedNote: string | null = null;
+    // ...and which ledger row recorded this paper, for the print page's thermal copy.
+    let paperJobId: string | null = null;
     let priorPrintState: BillPrintState | null =
       billPrintByTable.get(tableName.toLowerCase()) ?? null;
     if (restaurantId && tableName && handoff) {
@@ -1096,6 +1100,7 @@ function OrdersDashboard() {
       // that claim was recorded, so its print state is the "was this already
       // printed" the reprint banner asks about.
       printableBill = handoff.printableBill;
+      paperJobId = handoff.paperJobId ?? null;
       priorPrintState = billPrintStateFields(handoff.printableBill) ?? priorPrintState;
       try {
         const refreshed = await getTables(restaurantId);
@@ -1106,7 +1111,7 @@ function OrdersDashboard() {
       priorPrintState = billPrintStateFields(fresh) ?? priorPrintState;
 
       const claim = await claimBillPrint(restaurantId, tableName, order.id);
-      if (claim.outcome === "claimed") { revisedNote = claim.revisedNote; }
+      if (claim.outcome === "claimed") { revisedNote = claim.revisedNote; paperJobId = claim.paperJobId; }
       if (claim.outcome === "refused") {
         // Nothing was ever drawn in it. Closing an empty tab is the whole of
         // "only render the print page if the claim succeeded".
@@ -1167,6 +1172,8 @@ function OrdersDashboard() {
         bill_print_state: priorPrintState,
         // "** UPDATED BILL **" and its line, when the claim said so.
         bill_revised_note: revisedNote,
+        // The claim's ledger row, so "Print ESC/POS" files the same paper record.
+        bill_paper_job_id: paperJobId,
         // Carried across verbatim, like the print state above. The print page
         // prefers it over its own /bill-for-table read, which for a waiter comes
         // back with every amount removed.
@@ -2098,9 +2105,14 @@ function OrdersDashboard() {
         return;
       }
     }
+    // CLIENT ITEMS 1 AND 2: the same stale-paper question as every other settle
+    // (fetchSettleView). This dialog is its own confirm, so it is asked only
+    // when the paper is out of date — and "Settle anyway" is recorded.
+    const view = await fetchSettleView(splitPayOrder.table);
+    if (view.staleWarning && !window.confirm(settleConfirmText(view, "Record this split payment? This sends the bill for admin approval."))) {return;}
     setSplitBusy(true);
     try {
-      await confirmBillPaymentByWaiter(user.restaurantUsername, user.employeeId, splitPayOrder.id, "Split", splitProofUrl, splits);
+      await confirmBillPaymentByWaiter(user.restaurantUsername, user.employeeId, splitPayOrder.id, "Split", splitProofUrl, splits, { settledWithStalePaper: view.staleWarning !== null });
       toast({ title: "Split payment recorded", description: "Awaiting admin approval." });
       setSplitPayOrder(null);
       await refreshOrders();

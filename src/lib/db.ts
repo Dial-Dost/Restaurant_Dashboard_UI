@@ -19,7 +19,7 @@ import { readErrorMessage, refusalSentence, type RefusedAction } from '@/lib/err
 // C3. The two readers are pure and live beside the rule they implement, so this
 // module holds no second opinion about what "already printed" means — it only
 // carries the bytes between the route and the screens.
-import { billPrintRefusal, billPrintStateFields, billRevisedNoteOf, type BillPrintState } from '@/lib/bill-print-state';
+import { billPaperJobIdOf, billPrintRefusal, billPrintStateFields, billRevisedNoteOf, type BillPrintState } from '@/lib/bill-print-state';
 // Client item 6. Pure, like the C3 readers above: this module only carries the
 // next party's seat and the 409 between the routes and the screens.
 import { ADD_TO_PRINTED_BILL_KEY, nextPartyAfterPrint, nextPartyRowFields, readBillPrintedRefusal, type BillPrintedRefusal } from '@/lib/next-party';
@@ -1642,8 +1642,9 @@ export type BillPrintClaimResult =
     // next guests at this number — both null when there is none.
     // `revisedNote` (client items 1 and 2): this print replaces out-of-date
     // paper — the line under "** UPDATED BILL **", in the server's words — or
-    // null when it replaces nothing.
-    | { outcome: 'claimed'; state: BillPrintState | null; printableBill: Record<string, unknown> | null; nextParty: { table: string | null; message: string | null }; revisedNote: string | null }
+    // null when it replaces nothing. `paperJobId`: the claim's own ledger row, which
+    // the print page names if it also sends this paper to a thermal printer.
+    | { outcome: 'claimed'; state: BillPrintState | null; printableBill: Record<string, unknown> | null; nextParty: { table: string | null; message: string | null }; revisedNote: string | null; paperJobId: string | null }
     | { outcome: 'unavailable'; reason: string }
     | { outcome: 'refused'; status: number; message: string; reprintNeedsSenior: boolean; state: BillPrintState | null };
 
@@ -1729,6 +1730,7 @@ export const claimBillPrint = async (
                 : null,
             nextParty: nextPartyAfterPrint(body),
             revisedNote: billRevisedNoteOf(body),
+            paperJobId: billPaperJobIdOf(body),
         };
     }
 

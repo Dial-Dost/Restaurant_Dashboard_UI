@@ -42,6 +42,7 @@ import {
     billPrintRefusal,
     billPrintScope,
     billPrintStateFields,
+    billPaperJobIdOf,
     billReceiptIsReprint,
     billRevisedNoteOf,
     isReprintOfPrintedBill,
@@ -346,6 +347,13 @@ describe('the UPDATED bill and the stale-paper settle (client items 1-2)', () =>
         expect(billRevisedNoteOf({ revised: false, revised_note: 'Replaces the bill printed 13:32' })).toBeNull();
         expect(billRevisedNoteOf({ revised: 'true' })).toBeNull();
         expect(billRevisedNoteOf(null)).toBeNull();
+    });
+
+    it("the claim's own job id is read for the thermal copy of the same paper, and nothing else is", () => {
+        expect(billPaperJobIdOf({ success: true, recorded: true, jobId: ' 9a000000-0000-4000-8000-000000000001 ' })).toBe('9a000000-0000-4000-8000-000000000001');
+        for (const other of [{ recorded: false, jobId: null }, { jobId: '' }, { jobId: 7 }, {}, null, 'job', []]) {
+            expect(billPaperJobIdOf(other)).toBeNull();
+        }
     });
 
     it('the settle warning: with amounts for a senior, without for a reader who was not sent them, and never on a guess', () => {

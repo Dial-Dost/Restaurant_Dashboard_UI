@@ -90,6 +90,7 @@ import {
     floorStateOf,
     floorTileStyle,
     nextPartyBadge,
+    printedBacklogFilterOn,
     printedClockLabel,
     printedTileChips,
     type FloorState,
@@ -895,8 +896,18 @@ export default function TablesPage() {
         });
     }, [occupancyByName]);
     const legendWithCounts = !isWaiterOnly(user);
-    const legend = floorLegend(tablesData.map(stateOfTable), legendWithCounts);
-    const [onlyPrinted, setOnlyPrinted] = useState(false);
+    const floorStates = tablesData.map(stateOfTable);
+    const legend = floorLegend(floorStates, legendWithCounts);
+    const [printedRequested, setOnlyPrinted] = useState(false);
+    // The filter narrows the floor only while there is a printed table to show:
+    // settling the last one takes its legend chip away, and a filter left on
+    // would blank the floor with nothing to turn it off (printedBacklogFilterOn).
+    const anyPrinted = floorStates.includes("printed");
+    const onlyPrinted = legendWithCounts && printedBacklogFilterOn(printedRequested, floorStates);
+    useEffect(() => {
+        // ...and the request is dropped, so the next print does not narrow the floor by itself.
+        if (printedRequested && !anyPrinted) { setOnlyPrinted(false); }
+    }, [printedRequested, anyPrinted]);
 
     /*
       D3/D4 — the party move and the order move, both of them ONE call.

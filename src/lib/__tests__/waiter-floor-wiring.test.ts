@@ -85,6 +85,40 @@ describe('settling against out-of-date paper warns, never blocks, and is recorde
         expect(orders).toMatch(/stalePaperSettleWarning\(\{\s*paperStale: paperStaleOf\(bill\),/);
     });
 
+    it('EVERY settle door asks: each waiter-confirm and admin-approve call on the page carries the flag', () => {
+        const calls = (name: string): string[] => {
+            const out: string[] = [];
+            const re = new RegExp(`await ${name}\\(`, 'g');
+            for (let m = re.exec(orders); m; m = re.exec(orders)) {
+                // The call's own argument list, to its closing paren at depth 0.
+                let depth = 0;
+                let end = m.index + m[0].length - 1;
+                for (; end < orders.length; end += 1) {
+                    if (orders[end] === '(') { depth += 1; }
+                    if (orders[end] === ')') { depth -= 1; if (depth === 0) { break; } }
+                }
+                out.push(orders.slice(m.index, end + 1));
+            }
+            return out;
+        };
+        const confirms = calls('confirmBillPaymentByWaiter');
+        const approves = calls('approveBillPaymentByAdmin');
+        // The single-mode confirm and the split confirm; the approval.
+        expect(confirms).toHaveLength(2);
+        expect(approves).toHaveLength(1);
+        for (const call of [...confirms, ...approves]) {
+            expect(call).toContain('settledWithStalePaper: view.staleWarning !== null');
+        }
+        // The split door reads the paper for the table it is settling, and asks
+        // only when it is out of date (the dialog is its own confirm).
+        expect(orders).toContain('const view = await fetchSettleView(splitPayOrder.table);');
+        expect(orders).toContain('if (view.staleWarning && !window.confirm(settleConfirmText(view, "Record this split payment? This sends the bill for admin approval."))) {return;}');
+        // No other page settles.
+        for (const other of ['src/app/dashboard/tables/page.tsx', 'src/app/dashboard/orders/capture-actions.tsx', 'src/app/dashboard/orders/print/page.tsx']) {
+            expect(readSource(other)).not.toMatch(/confirmBillPaymentByWaiter|approveBillPaymentByAdmin|waiter-confirm-payment|admin-approve-payment/);
+        }
+    });
+
     it('db.ts sends settled_with_stale_paper only when told to', () => {
         expect(db).toContain("...(opts?.settledWithStalePaper === true ? { settled_with_stale_paper: true } : {}),");
         expect(db).toContain("...(opts?.settledWithStalePaper === true ? { body: JSON.stringify({ settled_with_stale_paper: true }) } : {}),");
@@ -106,12 +140,39 @@ describe('the Tables floor paints the five states', () => {
 
     it('the legend counts for a senior, keys for a waiter, and the printed count filters the floor', () => {
         expect(tables).toContain('const legendWithCounts = !isWaiterOnly(user);');
-        expect(tables).toContain('const legend = floorLegend(tablesData.map(stateOfTable), legendWithCounts);');
+        expect(tables).toContain('const legend = floorLegend(floorStates, legendWithCounts);');
         expect(tables).toMatch(/row\.state === "printed" && legendWithCounts \?[\s\S]{0,700}?setOnlyPrinted\(\(v\) => !v\)/);
         expect(tables).toContain('section.tables.filter((table) => !onlyPrinted || stateOfTable(table) === "printed")');
     });
 
+    it('the printed filter ends with the last printed bill — never a blank floor with no chip to clear it', () => {
+        // The grid filters on the EFFECTIVE filter, not the request...
+        expect(tables).toContain('const onlyPrinted = legendWithCounts && printedBacklogFilterOn(printedRequested, floorStates);');
+        expect(tables).toContain('const anyPrinted = floorStates.includes("printed");');
+        // ...and the request is dropped once nothing is printed.
+        expect(tables).toMatch(/useEffect\(\(\) => \{\s*if \(printedRequested && !anyPrinted\) \{ setOnlyPrinted\(false\); \}\s*\}, \[printedRequested, anyPrinted\]\);/);
+        expect(tables).not.toMatch(/const \[onlyPrinted, setOnlyPrinted\] = useState/);
+    });
+
     it('db.ts carries has_order onto the table row', () => {
         expect(db).toContain('...hasOrderField(item),');
+    });
+});
+
+describe('the ESC/POS copy of a claimed paper files the claim\'s record (POST /publish/bill paperJobId)', () => {
+    const print = code(readSource('src/app/dashboard/orders/print/page.tsx'));
+    const capture = code(readSource('src/app/dashboard/orders/capture-actions.tsx'));
+
+    it('the claim answers its job id, and both print doors carry it to the page', () => {
+        expect(db).toContain('paperJobId: billPaperJobIdOf(body),');
+        expect(orders).toContain('if (claim.outcome === "claimed") { revisedNote = claim.revisedNote; paperJobId = claim.paperJobId; }');
+        expect(capture).toContain('paperJobId: billPaperJobIdOf(answer.result)');
+        expect(orders).toContain('paperJobId = handoff.paperJobId ?? null;');
+        expect(orders).toContain('bill_paper_job_id: paperJobId,');
+    });
+
+    it('the page names it on the publish, for the open bill only', () => {
+        expect(print).toContain("const paperJobId = printed.source === 'open' ? (order.bill_paper_job_id ?? '').trim() || null : null;");
+        expect(print).toMatch(/path: '\/publish\/bill',[\s\S]{0,400}?escBase64: b64, \.\.\.\(paperJobId \? \{ paperJobId \} : \{\}\) \}/);
     });
 });

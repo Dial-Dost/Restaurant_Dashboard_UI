@@ -217,7 +217,7 @@ describe('wiring', () => {
         const refusal = body.slice(body.indexOf('if (!answer.ok)'), body.indexOf('const said ='));
         expect(refusal).toContain('tab?.close()');
         // ...and hands the tab and the already-claimed bill to the page's print flow.
-        expect(body).toContain('await printBill({ printWindow: tab, printableBill: answer.result.printable_bill ?? null })');
+        expect(body).toContain('await printBill({ printWindow: tab, printableBill: answer.result.printable_bill ?? null, paperJobId: billPaperJobIdOf(answer.result) })');
     });
 
     it('both the removal form and the live-waiver reprint go through it; the old two-step is gone', () => {

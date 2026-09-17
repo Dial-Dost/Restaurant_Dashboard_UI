@@ -133,6 +133,17 @@ export const floorLegend = (
         }));
 };
 
+/**
+ * IS THE OWNER'S "ONLY THE PRINTED BILLS" FILTER NARROWING THE FLOOR? Only when
+ * it was asked for AND a printed table is there to show. The counted legend
+ * drops a state with no table, so once the last printed bill is settled the
+ * chip that turns the filter off is gone — and a filter still in force would
+ * leave a blank floor with no control to clear it. The page also clears the
+ * request then, so the next print does not bring the filter back by itself.
+ */
+export const printedBacklogFilterOn = (requested: boolean, states: readonly FloorState[]): boolean =>
+    requested && states.includes('printed');
+
 /** "#2" — the small chip on a next-party seat, whose tile reads its root's number. */
 export const nextPartyBadge = (partyNo: number | null | undefined): string | null =>
     typeof partyNo === 'number' && Number.isInteger(partyNo) && partyNo >= 2 ? `#${String(partyNo)}` : null;

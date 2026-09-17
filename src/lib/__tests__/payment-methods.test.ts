@@ -273,7 +273,7 @@ describe('WIRED: the pickers read the config and keep no list of their own', () 
         const body = orders.slice(start, orders.indexOf('const refreshOrders = async', start));
         expect(body).toContain('splitScreenshotLabels(splits, paymentMethods)');
         expect(body).toContain('pickPaymentProofScreenshot()');
-        expect(body).toContain('"Split", splitProofUrl, splits)');
+        expect(body).toContain('"Split", splitProofUrl, splits, { settledWithStalePaper: view.staleWarning !== null })');
         expect(body).not.toContain('"Split", null, splits)');
     });
 

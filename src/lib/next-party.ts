@@ -208,7 +208,12 @@ export const nextPartyAfterPrint = (body: unknown): { table: string | null; mess
 
 /** The server's refusal of an order added to a printed bill, read. */
 export interface BillPrintedRefusal {
-    /** The server's sentence, shown as it stands. */
+    /**
+     * The server's sentence, shown as it stands — its 2.0.2 one
+     * (`add_to_printed_message`) when it also offers "Add to 12's printed
+     * bill", because the 2.0.1 sentence sends the waiter to a manager for the
+     * very thing that button does.
+     */
     message: string;
     /** The printed table. */
     table: string;
@@ -236,8 +241,9 @@ export const readBillPrintedRefusal = (body: unknown): BillPrintedRefusal | null
     const elsewhere = next !== '' && next.toLowerCase() !== table.toLowerCase();
     const label = str(b.next_party_action);
     const addLabel = str(b.add_to_printed_action);
+    const addMessage = addLabel ? str(b.add_to_printed_message) : '';
     return {
-        message: str(b.error) || "This table's bill has already been printed.",
+        message: addMessage || str(b.error) || "This table's bill has already been printed.",
         table,
         nextPartyTable: elsewhere ? next : null,
         actionLabel: elsewhere ? (label || takeItOnLabel(next)) : null,

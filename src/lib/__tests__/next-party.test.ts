@@ -173,6 +173,13 @@ describe('what the server answers', () => {
         // 2.0.2's server does, and the page answers it with the confirm.
         expect(readBillPrintedRefusal({ ...body, add_to_printed_action: "Add to 12's printed bill" })?.addToPrintedLabel)
             .toBe("Add to 12's printed bill");
+        // ...and its 2.0.2 sentence, which names that choice instead of sending
+        // the waiter to a manager for it, is the one shown beside the button.
+        const said = "12's bill has already been printed. Take a new party's order on 12 (next party), or, if it is for the same guests, add it to 12's printed bill and print the updated bill.";
+        expect(readBillPrintedRefusal({ ...body, add_to_printed_action: "Add to 12's printed bill", add_to_printed_message: said })?.message).toBe(said);
+        // Without the action the old sentence stands, whatever else was sent.
+        expect(readBillPrintedRefusal({ ...body, add_to_printed_message: said })?.message).toBe(body.error);
+        expect(readBillPrintedRefusal({ ...body, add_to_printed_action: "Add to 12's printed bill", add_to_printed_message: '  ' })?.message).toBe(body.error);
         // Nowhere else to go, or the seat IS the table: a sentence and no action.
         expect(readBillPrintedRefusal({ ...body, next_party_table: null })).toMatchObject({ nextPartyTable: null, actionLabel: null });
         expect(readBillPrintedRefusal({ ...body, next_party_table: '12' })).toMatchObject({ nextPartyTable: null, actionLabel: null });
@@ -483,6 +490,10 @@ describe('the same words as the server (Restaurant_Backend/next_party.ts)', () =
         expect(src).toContain(`export const ADD_TO_PRINTED_BILL_KEY = "${ADD_TO_PRINTED_BILL_KEY}";`);
         expect(src).toContain("return `Add to ${tableSentenceName(table, parentTable ?? null)}'s printed bill`;");
         expect(src).toContain('`${named(toTable)} is the same table as ${named(fromTable)} — pick a different table to move to.`');
+        // The 2.0.2 refusal sentence this page shows beside that action.
+        expect(src).toContain("add_to_printed_message: addToPrinted ? addToPrintedBillRefusalMessage(named, elsewhere ? nextNamed : null) : null,");
+        expect(src).toContain("? `${named}'s bill has already been printed. Take a new party's order on ${next}, or, if it is for the same guests, add it to ${named}'s printed bill and print the updated bill.`");
+        expect(src).toContain(": `${named}'s bill has already been printed. If it is for the same guests, add it to ${named}'s printed bill and print the updated bill.`;");
     });
 
     maybe('the refusal\'s status is the server\'s — and never 409', () => {
