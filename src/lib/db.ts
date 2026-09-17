@@ -29,11 +29,15 @@ import { UNREACHABLE_MESSAGE, billCustomerPayload, billCustomerSaveOutcome, type
 import { SELECTED_OUTLET_KEY } from '@/lib/outlet';
 import {
     KOT_PRINT_STYLE_DEFAULT,
+    KOT_TEST_PRINT_BODY,
+    KOT_TEST_PRINT_OFFLINE,
+    KOT_TEST_PRINT_PATH,
     KOT_TEXT_SIZE_DEFAULT,
     readKotDocketSettings,
     savedKotPrintStyle,
     savedKotTextSize,
     type KotPrintStyle,
+    type KotTestPrintResult,
     type KotTextSize,
 } from '@/lib/kot-print-style';
 import { readPaymentMethods, type PaymentMethodConfig } from '@/lib/payment-methods';
@@ -5382,6 +5386,29 @@ export const setKotTextSize = async (restaurantId: string, size: KotTextSize): P
     let reply: unknown;
     try { reply = await res.json(); } catch { return size; }
     return savedKotTextSize(reply, size);
+};
+
+// --- "Print a test KOT" (POST /print/test) -----------------------------------
+// The KOT card's third control: one test docket, in this restaurant's own style
+// and size, through the same routing a real ticket takes. The route already
+// existed and nothing called it; src/lib/kot-print-style.ts has the rest.
+//
+// A REFUSAL IS RETURNED, not thrown — the 403 without the print permission, the
+// 400 for a role the server does not know — because this module's thrown
+// messages are redacted in production (see RefusedAction). A backend this
+// server could not reach is returned the same way, with status 0 and the
+// needs-a-connection sentence, for the same reason.
+export const printTestKot = async (restaurantId: string): Promise<KotTestPrintResult> => {
+    const res = await backendCall(KOT_TEST_PRINT_PATH, restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(KOT_TEST_PRINT_BODY),
+    });
+    if (!res) {return { refused: true, status: 0, error: KOT_TEST_PRINT_OFFLINE };}
+    if (!res.ok) {return { refused: true, status: res.status, error: await readErrorMessage(res, 'Unable to print a test KOT.') };}
+    let reply: unknown = null;
+    try { reply = await res.json(); } catch { /* accepted; the card says so without the detail */ }
+    return { sent: true, reply };
 };
 
 // --- Printed-bill identity + the sentence above the bill QR ------------------
