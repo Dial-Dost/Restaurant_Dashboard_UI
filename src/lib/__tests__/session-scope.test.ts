@@ -326,13 +326,27 @@ describe('D3 / D4 — the two move gates, which are genuinely two grants', () =>
         expect(canMoveOrderToTable(null)).toBe(false);
     });
 
-    it('does not gate either on waiter_only — a waiter moves the party they seated', () => {
-        // The requirement says "staff", and the permission the backend chose is
-        // the one the core waiter role holds. Adding a role test on top would
-        // hide a control from exactly the person it was gated for.
+    it('client items 1 and 2: a waiter MOVES A TABLE; "Move an order" stays a senior\'s, as on the app', () => {
+        // "On the waiter dashboard, Move table option needs to be implemented."
+        // The permission the backend chose is the one the core waiter role
+        // holds. Move an order was not asked for, and the app keeps it off a
+        // waiter-only floor, so the web does too — the same line on both clients.
         const scopedWaiter = { scope: { waiter_only: true }, actions_set: [PERM_TABLE_SERVICE, PERM_ORDER_ADD] };
         expect(canMoveTableParty(scopedWaiter)).toBe(true);
-        expect(canMoveOrderToTable(scopedWaiter)).toBe(true);
+        expect(canMoveOrderToTable(scopedWaiter)).toBe(false);
+        const scopedWaiterAnswered = { scope: { waiter_only: true, move_table: true, move_order: true }, actions_set: [] };
+        expect(canMoveTableParty(scopedWaiterAnswered)).toBe(true);
+        expect(canMoveOrderToTable(scopedWaiterAnswered)).toBe(false);
+        // A senior with the same grants keeps both.
+        const manager = { scope: { waiter_only: false, move_table: true, move_order: true }, actions_set: [] };
+        expect(canMoveTableParty(manager)).toBe(true);
+        expect(canMoveOrderToTable(manager)).toBe(true);
+    });
+
+    it('the SERVER\'s move flags win over the action list, in both directions', () => {
+        expect(canMoveTableParty({ scope: { waiter_only: false, move_table: false }, actions_set: ['*'] })).toBe(false);
+        expect(canMoveOrderToTable({ scope: { waiter_only: false, move_order: false }, actions_set: ['*'] })).toBe(false);
+        expect(canMoveTableParty({ scope: { waiter_only: true, move_table: true }, actions_set: [] })).toBe(true);
     });
 
     it('PERM_ORDER_ADD is routes/tables.ts\'s own id, verbatim', () => {

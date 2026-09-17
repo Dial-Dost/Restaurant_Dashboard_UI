@@ -10,7 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import Image from 'next/image';
 import { DEFAULT_TIMEZONE, formatDateTime } from '@/lib/tz';
 import { useTimezone } from '@/lib/use-timezone';
-import { billReceiptIsReprint, REPRINT_MARKER, type BillPrintState } from '@/lib/bill-print-state';
+import { billReceiptIsReprint, REPRINT_MARKER, UPDATED_BILL_MARKER, type BillPrintState } from '@/lib/bill-print-state';
 import { billCustomerLines } from '@/lib/bill-customer';
 import { roundOffOf } from '@/lib/bill-round-off';
 import { ncPrintSettlement, type NcPrintSettlement } from '@/lib/nc-settle';
@@ -88,6 +88,20 @@ interface Order {
     state the bill was in when the operator pressed the button.
   */
   bill_print_state?: BillPrintState | null;
+  /**
+   * CLIENT ITEMS 1 AND 2 — this print REPLACES out-of-date paper: the line the
+   * print claim answered with ("Replaces the bill printed 13:32"), stamped on by
+   * the orders page. The paper then says "** UPDATED BILL **" in REPRINT's place.
+   * Null or absent: it replaces nothing.
+   */
+  bill_revised_note?: string | null;
+  /**
+   * CLIENT ITEMS 1 AND 2 — the print claim's ledger row. "Print ESC/POS" names it
+   * to POST /publish/bill (`paperJobId`), whose job is a newer counted print of
+   * the same bill: the server copies the claim's record of this paper onto it,
+   * or the seating's paper reads unknown from then on.
+   */
+  bill_paper_job_id?: string | null;
   /** The server's PRICED bill from the print claim. Preferred by the print page
    *  over its own /bill-for-table read, which C4 redacts for a waiter. */
   printable_bill?: Record<string, unknown> | null;
@@ -211,6 +225,8 @@ interface PrintedBill {
      */
     customer: string | null | undefined;
     customerGstin: string | null | undefined;
+    /** Client item 7 — the guest's address, off the same document, by the same rule. */
+    customerAddress: string | null | undefined;
     /**
      * A bill SETTLED AS NON-CHARGEABLE (backend migration 052): the block printed
      * under its 0.00 total — the kind and the authoriser, off the settled bill,
@@ -228,12 +244,17 @@ const docField = (doc: Record<string, unknown> | null | undefined, key: string):
 
 /**
  * The customer slot for this receipt — `Name: …` (a bare `Name:` for a walk-in)
- * and, when set, `Customer GSTIN: …` — shared by the on-screen bill and the
+ * and, when set, `Customer GSTIN: …` and the `Address: …` lines (client item 7)
+ * — shared by the on-screen bill and the
  * ESC/POS twin so they cannot drift. See billCustomerLines for why it sits under
  * the header and why a walk-in's slot is left blank.
  */
 function receiptCustomerLines(printed: PrintedBill, order: { customer?: unknown }): string[] {
-    return billCustomerLines(printed.customer === undefined ? order.customer : printed.customer, printed.customerGstin);
+    return billCustomerLines(
+        printed.customer === undefined ? order.customer : printed.customer,
+        printed.customerGstin,
+        printed.customerAddress,
+    );
 }
 
 /**
@@ -403,6 +424,7 @@ function resolvePrintedBill(order: Order, settled: any | null, openBill: any | n
             source: 'settled',
             customer: docField(settled as Record<string, unknown>, 'customer'),
             customerGstin: docField(settled as Record<string, unknown>, 'customer_gstin'),
+            customerAddress: docField(settled as Record<string, unknown>, 'customer_address'),
             settlement: ncPrintSettlement(settled),
         };
         return { ok: true, printed };
@@ -459,6 +481,7 @@ function resolvePrintedBill(order: Order, settled: any | null, openBill: any | n
             source: 'open',
             customer: docField(openBill as Record<string, unknown>, 'customer'),
             customerGstin: docField(openBill as Record<string, unknown>, 'customer_gstin'),
+            customerAddress: docField(openBill as Record<string, unknown>, 'customer_address'),
             // An open bill is never settled, as NC or otherwise.
             settlement: null,
         };
@@ -820,6 +843,11 @@ function PrintPageContents() {
       what they owe.
     */
     const isReprint = billReceiptIsReprint(printed.source, order.bill_print_state);
+    // An UPDATED bill is marked for the same reason and on the same document
+    // only: the claim that said so was made against this open table's bill.
+    const revisedNote = printed.source === 'open' ? (order.bill_revised_note ?? '').trim() || null : null;
+    // The claim's paper record belongs to the same open bill, and to nothing else.
+    const paperJobId = printed.source === 'open' ? (order.bill_paper_job_id ?? '').trim() || null : null;
     const currencySymbol = order.currencySymbol || '₹';
     const cashierName = `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || '';
     const billId = bill?.id ?? settledBill?.id ?? openBill?.bill_id ?? '';
@@ -889,7 +917,7 @@ function PrintPageContents() {
                         <button
                                 onClick={async () => {
                                     // Passed logoBase64 to the encoder
-                                    const esc = await generateEscPos(user, profile, cashierName, bill, order, logoBase64, timezone, billPrint, printed, isReprint);
+                                    const esc = await generateEscPos(user, profile, cashierName, bill, order, logoBase64, timezone, billPrint, printed, isReprint, revisedNote);
                                     // Never silent: an encoder that returned null
                                     // printed nothing, and an operator who thinks
                                     // he has sent a bill to the thermal printer
@@ -931,7 +959,7 @@ function PrintPageContents() {
                                         const resp = await requestBackend({
                                             path: '/publish/bill',
                                             method: 'POST',
-                                            body: { restaurantId: user?.res_id, outletId: user?.outlet_id, billId: billId || String(Date.now()), escBase64: b64 },
+                                            body: { restaurantId: user?.res_id, outletId: user?.outlet_id, billId: billId || String(Date.now()), escBase64: b64, ...(paperJobId ? { paperJobId } : {}) },
                                         });
 
                                         if (!resp.ok) {
@@ -970,7 +998,12 @@ function PrintPageContents() {
                     two spellings would mean a guest comparing two slips has no
                     way to tell they are the same document.
                 */}
-                {isReprint ? (
+                {revisedNote ? (
+                    <div data-testid="receipt-updated" className="py-2 text-center">
+                        <div className="text-2xl font-extrabold tracking-widest">{UPDATED_BILL_MARKER}</div>
+                        <div className="text-[13px]">{revisedNote}</div>
+                    </div>
+                ) : isReprint ? (
                     <div className="py-2 text-center text-2xl font-extrabold tracking-widest">
                         {REPRINT_MARKER}
                     </div>
@@ -1006,11 +1039,14 @@ function PrintPageContents() {
                 {/* R2 item 1 — the customer's own slot, directly under the
                     restaurant header and above the Date / Bill No. block, as on
                     the client's printed bill: "Name:" (left blank for a walk-in)
-                    and, for a corporate party, "Customer GSTIN:". The thermal
-                    bill prints the same lines in the same place. */}
+                    and, for a corporate party, "Customer GSTIN:" and the
+                    "Address:" lines (client item 7). The thermal bill prints the
+                    same lines in the same place. Keyed by POSITION: two address
+                    lines can read the same ("Bengaluru" twice), and a key taken
+                    from the text would collide. */}
                 <div className="w-full" data-testid="receipt-customer-slot">
-                    {receiptCustomerLines(printed, order).map((l) => (
-                        <p key={l}>{l}</p>
+                    {receiptCustomerLines(printed, order).map((l, i) => (
+                        <p key={i} className="break-words">{l}</p>
                     ))}
                 </div>
                 <ReceiptRule />
@@ -1257,7 +1293,7 @@ async function billLogoRasterFromBase64(logoBase64: string): Promise<Uint8Array 
  * gathers what that needs from the page: the same header, customer slot, ladder
  * and QR sentence the on-screen bill draws, the logo raster and the feedback URL.
  */
-export async function generateEscPos(user: any, profile: any, cashierName: string, bill: any, orderArg?: any, logoBase64?: string | null, timeZone: string = DEFAULT_TIMEZONE, billPrint: BillPrintSettings | null = null, printedArg: PrintedBill | null = null, reprint = false): Promise<Uint8Array | null> {
+export async function generateEscPos(user: any, profile: any, cashierName: string, bill: any, orderArg?: any, logoBase64?: string | null, timeZone: string = DEFAULT_TIMEZONE, billPrint: BillPrintSettings | null = null, printedArg: PrintedBill | null = null, reprint = false, revisedNote: string | null = null): Promise<Uint8Array | null> {
     try {
         // NO SERVER-RESOLVED BILL, NO PAPER — checked before anything is encoded
         // or fetched. This is root cause 4's other half: the fallback that used
@@ -1331,6 +1367,9 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
             // ** REPRINT **, FIRST AND BIGGEST, above the logo — the backend's
             // own constant, in the backend's own place (see buildBillEscPos).
             reprint,
+            // ...or ** UPDATED BILL ** with the replaced print's clock, when this
+            // print replaces out-of-date paper (client items 1 and 2).
+            revisedNote,
             logo,
             restaurantName: clean(profile?.outlet_name) || 'Receipt',
             // Name, then legal entity / address lines / Ph / GSTIN. Each of

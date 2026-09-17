@@ -312,3 +312,43 @@
     min-height: 64px;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   CLIENT ITEMS 1 AND 2 — THE FLOOR'S FIVE COLOURS, FIXED.
+   "The fresh table 12 in green, and the table 12 whose bill has been printed
+   but not settled in orange."
+
+   Free green, seated amber, running red, bill printed orange, reserved blue,
+   and a neutral ink for the next party's "#2" chip. FIXED PER SCHEME and never
+   the accent: an owner on a green accent would otherwise have "occupied" and
+   "free" in two greens. The values are the app's (AppShellScheme floor*),
+   transcribed in src/lib/floor-state.ts FLOOR_INKS; floor-state.test.ts holds
+   these three blocks to that table, and every ink to 4.5:1 on its cards and a
+   CIEDE2000 distance of 12 from every other.
+   --------------------------------------------------------------------------- */
+:root {
+  --floor-free: #2B6326;
+  --floor-seated: #7A5B00;
+  --floor-running: #B0283C;
+  --floor-printed: #A84A06;
+  --floor-reserved: #2F5F8F;
+  --floor-next-party: #5F6670;
+}
+
+.dark {
+  --floor-free: #6CC070;
+  --floor-seated: #E2C458;
+  --floor-running: #E0697A;
+  --floor-printed: #F28C3A;
+  --floor-reserved: #79A7D8;
+  --floor-next-party: #B9B4A8;
+}
+
+[data-palette="gaia"].dark {
+  --floor-free: #9BC4A0;
+  --floor-seated: #E2C458;
+  --floor-running: #D9705F;
+  --floor-printed: #F0934A;
+  --floor-reserved: #8FB0D0;
+  --floor-next-party: #B3AC99;
+}

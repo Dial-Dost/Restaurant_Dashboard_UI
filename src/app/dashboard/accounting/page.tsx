@@ -53,6 +53,9 @@ function AccountingInner() {
   const search = useSearchParams()
   const { range, setRange } = useDateRange("accounting", { params: search })
   const { from, to } = range
+  // A link that is about particular bills (item 10: a payment mode's own bills,
+  // the Split bills) names the filter and anchors #settled-bills.
+  const linkedMethod = search.get("method")?.trim()
   const [loading, setLoading] = useState(true)
   const [sales, setSales] = useState<SalesReport | null>(null)
   const [gst, setGst] = useState<GstReport | null>(null)
@@ -93,6 +96,18 @@ function AccountingInner() {
   }, [rid, from, to])
 
   useEffect(() => { void load() }, [load])
+
+  // The anchor is only there once the figures above it have painted, which is
+  // after the browser gave up looking for it — so it is brought into view once,
+  // when the first load lands.
+  const [revealed, setRevealed] = useState(false)
+  useEffect(() => {
+    if (loading || revealed || typeof window === "undefined" || window.location.hash !== "#settled-bills") {return}
+    const el = document.getElementById("settled-bills")
+    if (!el) {return}
+    el.scrollIntoView({ block: "start" })
+    queueMicrotask(() => { setRevealed(true) })
+  }, [loading, revealed])
 
   const onAddExpense = async () => {
     const amount = Number(exAmount)
@@ -301,14 +316,17 @@ function AccountingInner() {
       {/* The source records behind every figure above — same date range. The
           card's own picker drives THIS page window (setRange), not a private
           one, so changing the days from down here moves the totals too. */}
-      <ClosedBillsSection
-        rid={rid}
-        from={from}
-        to={to}
-        range={range}
-        onRangeChange={setRange}
-        description="The individual settled bills behind the sales, GST and discount figures above. Open one for its line items, taxes, service charge, payment and settlement trail."
-      />
+      <div id="settled-bills" className="scroll-mt-20">
+        <ClosedBillsSection
+          rid={rid}
+          from={from}
+          to={to}
+          range={range}
+          onRangeChange={setRange}
+          initialMethod={linkedMethod}
+          description="The individual settled bills behind the sales, GST and discount figures above. Open one for its line items, taxes, service charge, payment and settlement trail."
+        />
+      </div>
 
       <Card id="discounts-section" className="scroll-mt-20">
         <CardHeader>

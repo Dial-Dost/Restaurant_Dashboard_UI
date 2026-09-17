@@ -5,6 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { SearchInput } from "@/components/ui/search-input";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -1811,11 +1812,11 @@ function ValetDashboardPageInner() {
           <div className="mb-4 grid gap-3 md:grid-cols-4">
             <div>
               <Label htmlFor="record-search">Search records</Label>
-              <Input
+              <SearchInput
                 id="record-search"
                 placeholder="Search by name, ticket, plate, stage or bay"
                 value={recordSearchQuery}
-                onChange={(e) => { setRecordSearchQuery(e.target.value); }}
+                onValueChange={setRecordSearchQuery}
               />
             </div>
             <div>

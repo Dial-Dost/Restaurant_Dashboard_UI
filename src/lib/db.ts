@@ -11,7 +11,7 @@ import { type Customer } from '@/app/dashboard/customers/page';
 import { type InventoryItem } from '@/app/dashboard/inventory/page';
 import { type MenuItem } from '@/app/dashboard/menu/data';
 import { MenuBadgeInUseError, parseBadgeCatalogue, type MenuBadge } from '@/lib/menu-badges';
-import { type Order } from '@/app/dashboard/orders/page';
+import { type MovedItem, type Order } from '@/app/dashboard/orders/page';
 import { type Table } from '@/app/dashboard/tables/data';
 import { type AuditLog } from '@/app/dashboard/audit-logs/page';
 import { serverBackendBase, serverBaseUrlFrom } from '@/lib/backend-url';
@@ -19,20 +19,25 @@ import { readErrorMessage, refusalSentence, type RefusedAction } from '@/lib/err
 // C3. The two readers are pure and live beside the rule they implement, so this
 // module holds no second opinion about what "already printed" means — it only
 // carries the bytes between the route and the screens.
-import { billPrintRefusal, billPrintStateFields, type BillPrintState } from '@/lib/bill-print-state';
+import { billPaperJobIdOf, billPrintRefusal, billPrintStateFields, billRevisedNoteOf, type BillPrintState } from '@/lib/bill-print-state';
 // Client item 6. Pure, like the C3 readers above: this module only carries the
 // next party's seat and the 409 between the routes and the screens.
-import { nextPartyAfterPrint, nextPartyRowFields, readBillPrintedRefusal, type BillPrintedRefusal } from '@/lib/next-party';
+import { ADD_TO_PRINTED_BILL_KEY, nextPartyAfterPrint, nextPartyRowFields, readBillPrintedRefusal, type BillPrintedRefusal } from '@/lib/next-party';
+import { hasOrderField } from '@/lib/floor-state';
 import { ncSettleWasRefused } from '@/lib/nc-settle';
 import { UNREACHABLE_MESSAGE, billCustomerPayload, billCustomerSaveOutcome, type BillCustomerRequest, type BillCustomerSaveOutcome } from '@/lib/bill-customer';
 import { SELECTED_OUTLET_KEY } from '@/lib/outlet';
 import {
     KOT_PRINT_STYLE_DEFAULT,
+    KOT_TEST_PRINT_BODY,
+    KOT_TEST_PRINT_OFFLINE,
+    KOT_TEST_PRINT_PATH,
     KOT_TEXT_SIZE_DEFAULT,
     readKotDocketSettings,
     savedKotPrintStyle,
     savedKotTextSize,
     type KotPrintStyle,
+    type KotTestPrintResult,
     type KotTextSize,
 } from '@/lib/kot-print-style';
 import { readPaymentMethods, type PaymentMethodConfig } from '@/lib/payment-methods';
@@ -822,6 +827,10 @@ const mapTable = (item: any, index: number): Table => {
         // src/lib/next-party.ts for who reads these and why the handle, never
         // the display name, is what every request sends.
         ...nextPartyRowFields(item, String(name)),
+        // CLIENT ITEMS 1 AND 2 — "a party is seated but has not ordered" and "food
+        // is on its way" are different colours on the floor (src/lib/floor-state.ts).
+        // Absent on an older server, which reads as "not known" rather than false.
+        ...hasOrderField(item),
     };
 };
 
@@ -1046,6 +1055,17 @@ const mapOrder = (item: any): Order => {
     */
     barked_at: wireTimestamp(wire.barked_at),
     kot_nos: wireNumbers(wire.kot_nos),
+    /*
+      CLIENT ITEM 4 — WHERE A TICKET CAME FROM, AND WHAT A MOVE TOOK OFF IT.
+      Passed through as the server shaped them (order_moves.ts
+      orderMoveProvenance) — names and quantities only, never a price — and
+      ABSENT on an order that never moved, which every screen reads as "draw
+      nothing new".
+    */
+    ...(typeof wire.moved_from === 'string' && wire.moved_from.trim() !== '' ? { moved_from: wire.moved_from.trim() } : {}),
+    ...(typeof wire.moved_at === 'string' ? { moved_at: wire.moved_at } : {}),
+    ...(typeof wire.emptied_by === 'string' ? { emptied_by: wire.emptied_by } : {}),
+    ...(Array.isArray(wire.moved_items) ? { moved_items: wire.moved_items as MovedItem[] } : {}),
     /*
       D2 — THE SERVER'S SERVICE CLOCK, CARRIED VERBATIM.
 
@@ -1524,15 +1544,10 @@ export const occupyTable = async (restaurantId: string, tableName: string, numCo
         let body: Partial<OccupyTableResult> | null = null;
         try { body = (await response.json()) as Partial<OccupyTableResult>; } catch { body = null; }
 
+        // Refresh the cached roster. No DOM event from here: this is a "use
+        // server" module, where `window` does not exist — every caller re-reads
+        // the floor itself (src/lib/floor-refresh.ts).
         await getTables(restaurantId);
-        // notify other UI parts (Tables page) that table data changed
-        try {
-            if (typeof window !== 'undefined') {
-                window.dispatchEvent(new CustomEvent('tables:changed'));
-            }
-        } catch {
-            // ignore
-        }
         return {
             acknowledged: true,
             table_id: body?.table_id,
@@ -1635,7 +1650,11 @@ export type BillPrintClaimResult =
     // no amounts and refuses — which is how no waiter on the web could ever print.
     // `nextParty` (client item 6): the seat the server opened, or found, for the
     // next guests at this number — both null when there is none.
-    | { outcome: 'claimed'; state: BillPrintState | null; printableBill: Record<string, unknown> | null; nextParty: { table: string | null; message: string | null } }
+    // `revisedNote` (client items 1 and 2): this print replaces out-of-date
+    // paper — the line under "** UPDATED BILL **", in the server's words — or
+    // null when it replaces nothing. `paperJobId`: the claim's own ledger row, which
+    // the print page names if it also sends this paper to a thermal printer.
+    | { outcome: 'claimed'; state: BillPrintState | null; printableBill: Record<string, unknown> | null; nextParty: { table: string | null; message: string | null }; revisedNote: string | null; paperJobId: string | null }
     | { outcome: 'unavailable'; reason: string }
     | { outcome: 'refused'; status: number; message: string; reprintNeedsSenior: boolean; state: BillPrintState | null };
 
@@ -1720,6 +1739,8 @@ export const claimBillPrint = async (
                 ? (printable as Record<string, unknown>)
                 : null,
             nextParty: nextPartyAfterPrint(body),
+            revisedNote: billRevisedNoteOf(body),
+            paperJobId: billPaperJobIdOf(body),
         };
     }
 
@@ -1770,6 +1791,13 @@ export interface MoveTablePartyResult {
     covers: number;
     moved_orders: number;
     moved_bill: boolean;
+    /** Client items 1 and 2: the party's bill had been printed; its paper came with them. Absent on an older server. */
+    printed?: boolean;
+    /** The table name on that paper ("12"), when known. */
+    printed_as?: string | null;
+    /** The green seat the server opened for the next guests at the destination. */
+    next_party_table?: string | null;
+    next_party_message?: string | null;
 }
 
 /**
@@ -1820,6 +1848,17 @@ export interface MoveOrderToTableResult {
     order_id: string;
     from_table: string;
     to_table: string;
+    /** Client item 4: every dish on the moved ticket (name, size, quantity — never a price). */
+    items?: { name: string; variation: string | null; quantity: number }[];
+    /** The KOT the pass calls it by, when there is one. */
+    kot_no?: number | null;
+    /** A move changes two bills: the reprint(s) a senior role is asked for. */
+    reprint_needed?: boolean;
+    reprint_table?: string;
+    reprint_message?: string;
+    also_reprint_needed?: boolean;
+    also_reprint_table?: string;
+    also_reprint_message?: string;
     /**
      * The correction docket. `printed: false` is NOT a failure — it means the
      * kitchen never had a ticket for this order, so there is no paper on the
@@ -1883,14 +1922,9 @@ export const updateTableSeating = async (
     }
 
     const updated = (await response.json()) as { table_name: string; capacity: number; max_capacity: number };
+    // The cached roster; the caller re-reads the floor itself (no DOM event from
+    // a "use server" module).
     await getTables(restaurantId);
-    try {
-        if (typeof window !== 'undefined') {
-            window.dispatchEvent(new CustomEvent('tables:changed'));
-        }
-    } catch {
-        // ignore
-    }
     return updated;
 };
 
@@ -2031,6 +2065,11 @@ export interface ClosedBillSummary {
     // pre-discount subtotal); always a number in the detail read.
     discount_amount: number | null;
     coupon_code: string | null;
+    /**
+     * Who the bill was made out to — client item 8: the list row now says it.
+     * Optional (an older backend sends no key); null for a walk-in.
+     */
+    customer?: string | null;
     refunded: boolean;
     refund_amount: number;
     apc: number | null;
@@ -2059,6 +2098,12 @@ export interface ClosedBillDetail extends ClosedBillSummary {
      * here" rather than as "no GSTIN".
      */
     customer_gstin?: string | null;
+    /**
+     * Client item 7 (backend migration 054) — the guest's address, lines joined
+     * by LF. Optional for the same reason: no key means "an older backend", not
+     * "no address". Detail only — the list never carries it.
+     */
+    customer_address?: string | null;
     seated_at: string | null;
     left_at: string | null;
     waiter_confirmed_at: string | null;
@@ -2460,14 +2505,19 @@ export const addMenuItem = async (restaurantId: string, item: MenuItem) => {
 // never as a throw, whose message Next redacts across this "use server"
 // boundary. The caller shows the sentence and the "Take it on 12 (next party)"
 // action.
-export const addOrder = async (restaurantId: string, order: Order, opts?: { idempotencyKey?: string }) => {
+//
+// CLIENT ITEMS 1 AND 2 (2.0.2) — `addToPrintedBill`: the operator confirmed these
+// items go on the table's PRINTED bill ("Add to printed bill"). Sent as
+// `add_to_printed_bill: true`, which is the only thing that lets a waiter-only
+// login add to printed paper; never sent without that confirm.
+export const addOrder = async (restaurantId: string, order: Order, opts?: { idempotencyKey?: string; addToPrintedBill?: boolean }) => {
     const response = await backendCall('/orders', restaurantId, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             ...(opts?.idempotencyKey ? { 'Idempotency-Key': opts.idempotencyKey } : {}),
         },
-        body: JSON.stringify(order),
+        body: JSON.stringify(opts?.addToPrintedBill === true ? { ...order, [ADD_TO_PRINTED_BILL_KEY]: true } : order),
     });
 
     if (response && !response.ok && response.status >= 400 && response.status < 500) {
@@ -2577,6 +2627,12 @@ export const confirmBillPaymentByWaiter = async (
     payment_method: PaymentMethod,
     payment_proof_screenshot_url?: string | null,
     splits?: PaymentSplit[],
+    /**
+     * Client items 1 and 2: the cashier was warned the printed bill is out of
+     * date and pressed "Settle anyway". Recorded in the audit log; the settle
+     * itself is unchanged.
+     */
+    opts?: { settledWithStalePaper?: boolean },
 ) => {
     const response = await backendCall(`/bills/order/${encodeURIComponent(orderId)}/waiter-confirm-payment`, restaurantId, {
         method: 'POST',
@@ -2588,6 +2644,7 @@ export const confirmBillPaymentByWaiter = async (
             payment_method,
             payment_proof_screenshot_url: payment_proof_screenshot_url ?? null,
             ...(splits && splits.length > 0 ? { splits } : {}),
+            ...(opts?.settledWithStalePaper === true ? { settled_with_stale_paper: true } : {}),
         }),
     });
 
@@ -2608,6 +2665,8 @@ export const approveBillPaymentByAdmin = async (
     restaurantId: string,
     employeeId: string,
     orderId: string,
+    /** "Settle anyway" against out-of-date paper — see confirmBillPaymentByWaiter. */
+    opts?: { settledWithStalePaper?: boolean },
 ) => {
     const response = await backendCall(`/bills/order/${encodeURIComponent(orderId)}/admin-approve-payment`, restaurantId, {
         method: 'POST',
@@ -2615,6 +2674,7 @@ export const approveBillPaymentByAdmin = async (
             'Content-Type': 'application/json',
             'X-Employee-Id': employeeId,
         },
+        ...(opts?.settledWithStalePaper === true ? { body: JSON.stringify({ settled_with_stale_paper: true }) } : {}),
     });
 
     if (!response) {
@@ -3890,7 +3950,7 @@ async function sendBillCustomer(restaurantId: string, request: BillCustomerReque
         return { ok: false, outdated: false, message: UNREACHABLE_MESSAGE, status: 0 };
     }
     const text = await response.text().catch(() => '');
-    return billCustomerSaveOutcome(response.status, text, 'customer_gstin' in request.body);
+    return billCustomerSaveOutcome(response.status, text, 'customer_gstin' in request.body, 'customer_address' in request.body);
 }
 
 /**
@@ -3905,7 +3965,7 @@ async function sendBillCustomer(restaurantId: string, request: BillCustomerReque
  * R2 item 1 — and the customer's GSTIN, for a corporate party. `customerGstin`
  * `undefined` leaves it off the body, which the route reads as "unchanged"; see
  * billCustomerPayload for why a dialog that does not know the current GSTIN must
- * not send `null`.
+ * not send `null`. Client item 7: `customerAddress` follows exactly that rule.
  *
  * RETURNS its failure rather than throwing it: Next redacts the message of an
  * Error thrown out of a Server Action in production, so the server's sentence
@@ -3917,23 +3977,26 @@ export const setBillCustomerName = async (
     tableName: string,
     customer: string,
     customerGstin?: string,
+    customerAddress?: string,
 ): Promise<BillCustomerSaveOutcome> =>
-    sendBillCustomer(restaurantId, billCustomerPayload({ kind: 'table', tableName }, customer, customerGstin));
+    sendBillCustomer(restaurantId, billCustomerPayload({ kind: 'table', tableName }, customer, customerGstin, customerAddress));
 
 /**
  * R2 item 1 — change the name and GSTIN on a SETTLED bill, from Accounting's
- * past bills. Addressed by bill id, never by table name: the table name answers
- * with whoever is sitting there now. The route changes only those two fields —
- * no money, no status, no timestamps — and is gated on the permission the E5
- * settled reprint uses.
+ * past bills (and History's — the same section). Addressed by bill id, never by
+ * table name: the table name answers with whoever is sitting there now. The
+ * route changes only those fields — client item 7 adds the address — no money,
+ * no status, no timestamps, and is gated on the permission the E5 settled
+ * reprint uses.
  */
 export const setSettledBillCustomerDetails = async (
     restaurantId: string,
     billId: string,
     customer: string,
     customerGstin?: string,
+    customerAddress?: string,
 ): Promise<BillCustomerSaveOutcome> =>
-    sendBillCustomer(restaurantId, billCustomerPayload({ kind: 'bill', billId }, customer, customerGstin));
+    sendBillCustomer(restaurantId, billCustomerPayload({ kind: 'bill', billId }, customer, customerGstin, customerAddress));
 
 
 export interface OperationsAnalytics {
@@ -4145,6 +4208,12 @@ export interface HeadlineFigure {
      * place to change a definition, and it is the place that computes it.
      */
     hint: string;
+    /**
+     * Where tapping it leads (client item 10) — Restaurant_Backend/glance_drill.ts.
+     * OPTIONAL: an older backend sends none, and the card falls back to its own
+     * copy of the same table (glance-destinations.ts). Read through glanceDrillOf.
+     */
+    drill?: unknown;
 }
 
 /** H1 — the six figures in the box at the top of the overview. */
@@ -4187,6 +4256,19 @@ export interface OverviewHeadline {
      * backend sends none. Read through readHeadlineNc (lib/nc-settle.ts).
      */
     today_nc?: { label: string; hint: string; bills: number; value: number };
+    /**
+     * Today's ladder, rung by rung — the Sales Summary's totals for today (no
+     * covers, APC or ABV: the headline read has no seating). OPTIONAL: an older
+     * backend sends none, and a missing ladder is left out, never drawn as zeros.
+     */
+    today_ladder?: Record<string, number>;
+    /** How many of today's bills are behind the two Online figures. OPTIONAL. */
+    today_online_bills?: number;
+    /**
+     * Where every non-figure element of the box leads (item 10). OPTIONAL; read
+     * through glanceDrillOf, which falls back to the mirrored table.
+     */
+    drills?: unknown;
 }
 
 /** null on an unreachable backend — never zeroes, which an owner would act on. */
@@ -4380,23 +4462,50 @@ export const getBalanceSheet = async (restaurantId: string, asOf?: string) =>
  * button in a dialog and "Couldn't reprint" with no reason is the thing this
  * product keeps getting wrong.
  */
+/*
+    CLIENT ITEM 8 — "Reprint bill should show up in History; old bills should be
+    reprintable from the history section." History mounts the same settled-bills
+    section as Accounting, so the button was already there — and it NEVER
+    WORKED, from either screen:
+
+      * it went through backendJson, which sets no Content-Type, and fetch()
+        labels a string body text/plain. express.json() only parses
+        application/json, so the route saw an empty body and answered 400
+        "bill_id is required" to every press;
+      * backendJson turns any non-2xx into null, so the toast could only ever
+        say the generic sentence below — never the server's own ("no line items
+        recorded", a 403 naming the permission, "no printer is online").
+
+    So: a JSON body, labelled as one, and the server's refusal verbatim
+    (readErrorMessage), as the name / GSTIN dialog already does. Returned
+    rather than thrown, because Next redacts an Error thrown out of a Server
+    Action in production.
+*/
 export const reprintSettledBill = async (
     restaurantId: string,
     billId: string,
 ): Promise<{ ok: true; jobId: string | null; destination: string | null } | { ok: false; message: string }> => {
-    try {
-        const data = await backendJson<{ success?: boolean; jobId?: string; destination?: string; error?: string }>(
-            `/print/bill/settled?restaurantId=${encodeURIComponent(restaurantId)}`,
-            restaurantId,
-            { method: 'POST', body: JSON.stringify({ bill_id: billId }) },
-        );
-        if (data?.success) {
-            return { ok: true, jobId: data.jobId ?? null, destination: data.destination ?? null };
-        }
-        return { ok: false, message: data?.error ?? 'The bill could not be sent to a printer.' };
-    } catch (e) {
-        return { ok: false, message: e instanceof Error ? e.message : 'The bill could not be sent to a printer.' };
+    const fallback = 'The bill could not be sent to a printer.';
+    const response = await backendCall(
+        `/print/bill/settled?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ bill_id: billId }),
+        },
+    );
+    if (!response) {
+        return { ok: false, message: 'Could not reach the server, so nothing was printed. Check the connection and try again.' };
     }
+    if (!response.ok) {
+        return { ok: false, message: await readErrorMessage(response, fallback) };
+    }
+    const data = (await response.json().catch(() => null)) as { success?: boolean; jobId?: string; destination?: string } | null;
+    if (!data?.success) {
+        return { ok: false, message: fallback };
+    }
+    return { ok: true, jobId: data.jobId ?? null, destination: data.destination ?? null };
 };
 
 // --- Bank / settlement reconciliation -----------------------------------------
@@ -4502,11 +4611,22 @@ export interface ReportSchedule {
     consecutive_failures: number;
     created_at: string;
     updated_at: string;
+    /** Client item 9 (migration 057). Absent from a 2.0.1 backend. */
+    report_keys?: string[];
+    formats?: string[];
+    /** 'calendar' | 'trading_day' */
+    window_mode?: string;
+    /** 'outlet' | 'all' */
+    outlet_scope?: string;
+    /** When it next fires and what that run covers — the server's own arithmetic. */
+    next_run_at?: string | null;
+    next_window?: { from: string; to: string; day_close: string | null; start_at: string; end_at: string } | null;
 }
 
 export interface ReportDelivery {
     id: string;
-    schedule_id: string;
+    /** Null for a Send now or a test email (migration 058). */
+    schedule_id: string | null;
     outlet_id: string;
     /** The tenant-local day the occurrence was due; null for a manual "run now". */
     occurrence_key: string | null;
@@ -4514,7 +4634,7 @@ export interface ReportDelivery {
     period_from: string;
     period_to: string;
     timezone: string;
-    /** 'claimed' | 'rendered' | 'delivered' | 'failed' | 'abandoned' */
+    /** 'claimed' | 'rendered' | 'sending' | 'delivered' | 'failed' | 'abandoned' */
     status: string;
     attempts: number;
     channel: string | null;
@@ -4526,6 +4646,28 @@ export interface ReportDelivery {
     error: string | null;
     delivered_at: string | null;
     created_at: string;
+    /** Client item 9 (migration 058). Absent from a 2.0.1 backend. */
+    kind?: 'scheduled' | 'manual' | 'adhoc';
+    report_keys?: string[];
+    formats?: string[];
+    outlet_scope?: string;
+    day_close?: string | null;
+    window_start_at?: string | null;
+    window_end_at?: string | null;
+    /** The addresses a Send now was addressed to. */
+    recipients?: string[] | null;
+    /** Nothing more happens without a person (a 'failed' row with retries left is not final). */
+    final?: boolean;
+    /** When the server tries a non-final 'failed' row again. */
+    next_attempt_at?: string | null;
+    rejected_to?: string[];
+    skipped_to?: string[];
+    provider?: string | null;
+    maybe_duplicate?: boolean;
+    files?: {
+        id: string; report_key: string; format: string; filename: string; mime: string;
+        bytes: number; rows: number; truncated: boolean; purged: boolean;
+    }[];
 }
 
 /** Create and edit share one shape — the backend fills every omitted key from
@@ -4557,27 +4699,6 @@ export const getReportSchedules = async (restaurantId: string): Promise<ReportSc
     return Array.isArray(data?.schedules) ? data.schedules : null;
 };
 
-/**
- * Can THIS deployment send email at all?
- *
- * The server decides and says so on the same response as the list; the form
- * obeys rather than assuming. A capability a client has to guess at is the
- * recurring shape of this project's bugs — and the specific cost of guessing
- * wrong here is an owner saving a daily 8am email schedule that renders a report
- * every morning, fails to deliver it, and disables itself after five days.
- *
- * `null` on an unreachable backend, so "we could not ask" stays distinguishable
- * from "the answer is no" — the same contract getReportSchedules uses.
- */
-export const getReportEmailAvailable = async (restaurantId: string): Promise<boolean | null> => {
-    const data = await backendJson<{ email_available?: boolean }>(
-        `/reports/schedules?restaurantId=${encodeURIComponent(restaurantId)}`,
-        restaurantId,
-        { method: 'GET' },
-    );
-    return typeof data?.email_available === 'boolean' ? data.email_available : null;
-};
-
 export const getReportDeliveries = async (
     restaurantId: string,
     opts: { scheduleId?: string; limit?: number } = {},
@@ -4593,51 +4714,12 @@ export const getReportDeliveries = async (
     return Array.isArray(data?.deliveries) ? data.deliveries : null;
 };
 
-export const createReportSchedule = async (restaurantId: string, input: ReportSchedulePatch): Promise<ReportSchedule> => {
-    const res = await backendCall('/reports/schedules', restaurantId, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(input),
-    });
-    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to create the scheduled report');}
-    return res.json();
-};
-
-export const updateReportSchedule = async (restaurantId: string, id: string, input: ReportSchedulePatch): Promise<ReportSchedule> => {
-    const res = await backendCall(`/reports/schedules/${encodeURIComponent(id)}`, restaurantId, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(input),
-    });
-    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to update the scheduled report');}
-    return res.json();
-};
-
 // Archives rather than destroys — the delivery history and the at-most-once
 // guard outlive the schedule, so the row stops firing but never disappears from
 // the record. The endpoint is DELETE for REST's sake; the effect is an archive.
 export const deleteReportSchedule = async (restaurantId: string, id: string): Promise<void> => {
     const res = await backendCall(`/reports/schedules/${encodeURIComponent(id)}`, restaurantId, { method: 'DELETE' });
     if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to remove the scheduled report');}
-};
-
-/** QUEUES an extra occurrence — it is rendered by the next sweep tick, not
- *  inline — and returns its delivery id so the caller can point at the row. */
-export const runReportScheduleNow = async (
-    restaurantId: string,
-    id: string,
-): Promise<{ queued: boolean; delivery_id: string | null; note: string | null }> => {
-    const res = await backendCall(`/reports/schedules/${encodeURIComponent(id)}/run-now`, restaurantId, { method: 'POST' });
-    // 409 is the per-minute dedup working, not a failure: the same manual run is
-    // already queued. Returned as an outcome rather than thrown so the caller can
-    // say so plainly — throwing made the dashboard shout "Couldn't queue this
-    // report" at a success the owner app was reporting as one.
-    if (res?.status === 409) {return { queued: false, delivery_id: null, note: await readErrorMessage(res) };}
-    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to queue this report');}
-    try {
-        const j = await res.json();
-        return { queued: true, delivery_id: typeof j?.delivery_id === 'string' ? j.delivery_id : null, note: null };
-    } catch { return { queued: true, delivery_id: null, note: null }; }
 };
 
 // The rendered artifact. This is the ONLY place a scheduled report's figures are
@@ -4651,6 +4733,168 @@ export const getReportDeliveryCsv = async (restaurantId: string, deliveryId: str
     );
     if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to download this report');}
     return res.text();
+};
+
+// --- Email reports (client item 9) -------------------------------------------
+// The address book, Send now, the test email and one delivery's detail and
+// files. Every write RETURNS its refusal instead of throwing it: Next redacts
+// an Error thrown out of a Server Action in production, and "Email is not set
+// up on this server" is exactly the sentence the owner needs to read. `code`
+// is the server's machine word (mail_not_configured, rate_limited, …) so the
+// screen can branch without parsing prose.
+
+export type EmailResult<T> = { ok: true; data: T } | { ok: false; error: string; code: string | null; status: number };
+
+const EMAIL_UNREACHABLE = 'Could not reach the server — check the connection and try again.';
+
+const emailRefusal = async (res: Response | null, fallback: string): Promise<{ ok: false; error: string; code: string | null; status: number }> => {
+    if (!res) {return { ok: false, error: EMAIL_UNREACHABLE, code: null, status: 0 };}
+    const text = await res.text().catch(() => '');
+    let code: string | null = null;
+    try {
+        const parsed = JSON.parse(text) as { code?: unknown };
+        code = typeof parsed?.code === 'string' ? parsed.code : null;
+    } catch { /* not JSON — the sentence reader below handles it */ }
+    const error = await readErrorMessage({ status: res.status, text: () => Promise.resolve(text) }, fallback);
+    return { ok: false, error, code, status: res.status };
+};
+
+const emailJson = async <T>(res: Response | null, fallback: string): Promise<EmailResult<T>> => {
+    if (!res?.ok) {return emailRefusal(res, fallback);}
+    try { return { ok: true, data: (await res.json()) as T }; }
+    catch { return { ok: false, error: 'The server answered with something this screen cannot read — reload and try again.', code: null, status: res.status }; }
+};
+
+/** GET /reports/email/config, raw — read it with readReportEmailConfig. `null` = could not ask. */
+export const getReportEmailConfig = async (restaurantId: string): Promise<unknown | null> => {
+    return backendJson<unknown>(`/reports/email/config?restaurantId=${encodeURIComponent(restaurantId)}`, restaurantId, { method: 'GET' });
+};
+
+/** GET /reports/email/recipients, raw — read it with readBook. */
+export const getReportEmailRecipients = async (restaurantId: string): Promise<unknown | null> => {
+    return backendJson<unknown>(`/reports/email/recipients?restaurantId=${encodeURIComponent(restaurantId)}`, restaurantId, { method: 'GET' });
+};
+
+export const addReportEmailRecipient = async (
+    restaurantId: string,
+    input: { email: string; label?: string },
+): Promise<EmailResult<{ recipient: { id: string; email: string } }>> => {
+    const res = await backendCall(`/reports/email/recipients?restaurantId=${encodeURIComponent(restaurantId)}`, restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: input.email, label: input.label ?? null }),
+    });
+    return emailJson(res, 'Unable to add the address');
+};
+
+export const removeReportEmailRecipient = async (restaurantId: string, id: string): Promise<EmailResult<{ removed: boolean }>> => {
+    const res = await backendCall(
+        `/reports/email/recipients/${encodeURIComponent(id)}?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        { method: 'DELETE' },
+    );
+    return emailJson(res, 'Unable to remove the address');
+};
+
+/** A message with no figures to one address in the book. 202 + the delivery id to poll. */
+export const sendReportTestEmail = async (
+    restaurantId: string,
+    input: { recipientId: string; clientRequestId: string },
+): Promise<EmailResult<{ delivery_id: string; replayed: boolean }>> => {
+    const res = await backendCall(`/reports/email/test?restaurantId=${encodeURIComponent(restaurantId)}`, restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipient_id: input.recipientId, client_request_id: input.clientRequestId }),
+    });
+    return emailJson(res, 'Unable to send the test email');
+};
+
+/**
+ * Send now. `outletId` is the outlet the request runs as — ALWAYS a real one:
+ * the backend refuses every write made in the all-outlets mode, so the
+ * combined scope travels in the body (`outlet_scope: 'all'`), never the header.
+ */
+export const sendReportEmail = async (
+    restaurantId: string,
+    body: unknown,
+    outletId?: string,
+): Promise<EmailResult<{ delivery_id: string; replayed: boolean }>> => {
+    const path = `/reports/email/send?restaurantId=${encodeURIComponent(restaurantId)}`;
+    let res: Response | null = null;
+    try {
+        const hdrs = await headersForRestaurant(path, restaurantId, { 'Content-Type': 'application/json' }, outletId);
+        res = await fetch(`${apiBaseUrl()}${path}`, { method: 'POST', headers: hdrs, body: JSON.stringify(body) });
+    } catch (error) {
+        console.warn(`Backend request failed for ${path}`, error);
+        return { ok: false, error: EMAIL_UNREACHABLE, code: null, status: 0 };
+    }
+    enforceSessionAlive(path, res.status);
+    return emailJson(res, 'Unable to send these reports');
+};
+
+/** One delivery with its per-address outcome and files (GET /reports/deliveries/:id), raw. */
+export const getReportDelivery = async (restaurantId: string, deliveryId: string): Promise<ReportDelivery | null> => {
+    const data = await backendJson<{ delivery?: ReportDelivery }>(
+        `/reports/deliveries/${encodeURIComponent(deliveryId)}?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+    return data?.delivery ?? null;
+};
+
+/**
+ * One stored attachment, as base64 — a Server Action can only hand plain data
+ * back to the browser, and an .xlsx is binary.
+ */
+export const getReportDeliveryFile = async (
+    restaurantId: string,
+    deliveryId: string,
+    fileId: string,
+): Promise<EmailResult<{ base64: string; mime: string }>> => {
+    const res = await backendCall(
+        `/reports/deliveries/${encodeURIComponent(deliveryId)}/files/${encodeURIComponent(fileId)}?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        { method: 'GET' },
+    );
+    if (!res?.ok) {return emailRefusal(res, 'Unable to download this file');}
+    const buf = Buffer.from(await res.arrayBuffer());
+    return { ok: true, data: { base64: buf.toString('base64'), mime: res.headers.get('content-type') ?? 'application/octet-stream' } };
+};
+
+/** A schedule write that returns its refusal (see the note above) — the email editor's path. */
+export const saveReportSchedule = async (
+    restaurantId: string,
+    id: string | null,
+    input: Record<string, unknown>,
+): Promise<EmailResult<ReportSchedule>> => {
+    const res = await backendCall(id ? `/reports/schedules/${encodeURIComponent(id)}` : '/reports/schedules', restaurantId, {
+        method: id ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+    });
+    return emailJson(res, id ? 'Unable to update the scheduled report' : 'Unable to create the scheduled report');
+};
+
+/** Run now, for a day the owner picks (a daily schedule) — refusal returned, not thrown. */
+export const runReportScheduleFor = async (
+    restaurantId: string,
+    id: string,
+    businessDate?: string,
+): Promise<EmailResult<{ queued: boolean; delivery_id: string | null; started?: boolean; note?: string }>> => {
+    const res = await backendCall(`/reports/schedules/${encodeURIComponent(id)}/run-now`, restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(businessDate ? { business_date: businessDate } : {}),
+    });
+    // 409 is the per-minute dedup working, not a failure: the same manual run is
+    // already queued. Returned as an outcome so the caller can say so plainly —
+    // throwing made the dashboard shout "Couldn't queue this report" at a success
+    // the owner app was reporting as one.
+    if (res?.status === 409) {
+        const refusal = await emailRefusal(res, 'This report is already queued for this minute.');
+        return { ok: true, data: { queued: false, delivery_id: null, started: false, note: refusal.error } };
+    }
+    return emailJson(res, 'Unable to queue this report');
 };
 
 // --- Cash register / day-close ----------------------------------------------
@@ -5327,6 +5571,29 @@ export const setKotTextSize = async (restaurantId: string, size: KotTextSize): P
     let reply: unknown;
     try { reply = await res.json(); } catch { return size; }
     return savedKotTextSize(reply, size);
+};
+
+// --- "Print a test KOT" (POST /print/test) -----------------------------------
+// The KOT card's third control: one test docket, in this restaurant's own style
+// and size, through the same routing a real ticket takes. The route already
+// existed and nothing called it; src/lib/kot-print-style.ts has the rest.
+//
+// A REFUSAL IS RETURNED, not thrown — the 403 without the print permission, the
+// 400 for a role the server does not know — because this module's thrown
+// messages are redacted in production (see RefusedAction). A backend this
+// server could not reach is returned the same way, with status 0 and the
+// needs-a-connection sentence, for the same reason.
+export const printTestKot = async (restaurantId: string): Promise<KotTestPrintResult> => {
+    const res = await backendCall(KOT_TEST_PRINT_PATH, restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(KOT_TEST_PRINT_BODY),
+    });
+    if (!res) {return { refused: true, status: 0, error: KOT_TEST_PRINT_OFFLINE };}
+    if (!res.ok) {return { refused: true, status: res.status, error: await readErrorMessage(res, 'Unable to print a test KOT.') };}
+    let reply: unknown = null;
+    try { reply = await res.json(); } catch { /* accepted; the card says so without the detail */ }
+    return { sent: true, reply };
 };
 
 // --- Printed-bill identity + the sentence above the bill QR ------------------

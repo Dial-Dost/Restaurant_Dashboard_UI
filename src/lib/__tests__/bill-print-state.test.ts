@@ -34,14 +34,24 @@
 import {
     BILL_PRINT_STATE_KEYS,
     NO_BILL_PRINTS,
+    PRINT_BILL_LABEL,
+    PRINT_UPDATED_BILL_LABEL,
     REPRINT_MARKER,
+    SETTLE_ANYWAY_LABEL,
+    UPDATED_BILL_MARKER,
     billPrintRefusal,
     billPrintScope,
     billPrintStateFields,
+    billPaperJobIdOf,
     billReceiptIsReprint,
+    billRevisedNoteOf,
+    handedOffPrint,
     isReprintOfPrintedBill,
+    paperStaleOf,
+    printBillHandoffOf,
     serverBillPrintState,
     serverSaysBillPrinted,
+    stalePaperSettleWarning,
 } from '../bill-print-state';
 import type { ScopedSession } from '../session-scope';
 
@@ -136,25 +146,65 @@ describe('billPrintStateFields — the server\'s numbers, carried not re-derived
     it('NO_BILL_PRINTS is the backend\'s own never-printed record, field for field', () => {
         expect(NO_BILL_PRINTS).toEqual({ print_count: 0, bill_printed_at: null, printed_at: null });
     });
+
+    it('client items 1-2: carries paper_stale, printed_as and printed_total only when the server sent them', () => {
+        expect(billPrintStateFields({ ...payload(1), paper_stale: true, printed_as: '12', printed_total: 2100 })).toEqual({
+            ...payload(1), paper_stale: true, printed_as: '12', printed_total: 2100,
+        });
+        expect(billPrintStateFields({ ...payload(1), paper_stale: null })).toEqual({ ...payload(1), paper_stale: null });
+        // A pre-055 server's row is field-for-field what it was.
+        expect(billPrintStateFields(payload(1))).toEqual(payload(1));
+        // Junk is not carried.
+        expect(billPrintStateFields({ ...payload(1), paper_stale: 'yes', printed_as: '  ', printed_total: 'x' })).toEqual(payload(1));
+    });
+
+    it('paperStaleOf: only a boolean the server sent', () => {
+        expect(paperStaleOf({ paper_stale: true })).toBe(true);
+        expect(paperStaleOf({ paper_stale: false })).toBe(false);
+        for (const junk of [{ paper_stale: null }, { paper_stale: 'true' }, {}, null, undefined, 'x']) {
+            expect(paperStaleOf(junk)).toBeNull();
+        }
+    });
 });
 
 describe('billPrintScope — the waiter gets one print, and the button says so', () => {
     it('SHOWS Print Bill to a waiter whose bill has not been printed', () => {
         const scope = billPrintScope(WAITER, serverSaysBillPrinted(payload(0)));
         expect(scope.print).toBe(true);
+        expect(scope.printLabel).toBe(PRINT_BILL_LABEL);
         expect(scope.reprintNeedsSenior).toBe(false);
         expect(scope.retiresTable).toBe(false);
     });
 
-    it('HIDES Print Bill once the server\'s count has moved, and retires the table', () => {
+    it('HIDES Print Bill once the server\'s count has moved — and the table STAYS on the waiter\'s list (client items 1-2)', () => {
         const scope = billPrintScope(WAITER, serverSaysBillPrinted(payload(1)));
         expect(scope.print).toBe(false);
         // The sentence that replaces the button. A waiter handed a blank space
         // presses it again on the next device they find.
         expect(scope.reprintNeedsSenior).toBe(true);
-        // "clear/reset from their view" — one list, one screen, one identity.
-        // Nothing is written: the table is still occupied and still owes money.
-        expect(scope.retiresTable).toBe(true);
+        // REWRITTEN ON PURPOSE (2.0.2). C3 used to take a printed table off the
+        // waiter's view; "bills are settled only at night" and it vanished for
+        // hours. It now stays, orange, until it is settled.
+        expect(scope.retiresTable).toBe(false);
+    });
+
+    it('client items 1-2: a waiter may print ONLY an UPDATED bill — when the server says the paper is stale', () => {
+        const stale = billPrintScope(WAITER, true, true);
+        expect(stale).toEqual({ print: true, printLabel: PRINT_UPDATED_BILL_LABEL, updated: true, reprintNeedsSenior: false, retiresTable: false });
+        // The same paper, or a paper nobody recorded: still a senior's.
+        for (const paper of [false, null] as const) {
+            const scope = billPrintScope(WAITER, true, paper);
+            expect(scope).toEqual({ print: false, printLabel: PRINT_BILL_LABEL, updated: false, reprintNeedsSenior: true, retiresTable: false });
+        }
+        // Unprinted: the plain first print, whatever a stray flag says.
+        expect(billPrintScope(WAITER, false, true)).toMatchObject({ print: true, printLabel: PRINT_BILL_LABEL, updated: false });
+        // And the words are the app's.
+        expect(PRINT_UPDATED_BILL_LABEL).toBe('Print updated bill');
+    });
+
+    it('a senior sees "Print updated bill" on stale paper too, and keeps the plain label otherwise', () => {
+        expect(billPrintScope(MANAGER, true, true)).toMatchObject({ print: true, printLabel: PRINT_UPDATED_BILL_LABEL, updated: true });
+        expect(billPrintScope(MANAGER, true, false)).toMatchObject({ print: true, printLabel: PRINT_BILL_LABEL, updated: false });
     });
 
     it('keeps the button for a waiter when the backend said nothing at all', () => {
@@ -285,6 +335,108 @@ describe('the REPRINT marker — one spelling, shared with the thermal path', ()
         const claimResponseAfterFirstPrint = { print_count: 1, bill_printed_at: '2026-09-11T14:05:00.000Z', printed_at: '2026-09-11T14:05:00.000Z' };
         expect(isReprintOfPrintedBill(beforeFirstPrint)).toBe(false);
         expect(isReprintOfPrintedBill(claimResponseAfterFirstPrint)).toBe(true);
+    });
+});
+
+describe('the UPDATED bill and the stale-paper settle (client items 1-2)', () => {
+    it('the banner is the backend\'s, byte for byte', () => {
+        expect(UPDATED_BILL_MARKER).toBe('** UPDATED BILL **');
+    });
+
+    it('the claim\'s revised note is read only when the claim said revised', () => {
+        expect(billRevisedNoteOf({ revised: true, revised_note: 'Replaces the bill printed 13:32' })).toBe('Replaces the bill printed 13:32');
+        expect(billRevisedNoteOf({ revised: true })).toBe('Replaces an earlier printed bill');
+        expect(billRevisedNoteOf({ revised: false, revised_note: 'Replaces the bill printed 13:32' })).toBeNull();
+        expect(billRevisedNoteOf({ revised: 'true' })).toBeNull();
+        expect(billRevisedNoteOf(null)).toBeNull();
+    });
+
+    it("the claim's own job id is read for the thermal copy of the same paper, and nothing else is", () => {
+        expect(billPaperJobIdOf({ success: true, recorded: true, jobId: ' 9a000000-0000-4000-8000-000000000001 ' })).toBe('9a000000-0000-4000-8000-000000000001');
+        for (const other of [{ recorded: false, jobId: null }, { jobId: '' }, { jobId: 7 }, {}, null, 'job', []]) {
+            expect(billPaperJobIdOf(other)).toBeNull();
+        }
+    });
+
+    it('the settle warning: with amounts for a senior, without for a reader who was not sent them, and never on a guess', () => {
+        expect(stalePaperSettleWarning({ paperStale: true, printedClock: '13:32', printedTotal: 2100, grandTotal: 2220 }))
+            .toBe('The printed bill (13:32) shows ₹2,100.00; the bill is now ₹2,220.00. Print the updated bill before taking payment.');
+        expect(stalePaperSettleWarning({ paperStale: true, printedClock: '', printedTotal: null, grandTotal: 2220 }))
+            .toBe('The printed bill no longer matches the bill. Print the updated bill before taking payment.');
+        for (const paperStale of [false, null, undefined]) {
+            expect(stalePaperSettleWarning({ paperStale, printedTotal: 2100, grandTotal: 2220 })).toBeNull();
+        }
+        expect(SETTLE_ANYWAY_LABEL).toBe('Settle anyway');
+    });
+
+    // INTEGRATION FINDING: /bill-for-table's paper_stale fingerprints the whole
+    // paper, GSTIN and address included, so a paper can be stale with the total
+    // unchanged — and the warning read "shows ₹2,100.00; the bill is now ₹2,100.00".
+    it('equal totals (to the paisa) get the sentence without amounts; a paisa of difference keeps them', () => {
+        const noAmounts = 'The printed bill (13:32) no longer matches the bill. Print the updated bill before taking payment.';
+        expect(stalePaperSettleWarning({ paperStale: true, printedClock: '13:32', printedTotal: 2100, grandTotal: 2100 })).toBe(noAmounts);
+        expect(stalePaperSettleWarning({ paperStale: true, printedClock: '13:32', printedTotal: 2100.001, grandTotal: 2099.999 })).toBe(noAmounts);
+        expect(stalePaperSettleWarning({ paperStale: true, printedClock: '13:32', printedTotal: 2100, grandTotal: 2100.01 }))
+            .toBe('The printed bill (13:32) shows ₹2,100.00; the bill is now ₹2,100.01. Print the updated bill before taking payment.');
+        expect(stalePaperSettleWarning({ paperStale: true, printedTotal: 0, grandTotal: 0 }))
+            .toBe('The printed bill no longer matches the bill. Print the updated bill before taking payment.');
+    });
+});
+
+// INTEGRATION FINDING: "Remove service charge & print" on printed paper printed
+// "** REPRINT **" on the web while the thermal and app copies said "** UPDATED
+// BILL **" — the handoff dropped the composite route's revised_note.
+describe('the service-charge handoff carries the whole claim (client items 1-2)', () => {
+    /** POST /bills/service-charge-waiver/print (render 'client') on a bill printed at 13:32. */
+    const answer = {
+        success: true,
+        waiver_created: true,
+        printed: true,
+        render: 'client',
+        billId: 'b-1',
+        recorded: true,
+        jobId: '9a000000-0000-4000-8000-000000000001',
+        print_count: 2,
+        revised: true,
+        revised_note: 'Replaces the bill printed 13:32',
+        printable_bill: { grand_total: 1932, print_count: 1, bill_printed_at: '2026-09-17T08:02:00.000Z', printed_at: '2026-09-17T08:02:00.000Z' },
+    };
+    const tab = null;
+
+    it('reads the note, the job and the priced bill off the answer', () => {
+        const handoff = printBillHandoffOf(answer, tab);
+        expect(handoff).toEqual({
+            printWindow: null,
+            printableBill: answer.printable_bill,
+            paperJobId: '9a000000-0000-4000-8000-000000000001',
+            revisedNote: 'Replaces the bill printed 13:32',
+        });
+    });
+
+    it('a paper that replaces nothing carries no note; a malformed answer carries nothing', () => {
+        expect(printBillHandoffOf({ ...answer, revised: false }, tab).revisedNote).toBeNull();
+        expect(printBillHandoffOf({ printed: true }, tab)).toEqual({ printWindow: null, printableBill: null, paperJobId: null, revisedNote: null });
+        expect(printBillHandoffOf(null, tab)).toEqual({ printWindow: null, printableBill: null, paperJobId: null, revisedNote: null });
+    });
+
+    it('the page takes all four from the handoff: UPDATED, not REPRINT, on a bill printed before', () => {
+        const fallback = payload(0);
+        const handed = handedOffPrint(printBillHandoffOf(answer, tab), fallback);
+        expect(handed.revisedNote).toBe('Replaces the bill printed 13:32');
+        expect(handed.paperJobId).toBe('9a000000-0000-4000-8000-000000000001');
+        expect(handed.printableBill).toBe(answer.printable_bill);
+        // The print state is the bill's (read before the claim): printed once.
+        expect(handed.priorPrintState).toEqual({ print_count: 1, bill_printed_at: '2026-09-17T08:02:00.000Z', printed_at: '2026-09-17T08:02:00.000Z' });
+        expect(billReceiptIsReprint('open', handed.priorPrintState)).toBe(true);
+        // ...and the note is what the print page puts in REPRINT's place.
+        expect(handed.revisedNote).not.toBeNull();
+    });
+
+    it('an older handoff (no note, no job) and a bill without print state fall back as before', () => {
+        const handed = handedOffPrint({ printWindow: null, printableBill: { grand_total: 10 } }, payload(0));
+        expect(handed.revisedNote).toBeNull();
+        expect(handed.paperJobId).toBeNull();
+        expect(handed.priorPrintState).toEqual(payload(0));
     });
 });
 

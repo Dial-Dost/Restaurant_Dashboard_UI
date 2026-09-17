@@ -7,8 +7,8 @@
 //
 // WHY THE SETTING EXISTS, because the copy below only makes sense with it: the
 // reference kitchen docket is drawn as a RASTER IMAGE — the client's ticket is a
-// proportional Arial-metric face and a thermal printer's built-in fonts are
-// monospaced, so text mode cannot match it. Nearly every thermal printer draws a
+// proportional face and a thermal printer's built-in fonts are monospaced, so
+// text mode cannot match it. Nearly every thermal printer draws a
 // raster. The ones that do not DO NOT SAY SO: they feed blank paper. On a
 // kitchen printer that is an order nobody cooks, with every screen in the
 // building saying the order is fine. No printer model is on record for this
@@ -24,6 +24,8 @@
 // shown against such a backend, and a save whose reply lacks the key raises
 // (savedKotPrintStyle / savedKotTextSize) instead of confirming. The owner app
 // does the same, in the same words (models/kot_docket_settings.dart).
+
+import { isRefusedAction, type RefusedAction } from './error-message';
 
 export type KotPrintStyle = 'reference' | 'classic';
 
@@ -65,7 +67,7 @@ export const KOT_PRINT_STYLE_OPTIONS: readonly { value: KotPrintStyle; label: st
     {
         value: 'classic',
         label: 'Classic text docket',
-        detail: 'The plain ticket this system printed before. Use it if the new one does not print.',
+        detail: "Plain text in the printer's own font, at its normal size. Use it if the new one does not print.",
     },
 ];
 
@@ -90,7 +92,8 @@ export const KOT_PRINT_STYLE_HELP =
 // three words; the dots-per-em each one means is the renderer's business.
 //
 // IT SIZES THE REFERENCE DOCKET ONLY. The classic text docket prints in the
-// printer's own font and ignores it — the copy says so, and the card repeats it
+// printer's own font, at its normal size (never stretched — client item 5), and
+// ignores it — the copy says so, and the card repeats it
 // while the classic docket is the one selected, so an owner on the fallback is
 // never left wondering why Small changed nothing.
 //
@@ -183,8 +186,171 @@ export const KOT_TEXT_SIZE_OPTIONS: readonly { value: KotTextSize; label: string
  */
 export const KOT_TEXT_SIZE_HELP =
     'Applies to the new docket only. The classic text docket prints in the printer\'s own font '
-    + 'and ignores this setting.';
+    + 'at its normal size, and ignores this setting.';
 
 /** Shown under the size control while the classic docket is the selected style. */
 export const KOT_TEXT_SIZE_CLASSIC_NOTE =
     'Your kitchens are on the classic text docket, so this size is not used until you switch back.';
+
+// ---------------------------------------------------------------------------
+// "PRINT A TEST KOT" — the card's third control.
+//
+// The server has always had POST /print/test (PERM_PRINT). It prints one slip
+// in THIS restaurant's own docket style and text size, on its own roll, through
+// the same routing a real ticket takes — so it answers the only question an
+// owner at a kitchen printer has after changing either setting: "what will the
+// kitchen get?" Nothing on the web or the app called it. This is the caller.
+//
+// ONLINE ONLY. A test slip printed from a queue an hour later is not a test of
+// anything, and every /print write is refused offline by design (the owner app's
+// OutboxPolicy denies the prefix). The card checks before it sends and says so.
+// The SERVER's queue is the one exception, and the card says that too: a slip
+// that went to every device and none printed is kept for `replayMinutes` (five)
+// for a kitchen device that connects late — one per role, the newest — and is
+// dropped after that (Restaurant_Backend print_jobs.ts, "test slips").
+//
+// ONE TAP, ONE SLIP. The handler below ignores a tap while one is in flight,
+// and the card disables the button for the same window, so a double click is
+// one request — two test slips would read as a printer that duplicates jobs.
+//
+// NEVER DURING A SAVE, AND NO SAVE DURING A TEST. The server reads the style
+// and size when it builds the slip, and a save moves the card before its
+// request lands — so a test pressed mid-save prints the setting the card has
+// already moved away from, under help text that says "the style and size chosen
+// above". kotDocketCardLocks turns the button off while a save is out and the
+// choices off while a test is.
+//
+// A REFUSAL IS SHOWN IN THE SERVER'S WORDS. The route 403s without the print
+// permission and 400s a role it does not know; db.ts RETURNS that sentence (a
+// "use server" module has its thrown messages redacted in production) and the
+// card puts it in the toast. The owner app says the same things
+// (models/kot_docket_settings.dart, kotTestPrint*).
+// ---------------------------------------------------------------------------
+
+/** The existing route, and the one body this card sends to it. */
+export const KOT_TEST_PRINT_PATH = '/print/test';
+export const KOT_TEST_PRINT_BODY: Readonly<{ role: 'kot' }> = Object.freeze({ role: 'kot' });
+
+export const KOT_TEST_PRINT_LABEL = 'Print a test KOT';
+export const KOT_TEST_PRINT_SENDING = 'Sending a test KOT…';
+export const KOT_TEST_PRINT_HELP =
+    'Sends one test docket to the kitchen printer in the style and size chosen above, '
+    + 'so you can check the paper before service.';
+export const KOT_TEST_PRINT_SENT_TITLE = 'Test KOT sent';
+export const KOT_TEST_PRINT_FAILED_TITLE = "Couldn't print a test KOT";
+export const KOT_TEST_PRINT_OFFLINE = 'A test KOT needs a connection — reconnect and try again.';
+
+/**
+ * What becomes of a broadcast slip that no device printed, in one sentence.
+ *
+ * The server keeps it for the `replayMinutes` its reply names, for the first
+ * kitchen device that connects late, and never after — so an owner whose
+ * kitchen PC is off learns that switching it on in the next few minutes still
+ * prints the slip, and that it will not appear mid-service. A reply without
+ * the number (a backend before the window) may keep it far longer, so this
+ * says only that it may still print.
+ */
+export const kotTestPrintReplayNote = (reply: unknown): string => {
+    const minutes = isDocument(reply) ? reply.replayMinutes : undefined;
+    if (typeof minutes === 'number' && Number.isInteger(minutes) && minutes > 0) {
+        return 'If nothing came out, it prints on the first kitchen device to connect within '
+            + `${String(minutes)} minute${minutes === 1 ? '' : 's'}, and not after that.`;
+    }
+    return 'If nothing came out, it may still print when a kitchen device connects.';
+};
+
+/**
+ * What the server did with the slip, in one sentence.
+ *
+ * POST /print/test answers `{ results: [{ role, mode, reason, destination, … }] }`.
+ * 'directed' went to one named printer; 'broadcast' went to every connected
+ * device, each of which prints it on the kitchen printer it has set up — and
+ * when a routed printer's device is offline, the owner should know that is why.
+ * A reply this card cannot read still means the request was accepted.
+ */
+export const kotTestPrintOutcome = (reply: unknown): string => {
+    const results = isDocument(reply) && Array.isArray(reply.results)
+        ? reply.results.filter(isDocument)
+        : null;
+    if (!results) {return "Sent. Check the kitchen printer's paper.";}
+    if (results.length === 0) {return 'Nothing was sent to print.';}
+    const first = results[0];
+    const destination = typeof first.destination === 'string' && first.destination.trim()
+        ? first.destination.trim()
+        : null;
+    if (first.mode === 'directed') {return `Sent to ${destination ?? 'the kitchen printer'}. Check the paper there.`;}
+    if (first.reason === 'no_device_online' && destination) {
+        return `${destination} is not online, so every connected device with a kitchen printer was asked to print it. `
+            + `Check the paper. ${kotTestPrintReplayNote(reply)}`;
+    }
+    return `Every connected device with a kitchen printer was asked to print it. Check the paper. ${kotTestPrintReplayNote(reply)}`;
+};
+
+/** Which of the card's controls are off. */
+export interface KotDocketCardLocks {
+    /** The style and size choices. */
+    choicesDisabled: boolean;
+    /** "Print a test KOT". */
+    testDisabled: boolean;
+}
+
+/**
+ * THE CARD'S CONTROLS LOCK EACH OTHER OUT (see "never during a save" above).
+ * The test button is not gated on the settings permission — the route checks
+ * the print one — but it waits out the load, any save, and its own request;
+ * the choices wait out the load, any save, and a test in flight.
+ */
+export const kotDocketCardLocks = (state: {
+    canEdit: boolean;
+    loading: boolean;
+    saving: boolean;
+    testing: boolean;
+}): KotDocketCardLocks => ({
+    choicesDisabled: !state.canEdit || state.loading || state.saving || state.testing,
+    testDisabled: state.loading || state.saving || state.testing,
+});
+
+/** What the card's send returns: the reply, or the server's refusal. */
+export type KotTestPrintResult = { sent: true; reply: unknown } | RefusedAction;
+
+export interface KotTestPrintDeps {
+    /** False only when the browser knows it is offline. */
+    online: () => boolean;
+    /** The one request. */
+    send: () => Promise<KotTestPrintResult>;
+    notify: (notice: { title: string; description: string; failed: boolean }) => void;
+    /** Told true before the request and false after, for the button. */
+    busy: (sending: boolean) => void;
+}
+
+/**
+ * The button's click handler: one tap, one request, and a tap while one is in
+ * flight does nothing. Pure of React so the web suite (node) can press it.
+ */
+export const kotTestPrintHandler = (deps: KotTestPrintDeps): (() => Promise<void>) => {
+    let inFlight = false;
+    return async () => {
+        if (inFlight) {return;}
+        if (!deps.online()) {
+            deps.notify({ title: KOT_TEST_PRINT_FAILED_TITLE, description: KOT_TEST_PRINT_OFFLINE, failed: true });
+            return;
+        }
+        inFlight = true;
+        deps.busy(true);
+        try {
+            const result = await deps.send();
+            if (isRefusedAction(result)) {
+                deps.notify({ title: KOT_TEST_PRINT_FAILED_TITLE, description: result.error, failed: true });
+            } else {
+                deps.notify({ title: KOT_TEST_PRINT_SENT_TITLE, description: kotTestPrintOutcome(result.reply), failed: false });
+            }
+        } catch {
+            // The server action itself did not complete: the browser lost the
+            // line mid-request. Its message is not a sentence for an owner.
+            deps.notify({ title: KOT_TEST_PRINT_FAILED_TITLE, description: KOT_TEST_PRINT_OFFLINE, failed: true });
+        } finally {
+            inFlight = false;
+            deps.busy(false);
+        }
+    };
+};

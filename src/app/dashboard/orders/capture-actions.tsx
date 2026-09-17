@@ -144,9 +144,9 @@ import {
     type TenderDraft,
     type VocabularyOption,
 } from "@/lib/mis-capture"
-import { serverBillPrintState } from "@/lib/bill-print-state"
+import { printBillHandoffOf, serverBillPrintState, type PrintBillHandoff } from "@/lib/bill-print-state"
 import { cancelKotRoute } from "@/lib/orders-grid"
-import { can } from "@/lib/session-scope"
+import { answered, can, isWaiterOnly } from "@/lib/session-scope"
 import { cn } from "@/lib/utils"
 
 /** The order this panel acts on, in the only shape it needs. */
@@ -159,16 +159,9 @@ export interface CaptureOrder {
 
 type Which = null | "comp" | "void" | "waiver" | "tenders" | "counter"
 
-/**
- * What "Remove service charge & print" hands the page's print flow: the tab it
- * opened inside its own click (a popup blocker would kill one opened later), and
- * the bill the server has ALREADY claimed the print of — so the page renders it
- * without claiming a second time.
- */
-export interface PrintBillHandoff {
-    printWindow: Window | null
-    printableBill: Record<string, unknown> | null
-}
+// What "Remove service charge & print" hands the page's print flow — defined
+// beside the claim readers it is built from (bill-print-state.ts).
+export type { PrintBillHandoff }
 
 // ---------------------------------------------------------------------------
 // Shared bits
@@ -332,10 +325,15 @@ export function CaptureActions({ restaurantId, order, onChanged, printBill }: {
     */
     const actions = user?.actions_set
     const canComp = can(user, "comp_item")
-    const canVoid = can(user, "void_order")
+    // CLIENT ITEM 3 — a waiter-only session never voids a ticket the kitchen
+    // holds, whatever it was granted: the server refuses it (cancel_needs_senior),
+    // so the item is not drawn at all rather than drawn as a permission to ask
+    // for. The same rule as Cancel KOT (`cancelKotRoute`).
+    const offersVoid = !isWaiterOnly(user) && answered(user, "cancel_kot") !== false
+    const canVoid = offersVoid && can(user, "void_order")
     const canWaive = can(user, "waive_service_charge")
     const canTender = hasPermission(actions, PERM_RECORD_PAYMENT)
-    const anyLocked = !canComp || !canVoid || !canWaive || !canTender
+    const anyLocked = !canComp || (offersVoid && !canVoid) || !canWaive || !canTender
 
     const money = useCallback((v: unknown) => formatAmount(v, currencySymbol), [currencySymbol])
     const fail = useCallback((e: unknown) => {
@@ -397,7 +395,7 @@ export function CaptureActions({ restaurantId, order, onChanged, printBill }: {
                     </DropdownMenuLabel>
                     <DropdownMenuSeparator />
                     {item("comp", <Gift className="h-4 w-4" />, "Non-chargeable item…", canComp, "Mark Items Non-Chargeable")}
-                    {item("void", <Ban className="h-4 w-4" />, "Void this order…", canVoid, "Void Orders With Reason")}
+                    {offersVoid ? item("void", <Ban className="h-4 w-4" />, "Void this order…", canVoid, "Void Orders With Reason") : null}
                     {item("waiver", <Receipt className="h-4 w-4" />, "Remove service charge & print…", canWaive, "Waive Service Charge")}
                     <DropdownMenuSeparator />
                     {item("tenders", <Wallet className="h-4 w-4" />, "Payments & tip…", canTender, "Record Payment")}
@@ -876,10 +874,12 @@ function CancelKotReasonDialog({
       submit empty (1.2), because that route records a reason but, for the sake
       of shipped tills, does not refuse a missing one.
 
-  `cancelKotRoute` makes that choice, and it is the same two-route rule the owner
-  app's table sheet uses, so a waiter is offered the same control on both. A
-  session that can take neither route is shown nothing. DELETE /orders/:id is
-  never used: it records no reason.
+  `cancelKotRoute` makes that choice, and it is the same rule the owner app's
+  table sheet uses, so one person is offered the same control on both. A
+  session that can take neither route is shown nothing — and since client item
+  3 (2026-09-17) that includes every waiter-only session, which the server
+  refuses on both routes. DELETE /orders/:id is never used: it records no
+  reason.
 
   ONLY ON A NUMBERED TICKET. With no KOT number there is no placed ticket to
   cancel from the KOT section (the trailing "No KOT number" block gathers several
@@ -1049,7 +1049,10 @@ function WaiverDialog({
                 answered = answer.result
                 const said = serviceChargeRemovalSentence(answer.result, money)
                 if (answer.result.printed && printBill) {
-                    await printBill({ printWindow: tab, printableBill: answer.result.printable_bill ?? null })
+                    // The claim's fields travel whole — the paper's job id AND its
+                    // "Replaces the bill printed 13:32", or a waiver on printed
+                    // paper prints REPRINT where the thermal copy says UPDATED BILL.
+                    await printBill(printBillHandoffOf(answer.result, tab))
                 } else {
                     tab?.close()
                 }

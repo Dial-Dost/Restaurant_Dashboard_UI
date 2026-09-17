@@ -5,6 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { SearchInput } from "@/components/ui/search-input";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -21,6 +22,7 @@ import { getAuditLogPage, undoAuditLog } from '@/lib/db';
 import { useToast } from "@/hooks/use-toast";
 import { formatDateTime, formatFullDateTime, timezoneCaption } from "@/lib/tz";
 import { useTimezone } from "@/lib/use-timezone";
+import { filterFetchDelayMs } from "@/lib/search-input";
 
 export interface AuditLog {
   id: string;
@@ -55,6 +57,8 @@ export default function AuditLogsPage() {
   const { timezone } = useTimezone();
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [category, setCategory] = useState("All");
+  // The box's text, and the query it has settled on (debounced by the box).
+  const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -79,7 +83,7 @@ export default function AuditLogsPage() {
     isAdmin ||
     (Array.isArray(user?.actions_set) && (user.actions_set.includes('*') || user.actions_set.includes(UNDO_PERMISSION_ID)))
   );
-  const hasFilters = category !== 'All' || Boolean(search) || Boolean(from) || Boolean(to);
+  const hasFilters = category !== 'All' || Boolean(searchInput) || Boolean(from) || Boolean(to);
 
   const filters = useMemo(() => ({
     category,
@@ -92,12 +96,16 @@ export default function AuditLogsPage() {
 
   // First page. Debounced, and re-run from offset 0 whenever a filter changes —
   // which also discards everything already scrolled in, so a filtered view can
-  // never show rows that no longer match.
+  // never show rows that no longer match. The search box debounces itself, so
+  // a change to the search alone goes at once (an emptied box re-asks now).
   const [reloadToken, setReloadToken] = useState(0);
+  const lastFilters = useRef<typeof filters | null>(null);
   useEffect(() => {
     if (!rid || !isAdmin) {return;}
     let active = true;
     setLoading(true);
+    const delay = filterFetchDelayMs(lastFilters.current, filters, ['search'], 300);
+    lastFilters.current = filters;
     const t = setTimeout(() => {
       void getAuditLogPage(rid, { ...filters, limit: PAGE_SIZE, offset: 0 })
         .then((page) => {
@@ -113,7 +121,7 @@ export default function AuditLogsPage() {
           setHasMore(page.has_more);
         })
         .finally(() => { if (active) {setLoading(false);} });
-    }, 300);
+    }, delay);
     return () => { active = false; clearTimeout(t); };
   }, [rid, isAdmin, filters, reloadToken]);
 
@@ -175,7 +183,7 @@ export default function AuditLogsPage() {
     );
   }
 
-  const resetFilters = () => { setCategory('All'); setSearch(''); setFrom(''); setTo(''); };
+  const resetFilters = () => { setCategory('All'); setSearchInput(''); setFrom(''); setTo(''); };
 
   // After an undo, re-read exactly the window the user has scrolled in (one
   // request) so the "Undone" badge and the new undo entry appear without
@@ -243,7 +251,14 @@ export default function AuditLogsPage() {
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">Search</label>
-              <Input value={search} onChange={(e) => { setSearch(e.target.value); }} placeholder="Employee, action, or details…" />
+              <SearchInput
+                value={searchInput}
+                onValueChange={setSearchInput}
+                onQueryChange={setSearch}
+                debounceMs={300}
+                placeholder="Employee, action, or details…"
+                aria-label="Search the audit log"
+              />
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">From</label>

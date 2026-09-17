@@ -51,6 +51,9 @@ import { useTranslation } from '@/context/LanguageContext';
 import { useAuth } from '@/context/AuthContext';
 import { canEditDishAvailability, canOpenEmployeesPage, canOpenFloorPlan, isWaiterOnly as sessionIsWaiterOnly } from '@/lib/session-scope';
 import { DishAvailabilitySidebar } from '@/components/dish-availability-sidebar';
+// The nav's keyword table lives in lib so every link into a section (the
+// Overview's cards, the glance box) asks the same question this nav does.
+import { hasKeywordAction, sectionKeywords } from '@/lib/dashboard-sections';
 import { RealtimeProvider } from '@/context/RealtimeContext';
 import { TimezoneProvider } from '@/lib/use-timezone';
 import Dock, { type DockSectionData } from '@/components/ui/Dock';
@@ -60,16 +63,6 @@ import '@/components/ui/Dock.css';
 const inter = Inter({ subsets: ['latin'] });
 
 const normalizeActionName = (value: string) => value.trim().toLowerCase();
-
-const hasKeywordAction = (actionNames: Set<string>, keywords: string[]) => {
-  if (keywords.length === 0) {return true;}
-  for (const actionName of actionNames) {
-    if (keywords.some((keyword) => actionName.includes(keyword.toLowerCase()))) {
-      return true;
-    }
-  }
-  return false;
-};
 
 function LayoutContent({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -139,9 +132,9 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
     {
       title: 'Operations',
       items: [
-        { href: '/dashboard', label: t('dashboard'), icon: <Home className="h-6 w-6" />, exact: true, actionKeywords: [] },
-        { href: '/dashboard/orders', label: t('orders'), icon: <ListOrdered className="h-6 w-6" />, actionKeywords: ['order', 'bill', 'payment'] },
-        { href: '/dashboard/tables', label: t('tables'), icon: <Package className="h-6 w-6" />, actionKeywords: ['table'] },
+        { href: '/dashboard', label: t('dashboard'), icon: <Home className="h-6 w-6" />, exact: true, actionKeywords: sectionKeywords('/dashboard') },
+        { href: '/dashboard/orders', label: t('orders'), icon: <ListOrdered className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/orders') },
+        { href: '/dashboard/tables', label: t('tables'), icon: <Package className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/tables') },
         /*
           D5 — FLOOR PLAN IS ITS OWN DESTINATION, BESIDE TABLES AND NOT INSIDE IT.
           Tables is the SERVICE screen (occupy, covers, release, take orders);
@@ -153,69 +146,69 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
           by the permission its own route demands.
         */
         ...(canEditFloorPlan
-          ? [{ href: '/dashboard/floor-plan', label: 'Floor plan', icon: <LayoutGrid className="h-6 w-6" />, actionKeywords: [] as string[] }]
+          ? [{ href: '/dashboard/floor-plan', label: 'Floor plan', icon: <LayoutGrid className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/floor-plan') }]
           : []),
-        { href: '/dashboard/waitlist', label: 'Waitlist', icon: <Hourglass className="h-6 w-6" />, actionKeywords: ['table', 'order', 'waitlist'] },
-        { href: '/dashboard/bookings', label: t('bookings'), icon: <ShoppingCart className="h-6 w-6" />, actionKeywords: ['booking'] },
-        { href: '/dashboard/menu', label: 'Menu', icon: <BookOpen className="h-6 w-6" />, actionKeywords: ['menu'] },
+        { href: '/dashboard/waitlist', label: 'Waitlist', icon: <Hourglass className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/waitlist') },
+        { href: '/dashboard/bookings', label: t('bookings'), icon: <ShoppingCart className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/bookings') },
+        { href: '/dashboard/menu', label: 'Menu', icon: <BookOpen className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/menu') },
       ],
     },
     {
       title: 'Inventory',
       items: [
-        { href: '/dashboard/inventory', label: t('inventory'), icon: <ClipboardList className="h-6 w-6" />, actionKeywords: ['inventory', 'stock'] },
-        { href: '/dashboard/purchase-orders', label: 'Purchase orders', icon: <Truck className="h-6 w-6" />, actionKeywords: ['inventory', 'stock', 'purchase', 'vendor'] },
+        { href: '/dashboard/inventory', label: t('inventory'), icon: <ClipboardList className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/inventory') },
+        { href: '/dashboard/purchase-orders', label: 'Purchase orders', icon: <Truck className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/purchase-orders') },
       ],
     },
     {
       title: 'Guests',
       items: [
-        { href: '/dashboard/customers', label: t('customers'), icon: <Users className="h-6 w-6" />, actionKeywords: ['customer'] },
-        { href: '/dashboard/feedback', label: 'Feedback', icon: <FileText className="h-6 w-6" />, actionKeywords: ['feedback'] },
+        { href: '/dashboard/customers', label: t('customers'), icon: <Users className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/customers') },
+        { href: '/dashboard/feedback', label: 'Feedback', icon: <FileText className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/feedback') },
         ...(hasRole('admin')
-          ? [{ href: '/dashboard/coupons', label: 'Coupons', icon: <Ticket className="h-6 w-6" />, actionKeywords: [] as string[] }]
+          ? [{ href: '/dashboard/coupons', label: 'Coupons', icon: <Ticket className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/coupons') }]
           : []),
       ],
     },
     {
       title: 'Team',
       items: [
-        { href: '/dashboard/attendance', label: 'Attendance', icon: <Clock className="h-6 w-6" />, actionKeywords: [] },
+        { href: '/dashboard/attendance', label: 'Attendance', icon: <Clock className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/attendance') },
         ...(hasRole('admin')
-          ? [{ href: '/dashboard/valet', label: 'Valet Dashboard', icon: <Activity className="h-6 w-6" />, actionKeywords: ['valet', 'parking'] }]
+          ? [{ href: '/dashboard/valet', label: 'Valet Dashboard', icon: <Activity className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/valet') }]
           : []),
       ],
     },
     {
       title: 'Insights',
       items: [
-        { href: '/dashboard/analytics', label: t('analytics'), icon: <LineChart className="h-6 w-6" />, actionKeywords: ['analytics', 'apc', 'report'] },
+        { href: '/dashboard/analytics', label: t('analytics'), icon: <LineChart className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/analytics') },
         // Simulation is analytics-derived (same backend action gate), so it sits
         // beside Analytics and opens for exactly the same roles.
-        { href: '/dashboard/simulation', label: 'Simulation', icon: <SlidersHorizontal className="h-6 w-6" />, actionKeywords: ['analytics', 'apc', 'report'] },
-        { href: '/dashboard/history', label: 'History', icon: <History className="h-6 w-6" />, actionKeywords: ['analytics', 'report'] },
+        { href: '/dashboard/simulation', label: 'Simulation', icon: <SlidersHorizontal className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/simulation') },
+        { href: '/dashboard/history', label: 'History', icon: <History className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/history') },
         // The MIS / control report set (Item Wise, Void KOT, Bill Edit, …).
         // Gated on ACCOUNTING, not analytics: every /reports/mis/* route carries
         // the SAME ACCOUNTING_PERM as the rest of /reports/*, so keywording it
         // like its Insights neighbours would show the tab to a user whose every
         // request inside it comes back 403.
-        { href: '/dashboard/reports', label: 'Reports', icon: <FileSpreadsheet className="h-6 w-6" />, actionKeywords: ['report', 'accounting', 'finance'] },
+        { href: '/dashboard/reports', label: 'Reports', icon: <FileSpreadsheet className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/reports') },
       ],
     },
     {
       title: 'Money',
       items: [
-        { href: '/dashboard/accounting', label: 'Accounting', icon: <FileText className="h-6 w-6" />, actionKeywords: ['report', 'accounting', 'finance'] },
-        { href: '/dashboard/cash', label: 'Cash register', icon: <Wallet className="h-6 w-6" />, actionKeywords: ['report', 'accounting', 'finance', 'cash'] },
+        { href: '/dashboard/accounting', label: 'Accounting', icon: <FileText className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/accounting') },
+        { href: '/dashboard/cash', label: 'Cash register', icon: <Wallet className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/cash') },
         ...(hasRole('admin')
-          ? [{ href: '/dashboard/billing', label: 'Billing & plan', icon: <CreditCard className="h-6 w-6" />, actionKeywords: [] as string[] }]
+          ? [{ href: '/dashboard/billing', label: 'Billing & plan', icon: <CreditCard className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/billing') }]
           : []),
       ],
     },
     {
       title: 'Setup',
       items: [
-        { href: '/dashboard/outlets', label: 'Outlets', icon: <Globe className="h-6 w-6" />, actionKeywords: ['outlet', 'branch', 'setting', 'profile'] },
+        { href: '/dashboard/outlets', label: 'Outlets', icon: <Globe className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/outlets') },
       ],
     },
   ]

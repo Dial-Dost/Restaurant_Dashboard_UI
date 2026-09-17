@@ -42,7 +42,7 @@ import {
     type BillEscPosInput,
 } from '../bill-escpos';
 import { billCustomerLines } from '../bill-customer';
-import { REPRINT_MARKER } from '../bill-print-state';
+import { REPRINT_MARKER, billReceiptIsReprint, handedOffPrint, printBillHandoffOf } from '../bill-print-state';
 import { escposLines, latin1 } from './escpos-text';
 
 function readSource(relative: string): string {
@@ -787,5 +787,69 @@ describe('the print page draws and encodes this bill', () => {
         }
         const rows = print.slice(print.indexOf('data-testid="receipt-date-row"'), print.indexOf('data-testid="receipt-items"'));
         expect(rows).not.toContain('shrink-0');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// CLIENT ITEMS 1 AND 2 — THE UPDATED BILL, byte for byte the backend's.
+//
+// jest-tests/bill_reprint_marker.test.ts pins the backend's first bytes to
+// exactly this prefix; the web's are pinned here to the same prefix, so a bill
+// that replaces out-of-date paper opens identically off a till and off the
+// dashboard.
+// ---------------------------------------------------------------------------
+describe('the UPDATED bill banner (client items 1-2)', () => {
+    const latinPrefix = (bytes: Uint8Array, n: number): string => latin1(bytes.subarray(0, n));
+
+    it('opens with the same bytes as escpos.ts: bold double "** UPDATED BILL **", then the replaced print\'s line', () => {
+        const bytes = buildBillEscPos(gaia({ reprint: true, revisedNote: 'Replaces the bill printed 13:32' }));
+        const expected = '\x1b@\x1dL\x18\x00\x1dW\x10\x02\x1ba\x01\x1bE\x01\x1b!\x38** UPDATED BILL **\n';
+        expect(latinPrefix(bytes, expected.length)).toBe(expected);
+        const lines = escposLines(bytes);
+        expect(lines.slice(0, 3)).toEqual(['** UPDATED BILL **', 'Replaces the bill printed 13:32', 'Gaia - Global Vegetarian']);
+        // It takes REPRINT's place; it is never printed beside it.
+        expect(lines).not.toContain(REPRINT_MARKER);
+    });
+
+    it('absent, null or blank prints exactly what it printed before the field existed', () => {
+        const before = latin1(buildBillEscPos(gaia({ reprint: true })));
+        for (const revisedNote of [undefined, null, '', '   ']) {
+            expect(latin1(buildBillEscPos(gaia({ reprint: true, revisedNote })))).toBe(before);
+        }
+    });
+
+    it('on 58mm the 18-character banner is bold at normal size (36 cells would not fit 32)', () => {
+        const bytes = buildBillEscPos(gaia({ width: 32, revisedNote: 'Replaces the bill printed 13:32' }));
+        expect(latin1(bytes)).toContain('\x1bE\x01** UPDATED BILL **\n\x1bE\x00');
+        expect(escposLines(bytes).slice(0, 2)).toEqual(['** UPDATED BILL **', 'Replaces the bill printed 13:32']);
+    });
+
+    // INTEGRATION FINDING: "Remove service charge & print" on printed paper
+    // printed REPRINT here and UPDATED BILL off the till.
+    it('a service-charge removal on printed paper reaches the roll as UPDATED BILL, never REPRINT', () => {
+        const answer = {
+            success: true, printed: true, render: 'client', recorded: true, jobId: 'j-1',
+            revised: true, revised_note: 'Replaces the bill printed 13:32',
+            printable_bill: { grand_total: 5058.26, print_count: 1, bill_printed_at: '2026-09-14T08:02:00.000Z', printed_at: '2026-09-14T08:02:00.000Z' },
+        };
+        const handed = handedOffPrint(printBillHandoffOf(answer, null), null);
+        // What the print page hands generateEscPos: isReprint off the prior state, and the note.
+        const reprint = billReceiptIsReprint('open', handed.priorPrintState);
+        expect(reprint).toBe(true);
+        const lines = escposLines(buildBillEscPos(gaia({ reprint, revisedNote: handed.revisedNote, serviceCharge: null, grandTotal: 5058.26 })));
+        expect(lines.slice(0, 2)).toEqual(['** UPDATED BILL **', 'Replaces the bill printed 13:32']);
+        expect(lines).not.toContain(REPRINT_MARKER);
+    });
+
+    it('the print page stamps the claim\'s line and hands it to the encoder and the preview', () => {
+        const printPage = code(readSource('src/app/dashboard/orders/print/page.tsx'));
+        expect(printPage).toContain("const revisedNote = printed.source === 'open' ? (order.bill_revised_note ?? '').trim() || null : null;");
+        expect(printPage).toContain('generateEscPos(user, profile, cashierName, bill, order, logoBase64, timezone, billPrint, printed, isReprint, revisedNote)');
+        expect(printPage).toMatch(/\{revisedNote \? \([\s\S]{0,200}?\{UPDATED_BILL_MARKER\}/);
+        expect(printPage).toContain('revisedNote,');
+        const orders = code(readSource('src/app/dashboard/orders/page.tsx'));
+        expect(orders).toContain('if (claim.outcome === "claimed") { revisedNote = claim.revisedNote; paperJobId = claim.paperJobId; }');
+        expect(orders).toContain('bill_revised_note: revisedNote,');
+        expect(code(readSource('src/lib/db.ts'))).toContain('revisedNote: billRevisedNoteOf(body),');
     });
 });
