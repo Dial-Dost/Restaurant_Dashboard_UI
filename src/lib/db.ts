@@ -4586,27 +4586,6 @@ export const getReportSchedules = async (restaurantId: string): Promise<ReportSc
     return Array.isArray(data?.schedules) ? data.schedules : null;
 };
 
-/**
- * Can THIS deployment send email at all?
- *
- * The server decides and says so on the same response as the list; the form
- * obeys rather than assuming. A capability a client has to guess at is the
- * recurring shape of this project's bugs — and the specific cost of guessing
- * wrong here is an owner saving a daily 8am email schedule that renders a report
- * every morning, fails to deliver it, and disables itself after five days.
- *
- * `null` on an unreachable backend, so "we could not ask" stays distinguishable
- * from "the answer is no" — the same contract getReportSchedules uses.
- */
-export const getReportEmailAvailable = async (restaurantId: string): Promise<boolean | null> => {
-    const data = await backendJson<{ email_available?: boolean }>(
-        `/reports/schedules?restaurantId=${encodeURIComponent(restaurantId)}`,
-        restaurantId,
-        { method: 'GET' },
-    );
-    return typeof data?.email_available === 'boolean' ? data.email_available : null;
-};
-
 export const getReportDeliveries = async (
     restaurantId: string,
     opts: { scheduleId?: string; limit?: number } = {},
@@ -4622,51 +4601,12 @@ export const getReportDeliveries = async (
     return Array.isArray(data?.deliveries) ? data.deliveries : null;
 };
 
-export const createReportSchedule = async (restaurantId: string, input: ReportSchedulePatch): Promise<ReportSchedule> => {
-    const res = await backendCall('/reports/schedules', restaurantId, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(input),
-    });
-    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to create the scheduled report');}
-    return res.json();
-};
-
-export const updateReportSchedule = async (restaurantId: string, id: string, input: ReportSchedulePatch): Promise<ReportSchedule> => {
-    const res = await backendCall(`/reports/schedules/${encodeURIComponent(id)}`, restaurantId, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(input),
-    });
-    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to update the scheduled report');}
-    return res.json();
-};
-
 // Archives rather than destroys — the delivery history and the at-most-once
 // guard outlive the schedule, so the row stops firing but never disappears from
 // the record. The endpoint is DELETE for REST's sake; the effect is an archive.
 export const deleteReportSchedule = async (restaurantId: string, id: string): Promise<void> => {
     const res = await backendCall(`/reports/schedules/${encodeURIComponent(id)}`, restaurantId, { method: 'DELETE' });
     if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to remove the scheduled report');}
-};
-
-/** QUEUES an extra occurrence — it is rendered by the next sweep tick, not
- *  inline — and returns its delivery id so the caller can point at the row. */
-export const runReportScheduleNow = async (
-    restaurantId: string,
-    id: string,
-): Promise<{ queued: boolean; delivery_id: string | null; note: string | null }> => {
-    const res = await backendCall(`/reports/schedules/${encodeURIComponent(id)}/run-now`, restaurantId, { method: 'POST' });
-    // 409 is the per-minute dedup working, not a failure: the same manual run is
-    // already queued. Returned as an outcome rather than thrown so the caller can
-    // say so plainly — throwing made the dashboard shout "Couldn't queue this
-    // report" at a success the owner app was reporting as one.
-    if (res?.status === 409) {return { queued: false, delivery_id: null, note: await readErrorMessage(res) };}
-    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to queue this report');}
-    try {
-        const j = await res.json();
-        return { queued: true, delivery_id: typeof j?.delivery_id === 'string' ? j.delivery_id : null, note: null };
-    } catch { return { queued: true, delivery_id: null, note: null }; }
 };
 
 // The rendered artifact. This is the ONLY place a scheduled report's figures are
@@ -4833,6 +4773,10 @@ export const runReportScheduleFor = async (
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(businessDate ? { business_date: businessDate } : {}),
     });
+    // 409 is the per-minute dedup working, not a failure: the same manual run is
+    // already queued. Returned as an outcome so the caller can say so plainly —
+    // throwing made the dashboard shout "Couldn't queue this report" at a success
+    // the owner app was reporting as one.
     if (res?.status === 409) {
         const refusal = await emailRefusal(res, 'This report is already queued for this minute.');
         return { ok: true, data: { queued: false, delivery_id: null, started: false, note: refusal.error } };
