@@ -216,6 +216,13 @@ export interface BillPrintedRefusal {
     nextPartyTable: string | null;
     /** The action's label, or null when there is no action to offer. */
     actionLabel: string | null;
+    /**
+     * 2.0.2 (client items 1 and 2): the server's label for "add these to the
+     * printed bill anyway" — "Add to 12's printed bill" — or null when it did
+     * not offer one (a guest, a merge, a move, or a server older than 2.0.2).
+     * The page answers it with the same confirm the orange tile opens.
+     */
+    addToPrintedLabel: string | null;
 }
 
 /** Null unless [body] is a `bill_printed` refusal. */
@@ -228,11 +235,13 @@ export const readBillPrintedRefusal = (body: unknown): BillPrintedRefusal | null
     const next = str(b.next_party_table);
     const elsewhere = next !== '' && next.toLowerCase() !== table.toLowerCase();
     const label = str(b.next_party_action);
+    const addLabel = str(b.add_to_printed_action);
     return {
         message: str(b.error) || "This table's bill has already been printed.",
         table,
         nextPartyTable: elsewhere ? next : null,
         actionLabel: elsewhere ? (label || takeItOnLabel(next)) : null,
+        addToPrintedLabel: addLabel || null,
     };
 };
 
@@ -360,6 +369,72 @@ export const reprintAnchorOrder = <T extends { table: string; status: string; cr
     if (open.length === 0) { return null; }
     const at = (o: T): number => (o.created_at ? Date.parse(o.created_at) : Number.NaN);
     return [...open].sort((a, z) => (Number.isFinite(at(z)) ? at(z) : 0) - (Number.isFinite(at(a)) ? at(a) : 0))[0];
+};
+
+// ============================================================================
+// CLIENT ITEMS 1 AND 2 — ADDING TO A PRINTED BILL, ON PURPOSE
+// ============================================================================
+//
+// "If a bill is printed on a table (not settled), there should still be an
+// option to add more items onto the existing bill." The server lets a waiter do
+// it only when the write says `add_to_printed_bill: true`, and this page sends
+// that only after the operator has seen what it means and chosen it over the
+// green seat beside the table. The words are the app's too.
+
+/** The body key the server reads (Restaurant_Backend/next_party.ts ADD_TO_PRINTED_BILL_KEY). */
+export const ADD_TO_PRINTED_BILL_KEY = 'add_to_printed_bill';
+
+/** "Add to 12's printed bill" — the server's addToPrintedBillLabel, word for word. */
+export const addToPrintedBillLabel = (table: string, parentTable?: string | null): string =>
+    `Add to ${tableSentenceName(table, parentTable)}'s printed bill`;
+
+/** The confirm's primary action. */
+export const ADD_TO_PRINTED_BILL_ACTION = 'Add to printed bill';
+
+/** "Use green 12" — the confirm's other action: the next party's seat, drawn green. */
+export const useGreenTableLabel = (root: string): string => `Use green ${root.trim()}`;
+
+/**
+ * THE CONFIRM, in one sentence: "12's bill was printed at 13:32. These items go
+ * on that bill and it must be printed again. New guests? Use the green 12."
+ * `printedClock` is the server's printed_at in the restaurant's zone ("" when
+ * unknown); `hasGreen` is whether there is a green seat to send new guests to.
+ */
+export const addToPrintedBillConfirm = (input: {
+    table: string;
+    parentTable?: string | null;
+    printedClock?: string | null;
+    hasGreen: boolean;
+}): string => {
+    const named = tableSentenceName(input.table, input.parentTable);
+    const root = (input.parentTable ?? '').trim() || (parseNextPartyName(input.table)?.root ?? input.table.trim());
+    const when = (input.printedClock ?? '').trim();
+    const printed = when ? `${named}'s bill was printed at ${when}.` : `${named}'s bill has been printed.`;
+    const green = input.hasGreen ? ` New guests? Use the green ${root}.` : '';
+    return `${printed} These items go on that bill and it must be printed again.${green}`;
+};
+
+/** The strip across the order pad while a draft is headed for printed paper. */
+export const addingToPrintedBillStrip = (table: string, parentTable?: string | null): string =>
+    `Adding to ${tableSentenceName(table, parentTable)}'s printed bill`;
+
+/**
+ * THE GREEN SEAT BESIDE A PRINTED TABLE: the family's free member — the root
+ * when it is free, else the lowest-numbered free next-party seat — the same
+ * choice the server makes (freeFamilySeat). Null when the whole family is busy.
+ * `isFree` is the floor's own answer, so the page and this rule cannot disagree.
+ */
+export const greenSeatFor = <T extends NextPartyAware & { party_no?: number | null }>(
+    printedTable: T,
+    tables: readonly T[],
+    isFree: (table: T) => boolean,
+): T | null => {
+    const root = ((printedTable.parent_table ?? '').trim() || printedTable.name.trim()).toLowerCase();
+    const family = tables.filter((t) => ((t.parent_table ?? '').trim() || t.name.trim()).toLowerCase() === root);
+    const free = family.filter((t) => t.name.trim().toLowerCase() !== printedTable.name.trim().toLowerCase() && isFree(t));
+    const rootRow = free.find((t) => !isNextPartyTable(t));
+    if (rootRow) { return rootRow; }
+    return [...free].sort((a, z) => (Number(a.party_no) || 0) - (Number(z.party_no) || 0))[0] ?? null;
 };
 
 // ============================================================================

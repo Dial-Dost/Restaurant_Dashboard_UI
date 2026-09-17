@@ -42,7 +42,32 @@ export interface MoveCandidateTable {
     capacity: number;
     /** The most it takes with chairs pulled up; the server's own capacity test. */
     max_capacity: number;
+    /**
+     * Client item 6: the root's name when this row is a next-party seat
+     * ("12 #2" -> "12"), null or absent on a room table.
+     */
+    parent_table?: string | null;
 }
+
+/**
+ * THE TABLE A ROW BELONGS TO: the root's name for a next-party seat, its own
+ * otherwise, folded for comparison. "12" and "12 #2" are one table.
+ */
+const familyKey = (table: Pick<MoveCandidateTable, 'name' | 'parent_table'>): string =>
+    ((table.parent_table ?? '').trim() || table.name.trim()).toLowerCase();
+
+/**
+ * Are these two rows the SAME PHYSICAL TABLE? — the backend's sameTableFamily,
+ * read off the names the floor already carries. A party move between them is
+ * refused by the server (MoveTableParty), so it is never offered.
+ */
+export const sameTableFamily = (
+    a: Pick<MoveCandidateTable, 'name' | 'parent_table'>,
+    b: Pick<MoveCandidateTable, 'name' | 'parent_table'>,
+): boolean => {
+    const ka = familyKey(a);
+    return ka !== '' && ka === familyKey(b);
+};
 
 /**
  * Where may this party go?
@@ -67,12 +92,22 @@ export const partyMoveDestinations = (
     isSeated: (tableName: string) => boolean,
     fromTable: string,
     covers: number,
+    /**
+     * CLIENT ITEMS 1 AND 2: the source's own root when it is a next-party seat.
+     * The table's whole FAMILY is left out — moving the printed 12 onto its own
+     * green "12 #2" (or back) moves nobody anywhere, and the server refuses it.
+     * Looked up from `tables` when not given.
+     */
+    fromParent?: string | null,
 ): MoveCandidateTable[] => {
     const source = (fromTable || '').trim().toLowerCase();
+    const sourceRow = tables.find((t) => (t.name || '').trim().toLowerCase() === source);
+    const from = { name: fromTable, parent_table: fromParent ?? sourceRow?.parent_table ?? null };
     const needed = Number.isFinite(covers) && covers > 0 ? Math.ceil(covers) : 1;
     return tables.filter((table) => {
         const name = (table.name || '').trim();
         if (name === '' || name.toLowerCase() === source) { return false; }
+        if (sameTableFamily(from, table)) { return false; }
         if (isSeated(name)) { return false; }
         const seats = Math.max(table.max_capacity || 0, table.capacity || 0);
         return seats >= needed;
@@ -171,6 +206,14 @@ export const movedPartySentence = (
     const n = Number.isFinite(movedOrders) && movedOrders > 0 ? Math.round(movedOrders) : 0;
     return `Moved ${fromTable} to ${toTable} — ${String(n)} order${n === 1 ? '' : 's'} came with them.`;
 };
+
+/**
+ * CLIENT ITEMS 1 AND 2 — WHAT MOVING A PRINTED PARTY MEANS, said before it runs.
+ * "The printed bill moves with them. The guest's paper still says 12." The same
+ * words on the app. `from` and `to` are the names as a sentence says them.
+ */
+export const printedPartyMoveNote = (from: string, to: string): string =>
+    `The printed bill moves with them. The guest's paper still says ${from.trim()}; the bill will show as ${to.trim()} (printed as ${from.trim()}).`;
 
 // ============================================================================
 // AFTER A MOVE, THE CLOCKS MOVE TOO

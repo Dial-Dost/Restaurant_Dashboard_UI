@@ -81,7 +81,20 @@ import {
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import { useFloorTables, type CombinedInfo, type TableOccupancy } from "@/hooks/use-floor-tables";
-import { canMoveOrderToTable, canMoveTableParty, canOpenFloorPlan } from "@/lib/session-scope";
+import { canMoveOrderToTable, canMoveTableParty, canOpenFloorPlan, isWaiterOnly } from "@/lib/session-scope";
+import { paperStaleOf, serverSaysBillPrinted } from "@/lib/bill-print-state";
+import {
+    FLOOR_STATE_WORDS,
+    floorChipStyle,
+    floorLegend,
+    floorStateOf,
+    floorTileStyle,
+    nextPartyBadge,
+    printedClockLabel,
+    printedTileChips,
+    type FloorState,
+} from "@/lib/floor-state";
+import { useTimezone } from "@/lib/use-timezone";
 import {
     isTableMoveEvent,
     kotTicketLabel,
@@ -89,6 +102,7 @@ import {
     movedPartySentence,
     orderMoveDestinations,
     partyMoveDestinations,
+    printedPartyMoveNote,
     refreshAfterTableMove,
 } from "@/lib/table-move";
 import {
@@ -234,10 +248,13 @@ function MoveTableDialog({
     }, [table?.name, open]);
 
     const sourceName = table?.name ?? "";
+    // CLIENT ITEMS 1 AND 2: the table's own family ("12" and its "12 #2") is
+    // never offered — the server refuses a move between them.
     const partyOptions = useMemo(
-        () => partyMoveDestinations(allTables, isSeated, sourceName, covers),
-        [allTables, isSeated, sourceName, covers],
+        () => partyMoveDestinations(allTables, isSeated, sourceName, covers, table?.parent_table ?? null),
+        [allTables, isSeated, sourceName, covers, table?.parent_table],
     );
+    const sourcePrinted = serverSaysBillPrinted(table?.bill_print ?? null);
     const orderOptions = useMemo(
         () => orderMoveDestinations(allTables, sourceName),
         [allTables, sourceName],
@@ -292,6 +309,14 @@ function MoveTableDialog({
                                     The guests, their {covers} cover{covers === 1 ? "" : "s"}, every order and the
                                     running bill move together. {table.name} becomes free.
                                 </p>
+                                {/* A PRINTED party's paper still names the table it left. */}
+                                {sourcePrinted ? (
+                                    <p className="text-xs rounded-md border px-2 py-1" style={floorChipStyle("printed")}>
+                                        {printedPartyMoveNote(tableOptionLabel(table), partyDestination
+                                            ? tableOptionLabel(allTables.find((t) => t.name === partyDestination) ?? { name: partyDestination })
+                                            : "the new table")}
+                                    </p>
+                                ) : null}
                                 <Button
                                     className="w-full"
                                     disabled={busy || partyDestination === ""}
@@ -402,7 +427,10 @@ function ServiceTable({
     onMove,
     canMove,
     busyTableName,
+    timezone,
 }: {
+    /** The restaurant's zone, for "Printed 13:32". */
+    timezone: string;
     table: Table;
     occupancy: TableOccupancy | null;
     combined?: CombinedInfo | null;
@@ -445,14 +473,28 @@ function ServiceTable({
     // `table.name` ("12 #2"), which is what its KOT and bill print.
     const nextParty = isNextPartyTable(table);
     const spoken = tableOptionLabel(table);
+    /*
+      CLIENT ITEMS 1 AND 2 — ONE OF FIVE COLOURS, FIXED (src/lib/floor-state.ts):
+      free green (the next party's "12 #2" too), seated amber, running red, bill
+      printed orange — the pending bill Gaia settles at night — and reserved blue.
+      A printed table stays on this floor until it is settled.
+    */
+    const printed = serverSaysBillPrinted(table.bill_print ?? null);
+    const state: FloorState = floorStateOf({ occupied: isOccupied, hasOrder: table.has_order ?? null, printed, reserved: isReserved });
+    const partyBadge = nextParty ? nextPartyBadge(table.party_no) : null;
+    const printedChips = state === "printed"
+        ? printedTileChips({
+            printedClock: printedClockLabel(table.bill_print?.printed_at ?? null, timezone),
+            paperStale: paperStaleOf(table.bill_print ?? null),
+            printedAs: table.bill_print?.printed_as ?? null,
+        })
+        : [];
 
     return (
         <Card
-            className={cn(
-                "transition-all min-w-0",
-                isOccupied ? "bg-red-950/40 border-red-900" : isReserved ? "bg-blue-950/30 border-blue-800" : "bg-slate-800/50 border-slate-700",
-                "hover:shadow-lg hover:border-slate-600",
-            )}
+            data-floor-state={state}
+            className={cn("transition-all min-w-0 border-2", "hover:shadow-lg")}
+            style={floorTileStyle(state)}
         >
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2 p-3">
                 <CardTitle className="text-xs font-medium sm:text-sm flex items-center gap-2 min-w-0">
@@ -478,25 +520,25 @@ function ServiceTable({
             <CardContent className="p-3 pt-0">
                 <div className="space-y-2">
                     <div className="flex flex-wrap items-center gap-2">
-                        <Badge
-                            variant={isOccupied ? "destructive" : "default"}
-                            className={cn(
-                                "text-[10px] sm:text-xs",
-                                isOccupied && "bg-red-600 text-white",
-                                !isOccupied && isReserved && "bg-blue-600 text-white",
-                            )}
-                        >
-                            {isOccupied ? "Occupied" : isReserved ? "Reserved" : "Available"}
+                        <Badge variant="outline" className="text-[10px] sm:text-xs" style={floorChipStyle(state)}>
+                            {FLOOR_STATE_WORDS[state]}
                         </Badge>
                         {nextParty ? (
                             <Badge
                                 variant="outline"
-                                className="text-[10px] sm:text-xs border-sky-600 text-sky-300"
-                                title={`The next party at ${tableDisplayName(table)}. Its bill reads ${table.name}.`}
+                                className="text-[10px] sm:text-xs"
+                                style={floorChipStyle("nextParty")}
+                                title={`${NEXT_PARTY_CHIP} at ${tableDisplayName(table)}. Its bill reads ${table.name}.`}
+                                aria-label={`${NEXT_PARTY_CHIP} at ${tableDisplayName(table)}`}
                             >
-                                {NEXT_PARTY_CHIP}
+                                {partyBadge ?? NEXT_PARTY_CHIP}
                             </Badge>
                         ) : null}
+                        {printedChips.map((chip) => (
+                            <Badge key={chip} variant="outline" className="text-[10px] sm:text-xs" style={floorChipStyle("printed")}>
+                                {chip}
+                            </Badge>
+                        ))}
                         {occupancy ? (
                             <Badge variant="outline" className="text-[10px] sm:text-xs bg-slate-700/50">
                                 {occupancy.num_covers} covers
@@ -629,6 +671,7 @@ export default function TablesPage() {
     const router = useRouter();
     const { user } = useAuth();
     const { toast } = useToast();
+    const { timezone } = useTimezone();
 
     const floor = useFloorTables(user);
     const { tables: tablesData, occupancyByName, combinedByName, serverZones, layout, reload: loadTables } = floor;
@@ -837,6 +880,25 @@ export default function TablesPage() {
     }).length;
 
     /*
+      CLIENT ITEMS 1 AND 2 — THE LEGEND. Every tile's state, once. A senior reads
+      the counts ("8 Bill printed" is the night-settle backlog) and may narrow
+      the floor to the printed tables; a waiter reads the colour key.
+    */
+    const stateOfTable = useCallback((table: Table): FloorState => {
+        const occupancy = occupancyByName[table.name.toLowerCase()] as TableOccupancy | undefined;
+        const occupied = occupancy?.is_occupied === true;
+        return floorStateOf({
+            occupied,
+            hasOrder: table.has_order ?? null,
+            printed: serverSaysBillPrinted(table.bill_print ?? null),
+            reserved: !occupied && (table.status === "Reserved" || table.status === "Booked"),
+        });
+    }, [occupancyByName]);
+    const legendWithCounts = !isWaiterOnly(user);
+    const legend = floorLegend(tablesData.map(stateOfTable), legendWithCounts);
+    const [onlyPrinted, setOnlyPrinted] = useState(false);
+
+    /*
       D3/D4 — the party move and the order move, both of them ONE call.
 
       NEITHER IS RETRIED AND NEITHER IS QUEUED. routes/tables.ts declines
@@ -918,7 +980,12 @@ export default function TablesPage() {
             }
             toast({
                 title: "Party moved",
-                description: movedPartySentence(result.from_table, result.to_table, result.moved_orders),
+                // CLIENT ITEMS 1 AND 2: a printed party's green seat at the new
+                // number, in the server's words, after what moved.
+                description: [
+                    movedPartySentence(result.from_table, result.to_table, result.moved_orders),
+                    result.next_party_message ?? "",
+                ].filter(Boolean).join(" "),
             });
             setMoveTableName(null);
             await refreshAfterTableMove({ tables: loadTables, orders: reloadOrders });
@@ -1097,6 +1164,29 @@ export default function TablesPage() {
                 </CardHeader>
                 <CardContent>
                     {totalTables > 0 ? (
+                        <div className="mb-4 flex flex-wrap items-center gap-2" data-testid="floor-legend">
+                            {legend.map((row) => (
+                                row.state === "printed" && legendWithCounts ? (
+                                    <button
+                                        key={row.state}
+                                        type="button"
+                                        aria-pressed={onlyPrinted}
+                                        title={onlyPrinted ? "Show every table" : "Show only the printed, unsettled bills"}
+                                        className="rounded-full border px-2.5 py-0.5 text-xs font-medium"
+                                        style={floorChipStyle(row.state)}
+                                        onClick={() => { setOnlyPrinted((v) => !v); }}
+                                    >
+                                        {row.label}{onlyPrinted ? " ✓" : ""}
+                                    </button>
+                                ) : (
+                                    <span key={row.state} className="rounded-full border px-2.5 py-0.5 text-xs font-medium" style={floorChipStyle(row.state)}>
+                                        {row.label}
+                                    </span>
+                                )
+                            ))}
+                        </div>
+                    ) : null}
+                    {totalTables > 0 ? (
                         <div className="space-y-8">
                             {renderSections.map((section) => {
                                 const reserved = isUnassignedSection(section.id);
@@ -1124,8 +1214,9 @@ export default function TablesPage() {
                                             </div>
                                         ) : null}
                                         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-8 gap-4">
-                                            {section.tables.map((table) => (
+                                            {section.tables.filter((table) => !onlyPrinted || stateOfTable(table) === "printed").map((table) => (
                                                 <ServiceTable
+                                                    timezone={timezone}
                                                     key={table.id}
                                                     table={table}
                                                     occupancy={occupancyByName[table.name.toLowerCase()] ?? null}

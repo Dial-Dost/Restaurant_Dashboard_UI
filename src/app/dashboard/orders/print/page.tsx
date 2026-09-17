@@ -10,7 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import Image from 'next/image';
 import { DEFAULT_TIMEZONE, formatDateTime } from '@/lib/tz';
 import { useTimezone } from '@/lib/use-timezone';
-import { billReceiptIsReprint, REPRINT_MARKER, type BillPrintState } from '@/lib/bill-print-state';
+import { billReceiptIsReprint, REPRINT_MARKER, UPDATED_BILL_MARKER, type BillPrintState } from '@/lib/bill-print-state';
 import { billCustomerLines } from '@/lib/bill-customer';
 import { roundOffOf } from '@/lib/bill-round-off';
 import { ncPrintSettlement, type NcPrintSettlement } from '@/lib/nc-settle';
@@ -88,6 +88,13 @@ interface Order {
     state the bill was in when the operator pressed the button.
   */
   bill_print_state?: BillPrintState | null;
+  /**
+   * CLIENT ITEMS 1 AND 2 — this print REPLACES out-of-date paper: the line the
+   * print claim answered with ("Replaces the bill printed 13:32"), stamped on by
+   * the orders page. The paper then says "** UPDATED BILL **" in REPRINT's place.
+   * Null or absent: it replaces nothing.
+   */
+  bill_revised_note?: string | null;
   /** The server's PRICED bill from the print claim. Preferred by the print page
    *  over its own /bill-for-table read, which C4 redacts for a waiter. */
   printable_bill?: Record<string, unknown> | null;
@@ -820,6 +827,9 @@ function PrintPageContents() {
       what they owe.
     */
     const isReprint = billReceiptIsReprint(printed.source, order.bill_print_state);
+    // An UPDATED bill is marked for the same reason and on the same document
+    // only: the claim that said so was made against this open table's bill.
+    const revisedNote = printed.source === 'open' ? (order.bill_revised_note ?? '').trim() || null : null;
     const currencySymbol = order.currencySymbol || '₹';
     const cashierName = `${user?.emp_Fname ?? ''}${user?.emp_Lname ? ` ${user.emp_Lname}` : ''}`.trim() || '';
     const billId = bill?.id ?? settledBill?.id ?? openBill?.bill_id ?? '';
@@ -889,7 +899,7 @@ function PrintPageContents() {
                         <button
                                 onClick={async () => {
                                     // Passed logoBase64 to the encoder
-                                    const esc = await generateEscPos(user, profile, cashierName, bill, order, logoBase64, timezone, billPrint, printed, isReprint);
+                                    const esc = await generateEscPos(user, profile, cashierName, bill, order, logoBase64, timezone, billPrint, printed, isReprint, revisedNote);
                                     // Never silent: an encoder that returned null
                                     // printed nothing, and an operator who thinks
                                     // he has sent a bill to the thermal printer
@@ -970,7 +980,12 @@ function PrintPageContents() {
                     two spellings would mean a guest comparing two slips has no
                     way to tell they are the same document.
                 */}
-                {isReprint ? (
+                {revisedNote ? (
+                    <div data-testid="receipt-updated" className="py-2 text-center">
+                        <div className="text-2xl font-extrabold tracking-widest">{UPDATED_BILL_MARKER}</div>
+                        <div className="text-[13px]">{revisedNote}</div>
+                    </div>
+                ) : isReprint ? (
                     <div className="py-2 text-center text-2xl font-extrabold tracking-widest">
                         {REPRINT_MARKER}
                     </div>
@@ -1257,7 +1272,7 @@ async function billLogoRasterFromBase64(logoBase64: string): Promise<Uint8Array 
  * gathers what that needs from the page: the same header, customer slot, ladder
  * and QR sentence the on-screen bill draws, the logo raster and the feedback URL.
  */
-export async function generateEscPos(user: any, profile: any, cashierName: string, bill: any, orderArg?: any, logoBase64?: string | null, timeZone: string = DEFAULT_TIMEZONE, billPrint: BillPrintSettings | null = null, printedArg: PrintedBill | null = null, reprint = false): Promise<Uint8Array | null> {
+export async function generateEscPos(user: any, profile: any, cashierName: string, bill: any, orderArg?: any, logoBase64?: string | null, timeZone: string = DEFAULT_TIMEZONE, billPrint: BillPrintSettings | null = null, printedArg: PrintedBill | null = null, reprint = false, revisedNote: string | null = null): Promise<Uint8Array | null> {
     try {
         // NO SERVER-RESOLVED BILL, NO PAPER — checked before anything is encoded
         // or fetched. This is root cause 4's other half: the fallback that used
@@ -1331,6 +1346,9 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
             // ** REPRINT **, FIRST AND BIGGEST, above the logo — the backend's
             // own constant, in the backend's own place (see buildBillEscPos).
             reprint,
+            // ...or ** UPDATED BILL ** with the replaced print's clock, when this
+            // print replaces out-of-date paper (client items 1 and 2).
+            revisedNote,
             logo,
             restaurantName: clean(profile?.outlet_name) || 'Receipt',
             // Name, then legal entity / address lines / Ph / GSTIN. Each of

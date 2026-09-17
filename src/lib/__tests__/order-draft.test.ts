@@ -361,11 +361,12 @@ describe('the orders page is wired to all of it', () => {
         // `coversChosen` rides along (client item 6): a seated party's covers
         // change only when the Guests box was typed in — see next-party.test.ts.
         expect(form).toMatch(/onSubmit\(\{ tableId: tableIdNum, items, covers, coversChosen, idempotencyKey: sendKey\.key \}\)/);
-        expect(page).toMatch(/await addOrder\(user\.restaurantUsername, newOrder, \{ idempotencyKey: newOrderData\.idempotencyKey \}\)/);
+        // Client items 1-2: the printed-bill confirmation rides beside the key.
+        expect(page).toMatch(/await addOrder\(user\.restaurantUsername, newOrder, \{\s*idempotencyKey: newOrderData\.idempotencyKey,\s*addToPrintedBill: newOrderData\.addToPrintedBill === true,\s*\}\)/);
 
         const db = code(readSource('src/lib/db.ts'));
         const add = db.slice(db.indexOf('export const addOrder'), db.indexOf('export const deleteOrder'));
-        expect(add).toMatch(/opts\?: \{ idempotencyKey\?: string \}/);
+        expect(add).toMatch(/opts\?: \{ idempotencyKey\?: string; addToPrintedBill\?: boolean \}/);
         expect(add).toMatch(/headers: \{[^}]*\.\.\.\(opts\?\.idempotencyKey \? \{ 'Idempotency-Key': opts\.idempotencyKey \}/);
     });
 });

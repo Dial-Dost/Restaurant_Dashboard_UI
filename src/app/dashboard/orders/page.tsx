@@ -115,9 +115,13 @@ import {
 import {
   billPrintScope,
   billPrintStateFields,
+  paperStaleOf,
+  SETTLE_ANYWAY_LABEL,
   serverSaysBillPrinted,
+  stalePaperSettleWarning,
   type BillPrintState,
 } from "@/lib/bill-print-state";
+import { FLOOR_STATE_WORDS, PAPER_STALE_CHIP, floorChipStyle, printedClockLabel } from "@/lib/floor-state";
 import { visibleAmount, visibleLineAmount, visibleMoneyText, visibleSubtotal } from "@/lib/order-prices";
 import {
   draftItemCount,
@@ -167,7 +171,7 @@ import {
 import { useCurrency } from "@/hooks/use-currency";
 import { useToast } from "@/hooks/use-toast";
 import { ToastAction } from "@/components/ui/toast";
-import { billPrintedOf, nextPartyRetryKey, planOrderSeating, readReprintNeeded, reprintAnchorOrder, seatedFromTableStatus, singleFlight, tableOptionLabel, type BillPrintedRefusal } from "@/lib/next-party";
+import { ADD_TO_PRINTED_BILL_ACTION, addToPrintedBillConfirm, addToPrintedBillLabel, addingToPrintedBillStrip, billPrintedOf, greenSeatFor, nextPartyRetryKey, planOrderSeating, readReprintNeeded, reprintAnchorOrder, seatedFromTableStatus, singleFlight, tableDisplayName, tableOptionLabel, useGreenTableLabel, type BillPrintedRefusal } from "@/lib/next-party";
 import { useHighlightRow } from "@/hooks/use-highlight-row";
 import { dayKeyInZone, formatDate, formatDateTime, formatFullDateTime, formatTime, timezoneAbbreviation, todayInZone } from "@/lib/tz";
 import { useTimezone } from "@/lib/use-timezone";
@@ -247,6 +251,8 @@ export interface Order {
   /** The server's PRICED bill from the print claim. Preferred by the print page
    *  over its own /bill-for-table read, which C4 redacts for a waiter. */
   printable_bill?: Record<string, unknown> | null;
+  // Client items 1-2: the print claim's "Replaces the bill printed 13:32" — see the print page.
+  bill_revised_note?: string | null;
   // Order channel: dine_in (default) / takeaway / delivery / swiggy / zomato.
   order_type?: string | null;
   taken_by_employee_id?: string | null;
@@ -691,7 +697,7 @@ function OrdersDashboard() {
   */
   // `parent_table` (client item 6): set on the next party's seat at a printed
   // table, so the picker can call "12 #2" by the words the floor uses.
-  const [tables, setTables] = useState<{ id: number; name: string; capacity: number; qr_token?: string | null; bill_print?: BillPrintState | null; parent_table?: string | null }[]>([]);
+  const [tables, setTables] = useState<{ id: number; name: string; capacity: number; qr_token?: string | null; bill_print?: BillPrintState | null; parent_table?: string | null; party_no?: number | null; status?: string }[]>([]);
   const [monthlyApcInsight, setMonthlyApcInsight] = useState<MonthlyApcInsight | null>(null);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
@@ -763,32 +769,27 @@ function OrdersDashboard() {
     who run the floor.
   */
   const printScopeForTable = useCallback(
-    (tableName: string) =>
-      billPrintScope(user, serverSaysBillPrinted(billPrintByTable.get((tableName || "").toLowerCase()) ?? null)),
+    (tableName: string) => {
+      const state = billPrintByTable.get((tableName || "").toLowerCase()) ?? null;
+      // CLIENT ITEMS 1 AND 2: the paper's staleness too, so a waiter who added
+      // to a printed bill gets "Print updated bill" — the one reprint the
+      // server lets them make.
+      return billPrintScope(user, serverSaysBillPrinted(state), paperStaleOf(state));
+    },
     [user, billPrintByTable],
   );
 
   /*
-    C3's SECOND HALF — "the table should clear/reset from their view".
+    C3's SECOND HALF USED TO BE "the table should clear/reset from their view",
+    and a waiter's printed table left this list.
 
-    READ AS EXACTLY WHAT IT SAYS: THEIR VIEW. Nothing is written. The table stays
-    occupied, the bill stays owing, and it is still on every manager's screen and
-    on the floor plan; what changes is that this waiter's orders list no longer
-    carries it, because for them the job at that table is finished and a manager
-    settles it. It CANNOT mean more than that: C2 forbids this same waiter from
-    settling, so "clear the table" would be asking the requirement to contradict
-    itself.
-
-    THE KITCHEN DISPLAY IS DELIBERATELY NOT FILTERED (it still renders
-    `displayOrders`). The pass is not anybody's view of the floor — food still
-    has to be cooked and called for a table whose bill has been printed, and
-    dropping a live ticket off the kitchen screen to enforce a rule about a
-    waiter's reprint would be the most expensive possible reading of C3.
+    CLIENT ITEMS 1 AND 2 (2.0.2) TOOK THAT BACK: "if a bill is not settled, the
+    table completely vanishes; bills are settled only at night." A printed
+    table's orders stay on every list, marked "Bill printed" in orange, until
+    the bill is settled. `billPrintScope(...).retiresTable` is false for
+    everyone; the list is the whole list.
   */
-  const visibleOrders = useMemo(
-    () => displayOrders.filter((order) => !printScopeForTable(order.table).retiresTable),
-    [displayOrders, printScopeForTable],
-  );
+  const visibleOrders = displayOrders;
   // ACTIVE sizes only, grouped by dish. A retired size must never be offerable
   // again — it stays resolvable on every order line that already named it, which
   // is a different question from whether it can be sold today.
@@ -1082,6 +1083,9 @@ function OrdersDashboard() {
     // a waiter's own /bill-for-table read is redacted, so the print page needs
     // this or it has no amounts to put on the guest's receipt.
     let printableBill: Record<string, unknown> | null = null;
+    // CLIENT ITEMS 1 AND 2: the claim says whether this paper REPLACES
+    // out-of-date paper, and in which words ("Replaces the bill printed 13:32").
+    let revisedNote: string | null = null;
     let priorPrintState: BillPrintState | null =
       billPrintByTable.get(tableName.toLowerCase()) ?? null;
     if (restaurantId && tableName && handoff) {
@@ -1102,6 +1106,7 @@ function OrdersDashboard() {
       priorPrintState = billPrintStateFields(fresh) ?? priorPrintState;
 
       const claim = await claimBillPrint(restaurantId, tableName, order.id);
+      if (claim.outcome === "claimed") { revisedNote = claim.revisedNote; }
       if (claim.outcome === "refused") {
         // Nothing was ever drawn in it. Closing an empty tab is the whole of
         // "only render the print page if the claim succeeded".
@@ -1160,6 +1165,8 @@ function OrdersDashboard() {
         // spellings they arrived in, so the print page reads the SERVER's answer
         // rather than deciding for itself whether this is a reprint.
         bill_print_state: priorPrintState,
+        // "** UPDATED BILL **" and its line, when the claim said so.
+        bill_revised_note: revisedNote,
         // Carried across verbatim, like the print state above. The print page
         // prefers it over its own /bill-for-table read, which for a waiter comes
         // back with every amount removed.
@@ -1301,8 +1308,12 @@ function OrdersDashboard() {
       }
 
       // Keyed by the draft (see keyForDraftSend in the form): the identical
-      // draft sent twice is ONE order to the server, not two.
-      const resp: any = await addOrder(user.restaurantUsername, newOrder, { idempotencyKey: newOrderData.idempotencyKey });
+      // draft sent twice is ONE order to the server, not two. The printed-bill
+      // flag rides only on a draft the operator confirmed (client items 1-2).
+      const resp: any = await addOrder(user.restaurantUsername, newOrder, {
+        idempotencyKey: newOrderData.idempotencyKey,
+        addToPrintedBill: newOrderData.addToPrintedBill === true,
+      });
       // Refused on a printed bill: the server wrote nothing, and neither did
       // this send (a printed bill's table is seated, so it was not touched
       // above). The dialog stays open with the draft as it was.
@@ -1410,6 +1421,53 @@ function OrdersDashboard() {
   }));
 
   /*
+    THE CONFIRM — "12's bill was printed at 13:32. These items go on that bill
+    and it must be printed again. New guests? Use the green 12." [Use green 12]
+    [Add to printed bill]. The same words and the same two actions as the app.
+    `seatHint` is the server's named seat when a refusal brought us here;
+    otherwise the green seat is found on the floor this page holds.
+  */
+  const [printedConfirm, setPrintedConfirm] = useState<{
+    draft: NewOrderDraft;
+    table: string;
+    parent: string | null;
+    green: string | null;
+    clock: string;
+  } | null>(null);
+  const askAddToPrinted = (draft: NewOrderDraft, tableName: string, seatHint: string | null): void => {
+    const row = tables.find((t) => t.name.toLowerCase() === tableName.toLowerCase()) ?? null;
+    const green = seatHint
+      ?? (row ? greenSeatFor(row, tables, (t) => t.status === "Available" && !serverSaysBillPrinted(t.bill_print ?? null))?.name ?? null : null);
+    setPrintedConfirm({
+      draft,
+      table: row?.name ?? tableName,
+      parent: row?.parent_table ?? null,
+      green,
+      clock: printedClockLabel(row?.bill_print?.printed_at ?? null, timezone),
+    });
+  };
+  const confirmAddToPrinted = async (): Promise<void> => {
+    const pending = printedConfirm;
+    if (!pending) {return;}
+    setPrintedConfirm(null);
+    const sent: NewOrderDraft = { ...pending.draft, addToPrintedBill: true };
+    const refusal = await handleAddOrder(sent);
+    if (refusal) {
+      toast({ title: "Not added — the bill is printed", description: refusal.message, variant: "destructive" });
+    }
+  };
+  const useGreenInstead = (): void => {
+    const pending = printedConfirm;
+    if (!pending?.green) {return;}
+    setPrintedConfirm(null);
+    void nextPartyRetry.run(pending.green, pending.draft).then((again) => {
+      if (again) {
+        toast({ title: "Not added", description: again.refusal.message, variant: "destructive" });
+      }
+    });
+  };
+
+  /*
     The dialog's send. A refusal is said in the server's words, and when it
     named a seat the toast carries the action; the dialog stays open with the
     cart, so a refusal the waiter ignores costs nothing.
@@ -1417,7 +1475,25 @@ function OrdersDashboard() {
   const submitNewOrder = async (draft: NewOrderDraft): Promise<void> => {
     // The same draft is already on its way to the next party's seat.
     if (nextPartyRetry.busy()) {return;}
+    // CLIENT ITEMS 1 AND 2 — A PRINTED TABLE TAKES MORE ONLY ON PURPOSE. The
+    // server's print ledger (the table row) says this bill is on paper: ask
+    // first, and offer the green seat beside it for new guests.
+    if (draft.addToPrintedBill !== true) {
+      const target = draft.tableName
+        ? tables.find((t) => t.name.toLowerCase() === (draft.tableName ?? "").toLowerCase())
+        : tables.find((t) => t.id === draft.tableId);
+      if (target && serverSaysBillPrinted(target.bill_print ?? null)) {
+        askAddToPrinted(draft, target.name, null);
+        return;
+      }
+    }
     const offer = (refusal: BillPrintedRefusal, sent: NewOrderDraft): void => {
+      // A 2.0.2 server offers the printed-bill confirm itself (the table was
+      // printed while this dialog was open): the same question, not a toast.
+      if (refusal.addToPrintedLabel && sent.addToPrintedBill !== true) {
+        askAddToPrinted(sent, refusal.table, refusal.nextPartyTable);
+        return;
+      }
       const seat = refusal.nextPartyTable;
       const label = refusal.actionLabel;
       toast({
@@ -1761,19 +1837,44 @@ function OrdersDashboard() {
   // PRE-TAX running sum while the bill is open. Display only; the settle
   // requests carry no amount. Returns null when the bill can't be read, in
   // which case the caller simply omits the figure.
-  const fetchTablePayable = async (tableName: string): Promise<number | null> => {
-    if (!user?.restaurantUsername) {return null;}
+  const payableLine = (payable: number | null) =>
+    payable != null ? `Amount payable: ${currencySymbol}${payable.toFixed(2)} (incl. taxes & charges)\n\n` : "";
+
+  /*
+    CLIENT ITEMS 1 AND 2 — WHAT THE SETTLE IS ABOUT TO TAKE, AND WHETHER THE PAPER
+    AGREES. The same bill read, now also asked whether the printed bill the
+    guest is holding is out of date (the server's `paper_stale`). A stale paper
+    WARNS — "The printed bill (13:32) shows ₹2,100.00; the bill is now
+    ₹2,220.00. Print the updated bill before taking payment." — and never
+    blocks: the till books the current total either way, and settling anyway is
+    recorded.
+  */
+  const fetchSettleView = async (tableName: string): Promise<{ payable: number | null; staleWarning: string | null }> => {
+    if (!user?.restaurantUsername) {return { payable: null, staleWarning: null };}
     try {
       const bill = await getBillForTable(user.restaurantUsername, tableName);
       const amount = Number(bill?.grand_total ?? bill?.total_amt);
-      return Number.isFinite(amount) && amount > 0 ? Math.round(amount * 100) / 100 : null;
+      const payable = Number.isFinite(amount) && amount > 0 ? Math.round(amount * 100) / 100 : null;
+      const state = billPrintStateFields(bill);
+      const staleWarning = stalePaperSettleWarning({
+        paperStale: paperStaleOf(bill),
+        printedClock: printedClockLabel(state?.printed_at ?? null, timezone),
+        printedTotal: state?.printed_total ?? null,
+        grandTotal: payable,
+        currency: currencySymbol,
+      });
+      return { payable, staleWarning };
     } catch {
-      return null;
+      return { payable: null, staleWarning: null };
     }
   };
 
-  const payableLine = (payable: number | null) =>
-    payable != null ? `Amount payable: ${currencySymbol}${payable.toFixed(2)} (incl. taxes & charges)\n\n` : "";
+  /** The settle confirm's text, with the stale-paper warning first when there is one. */
+  const settleConfirmText = (view: { payable: number | null; staleWarning: string | null }, question: string): string =>
+    view.staleWarning
+      ? `${view.staleWarning}\n\n${payableLine(view.payable)}${SETTLE_ANYWAY_LABEL}? ${question}`
+      : `${payableLine(view.payable)}${question}`;
+
 
   const handleWaiterConfirmPayment = async (order: Order, paymentMethod: PaymentMethod) => {
     if (!user?.restaurantUsername || !user.employeeId) {return;}
@@ -1795,9 +1896,9 @@ function OrdersDashboard() {
       }
     }
 
-    const payable = await fetchTablePayable(order.table);
+    const view = await fetchSettleView(order.table);
     const confirmed = window.confirm(
-      `${payableLine(payable)}Confirm payment by ${methodName}? This sends the bill for admin approval.`,
+      settleConfirmText(view, `Confirm payment by ${methodName}? This sends the bill for admin approval.`),
     );
     if (!confirmed) {return;}
 
@@ -1808,6 +1909,8 @@ function OrdersDashboard() {
         order.id,
         paymentMethod,
         proofScreenshotUrl,
+        undefined,
+        { settledWithStalePaper: view.staleWarning !== null },
       );
       const actorName = user.employeeUsername
         || `${user.emp_Fname ?? ''} ${user.emp_Lname ?? ''}`.trim()
@@ -1845,12 +1948,12 @@ function OrdersDashboard() {
       }
     }
 
-    const payable = await fetchTablePayable(order.table);
-    const confirmed = window.confirm(`${payableLine(payable)}Approve this waiter-confirmed payment?`);
+    const view = await fetchSettleView(order.table);
+    const confirmed = window.confirm(settleConfirmText(view, "Approve this waiter-confirmed payment?"));
     if (!confirmed) {return;}
 
     try {
-      await approveBillPaymentByAdmin(user.restaurantUsername, user.employeeId, order.id);
+      await approveBillPaymentByAdmin(user.restaurantUsername, user.employeeId, order.id, { settledWithStalePaper: view.staleWarning !== null });
       const actorName = user.employeeUsername
         || `${user.emp_Fname ?? ''} ${user.emp_Lname ?? ''}`.trim()
         || user.employeeId
@@ -2052,7 +2155,8 @@ function OrdersDashboard() {
           newest === null || Date.parse(order.created_at ?? "") > Date.parse(newest.created_at ?? "") ? order : newest
         ), null)
     : null;
-  const previewPrintControl = !selectedTableName ? null : !printScopeForTable(selectedTableName).print ? (
+  const previewPrintScope = selectedTableName ? printScopeForTable(selectedTableName) : null;
+  const previewPrintControl = !selectedTableName || !previewPrintScope ? null : !previewPrintScope.print ? (
     <div className="flex min-h-14 items-center rounded-md border px-3 text-sm text-muted-foreground">
       Bill printed — a reprint has to be made by a senior.
     </div>
@@ -2065,7 +2169,7 @@ function OrdersDashboard() {
       title={previewPrintAnchor === null ? "Nothing has been ordered on this table yet" : "Print this table's bill"}
       onClick={() => { if (previewPrintAnchor) { void triggerPrint(previewPrintAnchor); } }}
     >
-      <Printer /> Print Bill
+      <Printer /> {previewPrintScope.printLabel}
     </Button>
   );
 
@@ -2188,6 +2292,40 @@ function OrdersDashboard() {
             selectedTableName={selectedTable?.name ?? selectedTableName}
             onClearSelectedTable={() => { router.push("/dashboard/orders"); }}
           />
+        </DialogContent>
+      </Dialog>
+      {/* CLIENT ITEMS 1 AND 2 — the question before anything reaches printed paper. */}
+      <Dialog open={printedConfirm !== null} onOpenChange={(open) => { if (!open) { setPrintedConfirm(null); } }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {printedConfirm ? addToPrintedBillLabel(printedConfirm.table, printedConfirm.parent) : ""}?
+            </DialogTitle>
+            <DialogDescription>
+              {printedConfirm
+                ? addToPrintedBillConfirm({
+                    table: printedConfirm.table,
+                    parentTable: printedConfirm.parent,
+                    printedClock: printedConfirm.clock,
+                    hasGreen: printedConfirm.green !== null,
+                  })
+                : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2 sm:gap-2">
+            {printedConfirm?.green ? (
+              <Button
+                variant="outline"
+                style={floorChipStyle("free")}
+                onClick={useGreenInstead}
+              >
+                {useGreenTableLabel(tableDisplayName({ name: printedConfirm.table, parent_table: printedConfirm.parent }))}
+              </Button>
+            ) : null}
+            <Button style={floorChipStyle("printed")} variant="outline" onClick={() => { void confirmAddToPrinted(); }}>
+              {ADD_TO_PRINTED_BILL_ACTION}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
       {/* Money analytics — hidden from a waiter-only session exactly as the
@@ -2365,6 +2503,25 @@ function OrdersDashboard() {
                 >
                   <TableCell className="font-medium">
                     <div>{order.table}</div>
+                    {/* CLIENT ITEMS 1 AND 2 — the printed table stays on the list,
+                        and says so in the floor's orange; "Updated — print
+                        again" when the paper is behind the bill. */}
+                    {(() => {
+                      const state = billPrintByTable.get((order.table || "").toLowerCase()) ?? null;
+                      if (!serverSaysBillPrinted(state) || cancelled) { return null; }
+                      return (
+                        <div className="mt-0.5 flex flex-wrap items-center gap-1">
+                          <Badge variant="outline" className="text-[10px] px-1.5 py-0" style={floorChipStyle("printed")}>
+                            {FLOOR_STATE_WORDS.printed}
+                          </Badge>
+                          {paperStaleOf(state) === true ? (
+                            <Badge variant="outline" className="text-[10px] px-1.5 py-0" style={floorChipStyle("printed")}>
+                              {PAPER_STALE_CHIP}
+                            </Badge>
+                          ) : null}
+                        </div>
+                      );
+                    })()}
                     {/* Sits with the table name because those two together are
                         how a ticket is named out loud ("KOT 218 on table 7") —
                         and because an absent number then simply costs the row
@@ -2546,7 +2703,7 @@ function OrdersDashboard() {
                         onClick={() => { void triggerPrint(order); }}
                         disabled={cancelled}
                       >
-                        <Printer className="mr-1 h-3.5 w-3.5" /> Print Bill
+                        <Printer className="mr-1 h-3.5 w-3.5" /> {printScopeForTable(order.table).printLabel}
                       </Button>
                       ) : (
                         <span className="px-2 text-[11px] leading-tight text-muted-foreground">
@@ -3915,6 +4072,8 @@ function KitchenKioskDisplay({ station }: { station: string }) {
 interface NewOrderDraft {
   tableId: number;
   tableName?: string;
+  /** Client items 1-2: the operator confirmed these items go on the table's PRINTED bill. */
+  addToPrintedBill?: boolean;
   items: { id?: string; name: string; price: number; quantity?: number; note?: string | null; course_hold?: boolean; variation_id?: string }[];
   covers?: number;
   /** True once the Guests box was typed in: only then do a seated party's covers change. */
@@ -3922,7 +4081,7 @@ interface NewOrderDraft {
   idempotencyKey?: string;
 }
 
-function OrderForm({ onSubmit, busy = false, menuItems, tables, selectedTableName, onClearSelectedTable, variationsByMenuId }: { onSubmit: (data: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null; course_hold?: boolean; variation_id?: string }[]; covers?: number; coversChosen?: boolean; idempotencyKey?: string }) => Promise<void> | void; /** True while this draft is being sent to the next party's seat (client item 6): Send is held. */ busy?: boolean; menuItems: MenuItem[]; tables: { id: number; name: string; capacity: number; parent_table?: string | null }[]; selectedTableName?: string; onClearSelectedTable?: () => void; variationsByMenuId?: Map<string, MenuVariationRecord[]> }) {
+function OrderForm({ onSubmit, busy = false, menuItems, tables, selectedTableName, onClearSelectedTable, variationsByMenuId }: { onSubmit: (data: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null; course_hold?: boolean; variation_id?: string }[]; covers?: number; coversChosen?: boolean; idempotencyKey?: string }) => Promise<void> | void; /** True while this draft is being sent to the next party's seat (client item 6): Send is held. */ busy?: boolean; menuItems: MenuItem[]; tables: { id: number; name: string; capacity: number; parent_table?: string | null; bill_print?: BillPrintState | null }[]; selectedTableName?: string; onClearSelectedTable?: () => void; variationsByMenuId?: Map<string, MenuVariationRecord[]> }) {
   const { currencySymbol } = useCurrency();
   // C4's gate, from the session and therefore from the server. Read here rather
   // than passed in as a prop: a prop could be forgotten at one of the call
@@ -4090,6 +4249,21 @@ function OrderForm({ onSubmit, busy = false, menuItems, tables, selectedTableNam
   */
   const itemCount = draftItemCount(itemsList);
   const canSend = Boolean(selectedTableId) && itemsList.length > 0;
+  // CLIENT ITEMS 1 AND 2 — the orange strip: this draft is headed for a table
+  // whose bill is on paper. The send asks before it goes (submitNewOrder).
+  const selectedRow = tables.find((t) => String(t.id) === selectedTableId) ?? null;
+  const printedStrip = selectedRow && serverSaysBillPrinted(selectedRow.bill_print ?? null)
+    ? addingToPrintedBillStrip(selectedRow.name, selectedRow.parent_table ?? null)
+    : null;
+  const printedStripBar = printedStrip ? (
+    <div
+      data-testid="printed-bill-strip"
+      className="mt-2 rounded-md border px-3 py-1.5 text-sm font-medium"
+      style={floorChipStyle("printed")}
+    >
+      {printedStrip}
+    </div>
+  ) : null;
 
   /*
     ITEM 5 — THE REVIEW, drawn INSIDE this dialog in place of the form rather
@@ -4118,6 +4292,7 @@ function OrderForm({ onSubmit, busy = false, menuItems, tables, selectedTableNam
               {sending ? "Sending…" : "Send to kitchen"}
             </Button>
           </div>
+          {printedStripBar}
         </div>
         <div>
           <div className="text-lg font-semibold">{reviewTitle}</div>
@@ -4178,6 +4353,7 @@ function OrderForm({ onSubmit, busy = false, menuItems, tables, selectedTableNam
           <Button size="lg" className="h-12 flex-1 text-base" onClick={() => { void handleSubmit(); }} disabled={!canSend || sending || busy}>
             {sending ? "Sending…" : itemCount > 0 ? `Send order · ${String(itemCount)} item${itemCount === 1 ? "" : "s"}` : "Send order"}
           </Button>
+          {printedStripBar ? <div className="basis-full">{printedStripBar}</div> : null}
         </div>
       </div>
       {/* THE WHOLE FORM IS LOCKED WHILE ITS ORDER IS ON THE WAY, not only the two
