@@ -107,14 +107,16 @@ export function reportTitle(key: string, catalogue: readonly EmailableReport[] =
 /**
  * "Sales Summary and Void KOT", "All 15 MIS reports", "Item Wise, Discount and
  * 3 more" — the backend's reportListPhrase, so a schedule row here reads like
- * the subject of the email it sends.
+ * the subject of the email it sends. Up to `max` titles are all named, the last
+ * joined with "and": three under max 3 once ran together as
+ * "Item WiseDiscountVoid KOT".
  */
 export function reportListPhrase(keys: readonly string[], max = 2): string {
     const titles = keys.map((k) => reportTitle(k));
     if (titles.length === 0) {return 'No reports';}
     if (titles.length === EMAILABLE_REPORTS.length) {return 'All reports';}
     if (titles.length === MIS_EMAIL_KEYS.length && keys.every((k) => MIS_EMAIL_KEYS.includes(k))) {return 'All 15 MIS reports';}
-    if (titles.length <= max) {return titles.join(titles.length === 2 ? ' and ' : '');}
+    if (titles.length <= max) {return titles.length === 1 ? titles[0] : `${titles.slice(0, -1).join(', ')} and ${titles[titles.length - 1]}`;}
     return `${titles.slice(0, max).join(', ')} and ${String(titles.length - max)} more`;
 }
 
@@ -462,9 +464,9 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
 export const isRequestId = (v: string): boolean => UUID_RE.test(String(v ?? ''));
 
 /**
- * ONE id per dialog, made when it opens and reused by every retry of that send
- * — the server turns a repeat into a replay of the same delivery, so a dropped
- * response can never become a second email.
+ * A fresh request id (a v4 UUID). The server turns a repeat of an id into a
+ * replay of the same delivery, so a dropped response can never become a second
+ * email — see requestIdFor for when an id is reused.
  */
 export function newClientRequestId(rand: () => number = Math.random): string {
     const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
@@ -474,6 +476,32 @@ export function newClientRequestId(rand: () => number = Math.random): string {
     hex[16] = ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
     const h = hex.join('');
     return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+
+/** What a Send-now body asks for, without its id — equal keys, equal sends. */
+export function sendBodyKey(body: Omit<SendNowBody, 'client_request_id'> & { client_request_id?: string }): string {
+    return JSON.stringify([
+        [...body.report_keys].sort(),
+        [...body.formats].sort(),
+        body.window.from, body.window.to, body.window.day_close ?? '',
+        body.outlet_scope,
+        [...body.recipient_ids].sort(),
+    ]);
+}
+
+/** The last id this dialog sent, what it asked for, and whether its delivery is final. */
+export interface LastSend { id: string; bodyKey: string; settled: boolean }
+
+/**
+ * THE ID FOR THIS PRESS OF "Send". The same id ONLY for a true retry: the same
+ * reports, days, formats, scope and addresses, and no final answer yet. The
+ * server answers a repeated id with the delivery it already made — so keeping
+ * one id for the whole opening turned "change the addresses after a failure
+ * and press Send again" into a replay of the OLD failed send, and the
+ * corrected choice was never sent.
+ */
+export function requestIdFor(last: LastSend | null, bodyKey: string, mint: () => string = newClientRequestId): string {
+    return last && !last.settled && last.bodyKey === bodyKey ? last.id : mint();
 }
 
 /** The refusal a client can act on, by the server's `code`. */
@@ -517,15 +545,22 @@ export interface DeliveryLike {
     maybe_duplicate?: boolean | null;
     attempts?: number;
     error?: string | null;
+    /** The server's word on whether anything more will happen without a person (item 9 review). */
+    final?: boolean | null;
+    /** When a 'failed' row that is not final is tried again. */
+    next_attempt_at?: string | null;
+    timezone?: string | null;
 }
 
 export type StatusTone = 'ok' | 'bad' | 'pending' | 'muted';
 
+export const WILL_RETRY_LABEL = 'Will retry';
+
 /** One word per state, the same on web and app. */
-export function deliveryStatus(d: Pick<DeliveryLike, 'status' | 'channel'>): { label: string; tone: StatusTone } {
+export function deliveryStatus(d: Pick<DeliveryLike, 'status' | 'channel' | 'final'>): { label: string; tone: StatusTone } {
     switch (d.status) {
         case 'delivered': return { label: d.channel === 'email' ? 'Sent' : 'Delivered', tone: 'ok' };
-        case 'failed': return { label: 'Failed', tone: 'bad' };
+        case 'failed': return isFinalDelivery(d) ? { label: 'Failed', tone: 'bad' } : { label: WILL_RETRY_LABEL, tone: 'pending' };
         case 'abandoned': return { label: 'Missed', tone: 'bad' };
         case 'sending': return { label: 'Sending', tone: 'pending' };
         case 'rendered': return { label: 'Building', tone: 'pending' };
@@ -540,8 +575,30 @@ export function deliveryKind(d: Pick<DeliveryLike, 'kind' | 'report_keys'>, occu
     return 'Scheduled';
 }
 
-/** Settled = nothing more will happen without a person. A failed row may still be retried by the server. */
-export const isSettled = (status: string): boolean => status === 'delivered' || status === 'abandoned' || status === 'failed';
+/**
+ * FINAL = nothing more will happen to this row without a person, as the server
+ * says (`final`). A 'failed' row with attempts left is RETRIED at
+ * next_attempt_at: calling every 'failed' final told the owner "Couldn't send"
+ * for an email that went out minutes later — and invited a second send of it.
+ * A server that does not say reads the old way.
+ */
+export function isFinalDelivery(d: Pick<DeliveryLike, 'status' | 'final'>): boolean {
+    if (d.status === 'delivered' || d.status === 'abandoned') {return true;}
+    return d.status === 'failed' && d.final !== false;
+}
+
+/** Nothing will change for a while: final, or failed and waiting for its retry. A Send-now dialog stops watching here. */
+export const isResting = (d: Pick<DeliveryLike, 'status' | 'final'>): boolean => d.status === 'failed' || isFinalDelivery(d);
+
+/** "The server tries again at 18 Sep, 02:05." — or '' when it will not. */
+export function retryCaption(d: Pick<DeliveryLike, 'status' | 'final' | 'next_attempt_at' | 'timezone'>): string {
+    if (d.status !== 'failed' || isFinalDelivery(d)) {return '';}
+    const at = d.next_attempt_at && d.timezone ? wallClock(d.next_attempt_at, d.timezone) : '';
+    return at ? `The server tries again at ${at}.` : 'The server tries again shortly.';
+}
+
+/** How long a screen keeps refreshing a row that has not finished (web and app alike). */
+export const WATCH_MAX_MS = 15 * 60_000;
 
 export type RecipientOutcome = 'sent' | 'refused' | 'skipped' | 'waiting';
 export const RECIPIENT_OUTCOME_LABELS: Readonly<Record<RecipientOutcome, string>> = {
@@ -588,6 +645,13 @@ export function sendOutcome(d: DeliveryLike | null, timedOut: boolean): { title:
         return {
             title: `Sent to ${String(sent)} address${sent === 1 ? '' : 'es'}`,
             description: extra.length > 0 ? `${extra.join('; ')}.` : 'The files are also kept in Email reports → History.',
+            destructive: false,
+        };
+    }
+    if (d.status === 'failed' && !isFinalDelivery(d)) {
+        return {
+            title: 'Not sent yet',
+            description: `${d.error ? `${d.error} ` : ''}${retryCaption(d)} Its result will appear in Email reports → History; pressing Send again with the same choices does not send it twice.`,
             destructive: false,
         };
     }

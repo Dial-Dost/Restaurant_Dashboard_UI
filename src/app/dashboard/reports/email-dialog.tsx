@@ -11,8 +11,14 @@
 //  * a session filter (Lunch, Dinner) is NOT applied to an email — the server
 //    refuses one, because an attachment an accountant opens must cover whole
 //    days. The dialog says so instead of sending the filter anyway.
-//  * one request id per opening. A retry after a dropped response is the same
-//    send; the server answers it as a replay, never as a second email.
+//  * one request id per SEND, not per opening. Pressing Send again with the
+//    same choices before the delivery is final is the same send (the server
+//    answers it as a replay, never as a second email); changing the reports,
+//    days or addresses — or sending again after a final answer — is a new one.
+//    One id for the whole opening once replayed an old failed send in place of
+//    the corrected one.
+//  * a failure the server will retry says so ("Not sent yet"), not "Couldn't
+//    send".
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { AlertCircle, CheckCircle2, Loader2, Mail, XCircle } from "lucide-react"
@@ -36,7 +42,8 @@ import {
     WHOLE_DAYS_NOTE,
     bookEntryLabel,
     buildSendBody,
-    isSettled,
+    isFinalDelivery,
+    isResting,
     newClientRequestId,
     orderedKeys,
     readBook,
@@ -45,9 +52,12 @@ import {
     refusalTitle,
     reportDisabledReason,
     reportListPhrase,
+    requestIdFor,
+    sendBodyKey,
     sendNowBlocked,
     sendOutcome,
     type BookEntry,
+    type LastSend,
     type ReportEmailConfig,
 } from "@/lib/report-email"
 import { cn } from "@/lib/utils"
@@ -89,16 +99,16 @@ export function EmailReportDialog(props: EmailReportDialogProps) {
     const [error, setError] = useState<string | null>(null)
     const [sending, setSending] = useState(false)
     const [delivery, setDelivery] = useState<ReportDelivery | null>(null)
-    const requestId = useRef<string>("")
+    const lastSend = useRef<LastSend | null>(null)
     const alive = useRef(true)
 
     const combined = outletId === ALL_OUTLETS
 
-    // Every opening is a new send: a new id, the tab on screen, the days on screen.
+    // Every opening is a new send: no id yet, the tab on screen, the days on screen.
     useEffect(() => {
         if (!open) {return}
         alive.current = true
-        requestId.current = newClientRequestId()
+        lastSend.current = null
         setKeys([reportKey])
         setFormats(["xlsx"])
         setDayFrom(from)
@@ -146,7 +156,7 @@ export function EmailReportDialog(props: EmailReportDialogProps) {
             if (d) {
                 last = d
                 setDelivery(d)
-                if (isSettled(d.status)) {return { d, timedOut: false }}
+                if (isResting(d)) {return { d, timedOut: false }}
             }
         }
         return { d: last, timedOut: true }
@@ -154,8 +164,10 @@ export function EmailReportDialog(props: EmailReportDialogProps) {
 
     const send = async () => {
         setError(null)
+        // A fresh id is only USED when this is not a retry of the last send.
+        const fresh = newClientRequestId()
         const built = buildSendBody({
-            clientRequestId: requestId.current,
+            clientRequestId: fresh,
             reportKeys: keys,
             formats,
             from: dayFrom,
@@ -165,20 +177,27 @@ export function EmailReportDialog(props: EmailReportDialogProps) {
             recipientIds: chosen,
         }, maxRecipients)
         if (!built.ok) { setError(built.error); return }
+        const bodyKey = sendBodyKey(built.body)
+        const id = requestIdFor(lastSend.current, bodyKey, () => fresh)
+        const current: LastSend = { id, bodyKey, settled: false }
+        lastSend.current = current
+        setDelivery(null)
         setSending(true)
         try {
             // The request runs as a REAL outlet; the combined scope is in the body.
             const asOutlet = combined ? fallbackOutletId : outletId
-            const res = await sendReportEmail(rid, built.body, asOutlet)
+            const res = await sendReportEmail(rid, { ...built.body, client_request_id: id }, asOutlet)
             if (!res.ok) {
                 setError(res.error)
                 toast({ title: refusalTitle(res.code), description: res.error, variant: "destructive" })
                 return
             }
             const { d, timedOut } = await poll(res.data.delivery_id)
+            // A FINAL answer ends this id: the next press is a new send.
+            if (d && isFinalDelivery(d)) {current.settled = true}
             const outcome = sendOutcome(d, timedOut)
             toast({ title: outcome.title, description: outcome.description, variant: outcome.destructive ? "destructive" : undefined })
-            if (d && isSettled(d.status) && d.status === "delivered") { onOpenChange(false) }
+            if (d?.status === "delivered") { onOpenChange(false) }
         } finally {
             if (alive.current) {setSending(false)}
         }

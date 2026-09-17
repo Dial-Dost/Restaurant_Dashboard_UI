@@ -4547,6 +4547,10 @@ export interface ReportDelivery {
     window_end_at?: string | null;
     /** The addresses a Send now was addressed to. */
     recipients?: string[] | null;
+    /** Nothing more happens without a person (a 'failed' row with retries left is not final). */
+    final?: boolean;
+    /** When the server tries a non-final 'failed' row again. */
+    next_attempt_at?: string | null;
     rejected_to?: string[];
     skipped_to?: string[];
     provider?: string | null;

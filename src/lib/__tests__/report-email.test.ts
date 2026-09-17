@@ -44,7 +44,8 @@ import {
     formFromSchedule,
     idsForAddresses,
     isRequestId,
-    isSettled,
+    isFinalDelivery,
+    isResting,
     newClientRequestId,
     nextRunCaption,
     orderedKeys,
@@ -56,6 +57,11 @@ import {
     refusalTitle,
     reportDisabledReason,
     reportListPhrase,
+    requestIdFor,
+    retryCaption,
+    sendBodyKey,
+    WATCH_MAX_MS,
+    WILL_RETRY_LABEL,
     selectionProblem,
     sendNowBlocked,
     sendOutcome,
@@ -135,6 +141,11 @@ describe('the catalogue', () => {
         expect(reportListPhrase(['sales_summary'])).toBe('Sales Summary');
         expect(reportListPhrase(['void_kot', 'sales_summary'])).toBe('Void KOT and Sales Summary');
         expect(reportListPhrase(['item_wise', 'discount', 'void_kot', 'bill_edit'])).toBe('Item Wise, Discount and 2 more');
+        // Up to `max`, every title is named — three once ran together as "Item WiseDiscountVoid KOT".
+        expect(reportListPhrase(['item_wise', 'discount', 'void_kot'], 3)).toBe('Item Wise, Discount and Void KOT');
+        expect(reportListPhrase(['item_wise', 'discount'], 3)).toBe('Item Wise and Discount');
+        expect(reportListPhrase(['item_wise'], 3)).toBe('Item Wise');
+        expect(reportListPhrase(['item_wise', 'discount', 'void_kot', 'bill_edit'], 3)).toBe('Item Wise, Discount, Void KOT and 1 more');
         expect(reportListPhrase([...MIS_EMAIL_KEYS])).toBe('All 15 MIS reports');
         expect(reportListPhrase(EMAILABLE_REPORTS.map((r) => r.key))).toBe('All reports');
         expect(orderedKeys(['pnl', 'item_wise', 'nope', 'item_wise'])).toEqual(['item_wise', 'pnl']);
@@ -240,6 +251,34 @@ describe('Send now: the body', () => {
         for (const id of ids) { expect(isRequestId(id)).toBe(true); }
     });
 
+    it('the SAME id only for a true retry: same body, no final answer yet', () => {
+        let n = 0;
+        const mint = () => { n += 1; return `id-${String(n)}`; };
+        const body = buildSendBody(choice({ recipientIds: ['r1', 'r2'] }));
+        if (!body.ok) { throw new Error(body.error); }
+        const key = sendBodyKey(body.body);
+        // The id is not part of what is asked; the order of the ticks is not either.
+        const reordered = buildSendBody(choice({ clientRequestId: '3d6f0a51-8a7e-4c1b-9d2e-5f4a3b2c1d0e', recipientIds: ['r2', 'r1'] }));
+        if (!reordered.ok) { throw new Error(reordered.error); }
+        expect(sendBodyKey(reordered.body)).toBe(key);
+        // First press: a new id.
+        expect(requestIdFor(null, key, mint)).toBe('id-1');
+        // A dropped response, pressed again: the same send.
+        expect(requestIdFor({ id: 'id-1', bodyKey: key, settled: false }, key, mint)).toBe('id-1');
+        // After a failure, the owner changes the addresses: a NEW send, not a replay of the old one.
+        for (const changed of [
+            choice({ recipientIds: ['r1'] }), choice({ reportKeys: ['void_kot'] }), choice({ formats: ['csv'] }),
+            choice({ to: '2026-09-17' }), choice({ dayClose: '02:00' }), choice({ scope: 'all' }),
+        ]) {
+            const b = buildSendBody(changed);
+            if (!b.ok) { throw new Error(b.error); }
+            expect(sendBodyKey(b.body)).not.toBe(key);
+            expect(requestIdFor({ id: 'id-1', bodyKey: key, settled: false }, sendBodyKey(b.body), mint)).not.toBe('id-1');
+        }
+        // The same choices again after a FINAL answer: sent again, deliberately.
+        expect(requestIdFor({ id: 'id-1', bodyKey: key, settled: true }, key, () => 'fresh')).toBe('fresh');
+    });
+
     it('refusal codes get a title a person can act on', () => {
         expect(refusalTitle('mail_not_configured')).toBe(MAIL_OFF_SENTENCE);
         expect(refusalTitle('rate_limited')).toBe('Too many emails in a short time');
@@ -327,8 +366,24 @@ describe('deliveries', () => {
         expect(deliveryStatus({ status: 'sending' }).label).toBe('Sending');
         expect(deliveryStatus({ status: 'rendered' }).label).toBe('Building');
         expect(deliveryStatus({ status: 'claimed' }).label).toBe('Queued');
-        expect(['delivered', 'failed', 'abandoned'].every(isSettled)).toBe(true);
-        expect(['claimed', 'rendered', 'sending'].some(isSettled)).toBe(false);
+        expect(['delivered', 'failed', 'abandoned'].every((status) => isFinalDelivery({ status }))).toBe(true);
+        expect(['claimed', 'rendered', 'sending'].some((status) => isFinalDelivery({ status }))).toBe(false);
+    });
+
+    it('a failure the server will retry is not final, and says when', () => {
+        const waiting = { status: 'failed', final: false, error: '421 try again later', next_attempt_at: '2026-09-17T20:35:00.000Z', timezone: 'Asia/Kolkata' };
+        expect(isFinalDelivery(waiting)).toBe(false);
+        expect(isResting(waiting)).toBe(true);
+        expect(deliveryStatus(waiting)).toEqual({ label: WILL_RETRY_LABEL, tone: 'pending' });
+        expect(retryCaption(waiting)).toBe('The server tries again at 18 Sep, 02:05.');
+        expect(retryCaption({ ...waiting, next_attempt_at: null })).toBe('The server tries again shortly.');
+        // Final, and anything that is not a failure, has no retry to announce.
+        expect(retryCaption({ ...waiting, final: true })).toBe('');
+        expect(retryCaption({ status: 'sending', final: false })).toBe('');
+        expect(deliveryStatus({ status: 'failed', final: true })).toEqual({ label: 'Failed', tone: 'bad' });
+        expect(isResting({ status: 'sending', final: false })).toBe(false);
+        // A 15-minute watch, the same on the app.
+        expect(WATCH_MAX_MS).toBe(15 * 60_000);
     });
 
     it('where a delivery came from', () => {
@@ -367,6 +422,17 @@ describe('deliveries', () => {
         expect(partial.description).toContain('may have received it twice');
         const failed = sendOutcome({ status: 'failed', channel: 'email', error: 'Every address was refused' }, false);
         expect(failed).toEqual({ title: "Couldn't send", description: 'Every address was refused', destructive: true });
+        expect(sendOutcome({ status: 'failed', final: true, channel: 'email', error: 'Every address was refused' }, false)).toEqual(failed);
+        // Not final: the server retries it — never "Couldn't send", never an invitation to send twice.
+        const later = sendOutcome({
+            status: 'failed', final: false, channel: 'email', error: '421 try again later',
+            next_attempt_at: '2026-09-17T20:35:00.000Z', timezone: 'Asia/Kolkata',
+        }, true);
+        expect(later).toEqual({
+            title: 'Not sent yet',
+            description: '421 try again later The server tries again at 18 Sep, 02:05. Its result will appear in Email reports → History; pressing Send again with the same choices does not send it twice.',
+            destructive: false,
+        });
         expect(sendOutcome({ status: 'sending', channel: 'email' }, true).title).toBe('Still sending');
         expect(sendOutcome(null, true).title).toBe('Queued');
     });
@@ -475,7 +541,7 @@ describe('the same words as the app (when its checkout is beside this one)', () 
             EMAIL_AREA_TITLE, EMAIL_BUTTON_LABEL, EMAIL_BUTTON_TOOLTIP, MAIL_OFF_SENTENCE, SCHEDULER_OFF_SENTENCE,
             TEST_EMAIL_LABEL, ADDRESS_BOOK_TITLE, WHOLE_DAYS_NOTE,
             FORMAT_LABELS.xlsx, FORMAT_LABELS.csv, WINDOW_MODE_LABELS.trading_day, WINDOW_MODE_LABELS.calendar,
-            'Sent', 'Delivered', 'Failed', 'Missed', 'Sending', 'Building', 'Queued',
+            'Sent', 'Delivered', 'Failed', 'Missed', 'Sending', 'Building', 'Queued', WILL_RETRY_LABEL, 'Not sent yet',
             'Test email', 'Sent from Reports', 'Run now', 'Refused', 'Skipped', 'Waiting',
             'Calendar days only', 'All 15 MIS reports',
         ]) {
@@ -502,12 +568,15 @@ describe('the wiring', () => {
         expect(page).toContain('<EmailReportsPanel rid={rid} timezone={timezone} />');
     });
 
-    it('the dialog makes one request id per opening and never sends a session filter', () => {
+    it('the dialog picks the request id per send and never sends a session filter', () => {
         const openEffect = dialog.slice(dialog.indexOf('useEffect(() => {'), dialog.indexOf('}, [open, rid, reportKey, from, to])'));
-        expect(openEffect).toContain('requestId.current = newClientRequestId()');
-        expect(dialog).toContain('clientRequestId: requestId.current');
+        expect(openEffect).toContain('lastSend.current = null');
+        expect(dialog).toContain('const id = requestIdFor(lastSend.current, bodyKey, () => fresh)');
+        expect(dialog).toContain('const bodyKey = sendBodyKey(built.body)');
+        expect(dialog).toContain('if (d && isFinalDelivery(d)) {current.settled = true}');
+        expect(dialog).toContain('if (isResting(d)) {return { d, timedOut: false }}');
         expect(dialog).not.toMatch(/\bslot:|time_from|timeFrom/);
-        expect(dialog).toContain('await sendReportEmail(rid, built.body, asOutlet)');
+        expect(dialog).toContain('await sendReportEmail(rid, { ...built.body, client_request_id: id }, asOutlet)');
         // The combined scope travels in the body; the request runs as a real outlet.
         expect(dialog).toContain('const asOutlet = combined ? fallbackOutletId : outletId');
         expect(dialog).toContain('scope: combined ? "all" : "outlet"');
@@ -527,6 +596,9 @@ describe('the wiring', () => {
         expect(area).toContain('<Input id="sched-time" type="time" step={60}');
         expect(area).toContain('{config?.can_use_all_outlets && (');
         expect(area).toContain('<option value="email" disabled={!emailOk}>');
+        // The history keeps watching a row the server will retry, for as long as the app does.
+        expect(area).toContain('const inFlight = deliveries.some((d) => !isFinalDelivery(d) && Date.now() - Date.parse(d.created_at) < WATCH_MAX_MS)');
+        expect(area).toContain('{retryCaption(d) && <p');
     });
 
     it('db.ts calls the routes the backend serves, and returns refusals instead of throwing them', () => {

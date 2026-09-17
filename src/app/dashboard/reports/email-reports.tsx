@@ -50,9 +50,9 @@ import {
     ADDRESS_BOOK_EMPTY, ADDRESS_BOOK_READ_ONLY, ADDRESS_BOOK_TITLE, BLANK_EMAIL_SCHEDULE, EMAILABLE_REPORTS, FORMAT_LABELS,
     MIS_EMAIL_KEYS, POLL_INTERVAL_MS, RECIPIENT_OUTCOME_LABELS, TEST_EMAIL_LABEL, WINDOW_MODE_LABELS,
     addressProblem, bookEntryLabel, buildEmailSchedulePatch, cadenceCaption, configBanners, coverageCaption,
-    defaultWindowMode, deliveryKind, deliveryStatus, fileLabel, formFromSchedule, isSettled, newClientRequestId,
+    defaultWindowMode, deliveryKind, deliveryStatus, fileLabel, formFromSchedule, isFinalDelivery, newClientRequestId,
     nextRunCaption, orderedKeys, periodPhrase, readBook, readReportEmailConfig, recipientOutcomes, refusalTitle,
-    reportDisabledReason, reportListPhrase, wallClock,
+    reportDisabledReason, reportListPhrase, retryCaption, wallClock, WATCH_MAX_MS,
     type BookEntry, type DeliveryFile, type EmailScheduleForm, type ReportEmailConfig, type StatusTone,
 } from "@/lib/report-email"
 import { runScheduleAction } from "@/lib/report-schedule-actions"
@@ -134,9 +134,9 @@ export function EmailReportsPanel({ rid, timezone }: EmailReportsPanelProps) {
 
     useEffect(() => { void load() }, [load])
 
-    // A delivery still in flight refreshes itself, so "Sending" turns into
-    // "Sent" without anyone pressing Refresh.
-    const inFlight = deliveries.some((d) => !isSettled(d.status) && Date.now() - Date.parse(d.created_at) < 15 * 60_000)
+    // A delivery still in flight — or waiting for the server's retry — refreshes
+    // itself, so "Sending" turns into "Sent" without anyone pressing Refresh.
+    const inFlight = deliveries.some((d) => !isFinalDelivery(d) && Date.now() - Date.parse(d.created_at) < WATCH_MAX_MS)
     useEffect(() => {
         if (!inFlight) {return}
         const t = setTimeout(() => {
@@ -764,7 +764,8 @@ function HistoryCard({ rid, timezone, schedules, deliveries, failed, reload, toa
                                 </button>
                                 <span className={TONE_CLASS[status.tone]}>{status.label}</span>
                             </div>
-                            {d.error && <p className="mt-1 text-xs text-destructive">{d.error}</p>}
+                            {d.error && <p className={cn("mt-1 text-xs", isFinalDelivery(d) ? "text-destructive" : "text-muted-foreground")}>{d.error}</p>}
+                            {retryCaption(d) && <p className="mt-0.5 text-xs text-muted-foreground">{retryCaption(d)}</p>}
                             {expanded && (
                                 <div className="mt-2 space-y-2 border-t pt-2">
                                     {rows.length > 0 && (
