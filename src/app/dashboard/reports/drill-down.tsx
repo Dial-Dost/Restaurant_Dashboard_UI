@@ -137,6 +137,19 @@ export function DrillDownDialog({ request, onClose, restaurantId, outletId, time
                             <Field label="Waiter / closed by" value={bill.closed_by ?? "—"} />
                             <Field label="Customer" value={bill.customer ?? "—"} />
                             {"customer_gstin" in bill ? <Field label="Customer GSTIN" value={bill.customer_gstin?.trim() ? bill.customer_gstin.trim() : "—"} /> : null}
+                            {/* Client item 7 — read-only here, like everything on a
+                                control report's drill-down; only when the server
+                                sends the field. */}
+                            {"customer_address" in bill ? (
+                                <div className="col-span-2 sm:col-span-4">
+                                    <Field
+                                        label="Customer address"
+                                        value={bill.customer_address?.trim()
+                                            ? <span className="block whitespace-pre-line break-words">{bill.customer_address.trim()}</span>
+                                            : "—"}
+                                    />
+                                </div>
+                            ) : null}
                             <Field label="Seated" value={when(bill.seated_at)} />
                             <Field label="Opened" value={when(bill.created_at)} />
                         </div>

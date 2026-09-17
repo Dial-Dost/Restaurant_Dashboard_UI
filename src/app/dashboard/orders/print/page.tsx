@@ -211,6 +211,8 @@ interface PrintedBill {
      */
     customer: string | null | undefined;
     customerGstin: string | null | undefined;
+    /** Client item 7 — the guest's address, off the same document, by the same rule. */
+    customerAddress: string | null | undefined;
     /**
      * A bill SETTLED AS NON-CHARGEABLE (backend migration 052): the block printed
      * under its 0.00 total — the kind and the authoriser, off the settled bill,
@@ -228,12 +230,17 @@ const docField = (doc: Record<string, unknown> | null | undefined, key: string):
 
 /**
  * The customer slot for this receipt — `Name: …` (a bare `Name:` for a walk-in)
- * and, when set, `Customer GSTIN: …` — shared by the on-screen bill and the
+ * and, when set, `Customer GSTIN: …` and the `Address: …` lines (client item 7)
+ * — shared by the on-screen bill and the
  * ESC/POS twin so they cannot drift. See billCustomerLines for why it sits under
  * the header and why a walk-in's slot is left blank.
  */
 function receiptCustomerLines(printed: PrintedBill, order: { customer?: unknown }): string[] {
-    return billCustomerLines(printed.customer === undefined ? order.customer : printed.customer, printed.customerGstin);
+    return billCustomerLines(
+        printed.customer === undefined ? order.customer : printed.customer,
+        printed.customerGstin,
+        printed.customerAddress,
+    );
 }
 
 /**
@@ -403,6 +410,7 @@ function resolvePrintedBill(order: Order, settled: any | null, openBill: any | n
             source: 'settled',
             customer: docField(settled as Record<string, unknown>, 'customer'),
             customerGstin: docField(settled as Record<string, unknown>, 'customer_gstin'),
+            customerAddress: docField(settled as Record<string, unknown>, 'customer_address'),
             settlement: ncPrintSettlement(settled),
         };
         return { ok: true, printed };
@@ -459,6 +467,7 @@ function resolvePrintedBill(order: Order, settled: any | null, openBill: any | n
             source: 'open',
             customer: docField(openBill as Record<string, unknown>, 'customer'),
             customerGstin: docField(openBill as Record<string, unknown>, 'customer_gstin'),
+            customerAddress: docField(openBill as Record<string, unknown>, 'customer_address'),
             // An open bill is never settled, as NC or otherwise.
             settlement: null,
         };
@@ -1006,11 +1015,14 @@ function PrintPageContents() {
                 {/* R2 item 1 — the customer's own slot, directly under the
                     restaurant header and above the Date / Bill No. block, as on
                     the client's printed bill: "Name:" (left blank for a walk-in)
-                    and, for a corporate party, "Customer GSTIN:". The thermal
-                    bill prints the same lines in the same place. */}
+                    and, for a corporate party, "Customer GSTIN:" and the
+                    "Address:" lines (client item 7). The thermal bill prints the
+                    same lines in the same place. Keyed by POSITION: two address
+                    lines can read the same ("Bengaluru" twice), and a key taken
+                    from the text would collide. */}
                 <div className="w-full" data-testid="receipt-customer-slot">
-                    {receiptCustomerLines(printed, order).map((l) => (
-                        <p key={l}>{l}</p>
+                    {receiptCustomerLines(printed, order).map((l, i) => (
+                        <p key={i} className="break-words">{l}</p>
                     ))}
                 </div>
                 <ReceiptRule />

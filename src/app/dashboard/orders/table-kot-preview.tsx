@@ -49,7 +49,7 @@ import { BillCustomerDialog, type BillCustomerInitial } from "@/components/bill-
 import { useAuth } from "@/context/AuthContext";
 import { useCurrency } from "@/hooks/use-currency";
 import { cn } from "@/lib/utils";
-import { isPlaceholderCustomer } from "@/lib/bill-customer";
+import { isPlaceholderCustomer, normalizeAddress } from "@/lib/bill-customer";
 import { getBillForTable } from "@/lib/db";
 import { groupItemsByKot, type KotGroupOrder } from "@/lib/kot-groups";
 import { visibleLineAmount, visibleMoneyText } from "@/lib/order-prices";
@@ -142,6 +142,8 @@ export function TableKotPreview({
             // Only when the server SENT the key: an older backend's silence is not
             // "no GSTIN", and the dialog treats the two differently.
             ...("customer_gstin" in row ? { customer_gstin: typeof row.customer_gstin === "string" ? row.customer_gstin : null } : {}),
+            // Client item 7 — the same rule for the address.
+            ...("customer_address" in row ? { customer_address: typeof row.customer_address === "string" ? row.customer_address : null } : {}),
           }
           : null);
       })
@@ -153,6 +155,13 @@ export function TableKotPreview({
   const customerName = billCustomer && !isPlaceholderCustomer(billCustomer.customer) ? String(billCustomer.customer).trim() : "";
   const gstinSupported = billCustomer !== null && "customer_gstin" in billCustomer;
   const customerGstin = (billCustomer?.customer_gstin ?? "").trim();
+  // Client item 7 — the address, shown as its first line with the whole of it
+  // on hover: the strip is one compact line by design (6.7's controls sit
+  // directly under it), and the paper has room for all five lines.
+  const addressSupported = billCustomer !== null && "customer_address" in billCustomer;
+  const addressFull = normalizeAddress(billCustomer?.customer_address) ?? "";
+  const addressLines = addressFull === "" ? [] : addressFull.split("\n");
+  const addressFirst = addressLines[0] ?? "";
 
   return (
     <Card id="table-preview" className="border-primary/40">
@@ -194,13 +203,20 @@ export function TableKotPreview({
                     : <span className="text-muted-foreground">None</span>}
                 </span>
               ) : null}
+              {addressSupported && addressFirst ? (
+                <span className="min-w-0 max-w-full truncate" title={addressFull} data-testid="table-bill-customer-address">
+                  <span className="text-muted-foreground">Address: </span>
+                  <span className="font-semibold">{addressFirst}</span>
+                  {addressLines.length > 1 ? <span className="text-muted-foreground"> (+{addressLines.length - 1} more)</span> : null}
+                </span>
+              ) : null}
             </div>
             {/* Read-only for a scoped waiter, exactly like the owner app: the
                 line, and no button. */}
             {canEditCustomer ? (
             <>
             <Button variant="outline" size="sm" onClick={() => { setCustomerOpen(true); }}>
-              <Pencil className="h-3.5 w-3.5" /> Edit name / GSTIN
+              <Pencil className="h-3.5 w-3.5" /> Edit name / GSTIN / address
             </Button>
             <BillCustomerDialog
               open={customerOpen}
@@ -216,6 +232,8 @@ export function TableKotPreview({
                   // Keep "not supported here" if the server still sends no key.
                   ...(prev && "customer_gstin" in prev ? { customer_gstin: saved.customer_gstin } : {}),
                   ...(saved.customer_gstin ? { customer_gstin: saved.customer_gstin } : {}),
+                  ...(prev && "customer_address" in prev ? { customer_address: saved.customer_address } : {}),
+                  ...(saved.customer_address ? { customer_address: saved.customer_address } : {}),
                 }));
                 onChanged();
               }}

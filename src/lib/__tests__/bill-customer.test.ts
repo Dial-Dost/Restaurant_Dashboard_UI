@@ -117,39 +117,40 @@ describe('the dialog payload — one dialog, two routes', () => {
 
     it('db.ts sends both routes through that builder, and returns (not throws) the outcome', () => {
         const db = code(readSource('src/lib/db.ts'));
-        expect(db).toMatch(/billCustomerPayload\(\{ kind: 'table', tableName \}, customer, customerGstin\)/);
-        expect(db).toMatch(/billCustomerPayload\(\{ kind: 'bill', billId \}, customer, customerGstin\)/);
+        // Client item 7: the address rides through the same builder, by the same rule.
+        expect(db).toMatch(/billCustomerPayload\(\{ kind: 'table', tableName \}, customer, customerGstin, customerAddress\)/);
+        expect(db).toMatch(/billCustomerPayload\(\{ kind: 'bill', billId \}, customer, customerGstin, customerAddress\)/);
         expect(db).toMatch(/export const setSettledBillCustomerDetails = async/);
-        expect(db).toMatch(/billCustomerSaveOutcome\(response\.status, text, 'customer_gstin' in request\.body\)/);
+        expect(db).toMatch(/billCustomerSaveOutcome\(response\.status, text, 'customer_gstin' in request\.body, 'customer_address' in request\.body\)/);
     });
 });
 
 describe('seeding the dialog', () => {
     it('seeds the current name and GSTIN, never the Guest placeholder', () => {
         expect(billCustomerSeed({ customer: 'Acme', customer_gstin: '29ABCDE1234F1Z5' }))
-            .toEqual({ customer: 'Acme', gstin: '29ABCDE1234F1Z5', gstinKnown: true });
+            .toEqual({ customer: 'Acme', gstin: '29ABCDE1234F1Z5', gstinKnown: true, address: '', addressKnown: false });
         expect(billCustomerSeed({ customer: 'Guest', customer_gstin: null }))
-            .toEqual({ customer: '', gstin: '', gstinKnown: true });
+            .toEqual({ customer: '', gstin: '', gstinKnown: true, address: '', addressKnown: false });
         expect(billCustomerSeed({ customer: 'QR Guest' }).customer).toBe('');
     });
 
     it('a payload without the key (older backend) or no payload at all does not KNOW the GSTIN', () => {
-        expect(billCustomerSeed({ customer: 'Acme' })).toEqual({ customer: 'Acme', gstin: '', gstinKnown: false });
-        expect(billCustomerSeed(null)).toEqual({ customer: '', gstin: '', gstinKnown: false });
+        expect(billCustomerSeed({ customer: 'Acme' })).toEqual({ customer: 'Acme', gstin: '', gstinKnown: false, address: '', addressKnown: false });
+        expect(billCustomerSeed(null)).toEqual({ customer: '', gstin: '', gstinKnown: false, address: '', addressKnown: false });
     });
 });
 
 describe('what came back — the server\'s sentence verbatim, and old backends degrade', () => {
     it('reads the saved name and GSTIN off a success', async () => {
         await expect(billCustomerSaveOutcome(200, JSON.stringify({ success: true, customer: 'Acme', customer_gstin: '29ABCDE1234F1Z5', orders_updated: 2 }), true))
-            .resolves.toEqual({ ok: true, customer: 'Acme', customer_gstin: '29ABCDE1234F1Z5', gstinSaved: true });
+            .resolves.toEqual({ ok: true, customer: 'Acme', customer_gstin: '29ABCDE1234F1Z5', gstinSaved: true, customer_address: null, addressSaved: true });
         await expect(billCustomerSaveOutcome(200, JSON.stringify({ success: true, bill_id: 'b1', customer: null, customer_gstin: null }), true))
-            .resolves.toEqual({ ok: true, customer: null, customer_gstin: null, gstinSaved: true });
+            .resolves.toEqual({ ok: true, customer: null, customer_gstin: null, gstinSaved: true, customer_address: null, addressSaved: true });
     });
 
     it('a success WITHOUT customer_gstin after sending one is an old backend: the GSTIN was not saved', async () => {
         const r = await billCustomerSaveOutcome(200, JSON.stringify({ success: true, customer: 'Acme', orders_updated: 1 }), true);
-        expect(r).toEqual({ ok: true, customer: 'Acme', customer_gstin: null, gstinSaved: false });
+        expect(r).toEqual({ ok: true, customer: 'Acme', customer_gstin: null, gstinSaved: false, customer_address: null, addressSaved: true });
         // …and nothing is wrong when no GSTIN was sent in the first place.
         const plain = await billCustomerSaveOutcome(200, JSON.stringify({ success: true, customer: 'Acme', orders_updated: 1 }), false);
         expect(plain.ok && plain.gstinSaved).toBe(true);
