@@ -17,6 +17,7 @@ import {
 } from "@/lib/guest-theme";
 import { isMobile10, normalizeMobile10, sanitizePhoneInput } from "@/lib/phone";
 import { GuestPosters, readGuestPosters, type GuestPoster } from "@/components/guest-posters";
+import { SearchInput } from "@/components/ui/search-input";
 
 import { badgesById, capBadges, guestBadgeStyle, parseBadgeCatalogue, type MenuBadge } from "@/lib/menu-badges";
 import { formatRoundOff, roundOffOf } from "@/lib/bill-round-off";
@@ -80,6 +81,7 @@ const STRINGS: Record<Lang, Record<string, string>> = {
     bill: "Bill",
     tagline: "Scan · Order · Pay — from your table",
     searchPlaceholder: "Search the menu…",
+    clearSearch: "Clear search",
     add: "Add",
     customize: "Customize",
     soldOut: "Sold out",
@@ -162,6 +164,7 @@ const STRINGS: Record<Lang, Record<string, string>> = {
     bill: "बिल",
     tagline: "स्कैन · ऑर्डर · भुगतान — अपनी टेबल से",
     searchPlaceholder: "मेनू में खोजें…",
+    clearSearch: "खोज साफ़ करें",
     add: "जोड़ें",
     customize: "पसंद चुनें",
     soldOut: "उपलब्ध नहीं",
@@ -754,21 +757,24 @@ function OrderInner() {
 
         {/* SEARCH */}
         <div className="px-4 pt-2.5">
-          <div className="flex items-center gap-2 border px-3.5 py-2.5" style={{ backgroundColor: "rgba(var(--panelRGB),0.7)", borderColor: "rgba(var(--edgeRGB),0.08)", borderRadius: "var(--rCtrl)" }}>
-            <Icon name="search" style={{ fontSize: "calc(19px*var(--fs,1))", color: "var(--inkDim)" }} />
-            <input
-              value={query}
-              onChange={(e) => { setQuery(e.target.value); }}
-              placeholder={t("searchPlaceholder")}
-              className="min-w-0 flex-1 bg-transparent text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] text-[color:var(--ink)] outline-none placeholder:text-[color:var(--inkDim)]"
-              style={{ caretColor: "var(--accHi)" }}
-            />
-            {query && (
-              <button onClick={() => { setQuery(""); }} aria-label={t("close")} className="transition active:scale-90">
-                <Icon name="close" style={{ fontSize: "calc(18px*var(--fs,1))", color: "var(--inkMuted)" }} />
-              </button>
-            )}
-          </div>
+          {/* The shared search box in this page's own skin: same x, same
+              Escape, the page's glyphs and colours. The x keeps the row's
+              height by giving back its extra 20px as negative margin. */}
+          <SearchInput
+            bare
+            value={query}
+            onValueChange={setQuery}
+            placeholder={t("searchPlaceholder")}
+            aria-label={t("searchPlaceholder")}
+            clearLabel={t("clearSearch")}
+            wrapperClassName="flex items-center gap-2 border px-3.5 py-2.5"
+            wrapperStyle={{ backgroundColor: "rgba(var(--panelRGB),0.7)", borderColor: "rgba(var(--edgeRGB),0.08)", borderRadius: "var(--rCtrl)" }}
+            icon={<Icon name="search" style={{ fontSize: "calc(19px*var(--fs,1))", color: "var(--inkDim)" }} />}
+            className="min-w-0 flex-1 bg-transparent text-[length:calc(14px*var(--fs,1))] leading-[calc(20px*var(--fs,1))] text-[color:var(--ink)] outline-none placeholder:text-[color:var(--inkDim)]"
+            style={{ caretColor: "var(--accHi)" }}
+            clearClassName="-my-2.5 -mr-3 transition active:scale-90"
+            clearIcon={<Icon name="close" style={{ fontSize: "calc(18px*var(--fs,1))", color: "var(--inkMuted)" }} />}
+          />
         </div>
 
         {/* CATEGORY CHIPS */}

@@ -12,12 +12,13 @@
 // and lifts a "Service Charge" entry out of the tax breakdown so it is never
 // shown twice. Nothing is recomputed here.
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { useToast } from "@/hooks/use-toast"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { SearchInput } from "@/components/ui/search-input"
 import { Badge } from "@/components/ui/badge"
 import { Pencil, Printer, Receipt } from "lucide-react"
 import { useCurrency } from "@/hooks/use-currency"
@@ -27,6 +28,7 @@ import { closedBillMethodFilterOptions, paymentMethodLabel } from "@/lib/payment
 import { BillCustomerDialog } from "@/components/bill-customer-dialog"
 import { canEditSettledBillCustomer } from "@/lib/bill-customer"
 import { formatRoundOff, roundOffOf } from "@/lib/bill-round-off"
+import { filterFetchDelayMs } from "@/lib/search-input"
 import { getClosedBills, getClosedBill, reprintSettledBill, type ClosedBillSummary, type ClosedBillDetail } from "@/lib/db"
 import { DateRangePicker, RangeNote } from "@/components/date-range-picker"
 import type { DateRange } from "@/lib/date-range"
@@ -104,8 +106,12 @@ export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, range
   const effFrom = ownDateFilter ? ownFrom : from
   const effTo = ownDateFilter ? ownTo : to
 
+  // Each free-text box holds its text and the query it has settled on (the box
+  // debounces); the list asks the server with the settled ones.
+  const [searchInput, setSearchInput] = useState("")
   const [search, setSearch] = useState("")
   const [method, setMethod] = useState("")
+  const [tableInput, setTableInput] = useState("")
   const [table, setTable] = useState("")
 
   const [bills, setBills] = useState<ClosedBillSummary[]>([])
@@ -119,11 +125,17 @@ export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, range
   const [detail, setDetail] = useState<ClosedBillDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
 
-  // Debounced first page — reruns on every filter change.
+  // Debounced first page — reruns on every filter change. The two text boxes
+  // debounce themselves, so a change to them alone goes at once: an emptied
+  // box re-asks now instead of 300ms later.
+  const lastFilters = useRef<{ effFrom: string | undefined; effTo: string | undefined; search: string; method: string; table: string } | null>(null)
   useEffect(() => {
     if (!rid) {return}
     let active = true
     setLoading(true)
+    const nextFilters = { effFrom, effTo, search, method, table }
+    const delay = filterFetchDelayMs(lastFilters.current, nextFilters, ['search', 'table'], 300)
+    lastFilters.current = nextFilters
     const t = setTimeout(() => {
       void getClosedBills(rid, {
         limit: PAGE_SIZE,
@@ -147,7 +159,7 @@ export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, range
           if (active) {setFailed(true); setBills([]); setTotal(0); setHasMore(false)}
         })
         .finally(() => { if (active) {setLoading(false)} })
-    }, 300)
+    }, delay)
     return () => { active = false; clearTimeout(t) }
   }, [rid, effFrom, effTo, search, method, table])
 
@@ -190,8 +202,8 @@ export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, range
     }
   }, [rid])
 
-  const clearFilters = () => { setSearch(""); setMethod(""); setTable(""); setOwnFrom(""); setOwnTo("") }
-  const hasFilters = Boolean(search || method || table || (ownDateFilter && (ownFrom || ownTo)))
+  const clearFilters = () => { setSearchInput(""); setMethod(""); setTableInput(""); setOwnFrom(""); setOwnTo("") }
+  const hasFilters = Boolean(searchInput || method || tableInput || (ownDateFilter && (ownFrom || ownTo)))
 
   return (
     <Card id="closed-bills-section" className="scroll-mt-20">
@@ -218,12 +230,23 @@ export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, range
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          <Input
+          <SearchInput
             placeholder="Bill no, table, method, coupon, cashier…"
-            value={search}
-            onChange={(e) => { setSearch(e.target.value) }}
+            aria-label="Search closed bills"
+            value={searchInput}
+            onValueChange={setSearchInput}
+            onQueryChange={setSearch}
+            debounceMs={300}
           />
-          <Input placeholder="Table (exact, e.g. T2)" value={table} onChange={(e) => { setTable(e.target.value) }} />
+          {/* A filter typed like a search, so it clears like one. */}
+          <SearchInput
+            placeholder="Table (exact, e.g. T2)"
+            aria-label="Filter by table"
+            value={tableInput}
+            onValueChange={setTableInput}
+            onQueryChange={setTable}
+            debounceMs={300}
+          />
           <select
             value={method}
             onChange={(e) => { setMethod(e.target.value) }}

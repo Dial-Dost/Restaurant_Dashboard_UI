@@ -3,10 +3,17 @@
 import * as React from "react"
 import { type DialogProps } from "@radix-ui/react-dialog"
 import { Command as CommandPrimitive } from "cmdk"
-import { Search } from "lucide-react"
+import { Search, X } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import { Dialog, DialogContent } from "@/components/ui/dialog"
+import {
+  SEARCH_CLEAR_BUTTON_CLASS,
+  SEARCH_CLEAR_LABEL,
+  SEARCH_INPUT_ATTR,
+  searchKeyAction,
+  showSearchClear,
+} from "@/lib/search-input"
 
 const Command = React.forwardRef<
   React.ElementRef<typeof CommandPrimitive>,
@@ -37,22 +44,79 @@ const CommandDialog = ({ children, ...props }: CommandDialogProps) => {
   )
 }
 
+// CLIENT ITEM 6 (app 2.0.2): every cmdk search gets the same x as SearchInput
+// ("Search tables..." in Add New Order had none). The text is always held here
+// — the caller's when it passes `value`, this input's own otherwise — so the x
+// has something to clear, and an uncontrolled combobox still starts empty each
+// time its popover opens (the input unmounts with it).
 const CommandInput = React.forwardRef<
   React.ElementRef<typeof CommandPrimitive.Input>,
   React.ComponentPropsWithoutRef<typeof CommandPrimitive.Input>
->(({ className, ...props }, ref) => (
-  <div className="flex items-center border-b px-3" cmdk-input-wrapper="">
-    <Search className="mr-2 h-4 w-4 shrink-0 opacity-50" />
-    <CommandPrimitive.Input
-      ref={ref}
-      className={cn(
-        "flex h-11 w-full rounded-md bg-transparent py-3 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50",
-        className
-      )}
-      {...props}
-    />
-  </div>
-))
+>(({ className, value, onValueChange, onKeyDown, ...props }, ref) => {
+  const [own, setOwn] = React.useState("")
+  const text = value ?? own
+  const setText = (next: string): void => {
+    if (value === undefined) {setOwn(next)}
+    onValueChange?.(next)
+  }
+  const inner = React.useRef<HTMLInputElement | null>(null)
+  const setRefs = React.useCallback((node: HTMLInputElement | null) => {
+    inner.current = node
+    if (typeof ref === "function") {
+      ref(node)
+    } else if (ref) {
+      ref.current = node
+    }
+  }, [ref])
+  const clear = (): void => {
+    setText("")
+    inner.current?.focus()
+  }
+  return (
+    <div className="flex items-center border-b px-3" cmdk-input-wrapper="">
+      <Search className="mr-2 h-4 w-4 shrink-0 opacity-50" />
+      <CommandPrimitive.Input
+        ref={setRefs}
+        className={cn(
+          "flex h-11 w-full rounded-md bg-transparent py-3 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50",
+          className
+        )}
+        {...props}
+        {...{ [SEARCH_INPUT_ATTR]: "" }}
+        value={text}
+        onValueChange={setText}
+        onKeyDown={(e) => {
+          const before = e.defaultPrevented
+          onKeyDown?.(e)
+          const action = searchKeyAction({
+            key: e.key,
+            value: text,
+            handledByScreen: !before && e.defaultPrevented,
+            composing: e.nativeEvent.isComposing,
+          })
+          if (action === "clear") {
+            e.preventDefault()
+            e.stopPropagation()
+            clear()
+          }
+        }}
+      />
+      {showSearchClear(text) ? (
+        <button
+          type="button"
+          aria-label={SEARCH_CLEAR_LABEL}
+          title={SEARCH_CLEAR_LABEL}
+          // Keep the caret in the box: a mousedown on a button would take focus.
+          onMouseDown={(e) => { e.preventDefault() }}
+          onClick={clear}
+          className={cn(SEARCH_CLEAR_BUTTON_CLASS, "-mr-3 h-11")}
+        >
+          <X aria-hidden className="h-4 w-4" />
+        </button>
+      ) : null}
+    </div>
+  )
+})
 
 CommandInput.displayName = CommandPrimitive.Input.displayName
 

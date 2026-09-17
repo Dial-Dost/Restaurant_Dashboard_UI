@@ -29,6 +29,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { SearchInput } from "@/components/ui/search-input";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -38,7 +39,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
-import { ChevronDown, ChevronRight, Link2, MoreHorizontal, PlusCircle, Search, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Link2, MoreHorizontal, PlusCircle } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -559,26 +560,13 @@ function BookingsPageInner() {
             </div>
           </div>
           <div className="flex flex-col gap-2 pt-2 sm:flex-row sm:items-center">
-            <div className="relative w-full sm:max-w-sm">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={query}
-                onChange={(e) => { setQuery(e.target.value); }}
-                placeholder="Search name, phone, table, status, source, date…"
-                aria-label="Search bookings"
-                className="pl-8 pr-8"
-              />
-              {query ? (
-                <button
-                  type="button"
-                  onClick={() => { setQuery(""); }}
-                  aria-label="Clear search"
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              ) : null}
-            </div>
+            <SearchInput
+              value={query}
+              onValueChange={setQuery}
+              placeholder="Search name, phone, table, status, source, date…"
+              aria-label="Search bookings"
+              wrapperClassName="w-full sm:max-w-sm"
+            />
             <p className="text-xs text-muted-foreground">
               {query
                 ? `${visibleBookings.length} of ${bookings.length} booking${bookings.length === 1 ? "" : "s"} match`
