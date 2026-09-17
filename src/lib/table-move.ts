@@ -171,9 +171,127 @@ export const kotTicketLabel = (kotNos: unknown): string => {
     return `${nos.length === 1 ? 'KOT' : 'KOTs'} ${nos.join(', ')}`;
 };
 
+// ============================================================================
+// CLIENT ITEM 4 (2026-09-17) — THE DISHES, BY NAME
+// ============================================================================
+// "Right now there are no item names visible when an order is moved from one
+// table to another." The move dialog named each order "KOT 65" — or, with no
+// number, "Order 5a4099ef-98c9-…" — and the toast named neither the ticket's
+// food nor anything else a person at the pass could act on.
+//
+// THE WORDS ARE THE OWNER APP'S, character for character
+// (restaurant_owner_app lib/models/order_moves.dart; both suites pin the same
+// sentences), so a restaurant that moves an order on the laptop and on the
+// till is told the same thing both times. NO MONEY: nothing below reads a
+// price, and a waiter-only session is shown the dishes and never their worth.
+
+/** One line as a move names it. Every field is read as `unknown` off the wire. */
+export interface MoveDishSource {
+    name?: unknown;
+    item_name?: unknown;
+    variation?: unknown;
+    variation_name?: unknown;
+    quantity?: unknown;
+    qty?: unknown;
+    to_table?: unknown;
+}
+
+const moveText = (value: unknown): string => {
+    const s = (typeof value === 'string' || typeof value === 'number') ? String(value).trim() : '';
+    return s === 'null' ? '' : s;
+};
+
+const moveQty = (value: unknown): number => {
+    const parsed = Number(value ?? 1);
+    const q = Number.isFinite(parsed) ? Math.round(parsed) : 1;
+    return q < 1 ? 1 : q;
+};
+
+/** "2 × Dal (Half)" — one dish as the table preview prints it. */
+export const moveDishLine = (line: MoveDishSource): string => {
+    const name = moveText(line.name) || moveText(line.item_name) || 'Item';
+    const size = moveText(line.variation) || moveText(line.variation_name);
+    return `${String(moveQty(line.quantity ?? line.qty))} × ${size ? `${name} (${size})` : name}`;
+};
+
+/** Every dish on an order, in the ticket's order. */
+export const orderDishLines = (order: { items?: unknown } | null | undefined): string[] => {
+    const items = order?.items;
+    if (!Array.isArray(items)) { return []; }
+    return (items as unknown[])
+        .filter((it): it is MoveDishSource => it !== null && typeof it === 'object')
+        .map(moveDishLine);
+};
+
+/** "1 × A, 1 × B, 1 × C +2 more". `max` null names them all. */
+export const moveDishSummary = (lines: readonly string[], max: number | null = 3): string => {
+    if (lines.length === 0) { return ''; }
+    if (max === null || lines.length <= max) { return lines.join(', '); }
+    return `${lines.slice(0, max).join(', ')} +${String(lines.length - max)} more`;
+};
+
+/** "KOT 65" / "KOTs 65, 66", or "No KOT number" — never a UUID. */
+export const moveOrderTitle = (order: { kot_nos?: unknown } | null | undefined): string =>
+    kotTicketLabel(order?.kot_nos) || 'No KOT number';
+
+/** "from 12" — where a moved ticket came from, or null. */
+export const movedFromLabel = (order: { moved_from?: unknown } | null | undefined): string | null => {
+    const from = moveText(order?.moved_from);
+    return from ? `from ${from}` : null;
+};
+
+/**
+ * "Moved to 31: 1 × NOT YOUR PUCHKA" — what a dish move took OFF a ticket,
+ * grouped by where each went ("…; to 32: 2 × Dal"). Null when nothing did.
+ */
+export const movedAwayLine = (order: { moved_items?: unknown } | null | undefined): string | null => {
+    const raw = order?.moved_items;
+    if (!Array.isArray(raw) || raw.length === 0) { return null; }
+    const byTable = new Map<string, string[]>();
+    for (const it of raw as unknown[]) {
+        if (it === null || typeof it !== 'object') { continue; }
+        const line = it as MoveDishSource;
+        const to = moveText(line.to_table);
+        const list = byTable.get(to);
+        if (list) { list.push(moveDishLine(line)); } else { byTable.set(to, [moveDishLine(line)]); }
+    }
+    if (byTable.size === 0) { return null; }
+    const parts: string[] = [];
+    for (const [to, dishes] of byTable) {
+        parts.push(`${parts.length === 0 ? 'Moved to' : 'to'} ${to || 'another table'}: ${dishes.join(', ')}`);
+    }
+    return parts.join('; ');
+};
+
+/**
+ * DOES THE KITCHEN HAVE THIS TICKET? The one answer both clients give before a
+ * move, and the one the server acts on: a KOT number means a docket printed,
+ * a bark means the pass announced it, and either is enough.
+ *
+ * NOT THE BARK ALONE. Production barks almost none of its printed tickets
+ * (GGV: 79 of 80 in a fortnight), so a rule that read only `barked_at` told
+ * the person moving KOT-65 "nothing prints now" — and then a correction docket
+ * came out. `barked_at` absent (a backend older than the field) reads as
+ * barked, as the orders page reads it.
+ *
+ * PARITY: restaurant_owner_app lib/models/order_moves.dart moveOrderKitchenHas
+ * is the same rule, and both suites pin the same cases.
+ */
+export const moveOrderKitchenHas = (order: { kot_nos?: unknown; barked_at?: unknown }): boolean =>
+    kotTicketLabel(order.kot_nos) !== '' || order.barked_at !== null;
+
+/** What the kitchen will see when an order moves — said before the move. */
+export const moveOrderKitchenSentence = (fromTable: string, toTable: string, barked: boolean): string => (barked
+    ? `The kitchen already has a docket for ${fromTable}, so a correction docket prints for ${toTable} with the same KOT number. ${fromTable} keeps its guests and its other orders.`
+    : `The kitchen has not been sent this order yet, so nothing prints now — it will print for ${toTable} when it is sent.`);
+
+/** The dishes the server named in a move's answer (`items`), as lines. */
+export const movedDishesOf = (body: unknown): string[] =>
+    (body && typeof body === 'object' && !Array.isArray(body)) ? orderDishLines(body as { items?: unknown }) : [];
+
 /**
  * WHAT THE PASS NEEDS TO BE TOLD after an order moved, from the server's own
- * `print` block.
+ * `print` block — and, since client item 4, WHAT moved.
  *
  * `printed: false` IS NOT A FAILURE and must not read as one. It means the
  * kitchen never had a docket for this order, so there is no paper on the pass to
@@ -182,19 +300,82 @@ export const kotTicketLabel = (kotNos: unknown): string => {
  * number is coming out now, and whoever pressed the button has to go and say so
  * — which is the entire reason the backend puts the outcome in the response
  * instead of leaving staff to guess.
+ *
+ *   Moved to 15: 1 × KUNAFA BIRDS NEST, 1 × STIR FRIED WATERCHESTNUT +1 more. Correction docket KOT-65 is printing — tell the pass.
  */
 export const movedOrderSentence = (
     toTable: string,
     print: { printed?: boolean; kot_no?: number | string | null } | null | undefined,
+    dishes: readonly string[] = [],
 ): string => {
     const printed = print?.printed === true;
     const kotNo = print?.kot_no;
     const handle = kotNo === null || kotNo === undefined || String(kotNo).trim() === ''
         ? 'A correction docket'
         : `Correction docket KOT-${String(kotNo).trim()}`;
+    const summary = moveDishSummary(dishes);
+    const head = summary ? `Moved to ${toTable}: ${summary}.` : `Moved to ${toTable}.`;
     return printed
-        ? `Moved to ${toTable}. ${handle} is printing — tell the pass.`
-        : `Moved to ${toTable}. Nothing was on the pass for it, so no docket printed.`;
+        ? `${head} ${handle} is printing — tell the pass.`
+        : `${head} Nothing was on the pass for it, so no docket printed.`;
+};
+
+/**
+ * A MOVE CHANGES TWO BILLS. Every reprint a move's answer asks for: the first in
+ * the ordinary `reprint_*` fields, the second (only a move sends it, and only
+ * when both papers were printed) in `also_reprint_*`. Each is the table to
+ * print and the server's sentence.
+ */
+export const moveReprints = (body: unknown): { table: string; message: string }[] => {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) { return []; }
+    const b = body as Record<string, unknown>;
+    const out: { table: string; message: string }[] = [];
+    for (const prefix of ['reprint_', 'also_reprint_']) {
+        if (b[`${prefix}needed`] !== true) { continue; }
+        const table = moveText(b[`${prefix}table`]);
+        const message = moveText(b[`${prefix}message`]);
+        if (table && message) { out.push({ table, message }); }
+    }
+    return out;
+};
+
+/**
+ * EVERYTHING ONE ORDER MOVE TELLS THE PERSON WHO PRESSED IT, AS ONE NOTICE.
+ *
+ * The dashboard's toast store holds ONE toast (hooks/use-toast.ts,
+ * TOAST_LIMIT = 1): each new toast replaces the last. The move used to raise
+ * "Order moved" and then one "Reprint the bill" per printed table, so the
+ * sentence naming the dishes and the correction docket was gone at once, and
+ * when both bills were printed the destination's reprint went with it — only
+ * the source's prompt was ever read. One notice, every line in it, one "Open
+ * <table>" per reprint (the page draws them).
+ *
+ * `toTable` and `fallbackDishes` are what the page already knows, for a server
+ * that sent neither `to_table` nor `items`.
+ */
+export interface MoveOrderNotice {
+    title: string;
+    /** What moved, and what the pass has to be told. */
+    sentence: string;
+    /** Every bill to reprint, destination first (moveReprints). */
+    reprints: { table: string; message: string }[];
+}
+
+export const moveOrderNotice = (
+    result: unknown,
+    toTable: string,
+    fallbackDishes: readonly string[] = [],
+): MoveOrderNotice => {
+    const body = (result && typeof result === 'object' && !Array.isArray(result))
+        ? result as { to_table?: unknown; print?: { printed?: boolean; kot_no?: number | string | null } | null }
+        : {};
+    const served = movedDishesOf(result);
+    const reprints = moveReprints(result);
+    return {
+        title: reprints.length > 0 ? 'Order moved — reprint the bill' : 'Order moved',
+        sentence: movedOrderSentence(moveText(body.to_table) || toTable, body.print, served.length > 0 ? served : fallbackDishes),
+        reprints,
+    };
 };
 
 /** "3 orders came with them" / "1 order came with them" — plural handled once. */

@@ -95,6 +95,13 @@ export interface SessionScope {
     move_table?: boolean;
     /** POST /tables/move-order — "Move an order". Kept off a waiter-only floor by the clients. */
     move_order?: boolean;
+    /**
+     * Cancel KOT — cancelling food the kitchen has been told about. FALSE for a
+     * waiter-only login whatever it was granted (client item 3, 2026-09-17): the
+     * server refuses every such cancel with `cancel_needs_senior`. A Pending
+     * order's decline does not read it.
+     */
+    cancel_kot?: boolean;
 }
 
 /** One of the server's per-control answers. */
@@ -219,6 +226,9 @@ const CAPABILITY_FALLBACK_ACTION: Record<Capability, string> = {
     manage_roles: PERM_EDIT_ROLES,
     move_table: PERM_TABLE_SERVICE,
     move_order: PERM_ORDER_ADD,
+    // The plain cancel's gate. Only ever reached for a session stored before the
+    // flag shipped — and `cancelKotRoute` asks `waiter_only` before it asks this.
+    cancel_kot: PERM_ORDER_ADD,
 };
 
 /**

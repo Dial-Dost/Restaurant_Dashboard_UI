@@ -140,6 +140,7 @@ import {
   type DraftSendKey,
 } from "@/lib/order-draft";
 import { canBarkFromBoard, cancelKotRoute, ordersGridColumns, showsTableApcSummary } from "@/lib/orders-grid";
+import { movedAwayLine } from "@/lib/table-move";
 /*
   THE PREP TIMERS STAY LOCAL; THE SERVICE CLOCK DOES NOT.
 
@@ -233,6 +234,15 @@ interface Tax {
   percentage: number;
 }
 
+/** One dish a move took off a ticket, as GET /orders names it — never a price. */
+export interface MovedItem {
+  name: string;
+  variation?: string | null;
+  quantity: number;
+  to_table?: string | null;
+  moved_at?: string | null;
+}
+
 export interface Order {
   id: string;
   table: string;
@@ -298,6 +308,15 @@ export interface Order {
   // must therefore render a row without it exactly as it rendered before the
   // field existed — no empty chip, no dash, no reserved column.
   kot_nos?: number[] | null;
+  /*
+    CLIENT ITEM 4 — the move provenance GET /orders sends (absent when the
+    ticket never moved): the table it came from, and — on a ticket a dish move
+    emptied — what left it and where. Names and quantities only.
+  */
+  moved_from?: string | null;
+  moved_at?: string | null;
+  emptied_by?: string | null;
+  moved_items?: MovedItem[] | null;
   /*
     D1 + D2 — THE SERVER'S SERVICE CLOCK FOR THIS TICKET.
 
@@ -574,7 +593,9 @@ function OrdersDashboard() {
     resolved action list, which is the same list the route checks.
   */
   const canSettleBill = can(user, "settle_bill");
-  const canVoidOrder = can(user, "void_order");
+  // Client item 3: a waiter-only session is never offered a void, granted or not
+  // — the server refuses it on a ticketed order (see cancelKotRoute).
+  const canVoidOrder = can(user, "void_order") && cancelKotRoute(user, "Preparing") !== null;
   // SETTLE AS NC asks for BOTH answers, because its route checks both: it is a
   // comp and a settle. A cashier (Close Bill only) and a waiter (neither) are
   // not shown it at all — the app's settle sheet applies the same two.
@@ -2595,6 +2616,18 @@ function OrdersDashboard() {
                   </TableCell>
                   <TableCell>
                     <div className="font-medium">{(order as any).items_flattened?.length ? (order as any).items_flattened.map((i: any) => `${i.quantity}x ${i.name}${i.note ? ` (${i.note})` : ""}`).join(', ') : order.items.map(i => `${i.quantity}x ${i.name}${i.note ? ` (${i.note})` : ""}`).join(', ')}</div>
+                    {/* CLIENT ITEM 4 — a ticket a dish move emptied says what left
+                        it and where (it used to be a blank "Cancelled" row), and a
+                        ticket that arrived by a move says where from. The owner
+                        app's words (lib/table-move.ts). */}
+                    {movedAwayLine(order) ? (
+                      <div className="text-xs text-muted-foreground" data-testid="order-moved-away">{movedAwayLine(order)}</div>
+                    ) : null}
+                    {order.moved_from ? (
+                      <Badge variant="outline" className="mt-1 text-[10px] font-normal" data-testid="order-moved-from">
+                        Moved from {order.moved_from}
+                      </Badge>
+                    ) : null}
                     {order.payment_method ? (
                       <div className="text-xs text-muted-foreground">
                         Payment Method: {paymentMethodLabel(order.payment_method, paymentMethods)}

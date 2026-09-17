@@ -11,7 +11,7 @@ import { type Customer } from '@/app/dashboard/customers/page';
 import { type InventoryItem } from '@/app/dashboard/inventory/page';
 import { type MenuItem } from '@/app/dashboard/menu/data';
 import { MenuBadgeInUseError, parseBadgeCatalogue, type MenuBadge } from '@/lib/menu-badges';
-import { type Order } from '@/app/dashboard/orders/page';
+import { type MovedItem, type Order } from '@/app/dashboard/orders/page';
 import { type Table } from '@/app/dashboard/tables/data';
 import { type AuditLog } from '@/app/dashboard/audit-logs/page';
 import { serverBackendBase, serverBaseUrlFrom } from '@/lib/backend-url';
@@ -1052,6 +1052,17 @@ const mapOrder = (item: any): Order => {
     barked_at: wireTimestamp(wire.barked_at),
     kot_nos: wireNumbers(wire.kot_nos),
     /*
+      CLIENT ITEM 4 — WHERE A TICKET CAME FROM, AND WHAT A MOVE TOOK OFF IT.
+      Passed through as the server shaped them (order_moves.ts
+      orderMoveProvenance) — names and quantities only, never a price — and
+      ABSENT on an order that never moved, which every screen reads as "draw
+      nothing new".
+    */
+    ...(typeof wire.moved_from === 'string' && wire.moved_from.trim() !== '' ? { moved_from: wire.moved_from.trim() } : {}),
+    ...(typeof wire.moved_at === 'string' ? { moved_at: wire.moved_at } : {}),
+    ...(typeof wire.emptied_by === 'string' ? { emptied_by: wire.emptied_by } : {}),
+    ...(Array.isArray(wire.moved_items) ? { moved_items: wire.moved_items as MovedItem[] } : {}),
+    /*
       D2 — THE SERVER'S SERVICE CLOCK, CARRIED VERBATIM.
 
       `service_clock.ts` on the backend computes "how long has this table been in
@@ -1838,6 +1849,17 @@ export interface MoveOrderToTableResult {
     order_id: string;
     from_table: string;
     to_table: string;
+    /** Client item 4: every dish on the moved ticket (name, size, quantity — never a price). */
+    items?: { name: string; variation: string | null; quantity: number }[];
+    /** The KOT the pass calls it by, when there is one. */
+    kot_no?: number | null;
+    /** A move changes two bills: the reprint(s) a senior role is asked for. */
+    reprint_needed?: boolean;
+    reprint_table?: string;
+    reprint_message?: string;
+    also_reprint_needed?: boolean;
+    also_reprint_table?: string;
+    also_reprint_message?: string;
     /**
      * The correction docket. `printed: false` is NOT a failure — it means the
      * kitchen never had a ticket for this order, so there is no paper on the

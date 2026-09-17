@@ -52,6 +52,7 @@ import { cn } from "@/lib/utils";
 import { isPlaceholderCustomer } from "@/lib/bill-customer";
 import { getBillForTable } from "@/lib/db";
 import { groupItemsByKot, type KotGroupOrder } from "@/lib/kot-groups";
+import { movedFromLabel } from "@/lib/table-move";
 import { visibleLineAmount, visibleMoneyText } from "@/lib/order-prices";
 import { formatFullDateTime, formatTime } from "@/lib/tz";
 import { useTimezone } from "@/lib/use-timezone";
@@ -77,6 +78,8 @@ export interface PreviewOrder extends KotGroupOrder<PreviewLine> {
   table: string;
   status: string;
   items: PreviewLine[];
+  /** Client item 4: the table this ticket was moved from, when it was. */
+  moved_from?: string | null;
 }
 
 export function TableKotPreview({
@@ -243,8 +246,9 @@ export function TableKotPreview({
               const { order } = block;
               const placed = block.placedAt ? formatTime(block.placedAt, timezone) : "";
               // "KOT 5 · 14:57" / "KOTs 7, 9 · 15:02", or "No KOT number" for the
-              // trailing block — the owner app's exact headings.
-              const heading = [block.label, placed].filter(Boolean).join(" · ");
+              // trailing block — the owner app's exact headings. Client item 4: a
+              // ticket moved here says so, "KOT 65 · 16:27 · from 12".
+              const heading = [block.label, placed, order ? movedFromLabel(order) : null].filter(Boolean).join(" · ");
               return (
                 <div key={block.key} className="overflow-hidden rounded-lg border" data-testid="kot-block">
                   <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-muted/40 px-3 py-2">

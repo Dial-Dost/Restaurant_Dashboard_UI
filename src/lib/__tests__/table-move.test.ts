@@ -31,8 +31,19 @@ import {
     TABLE_MOVE_EVENTS,
     isTableMoveEvent,
     kotTicketLabel,
+    moveDishLine,
+    moveDishSummary,
+    moveOrderKitchenHas,
+    moveOrderKitchenSentence,
+    moveOrderNotice,
+    moveOrderTitle,
+    moveReprints,
+    movedAwayLine,
+    movedDishesOf,
+    movedFromLabel,
     movedOrderSentence,
     movedPartySentence,
+    orderDishLines,
     orderMoveDestinations,
     partyMoveDestinations,
     printedPartyMoveNote,
@@ -170,6 +181,138 @@ describe('the sentences staff are given afterwards', () => {
     });
 });
 
+// CLIENT ITEM 4 (2026-09-17) — "no item names visible when an order is moved".
+// The dialog named an order "KOT 65" or "Order 5a4099ef-…", the toast named no
+// food. PARITY: every sentence below is pinned character for character in the
+// owner app's test/order_moves_test.dart too.
+const KOT65 = {
+    kot_nos: [65],
+    items: [
+        { name: 'KUNAFA BIRDS NEST', price: 489, quantity: 1 },
+        { name: 'STIR FRIED WATERCHESTNUT', price: 419, quantity: 1 },
+        { name: 'TRUFFLE CREAM CHEESE', price: 519, quantity: 1 },
+        { name: 'Dal', variation: 'Half', price: 200, quantity: 2 },
+    ],
+};
+
+describe("client item 4 — the dishes, by name, in the app's words", () => {
+    it('one dish: quantity × name (size), never a price', () => {
+        expect(moveDishLine({ name: 'Dal', variation: 'Half', quantity: 2 })).toBe('2 × Dal (Half)');
+        expect(moveDishLine({ name: 'Dal', variation_name: 'Full', quantity: '3' })).toBe('3 × Dal (Full)');
+        expect(moveDishLine({ item_name: 'Lassi', qty: 2 })).toBe('2 × Lassi');
+        expect(moveDishLine({ quantity: 0 })).toBe('1 × Item');
+        expect(moveDishLine({ name: 'Chai', variation: null, quantity: 1.6 })).toBe('2 × Chai');
+        expect(moveDishLine({ name: 'null', quantity: null })).toBe('1 × Item');
+    });
+
+    it("an order's dishes, and the summary that names three and counts the rest", () => {
+        const lines = orderDishLines(KOT65);
+        expect(lines).toEqual(['1 × KUNAFA BIRDS NEST', '1 × STIR FRIED WATERCHESTNUT', '1 × TRUFFLE CREAM CHEESE', '2 × Dal (Half)']);
+        expect(moveDishSummary(lines)).toBe('1 × KUNAFA BIRDS NEST, 1 × STIR FRIED WATERCHESTNUT, 1 × TRUFFLE CREAM CHEESE +1 more');
+        expect(moveDishSummary(lines, null)).toBe(lines.join(', '));
+        expect(moveDishSummary([])).toBe('');
+        expect(orderDishLines({ items: 'nope' })).toEqual([]);
+        expect(orderDishLines(null)).toEqual([]);
+        expect(lines.join(' ')).not.toMatch(/489|₹/);
+    });
+
+    it("the ticket's handle is its KOT, or \"No KOT number\" — never the order id", () => {
+        expect(moveOrderTitle(KOT65)).toBe('KOT 65');
+        expect(moveOrderTitle({ kot_nos: [65, '66', 65, 0, -2, 'x'] })).toBe('KOTs 65, 66');
+        expect(moveOrderTitle({ kot_nos: null })).toBe('No KOT number');
+        expect(moveOrderTitle({})).toBe('No KOT number');
+    });
+
+    it('where a ticket came from, and what a dish move took off one', () => {
+        expect(movedFromLabel({ moved_from: '12' })).toBe('from 12');
+        expect(movedFromLabel({ moved_from: ' ' })).toBeNull();
+        expect(movedFromLabel({})).toBeNull();
+        expect(movedAwayLine({})).toBeNull();
+        expect(movedAwayLine({ moved_items: [] })).toBeNull();
+        expect(movedAwayLine({ moved_items: [{ name: 'NOT YOUR PUCHKA', quantity: 1, to_table: '31' }] }))
+            .toBe('Moved to 31: 1 × NOT YOUR PUCHKA');
+        expect(movedAwayLine({
+            moved_items: [
+                { name: 'A', quantity: 1, to_table: '31' },
+                { name: 'B', variation: 'Half', quantity: 2, to_table: '32' },
+                { name: 'C', quantity: 1, to_table: '31' },
+                { name: 'D', quantity: 1 },
+            ],
+        })).toBe('Moved to 31: 1 × A, 1 × C; to 32: 2 × B (Half); to another table: 1 × D');
+    });
+
+    // REVIEW FINDING — production barks almost no printed ticket (GGV: 79 of 80
+    // in a fortnight). The same cases are pinned in the owner app's
+    // test/order_moves_test.dart, so both clients say the same thing about
+    // KOT-65 before it moves.
+    it('the kitchen has a ticket when it carries a KOT number OR a bark — one rule on both clients', () => {
+        expect(moveOrderKitchenHas({ kot_nos: [65], barked_at: null })).toBe(true);
+        expect(moveOrderKitchenHas({ kot_nos: [], barked_at: '2026-09-14T10:57:16Z' })).toBe(true);
+        expect(moveOrderKitchenHas({ kot_nos: [65], barked_at: '2026-09-14T10:57:16Z' })).toBe(true);
+        expect(moveOrderKitchenHas({ kot_nos: [], barked_at: null })).toBe(false);
+        expect(moveOrderKitchenHas({ kot_nos: [0, -1, 'x'], barked_at: null })).toBe(false);
+        expect(moveOrderKitchenHas({ barked_at: null })).toBe(false);
+        // A backend older than both fields: read as barked, as the orders page reads it.
+        expect(moveOrderKitchenHas({})).toBe(true);
+        // KOT-65 unbarked: the sentence says a correction prints, which is what the server does.
+        expect(moveOrderKitchenSentence('12', '15', moveOrderKitchenHas({ kot_nos: [65], barked_at: null })))
+            .toMatch(/^The kitchen already has a docket for 12, so a correction docket prints for 15/);
+    });
+
+    it('the kitchen sentence, said before the move', () => {
+        expect(moveOrderKitchenSentence('12', 'the new table', true))
+            .toBe('The kitchen already has a docket for 12, so a correction docket prints for the new table with the same KOT number. 12 keeps its guests and its other orders.');
+        expect(moveOrderKitchenSentence('12', '15', false))
+            .toBe('The kitchen has not been sent this order yet, so nothing prints now — it will print for 15 when it is sent.');
+    });
+
+    it('the result names the dishes and the correction docket', () => {
+        expect(movedOrderSentence('15', { printed: true, kot_no: 65 }, orderDishLines(KOT65)))
+            .toBe('Moved to 15: 1 × KUNAFA BIRDS NEST, 1 × STIR FRIED WATERCHESTNUT, 1 × TRUFFLE CREAM CHEESE +1 more. Correction docket KOT-65 is printing — tell the pass.');
+        expect(movedOrderSentence('15', { printed: false }, ['2 × Dal']))
+            .toBe('Moved to 15: 2 × Dal. Nothing was on the pass for it, so no docket printed.');
+        expect(movedDishesOf({ items: [{ name: 'Dal', variation: 'Half', quantity: 2 }, 'junk'] })).toEqual(['2 × Dal (Half)']);
+        expect(movedDishesOf({ items: 'nope' })).toEqual([]);
+        expect(movedDishesOf(null)).toEqual([]);
+    });
+
+    it('ONE notice carries the move and every reprint — the toast store keeps only one toast', () => {
+        const both = {
+            to_table: '15',
+            items: [{ name: 'KUNAFA BIRDS NEST', quantity: 1 }],
+            print: { printed: true, kot_no: 65 },
+            reprint_needed: true, reprint_table: '15', reprint_message: "15's bill was already printed.",
+            also_reprint_needed: true, also_reprint_table: '12', also_reprint_message: "12's bill was already printed.",
+        };
+        expect(moveOrderNotice(both, 'ignored', ['2 × Dal'])).toEqual({
+            title: 'Order moved — reprint the bill',
+            sentence: 'Moved to 15: 1 × KUNAFA BIRDS NEST. Correction docket KOT-65 is printing — tell the pass.',
+            reprints: [
+                { table: '15', message: "15's bill was already printed." },
+                { table: '12', message: "12's bill was already printed." },
+            ],
+        });
+        // No reprint: the plain title; the page's own table name and dishes when the server sent none.
+        expect(moveOrderNotice({ print: { printed: false } }, '15', ['2 × Dal'])).toEqual({
+            title: 'Order moved',
+            sentence: 'Moved to 15: 2 × Dal. Nothing was on the pass for it, so no docket printed.',
+            reprints: [],
+        });
+        expect(moveOrderNotice(null, '15').sentence).toBe('Moved to 15. Nothing was on the pass for it, so no docket printed.');
+    });
+
+    it('a move can ask for two reprints — the destination first', () => {
+        expect(moveReprints({
+            reprint_needed: true, reprint_table: '15', reprint_message: 'fifteen',
+            also_reprint_needed: true, also_reprint_table: '12', also_reprint_message: 'twelve',
+        })).toEqual([{ table: '15', message: 'fifteen' }, { table: '12', message: 'twelve' }]);
+        expect(moveReprints({ reprint_needed: true, reprint_table: '15', reprint_message: 'x' })).toHaveLength(1);
+        expect(moveReprints({ also_reprint_needed: false })).toEqual([]);
+        expect(moveReprints(null)).toEqual([]);
+        expect(moveReprints([])).toEqual([]);
+    });
+});
+
 // THE STALE CLOCK AFTER A MOVE. The D1/D2 badges are reduced from the ORDERS
 // feed grouped by each ticket's table, not from the table grid, and the move
 // handlers used to re-read only the grid — so a moved party's clock stayed filed
@@ -212,6 +355,29 @@ describe('after a move, the clocks are re-read along with the grid', () => {
         }
         // …and a move made on another device reaches the same refresh.
         expect(page).toMatch(/isTableMoveEvent\(/);
+    });
+
+    it('client item 4 — the move dialog, its toast and both previews name the dishes (the wiring)', () => {
+        const page = src('app/dashboard/tables/page.tsx');
+        expect(page).not.toMatch(/`Order \$\{order\.id\}`/);
+        expect(page).toMatch(/moveOrderTitle\(order\)/);
+        expect(page).toMatch(/const dishes = orderDishLines\(order\);/);
+        expect(page).toMatch(/const notice = moveOrderNotice\(result, toTable, orderDishLines\(moved\)\);/);
+        expect(page).toMatch(/description: <MoveOrderNoticeBody notice=\{notice\} \/>/);
+        expect(page).toMatch(/\{notice\.reprints\.map\(\(reprint\) => \(\s*<ToastAction/);
+        // The dialog's kitchen sentence reads the shared rule, not the bark alone.
+        expect(page).toMatch(/moveOrderKitchenSentence\(table\.name, destination \|\| "the new table", kitchenHas\)/);
+        expect(page).toMatch(/const kitchenHas = moveOrderKitchenHas\(order\);/);
+        expect(page).toMatch(/\["Cancelled", "Closed", "Paid", "Payment Pending Approval"\]\.includes\(order\.status\)/);
+        const preview = src('app/dashboard/orders/table-kot-preview.tsx');
+        expect(preview).toMatch(/\[block\.label, placed, order \? movedFromLabel\(order\) : null\]/);
+        const orders = src('app/dashboard/orders/page.tsx');
+        expect(orders).toMatch(/movedAwayLine\(order\)/);
+        expect(orders).toMatch(/Moved from \{order\.moved_from\}/);
+        const db = src('lib/db.ts');
+        for (const key of ['moved_from', 'moved_at', 'emptied_by', 'moved_items']) {
+            expect([key, db.includes(`wire.${key}`)]).toEqual([key, true]);
+        }
     });
 
     it('the realtime bridge actually forwards the move events to the page', () => {
