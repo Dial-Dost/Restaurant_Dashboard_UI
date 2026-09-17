@@ -35,9 +35,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+import { SearchInput } from "@/components/ui/search-input"
 import { Badge } from "@/components/ui/badge"
-import { CircleSlash, Search, UtensilsCrossed } from "lucide-react"
+import { CircleSlash, UtensilsCrossed } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { getMenuItems, setMenuItemAvailability } from "@/lib/db"
 import type { MenuItem } from "@/app/dashboard/menu/data"
@@ -127,16 +127,14 @@ export function DishAvailabilitySidebar({ rid }: { rid: string }) {
           </SheetDescription>
         </SheetHeader>
 
-        <div className="relative mt-4">
-          <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-          <Input
-            className="pl-8"
-            placeholder="Search dishes…"
-            value={query}
-            onChange={(e) => { setQuery(e.target.value) }}
-            autoFocus
-          />
-        </div>
+        <SearchInput
+          wrapperClassName="mt-4"
+          placeholder="Search dishes…"
+          aria-label="Search dishes"
+          value={query}
+          onValueChange={setQuery}
+          autoFocus
+        />
 
         <div className="mt-3 flex-1 overflow-y-auto pr-1">
           {loading && items.length === 0 ? (

@@ -43,9 +43,7 @@ import {
     Layers,
     Loader2,
     Printer,
-    Search,
     Store,
-    X,
 } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
@@ -58,7 +56,7 @@ import {
     DropdownMenuSeparator,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { Input } from "@/components/ui/input"
+import { SearchInput } from "@/components/ui/search-input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { DateRangePicker } from "@/components/date-range-picker"
 import { useAuth } from "@/context/AuthContext"
@@ -253,13 +251,6 @@ function ReportsInner() {
         setSlotCatalogue(next)
         chooseSlot(reconcileSlotSelection(slotSel, next.slots))
     }, [chooseSlot, slotSel])
-
-    // Debounced search: a control report is an expensive query, and firing one
-    // per keystroke on "Bill No. 10423" is nine wasted round trips.
-    useEffect(() => {
-        const t = setTimeout(() => { setSearch(searchInput.trim()) }, 350)
-        return () => { clearTimeout(t) }
-    }, [searchInput])
 
     // Any change to WHAT is being asked returns to the first page. Staying on
     // page 7 of a new question shows an empty grid that looks like no data.
@@ -527,26 +518,18 @@ function ReportsInner() {
 
             {/* Toolbar: search, time-wise, columns, export. */}
             <div className="flex flex-wrap items-center gap-2">
-                <div className="relative">
-                    <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                    <Input
-                        value={searchInput}
-                        onChange={(e) => { setSearchInput(e.target.value) }}
-                        placeholder="Bill No., KOT, table, mode…"
-                        className="h-9 w-[230px] pl-8 pr-8"
-                        aria-label="Search this report by bill number, KOT, table or payment mode"
-                    />
-                    {searchInput && (
-                        <button
-                            type="button"
-                            onClick={() => { setSearchInput("") }}
-                            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                            aria-label="Clear search"
-                        >
-                            <X className="h-3.5 w-3.5" />
-                        </button>
-                    )}
-                </div>
+                {/* Debounced: a control report is an expensive query, and firing
+                    one per keystroke on "Bill No. 10423" is nine wasted round
+                    trips. Emptying the box asks again at once. */}
+                <SearchInput
+                    value={searchInput}
+                    onValueChange={setSearchInput}
+                    onQueryChange={setSearch}
+                    debounceMs={350}
+                    placeholder="Bill No., KOT, table, mode…"
+                    className="h-9 w-[230px]"
+                    aria-label="Search this report by bill number, KOT, table or payment mode"
+                />
 
                 {/* Time-wise. Rendered ONLY on the report it changes: a toggle that
                     is present but inert on fourteen of fifteen tabs teaches the user that
