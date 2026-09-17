@@ -375,7 +375,7 @@ describe('the size is saved through the settings document, and the card renders 
 
 describe('the classic docket is described as it now prints', () => {
     it('plain text, in the printer\'s own font, at its normal size', () => {
-        expect(KOT_PRINT_STYLE_OPTIONS[1]!.detail).toBe(
+        expect(KOT_PRINT_STYLE_OPTIONS.map((o) => o.detail)[1]).toBe(
             "Plain text in the printer's own font, at its normal size. Use it if the new one does not print.",
         );
         expect(KOT_TEXT_SIZE_HELP).toBe(
@@ -413,7 +413,7 @@ describe('what the test button says', () => {
     });
 
     it('names where the slip went', () => {
-        const reply = (r: Record<string, unknown>) => ({ results: [{ role: 'kot', jobId: 'j1', ...r }], skipped: 0 });
+        const reply = (r: Record<string, unknown>): unknown => ({ results: [{ role: 'kot', jobId: 'j1', ...r }], skipped: 0 });
         expect(kotTestPrintOutcome(reply({ mode: 'directed', reason: 'routed', destination: 'Kitchen Epson' })))
             .toBe('Sent to Kitchen Epson. Check the paper there.');
         expect(kotTestPrintOutcome(reply({ mode: 'directed', reason: 'routed', destination: null })))
@@ -432,12 +432,19 @@ describe('what the test button says', () => {
 });
 
 describe('pressing the test button', () => {
-    type Notice = { title: string; description: string; failed: boolean };
-    const harness = (opts: { online?: boolean; send?: () => Promise<KotTestPrintResult> } = {}) => {
+    interface Notice { title: string; description: string; failed: boolean }
+    interface Harness {
+        press: () => Promise<void>;
+        sends: number[];
+        notices: Notice[];
+        busy: boolean[];
+        release: (value: KotTestPrintResult) => void;
+    }
+    const harness = (opts: { online?: boolean; send?: () => Promise<KotTestPrintResult> } = {}): Harness => {
         const sends: number[] = [];
         const notices: Notice[] = [];
         const busy: boolean[] = [];
-        let release: (value: KotTestPrintResult) => void = () => {};
+        let release: (value: KotTestPrintResult) => void = (): void => undefined;
         const press = kotTestPrintHandler({
             online: () => opts.online ?? true,
             send: () => {
@@ -447,7 +454,7 @@ describe('pressing the test button', () => {
             notify: (n) => { notices.push(n); },
             busy: (b) => { busy.push(b); },
         });
-        return { press, sends, notices, busy, release: (v: KotTestPrintResult) => release(v) };
+        return { press, sends, notices, busy, release: (v: KotTestPrintResult): void => { release(v); } };
     };
     const directed: KotTestPrintResult = { sent: true, reply: { results: [{ mode: 'directed', destination: 'Kitchen Epson' }] } };
 
@@ -480,7 +487,7 @@ describe('pressing the test button', () => {
 
     it('a refusal is shown in the server\'s own sentence', async () => {
         const h = harness({
-            send: async () => ({ refused: true, status: 403, error: 'You need the "Print" permission to print a test slip.' }),
+            send: () => Promise.resolve({ refused: true, status: 403, error: 'You need the "Print" permission to print a test slip.' }),
         });
         await h.press();
         expect(h.sends).toHaveLength(1);
@@ -491,7 +498,7 @@ describe('pressing the test button', () => {
     });
 
     it('a request that never completed says it needs a connection, and frees the button', async () => {
-        const h = harness({ send: async () => { throw new Error('Failed to fetch'); } });
+        const h = harness({ send: () => Promise.reject(new Error('Failed to fetch')) });
         await h.press();
         expect(h.notices).toEqual([{ title: "Couldn't print a test KOT", description: KOT_TEST_PRINT_OFFLINE, failed: true }]);
         expect(h.busy).toEqual([true, false]);
@@ -517,7 +524,7 @@ describe('the test button is built AND called', () => {
         expect(card).toMatch(/<Button[\s\S]*?onClick=\{\(\) => \{ void printTest\(\) \}\}[\s\S]*?disabled=\{loading \|\| testing\}[\s\S]*?\{testing \? KOT_TEST_PRINT_SENDING : KOT_TEST_PRINT_LABEL\}[\s\S]*?<\/Button>/);
         expect(card).toContain('{KOT_TEST_PRINT_HELP}');
         expect(card).toContain('busy: setTesting,');
-        expect(card).toContain('navigator.onLine !== false');
+        expect(card).toContain('window.navigator.onLine');
         // Rendered inside the card that is itself rendered on Settings (pinned above).
         expect(card.indexOf('void printTest()')).toBeGreaterThan(card.indexOf('if (!supported) {return null}'));
         expect(card).not.toMatch(/\bfetch\(/);

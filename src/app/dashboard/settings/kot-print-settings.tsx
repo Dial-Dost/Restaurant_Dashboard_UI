@@ -87,7 +87,7 @@ export function KotPrintSettingsCard({ restaurantId, canEdit }: { restaurantId: 
 
   // Made once per restaurant, so its in-flight guard outlives a re-render.
   const printTest = useMemo(() => kotTestPrintHandler({
-    online: () => typeof navigator === "undefined" || navigator.onLine !== false,
+    online: () => typeof window === "undefined" || window.navigator.onLine,
     send: () => printTestKot(restaurantId),
     notify: ({ title, description, failed }) => {
       toast(failed ? { title, description, variant: "destructive" } : { title, description })

@@ -243,8 +243,8 @@ export const kotTestPrintOutcome = (reply: unknown): string => {
         ? reply.results.filter(isDocument)
         : null;
     if (!results) {return "Sent. Check the kitchen printer's paper.";}
+    if (results.length === 0) {return 'Nothing was sent to print.';}
     const first = results[0];
-    if (!first) {return 'Nothing was sent to print.';}
     const destination = typeof first.destination === 'string' && first.destination.trim()
         ? first.destination.trim()
         : null;
