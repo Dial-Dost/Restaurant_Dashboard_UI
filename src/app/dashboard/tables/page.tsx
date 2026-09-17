@@ -84,13 +84,11 @@ import { useFloorTables, type CombinedInfo, type TableOccupancy } from "@/hooks/
 import { canMoveOrderToTable, canMoveTableParty, canOpenFloorPlan } from "@/lib/session-scope";
 import {
     isTableMoveEvent,
-    kotTicketLabel,
+    moveOrderKitchenHas,
     moveOrderKitchenSentence,
+    moveOrderNotice,
     moveOrderTitle,
-    moveReprints,
-    movedDishesOf,
     movedFromLabel,
-    movedOrderSentence,
     movedPartySentence,
     orderDishLines,
     orderMoveDestinations,
@@ -98,6 +96,7 @@ import {
     refreshAfterTableMove,
 } from "@/lib/table-move";
 import { ToastAction } from "@/components/ui/toast";
+import { MoveOrderNoticeBody } from "./move-order-notice";
 import {
     elapsedSincePlaced,
     elapsedToSettlement,
@@ -128,7 +127,7 @@ interface TableOrder extends ServiceClockCarrier {
       handle the pass quotes, drawn beside each order in the move dialog so the
       person pressing the button is looking at the same number the kitchen is —
       moving "the 19:42 one" is how the wrong ticket gets moved. Absent on a
-      backend older than the field, which `kotTicketLabel` reads as "draw
+      backend older than the field, which `moveOrderTitle` reads as "draw
       nothing".
     */
     id: string;
@@ -334,12 +333,11 @@ function MoveTableDialog({
                             <p className="text-xs text-muted-foreground">There is no other table to move it to.</p>
                         ) : (
                             orders.map((order) => {
-                                const kot = kotTicketLabel(order.kot_nos);
                                 const destination = orderDestinations[order.id] ?? "";
                                 const dishes = orderDishLines(order);
                                 const from = movedFromLabel(order);
-                                // Undefined (an older backend) reads as barked, as the orders page reads it.
-                                const barked = order.barked_at !== null;
+                                // A KOT number OR a bark — the rule the app and the server use.
+                                const kitchenHas = moveOrderKitchenHas(order);
                                 return (
                                     <div key={order.id} className="space-y-1.5 rounded-md border p-2" data-testid="move-order-card">
                                         <div className="flex items-center justify-between gap-2 text-xs">
@@ -390,7 +388,7 @@ function MoveTableDialog({
                                             number so the two can be paired. If it was never printed
                                             there is nothing to correct and nothing prints. */}
                                         <p className="text-[11px] leading-snug text-muted-foreground">
-                                            {moveOrderKitchenSentence(table.name, destination || "the new table", kot !== "" || barked)}
+                                            {moveOrderKitchenSentence(table.name, destination || "the new table", kitchenHas)}
                                         </p>
                                         <Button
                                             size="sm"
@@ -981,27 +979,39 @@ export default function TablesPage() {
             // pass for it" are two different things for staff to go and do.
             // CLIENT ITEM 4: and WHAT moved — the server's dishes, else the ones
             // this page already had for the order.
-            const moved = orders.find((order) => order.id === orderId);
-            const served = movedDishesOf(result);
-            toast({
-                title: "Order moved",
-                description: movedOrderSentence(result.to_table, result.print, served.length > 0 ? served : orderDishLines(moved)),
-            });
+            //
             // A MOVE CHANGES TWO BILLS. A senior role moving between printed bills
             // is told which papers to reprint, in the server's words, with the way
             // to that table's Print Bill (a waiter-only session was refused before
             // anything moved).
-            for (const reprint of moveReprints(result)) {
-                toast({
-                    title: "Reprint the bill",
-                    description: reprint.message,
-                    action: (
-                        <ToastAction altText={`Open table ${reprint.table}`} onClick={() => { openOrdersForTable(reprint.table, null, true); }}>
-                            Open {reprint.table}
-                        </ToastAction>
-                    ),
-                });
-            }
+            //
+            // ALL OF IT IN ONE TOAST. The toast store keeps one at a time, so a
+            // second one raised here would wipe the first — see moveOrderNotice.
+            const moved = orders.find((order) => order.id === orderId);
+            const notice = moveOrderNotice(result, toTable, orderDishLines(moved));
+            toast({
+                title: notice.title,
+                description: <MoveOrderNoticeBody notice={notice} />,
+                ...(notice.reprints.length > 0
+                    ? {
+                        // Long enough to walk to the printer: this one carries work to do.
+                        duration: 20_000,
+                        action: (
+                            <div className="flex shrink-0 flex-col gap-1.5">
+                                {notice.reprints.map((reprint) => (
+                                    <ToastAction
+                                        key={reprint.table}
+                                        altText={`Open table ${reprint.table}`}
+                                        onClick={() => { openOrdersForTable(reprint.table, null, true); }}
+                                    >
+                                        Open {reprint.table}
+                                    </ToastAction>
+                                ))}
+                            </div>
+                        ),
+                    }
+                    : {}),
+            });
             setMoveTableName(null);
             await refreshAfterTableMove({ tables: loadTables, orders: reloadOrders });
         } catch (error: unknown) {

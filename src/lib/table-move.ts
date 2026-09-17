@@ -228,6 +228,23 @@ export const movedAwayLine = (order: { moved_items?: unknown } | null | undefine
     return parts.join('; ');
 };
 
+/**
+ * DOES THE KITCHEN HAVE THIS TICKET? The one answer both clients give before a
+ * move, and the one the server acts on: a KOT number means a docket printed,
+ * a bark means the pass announced it, and either is enough.
+ *
+ * NOT THE BARK ALONE. Production barks almost none of its printed tickets
+ * (GGV: 79 of 80 in a fortnight), so a rule that read only `barked_at` told
+ * the person moving KOT-65 "nothing prints now" — and then a correction docket
+ * came out. `barked_at` absent (a backend older than the field) reads as
+ * barked, as the orders page reads it.
+ *
+ * PARITY: restaurant_owner_app lib/models/order_moves.dart moveOrderKitchenHas
+ * is the same rule, and both suites pin the same cases.
+ */
+export const moveOrderKitchenHas = (order: { kot_nos?: unknown; barked_at?: unknown }): boolean =>
+    kotTicketLabel(order.kot_nos) !== '' || order.barked_at !== null;
+
 /** What the kitchen will see when an order moves — said before the move. */
 export const moveOrderKitchenSentence = (fromTable: string, toTable: string, barked: boolean): string => (barked
     ? `The kitchen already has a docket for ${fromTable}, so a correction docket prints for ${toTable} with the same KOT number. ${fromTable} keeps its guests and its other orders.`
@@ -285,6 +302,45 @@ export const moveReprints = (body: unknown): { table: string; message: string }[
         if (table && message) { out.push({ table, message }); }
     }
     return out;
+};
+
+/**
+ * EVERYTHING ONE ORDER MOVE TELLS THE PERSON WHO PRESSED IT, AS ONE NOTICE.
+ *
+ * The dashboard's toast store holds ONE toast (hooks/use-toast.ts,
+ * TOAST_LIMIT = 1): each new toast replaces the last. The move used to raise
+ * "Order moved" and then one "Reprint the bill" per printed table, so the
+ * sentence naming the dishes and the correction docket was gone at once, and
+ * when both bills were printed the destination's reprint went with it — only
+ * the source's prompt was ever read. One notice, every line in it, one "Open
+ * <table>" per reprint (the page draws them).
+ *
+ * `toTable` and `fallbackDishes` are what the page already knows, for a server
+ * that sent neither `to_table` nor `items`.
+ */
+export interface MoveOrderNotice {
+    title: string;
+    /** What moved, and what the pass has to be told. */
+    sentence: string;
+    /** Every bill to reprint, destination first (moveReprints). */
+    reprints: { table: string; message: string }[];
+}
+
+export const moveOrderNotice = (
+    result: unknown,
+    toTable: string,
+    fallbackDishes: readonly string[] = [],
+): MoveOrderNotice => {
+    const body = (result && typeof result === 'object' && !Array.isArray(result))
+        ? result as { to_table?: unknown; print?: { printed?: boolean; kot_no?: number | string | null } | null }
+        : {};
+    const served = movedDishesOf(result);
+    const reprints = moveReprints(result);
+    return {
+        title: reprints.length > 0 ? 'Order moved — reprint the bill' : 'Order moved',
+        sentence: movedOrderSentence(moveText(body.to_table) || toTable, body.print, served.length > 0 ? served : fallbackDishes),
+        reprints,
+    };
 };
 
 /** "3 orders came with them" / "1 order came with them" — plural handled once. */
