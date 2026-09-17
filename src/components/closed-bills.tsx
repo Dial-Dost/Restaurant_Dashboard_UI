@@ -7,6 +7,12 @@
 // section wraps GET /bills/closed (paged list) + GET /bills/closed/:id (the full
 // bill), and is mounted by both Accounting and History.
 //
+// CLIENT ITEM 8 — "Reprint bill should show up in History; old bills should be
+// reprintable from the history section." Because History mounts THIS section,
+// its Reprint is Accounting's Reprint: the same button, the same route, the
+// same permission. See reprintSettledBill for why that button never worked
+// until now, on either screen.
+//
 // The money split it renders comes straight from the backend, which guarantees
 //   taxable_base + service_charge + tax_total + round_off === grand_total
 // and lifts a "Service Charge" entry out of the tax breakdown so it is never
@@ -26,7 +32,7 @@ import { useAuth } from "@/context/AuthContext"
 import { usePaymentMethods } from "@/hooks/use-payment-methods"
 import { closedBillMethodFilterOptions, paymentMethodLabel } from "@/lib/payment-methods"
 import { BillCustomerDialog } from "@/components/bill-customer-dialog"
-import { canEditSettledBillCustomer } from "@/lib/bill-customer"
+import { canEditSettledBillCustomer, canReprintSettledBill } from "@/lib/bill-customer"
 import { formatRoundOff, roundOffOf } from "@/lib/bill-round-off"
 import { filterFetchDelayMs } from "@/lib/search-input"
 import { getClosedBills, getClosedBill, reprintSettledBill, type ClosedBillSummary, type ClosedBillDetail } from "@/lib/db"
@@ -90,6 +96,13 @@ export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, range
     not greyed, for everyone else: the route would refuse them.
   */
   const canEditCustomer = canEditSettledBillCustomer(user)
+  /*
+    CLIENT ITEM 8 — Reprint, behind its route's own gate. History is open to a
+    login that holds only an analytics / report action, and such a login used to
+    see a Reprint button that answered 403 every time. Hidden, not greyed, like
+    the edit beside it.
+  */
+  const canReprint = canReprintSettledBill(user)
   const [customerOpen, setCustomerOpen] = useState(false)
   const money = (n: number | null | undefined) =>
     `${currencySymbol}${Number(n ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -284,6 +297,11 @@ export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, range
                   <Receipt className="h-4 w-4 shrink-0 text-muted-foreground" />
                   <span className="font-medium">#{b.bill_no ?? "—"}</span>
                   <span className="text-muted-foreground">{b.table_name ?? "No table"}</span>
+                  {/* Client item 8 — whose bill it was, so an old bill can be
+                      found by eye in History before it is opened. */}
+                  {b.customer?.trim() ? (
+                    <span data-testid="closed-bill-row-customer" className="max-w-[14rem] truncate">{b.customer.trim()}</span>
+                  ) : null}
                   <span className="text-muted-foreground">{dateTime(b.settled_at ?? b.closed_at, timezone)}</span>
                   <span className="ml-auto flex items-center gap-2">
                     {b.refunded && <Badge variant="destructive">Refunded</Badge>}
@@ -325,49 +343,53 @@ export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, range
             <BillDetailBody detail={detail} money={money} />
           )}
 
-          {detail && (
+          {detail && (canReprint || canEditCustomer) && (
             <DialogFooter className="flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between">
               {/* SAID BEFORE IT IS PRESSED, not after. The paper carries a
                   REPRINT banner in the largest type the printer has, because a
                   second copy that looks like an original gets paid twice or
                   filed as a second sale — and somebody about to hand it to a
                   guest should know that is what comes out. */}
-              <p className="text-xs text-muted-foreground">
-                Prints a second copy, marked <span className="font-semibold">REPRINT</span>, with the
-                figures exactly as this bill was settled.
-              </p>
+              {canReprint ? (
+                <p className="text-xs text-muted-foreground">
+                  Prints a second copy, marked <span className="font-semibold">REPRINT</span>, with the
+                  figures exactly as this bill was settled.
+                </p>
+              ) : <span />}
               <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-              {canEditCustomer ? (
-                <Button size="sm" variant="outline" onClick={() => { setCustomerOpen(true) }}>
-                  <Pencil className="mr-2 h-4 w-4" />
-                  Edit name / GSTIN
-                </Button>
-              ) : null}
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={reprinting === detail.id}
-                onClick={() => {
-                  const id = detail.id
-                  setReprinting(id)
-                  void reprintSettledBill(rid, id)
-                    .then((r) => {
-                      toast(r.ok
-                        ? {
-                          title: "Sent to the printer",
-                          description: r.destination ? `Printing at ${r.destination}.` : "The reprint is on its way.",
-                        }
-                        // The SERVER'S sentence, verbatim. "Couldn't reprint"
-                        // sends an owner hunting; "no printer is online for
-                        // bills" tells them what to do.
-                        : { title: "Could not reprint", description: r.message, variant: "destructive" })
-                    })
-                    .finally(() => { setReprinting((cur) => (cur === id ? null : cur)) })
-                }}
-              >
-                <Printer className="mr-2 h-4 w-4" />
-                {reprinting === detail.id ? "Sending…" : "Reprint bill"}
-              </Button>
+                {canEditCustomer ? (
+                  <Button size="sm" variant="outline" onClick={() => { setCustomerOpen(true) }}>
+                    <Pencil className="mr-2 h-4 w-4" />
+                    Edit name / GSTIN / address
+                  </Button>
+                ) : null}
+                {canReprint ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={reprinting === detail.id}
+                    onClick={() => {
+                      const id = detail.id
+                      setReprinting(id)
+                      void reprintSettledBill(rid, id)
+                        .then((r) => {
+                          toast(r.ok
+                            ? {
+                              title: "Sent to the printer",
+                              description: r.destination ? `Printing at ${r.destination}.` : "The reprint is on its way.",
+                            }
+                            // The SERVER'S sentence, verbatim. "Couldn't reprint"
+                            // sends an owner hunting; "no printer is online for
+                            // bills" tells them what to do.
+                            : { title: "Could not reprint", description: r.message, variant: "destructive" })
+                        })
+                        .finally(() => { setReprinting((cur) => (cur === id ? null : cur)) })
+                    }}
+                  >
+                    <Printer className="mr-2 h-4 w-4" />
+                    {reprinting === detail.id ? "Sending…" : "Reprint bill"}
+                  </Button>
+                ) : null}
               </div>
             </DialogFooter>
           )}
@@ -386,7 +408,11 @@ export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, range
             // THE ROW REFRESHES FROM THE SERVER'S ANSWER at once, then from a
             // fresh read — the read is the truth, and the answer is what keeps
             // the old name from sitting on screen while it is in flight.
-            setDetail((cur) => (cur?.id === id ? { ...cur, customer: saved.customer, customer_gstin: saved.customer_gstin } : cur))
+            setDetail((cur) => (cur?.id === id
+              ? { ...cur, customer: saved.customer, customer_gstin: saved.customer_gstin, customer_address: saved.customer_address }
+              : cur))
+            // …and the list row behind the dialog says the new name too.
+            setBills((rows) => rows.map((row) => (row.id === id ? { ...row, customer: saved.customer } : row)))
             void getClosedBill(rid, id)
               .then((fresh) => { if (fresh) { setDetail((cur) => (cur?.id === id ? fresh : cur)) } })
               .catch(() => { /* the answer above already stands */ })
@@ -406,11 +432,11 @@ function Row({ label, value, bold, muted }: { label: string; value: string; bold
   )
 }
 
-function Fact({ label, value }: { label: string; value: string }) {
+function Fact({ label, value, wide }: { label: string; value: string; wide?: boolean }) {
   return (
-    <div className="rounded-md border p-2">
+    <div className={`rounded-md border p-2 ${wide ? "col-span-2 sm:col-span-4" : ""}`}>
       <p className="text-xs text-muted-foreground">{label}</p>
-      <p className="text-sm font-medium">{value}</p>
+      <p className={`text-sm font-medium ${wide ? "whitespace-pre-line break-words" : ""}`}>{value}</p>
     </div>
   )
 }
@@ -552,6 +578,12 @@ function BillDetailBody({ detail, money }: { detail: ClosedBillDetail; money: (n
               older backend's silence is not "no GSTIN". */}
           {"customer_gstin" in d ? <Fact label="Customer GSTIN" value={d.customer_gstin?.trim() ? d.customer_gstin.trim() : "—"} /> : null}
           <Fact label="Orders" value={String(d.orders.length)} />
+          {/* Client item 7 — the guest's address, across the row and in its own
+              lines, as the paper prints it. Drawn only when the server sends
+              the field; an older backend's silence is not "no address". */}
+          {"customer_address" in d ? (
+            <Fact label="Customer address" value={d.customer_address?.trim() ? d.customer_address.trim() : "—"} wide />
+          ) : null}
         </div>
       </div>
 

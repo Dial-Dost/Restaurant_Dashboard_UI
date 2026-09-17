@@ -2075,6 +2075,11 @@ export interface ClosedBillSummary {
     // pre-discount subtotal); always a number in the detail read.
     discount_amount: number | null;
     coupon_code: string | null;
+    /**
+     * Who the bill was made out to — client item 8: the list row now says it.
+     * Optional (an older backend sends no key); null for a walk-in.
+     */
+    customer?: string | null;
     refunded: boolean;
     refund_amount: number;
     apc: number | null;
@@ -2103,6 +2108,12 @@ export interface ClosedBillDetail extends ClosedBillSummary {
      * here" rather than as "no GSTIN".
      */
     customer_gstin?: string | null;
+    /**
+     * Client item 7 (backend migration 054) — the guest's address, lines joined
+     * by LF. Optional for the same reason: no key means "an older backend", not
+     * "no address". Detail only — the list never carries it.
+     */
+    customer_address?: string | null;
     seated_at: string | null;
     left_at: string | null;
     waiter_confirmed_at: string | null;
@@ -3949,7 +3960,7 @@ async function sendBillCustomer(restaurantId: string, request: BillCustomerReque
         return { ok: false, outdated: false, message: UNREACHABLE_MESSAGE, status: 0 };
     }
     const text = await response.text().catch(() => '');
-    return billCustomerSaveOutcome(response.status, text, 'customer_gstin' in request.body);
+    return billCustomerSaveOutcome(response.status, text, 'customer_gstin' in request.body, 'customer_address' in request.body);
 }
 
 /**
@@ -3964,7 +3975,7 @@ async function sendBillCustomer(restaurantId: string, request: BillCustomerReque
  * R2 item 1 — and the customer's GSTIN, for a corporate party. `customerGstin`
  * `undefined` leaves it off the body, which the route reads as "unchanged"; see
  * billCustomerPayload for why a dialog that does not know the current GSTIN must
- * not send `null`.
+ * not send `null`. Client item 7: `customerAddress` follows exactly that rule.
  *
  * RETURNS its failure rather than throwing it: Next redacts the message of an
  * Error thrown out of a Server Action in production, so the server's sentence
@@ -3976,23 +3987,26 @@ export const setBillCustomerName = async (
     tableName: string,
     customer: string,
     customerGstin?: string,
+    customerAddress?: string,
 ): Promise<BillCustomerSaveOutcome> =>
-    sendBillCustomer(restaurantId, billCustomerPayload({ kind: 'table', tableName }, customer, customerGstin));
+    sendBillCustomer(restaurantId, billCustomerPayload({ kind: 'table', tableName }, customer, customerGstin, customerAddress));
 
 /**
  * R2 item 1 — change the name and GSTIN on a SETTLED bill, from Accounting's
- * past bills. Addressed by bill id, never by table name: the table name answers
- * with whoever is sitting there now. The route changes only those two fields —
- * no money, no status, no timestamps — and is gated on the permission the E5
- * settled reprint uses.
+ * past bills (and History's — the same section). Addressed by bill id, never by
+ * table name: the table name answers with whoever is sitting there now. The
+ * route changes only those fields — client item 7 adds the address — no money,
+ * no status, no timestamps, and is gated on the permission the E5 settled
+ * reprint uses.
  */
 export const setSettledBillCustomerDetails = async (
     restaurantId: string,
     billId: string,
     customer: string,
     customerGstin?: string,
+    customerAddress?: string,
 ): Promise<BillCustomerSaveOutcome> =>
-    sendBillCustomer(restaurantId, billCustomerPayload({ kind: 'bill', billId }, customer, customerGstin));
+    sendBillCustomer(restaurantId, billCustomerPayload({ kind: 'bill', billId }, customer, customerGstin, customerAddress));
 
 
 export interface OperationsAnalytics {
@@ -4439,23 +4453,50 @@ export const getBalanceSheet = async (restaurantId: string, asOf?: string) =>
  * button in a dialog and "Couldn't reprint" with no reason is the thing this
  * product keeps getting wrong.
  */
+/*
+    CLIENT ITEM 8 — "Reprint bill should show up in History; old bills should be
+    reprintable from the history section." History mounts the same settled-bills
+    section as Accounting, so the button was already there — and it NEVER
+    WORKED, from either screen:
+
+      * it went through backendJson, which sets no Content-Type, and fetch()
+        labels a string body text/plain. express.json() only parses
+        application/json, so the route saw an empty body and answered 400
+        "bill_id is required" to every press;
+      * backendJson turns any non-2xx into null, so the toast could only ever
+        say the generic sentence below — never the server's own ("no line items
+        recorded", a 403 naming the permission, "no printer is online").
+
+    So: a JSON body, labelled as one, and the server's refusal verbatim
+    (readErrorMessage), as the name / GSTIN dialog already does. Returned
+    rather than thrown, because Next redacts an Error thrown out of a Server
+    Action in production.
+*/
 export const reprintSettledBill = async (
     restaurantId: string,
     billId: string,
 ): Promise<{ ok: true; jobId: string | null; destination: string | null } | { ok: false; message: string }> => {
-    try {
-        const data = await backendJson<{ success?: boolean; jobId?: string; destination?: string; error?: string }>(
-            `/print/bill/settled?restaurantId=${encodeURIComponent(restaurantId)}`,
-            restaurantId,
-            { method: 'POST', body: JSON.stringify({ bill_id: billId }) },
-        );
-        if (data?.success) {
-            return { ok: true, jobId: data.jobId ?? null, destination: data.destination ?? null };
-        }
-        return { ok: false, message: data?.error ?? 'The bill could not be sent to a printer.' };
-    } catch (e) {
-        return { ok: false, message: e instanceof Error ? e.message : 'The bill could not be sent to a printer.' };
+    const fallback = 'The bill could not be sent to a printer.';
+    const response = await backendCall(
+        `/print/bill/settled?restaurantId=${encodeURIComponent(restaurantId)}`,
+        restaurantId,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ bill_id: billId }),
+        },
+    );
+    if (!response) {
+        return { ok: false, message: 'Could not reach the server, so nothing was printed. Check the connection and try again.' };
     }
+    if (!response.ok) {
+        return { ok: false, message: await readErrorMessage(response, fallback) };
+    }
+    const data = (await response.json().catch(() => null)) as { success?: boolean; jobId?: string; destination?: string } | null;
+    if (!data?.success) {
+        return { ok: false, message: fallback };
+    }
+    return { ok: true, jobId: data.jobId ?? null, destination: data.destination ?? null };
 };
 
 // --- Bank / settlement reconciliation -----------------------------------------
