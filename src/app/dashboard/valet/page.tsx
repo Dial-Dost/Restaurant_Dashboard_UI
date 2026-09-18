@@ -5,7 +5,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { SearchInput } from "@/components/ui/search-input";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -1447,9 +1446,9 @@ function ValetDashboardPageInner() {
 
   return (
     <div className="grid gap-4 md:gap-8">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between max-lg:flex-wrap max-lg:gap-2">
         <h1 className="text-lg font-semibold md:text-2xl">Valet Dashboard</h1>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 max-lg:flex-wrap">
           <Button
             type="button"
             variant="secondary"
@@ -1812,11 +1811,11 @@ function ValetDashboardPageInner() {
           <div className="mb-4 grid gap-3 md:grid-cols-4">
             <div>
               <Label htmlFor="record-search">Search records</Label>
-              <SearchInput
+              <Input
                 id="record-search"
                 placeholder="Search by name, ticket, plate, stage or bay"
                 value={recordSearchQuery}
-                onValueChange={setRecordSearchQuery}
+                onChange={(e) => { setRecordSearchQuery(e.target.value); }}
               />
             </div>
             <div>

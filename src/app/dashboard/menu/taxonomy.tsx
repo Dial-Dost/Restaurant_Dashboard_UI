@@ -43,7 +43,7 @@
 //    accountant.
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { AlertTriangle, Info, Layers, Loader2, Plus, RotateCcw, Ruler } from "lucide-react"
+import { AlertTriangle, Info, Layers, Loader2, Plus, RotateCcw, Ruler, Search } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -57,7 +57,6 @@ import {
     DialogTitle,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
-import { SearchInput } from "@/components/ui/search-input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
@@ -400,12 +399,13 @@ function GroupsDialog({
                             <Label className="text-xs uppercase tracking-wide text-muted-foreground">
                                 Per-dish exceptions
                             </Label>
-                            <SearchInput
-                                wrapperClassName="max-w-sm"
-                                className="h-9" value={itemSearch} placeholder="Search a dish to override…"
-                                aria-label="Search a dish to override"
-                                onValueChange={setItemSearch}
-                            />
+                            <div className="relative max-w-sm">
+                                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                                <Input
+                                    className="h-9 pl-8" value={itemSearch} placeholder="Search a dish to override…"
+                                    onChange={(e) => { setItemSearch(e.target.value) }}
+                                />
+                            </div>
                             {shownItems.length === 0 ? (
                                 <p className="text-xs text-muted-foreground">
                                     {itemSearch.trim() ? "No dish matches that." : "No per-dish overrides — every dish takes its category's group, which is the usual and the tidier answer."}
@@ -550,11 +550,13 @@ function SizesDialog({ restaurantId, menuItems, canEdit, onClose }: {
                 <div className="grid gap-3 sm:grid-cols-12">
                     <div className="space-y-1.5 sm:col-span-5">
                         <Label>Dish</Label>
-                        <SearchInput
-                            className="h-9" value={search} placeholder="Search the menu…"
-                            aria-label="Search the menu"
-                            onValueChange={setSearch}
-                        />
+                        <div className="relative">
+                            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                            <Input
+                                className="h-9 pl-8" value={search} placeholder="Search the menu…"
+                                onChange={(e) => { setSearch(e.target.value) }}
+                            />
+                        </div>
                         <div className="max-h-72 space-y-0.5 overflow-y-auto rounded-md border p-1">
                             {shown.map((m) => (
                                 <button

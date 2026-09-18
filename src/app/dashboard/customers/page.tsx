@@ -132,7 +132,7 @@ export default function CustomersPage() {
 
   return (
     <div className="grid gap-4 md:gap-8">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between max-lg:flex-wrap max-lg:gap-2">
         <h1 className="text-lg font-semibold md:text-2xl">Customers</h1>
         <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
           <DialogTrigger asChild>

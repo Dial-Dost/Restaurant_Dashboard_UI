@@ -173,14 +173,14 @@ export default function AttendancePage() {
               <CardTitle className="text-base">Team hours</CardTitle>
               <CardDescription>Worked hours per employee over the selected range.</CardDescription>
             </div>
-            <div className="flex items-end gap-2">
-              <div className="grid gap-1">
+            <div className="flex items-end gap-2 max-sm:w-full max-sm:flex-wrap max-sm:justify-end">
+              <div className="grid min-w-0 flex-[1_1_9rem] gap-1 sm:flex-none">
                 <label className="text-xs text-muted-foreground">From</label>
-                <Input type="date" value={from} max={to} onChange={(e) => { setFrom(e.target.value); }} className="h-9 w-[150px]" />
+                <Input type="date" value={from} max={to} onChange={(e) => { setFrom(e.target.value); }} className="h-9 w-full sm:w-[150px]" />
               </div>
-              <div className="grid gap-1">
+              <div className="grid min-w-0 flex-[1_1_9rem] gap-1 sm:flex-none">
                 <label className="text-xs text-muted-foreground">To</label>
-                <Input type="date" value={to} min={from} max={todayIso()} onChange={(e) => { setTo(e.target.value); }} className="h-9 w-[150px]" />
+                <Input type="date" value={to} min={from} max={todayIso()} onChange={(e) => { setTo(e.target.value); }} className="h-9 w-full sm:w-[150px]" />
               </div>
               <Button variant="outline" size="icon" onClick={() => void loadSummary()} disabled={summaryLoading} aria-label="Refresh">
                 <RefreshCw className={`h-4 w-4 ${summaryLoading ? "animate-spin" : ""}`} />

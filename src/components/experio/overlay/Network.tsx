@@ -192,13 +192,13 @@ export default function Network() {
         >
           <div
             data-tilt
-            className="exp-module glass glass-rim glass-shine pointer-events-auto relative w-[136px] rounded-2xl px-4 py-3 will-change-transform"
+            className="exp-module glass glass-rim glass-shine pointer-events-auto relative w-[120px] rounded-2xl px-3 py-3 will-change-transform sm:w-[136px] sm:px-4"
           >
             <div className="flex items-center gap-1.5">
               <span className="size-1.5 rounded-full bg-emerald" />
               <span className="text-[12px] font-semibold text-ink">{m.label}</span>
             </div>
-            <div className="mt-1 text-[15px] font-bold tracking-tight text-ink tabular-nums">
+            <div className="mt-1 text-[13px] font-bold tracking-tight text-ink tabular-nums sm:text-[15px]">
               {MODULE_METRICS[i]}
             </div>
           </div>

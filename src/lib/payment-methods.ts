@@ -16,8 +16,6 @@
 //
 // PURE: no fetch, no React — see src/lib/__tests__/payment-methods.test.ts.
 
-import { NC_SETTLE_LABEL, NC_SETTLE_METHOD, isNcSettleMethod } from './nc-settle';
-
 export interface PaymentMethodConfig {
     id: string;
     label: string;
@@ -104,14 +102,11 @@ export const tenderPaymentOptions = (config: readonly PaymentMethodConfig[]): Pa
 /**
  * The closed-bills filter: EVERY mode the restaurant has ever configured, on or
  * off — a mode switched off last month still has last month's bills — plus
- * 'Split', the stored word for a bill paid several ways, and 'NC', the stored
- * word for a bill settled as non-chargeable (backend migration 052) — neither
- * is a mode, and both are on bills an owner looks for.
+ * 'Split', the stored word for a bill paid several ways.
  */
 export const closedBillMethodFilterOptions = (config: readonly PaymentMethodConfig[]): { value: string; label: string }[] => [
     ...config.map((m) => ({ value: m.id, label: m.label || m.id })),
     { value: 'Split', label: 'Split' },
-    { value: NC_SETTLE_METHOD, label: NC_SETTLE_LABEL },
 ];
 
 /** Case/punctuation-insensitive key — the server's paymentNameKey. */
@@ -135,14 +130,10 @@ const findMethod = (method: string | null | undefined, config: readonly PaymentM
 export const methodNeedsScreenshot = (method: string | null | undefined, config: readonly PaymentMethodConfig[]): boolean =>
     findMethod(method, config)?.requires_screenshot === true;
 
-/**
- * The owner's name for a stored method; the stored string when the config has
- * none. The NC marker is not a mode and has one name everywhere.
- */
+/** The owner's name for a stored method; the stored string when the config has none. */
 export const paymentMethodLabel = (method: string | null | undefined, config: readonly PaymentMethodConfig[]): string => {
     const s = (method ?? '').trim();
     if (!s) {return '';}
-    if (isNcSettleMethod(s)) {return NC_SETTLE_LABEL;}
     return findMethod(s, config)?.label ?? s;
 };
 

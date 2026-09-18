@@ -7,24 +7,17 @@
 // section wraps GET /bills/closed (paged list) + GET /bills/closed/:id (the full
 // bill), and is mounted by both Accounting and History.
 //
-// CLIENT ITEM 8 — "Reprint bill should show up in History; old bills should be
-// reprintable from the history section." Because History mounts THIS section,
-// its Reprint is Accounting's Reprint: the same button, the same route, the
-// same permission. See reprintSettledBill for why that button never worked
-// until now, on either screen.
-//
 // The money split it renders comes straight from the backend, which guarantees
 //   taxable_base + service_charge + tax_total + round_off === grand_total
 // and lifts a "Service Charge" entry out of the tax breakdown so it is never
 // shown twice. Nothing is recomputed here.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { useToast } from "@/hooks/use-toast"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { SearchInput } from "@/components/ui/search-input"
 import { Badge } from "@/components/ui/badge"
 import { Pencil, Printer, Receipt } from "lucide-react"
 import { useCurrency } from "@/hooks/use-currency"
@@ -32,17 +25,14 @@ import { useAuth } from "@/context/AuthContext"
 import { usePaymentMethods } from "@/hooks/use-payment-methods"
 import { closedBillMethodFilterOptions, paymentMethodLabel } from "@/lib/payment-methods"
 import { BillCustomerDialog } from "@/components/bill-customer-dialog"
-import { canEditSettledBillCustomer, canReprintSettledBill } from "@/lib/bill-customer"
+import { canEditSettledBillCustomer } from "@/lib/bill-customer"
 import { formatRoundOff, roundOffOf } from "@/lib/bill-round-off"
-import { filterFetchDelayMs } from "@/lib/search-input"
 import { getClosedBills, getClosedBill, reprintSettledBill, type ClosedBillSummary, type ClosedBillDetail } from "@/lib/db"
 import { DateRangePicker, RangeNote } from "@/components/date-range-picker"
 import type { DateRange } from "@/lib/date-range"
 import { formatDateTime } from "@/lib/tz"
 import { useTimezone } from "@/lib/use-timezone"
 import { elapsedToSettlement, formatDuration, readServiceClock } from "@/lib/service-clock"
-import { billItemLabel } from "@/lib/bill-escpos"
-import { NC_SETTLE_LABEL, isNcSettleMethod } from "@/lib/nc-settle"
 
 const PAGE_SIZE = 25
 
@@ -78,24 +68,12 @@ interface Props {
   range?: DateRange
   onRangeChange?: (range: DateRange) => void
   description?: string
-  /**
-   * The payment-method filter to open on — a link from the Overview's "Today at
-   * a glance" box (item 10) naming a mode's own bills, or the Split bills. Only
-   * the FIRST value is used; after that the filter is the owner's.
-   */
-  initialMethod?: string
 }
 
-export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, range, onRangeChange, description, initialMethod }: Props) {
+export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, range, onRangeChange, description }: Props) {
   const { toast } = useToast()
   const { methods: paymentMethods } = usePaymentMethods(rid)
-  const methodOptions = useMemo(() => {
-    const options = closedBillMethodFilterOptions(paymentMethods)
-    // A linked filter this tenant's config does not list (a retired mode) is
-    // still shown, so the filter in force is always one the owner can see.
-    const wanted = initialMethod?.trim() ?? ""
-    return wanted && !options.some((o) => o.value === wanted) ? [...options, { value: wanted, label: wanted }] : options
-  }, [paymentMethods, initialMethod])
+  const methodOptions = useMemo(() => closedBillMethodFilterOptions(paymentMethods), [paymentMethods])
   const { timezone } = useTimezone()
   /** The bill currently being sent to a printer, so the button can say so. */
   const [reprinting, setReprinting] = useState<string | null>(null)
@@ -108,13 +86,6 @@ export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, range
     not greyed, for everyone else: the route would refuse them.
   */
   const canEditCustomer = canEditSettledBillCustomer(user)
-  /*
-    CLIENT ITEM 8 — Reprint, behind its route's own gate. History is open to a
-    login that holds only an analytics / report action, and such a login used to
-    see a Reprint button that answered 403 every time. Hidden, not greyed, like
-    the edit beside it.
-  */
-  const canReprint = canReprintSettledBill(user)
   const [customerOpen, setCustomerOpen] = useState(false)
   const money = (n: number | null | undefined) =>
     `${currencySymbol}${Number(n ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -131,12 +102,8 @@ export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, range
   const effFrom = ownDateFilter ? ownFrom : from
   const effTo = ownDateFilter ? ownTo : to
 
-  // Each free-text box holds its text and the query it has settled on (the box
-  // debounces); the list asks the server with the settled ones.
-  const [searchInput, setSearchInput] = useState("")
   const [search, setSearch] = useState("")
-  const [method, setMethod] = useState(initialMethod?.trim() ?? "")
-  const [tableInput, setTableInput] = useState("")
+  const [method, setMethod] = useState("")
   const [table, setTable] = useState("")
 
   const [bills, setBills] = useState<ClosedBillSummary[]>([])
@@ -150,17 +117,11 @@ export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, range
   const [detail, setDetail] = useState<ClosedBillDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
 
-  // Debounced first page — reruns on every filter change. The two text boxes
-  // debounce themselves, so a change to them alone goes at once: an emptied
-  // box re-asks now instead of 300ms later.
-  const lastFilters = useRef<{ effFrom: string | undefined; effTo: string | undefined; search: string; method: string; table: string } | null>(null)
+  // Debounced first page — reruns on every filter change.
   useEffect(() => {
     if (!rid) {return}
     let active = true
     setLoading(true)
-    const nextFilters = { effFrom, effTo, search, method, table }
-    const delay = filterFetchDelayMs(lastFilters.current, nextFilters, ['search', 'table'], 300)
-    lastFilters.current = nextFilters
     const t = setTimeout(() => {
       void getClosedBills(rid, {
         limit: PAGE_SIZE,
@@ -184,7 +145,7 @@ export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, range
           if (active) {setFailed(true); setBills([]); setTotal(0); setHasMore(false)}
         })
         .finally(() => { if (active) {setLoading(false)} })
-    }, delay)
+    }, 300)
     return () => { active = false; clearTimeout(t) }
   }, [rid, effFrom, effTo, search, method, table])
 
@@ -227,24 +188,24 @@ export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, range
     }
   }, [rid])
 
-  const clearFilters = () => { setSearchInput(""); setMethod(""); setTableInput(""); setOwnFrom(""); setOwnTo("") }
-  const hasFilters = Boolean(searchInput || method || tableInput || (ownDateFilter && (ownFrom || ownTo)))
+  const clearFilters = () => { setSearch(""); setMethod(""); setTable(""); setOwnFrom(""); setOwnTo("") }
+  const hasFilters = Boolean(search || method || table || (ownDateFilter && (ownFrom || ownTo)))
 
   return (
     <Card id="closed-bills-section" className="scroll-mt-20">
       <CardHeader>
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
+          <div className="min-w-0">
             <CardTitle>Closed bills</CardTitle>
             <CardDescription>
               {description ?? "Every settled bill — open one to see its line items, taxes, service charge, discount, payment and who settled it."}
             </CardDescription>
           </div>
           {ownDateFilter ? (
-            <div className="flex items-center gap-2">
-              <Input type="date" value={ownFrom} onChange={(e) => { setOwnFrom(e.target.value) }} className="w-auto" aria-label="Settled from" />
+            <div className="flex w-full items-center gap-2 sm:w-auto">
+              <Input type="date" value={ownFrom} onChange={(e) => { setOwnFrom(e.target.value) }} className="min-w-0 flex-1 sm:w-auto sm:flex-none" aria-label="Settled from" />
               <span className="text-muted-foreground">→</span>
-              <Input type="date" value={ownTo} onChange={(e) => { setOwnTo(e.target.value) }} className="w-auto" aria-label="Settled to" />
+              <Input type="date" value={ownTo} onChange={(e) => { setOwnTo(e.target.value) }} className="min-w-0 flex-1 sm:w-auto sm:flex-none" aria-label="Settled to" />
             </div>
           ) : range && onRangeChange ? (
             <DateRangePicker value={range} onChange={onRangeChange} timezone={timezone} align="end" />
@@ -255,23 +216,12 @@ export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, range
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          <SearchInput
+          <Input
             placeholder="Bill no, table, method, coupon, cashier…"
-            aria-label="Search closed bills"
-            value={searchInput}
-            onValueChange={setSearchInput}
-            onQueryChange={setSearch}
-            debounceMs={300}
+            value={search}
+            onChange={(e) => { setSearch(e.target.value) }}
           />
-          {/* A filter typed like a search, so it clears like one. */}
-          <SearchInput
-            placeholder="Table (exact, e.g. T2)"
-            aria-label="Filter by table"
-            value={tableInput}
-            onValueChange={setTableInput}
-            onQueryChange={setTable}
-            debounceMs={300}
-          />
+          <Input placeholder="Table (exact, e.g. T2)" value={table} onChange={(e) => { setTable(e.target.value) }} />
           <select
             value={method}
             onChange={(e) => { setMethod(e.target.value) }}
@@ -309,11 +259,6 @@ export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, range
                   <Receipt className="h-4 w-4 shrink-0 text-muted-foreground" />
                   <span className="font-medium">#{b.bill_no ?? "—"}</span>
                   <span className="text-muted-foreground">{b.table_name ?? "No table"}</span>
-                  {/* Client item 8 — whose bill it was, so an old bill can be
-                      found by eye in History before it is opened. */}
-                  {b.customer?.trim() ? (
-                    <span data-testid="closed-bill-row-customer" className="max-w-[14rem] truncate">{b.customer.trim()}</span>
-                  ) : null}
                   <span className="text-muted-foreground">{dateTime(b.settled_at ?? b.closed_at, timezone)}</span>
                   <span className="ml-auto flex items-center gap-2">
                     {b.refunded && <Badge variant="destructive">Refunded</Badge>}
@@ -355,53 +300,49 @@ export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, range
             <BillDetailBody detail={detail} money={money} />
           )}
 
-          {detail && (canReprint || canEditCustomer) && (
+          {detail && (
             <DialogFooter className="flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between">
               {/* SAID BEFORE IT IS PRESSED, not after. The paper carries a
                   REPRINT banner in the largest type the printer has, because a
                   second copy that looks like an original gets paid twice or
                   filed as a second sale — and somebody about to hand it to a
                   guest should know that is what comes out. */}
-              {canReprint ? (
-                <p className="text-xs text-muted-foreground">
-                  Prints a second copy, marked <span className="font-semibold">REPRINT</span>, with the
-                  figures exactly as this bill was settled.
-                </p>
-              ) : <span />}
+              <p className="text-xs text-muted-foreground">
+                Prints a second copy, marked <span className="font-semibold">REPRINT</span>, with the
+                figures exactly as this bill was settled.
+              </p>
               <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-                {canEditCustomer ? (
-                  <Button size="sm" variant="outline" onClick={() => { setCustomerOpen(true) }}>
-                    <Pencil className="mr-2 h-4 w-4" />
-                    Edit name / GSTIN / address
-                  </Button>
-                ) : null}
-                {canReprint ? (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={reprinting === detail.id}
-                    onClick={() => {
-                      const id = detail.id
-                      setReprinting(id)
-                      void reprintSettledBill(rid, id)
-                        .then((r) => {
-                          toast(r.ok
-                            ? {
-                              title: "Sent to the printer",
-                              description: r.destination ? `Printing at ${r.destination}.` : "The reprint is on its way.",
-                            }
-                            // The SERVER'S sentence, verbatim. "Couldn't reprint"
-                            // sends an owner hunting; "no printer is online for
-                            // bills" tells them what to do.
-                            : { title: "Could not reprint", description: r.message, variant: "destructive" })
-                        })
-                        .finally(() => { setReprinting((cur) => (cur === id ? null : cur)) })
-                    }}
-                  >
-                    <Printer className="mr-2 h-4 w-4" />
-                    {reprinting === detail.id ? "Sending…" : "Reprint bill"}
-                  </Button>
-                ) : null}
+              {canEditCustomer ? (
+                <Button size="sm" variant="outline" onClick={() => { setCustomerOpen(true) }}>
+                  <Pencil className="mr-2 h-4 w-4" />
+                  Edit name / GSTIN
+                </Button>
+              ) : null}
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={reprinting === detail.id}
+                onClick={() => {
+                  const id = detail.id
+                  setReprinting(id)
+                  void reprintSettledBill(rid, id)
+                    .then((r) => {
+                      toast(r.ok
+                        ? {
+                          title: "Sent to the printer",
+                          description: r.destination ? `Printing at ${r.destination}.` : "The reprint is on its way.",
+                        }
+                        // The SERVER'S sentence, verbatim. "Couldn't reprint"
+                        // sends an owner hunting; "no printer is online for
+                        // bills" tells them what to do.
+                        : { title: "Could not reprint", description: r.message, variant: "destructive" })
+                    })
+                    .finally(() => { setReprinting((cur) => (cur === id ? null : cur)) })
+                }}
+              >
+                <Printer className="mr-2 h-4 w-4" />
+                {reprinting === detail.id ? "Sending…" : "Reprint bill"}
+              </Button>
               </div>
             </DialogFooter>
           )}
@@ -420,11 +361,7 @@ export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, range
             // THE ROW REFRESHES FROM THE SERVER'S ANSWER at once, then from a
             // fresh read — the read is the truth, and the answer is what keeps
             // the old name from sitting on screen while it is in flight.
-            setDetail((cur) => (cur?.id === id
-              ? { ...cur, customer: saved.customer, customer_gstin: saved.customer_gstin, customer_address: saved.customer_address }
-              : cur))
-            // …and the list row behind the dialog says the new name too.
-            setBills((rows) => rows.map((row) => (row.id === id ? { ...row, customer: saved.customer } : row)))
+            setDetail((cur) => (cur?.id === id ? { ...cur, customer: saved.customer, customer_gstin: saved.customer_gstin } : cur))
             void getClosedBill(rid, id)
               .then((fresh) => { if (fresh) { setDetail((cur) => (cur?.id === id ? fresh : cur)) } })
               .catch(() => { /* the answer above already stands */ })
@@ -444,11 +381,11 @@ function Row({ label, value, bold, muted }: { label: string; value: string; bold
   )
 }
 
-function Fact({ label, value, wide }: { label: string; value: string; wide?: boolean }) {
+function Fact({ label, value }: { label: string; value: string }) {
   return (
-    <div className={`rounded-md border p-2 ${wide ? "col-span-2 sm:col-span-4" : ""}`}>
+    <div className="rounded-md border p-2">
       <p className="text-xs text-muted-foreground">{label}</p>
-      <p className={`text-sm font-medium ${wide ? "whitespace-pre-line break-words" : ""}`}>{value}</p>
+      <p className="text-sm font-medium">{value}</p>
     </div>
   )
 }
@@ -486,8 +423,7 @@ function BillDetailBody({ detail, money }: { detail: ClosedBillDetail; money: (n
           ) : d.items.map((it, i) => (
             <div key={`${it.name}-${i}`} className="flex items-start gap-3 p-2 text-sm">
               <div className="min-w-0 flex-1">
-                {/* A comped line is its own line at 0.00 — the paper's words. */}
-                <p className="font-medium">{billItemLabel(it.name, it.nc)}</p>
+                <p className="font-medium">{it.name}</p>
                 <p className="text-xs text-muted-foreground">
                   {it.quantity} × {money(it.price)}{it.note ? ` · ${it.note}` : ""}
                 </p>
@@ -519,26 +455,12 @@ function BillDetailBody({ detail, money }: { detail: ClosedBillDetail; money: (n
           <Row label="Grand total" value={money(d.grand_total)} bold />
         </div>
         {d.refunded && <Row label="Refunded" value={`− ${money(d.refund_amount)}`} muted />}
-        {/* Beside the ladder, never in it: what the comped lines were worth. */}
-        {(d.nc_total ?? 0) > 0 && <Row label="NC value (not charged)" value={money(d.nc_total)} muted />}
       </div>
 
       <div>
         <p className="mb-2 text-xs font-semibold uppercase text-muted-foreground">Payment</p>
         <div className="space-y-1 rounded-md border p-3">
-          <Row label="Method" value={isNcSettleMethod(d.payment_method) ? NC_SETTLE_LABEL : (d.payment_method ?? "—")} />
-          {/* A BILL SETTLED AS NC says why it took nothing, and on whose say-so. */}
-          {d.nc_settlement ? (
-            <div data-testid="closed-bill-nc-settlement" className="space-y-1 pt-1">
-              <Row label="Settled as" value={`Non-chargeable — ${d.nc_settlement.kind_label}`} muted />
-              <Row label="Authorised by" value={d.nc_settlement.authorised_by} muted />
-              {d.nc_settlement.reason ? <Row label="Reason" value={d.nc_settlement.reason} muted /> : null}
-              <Row label="Given away (before tax)" value={money(d.nc_settlement.value)} muted />
-              {d.nc_settlement.would_have_charged !== null && d.nc_settlement.would_have_charged > 0 ? (
-                <Row label="Would have been (incl. tax)" value={money(d.nc_settlement.would_have_charged)} muted />
-              ) : null}
-            </div>
-          ) : null}
+          <Row label="Method" value={d.payment_method ?? "—"} />
           {d.payment_splits.map((s, i) => (
             <Row key={`${s.method}-${i}`} label={`↳ ${s.method}`} value={money(s.amount)} muted />
           ))}
@@ -590,12 +512,6 @@ function BillDetailBody({ detail, money }: { detail: ClosedBillDetail; money: (n
               older backend's silence is not "no GSTIN". */}
           {"customer_gstin" in d ? <Fact label="Customer GSTIN" value={d.customer_gstin?.trim() ? d.customer_gstin.trim() : "—"} /> : null}
           <Fact label="Orders" value={String(d.orders.length)} />
-          {/* Client item 7 — the guest's address, across the row and in its own
-              lines, as the paper prints it. Drawn only when the server sends
-              the field; an older backend's silence is not "no address". */}
-          {"customer_address" in d ? (
-            <Fact label="Customer address" value={d.customer_address?.trim() ? d.customer_address.trim() : "—"} wide />
-          ) : null}
         </div>
       </div>
 

@@ -5,9 +5,8 @@ import { Bar, BarChart, CartesianGrid, XAxis, YAxis, Line, LineChart, Pie, PieCh
 import { InteractiveChart, type IvPoint } from "./interactive-chart"
 import { SettlementBreakdownCard } from "./settlement-breakdown"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { createContext, Suspense, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import Link from "next/link"
-import { useSearchParams } from "next/navigation"
 import { useAuth } from "@/context/AuthContext"
 import { useCurrency } from "@/hooks/use-currency"
 import { getMenuInsights, type MenuInsights, type PriceSuggestion, type SuppressedSuggestion, applyMenuItemPrice, getOperationsAnalytics, type OperationsAnalytics, getApcTrends, type ApcTrendPoint, getAdvancedAnalytics, type AdvancedAnalytics, getOutletsComparison, type OutletComparison, createCampaign, deleteCampaign, getKitchenAnalytics, type KitchenAnalytics, type KitchenDishStat, type KitchenSectionStat, getMetricExplainers, type MetricExplainer, type MetricExplainers, getOverviewInsights, type OverviewInsights, type OverviewMetric, type AttentionItem, type AttentionRow } from "@/lib/db"
@@ -18,7 +17,7 @@ import { formatLongDate, formatMonth, timezoneCaption, todayInZone } from "@/lib
 import { useTimezone } from "@/lib/use-timezone"
 import { DateRangePicker, RangeNote } from "@/components/date-range-picker"
 import { useDateRange } from "@/hooks/use-date-range"
-import { rangeFromParams, type DateRange, type RangeQuery } from "@/lib/date-range"
+import { type DateRange, type RangeQuery } from "@/lib/date-range"
 import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, Download, Filter, Flame, HelpCircle, Info, Maximize2, Trophy, Lightbulb, Snail, TriangleAlert, X } from "lucide-react"
 
 // Series colour for every InteractiveChart on the page — one accent, so the
@@ -310,7 +309,10 @@ function SortControl<T>({ fields, state, onChange }: { fields: SortField<T>[]; s
 function SectionHeaderRow({ children, control }: { children: ReactNode; control: ReactNode }) {
   return (
     <div className="flex flex-wrap items-start justify-between gap-2">
-      <div className="min-w-0 flex-1">{children}</div>
+      {/* Below lg, a 14rem basis, not 0: with `flex-1` alone the text column never asks
+          for room, so on a phone the controls stayed beside it and the title
+          was crushed into a 70px strip. Now the row wraps instead. */}
+      <div className="min-w-0 flex-1 max-lg:basis-[14rem]">{children}</div>
       {control}
     </div>
   )
@@ -3955,20 +3957,14 @@ function OutletsComparisonCard({ view, onOpenView }: { view: ViewId; onOpenView:
   );
 }
 
-function AnalyticsInner(): React.JSX.Element {
+export default function AnalyticsPage() {
   const { timezone } = useTimezone();
   const { user } = useAuth();
   // ONE window for every section on the page. `chosen` is what lets the two
   // naturally-wider cards (KPI dashboard, month trends) keep their own default
   // until the owner actually picks something — after that everything agrees.
-  //
-  // Seeded from ?from=&to= first, so a link naming a day (the Overview's
-  // "Today at a glance" falls back here, item 10) opens on that day. A window
-  // the link named IS a choice: the two wider cards are cut on it too, rather
-  // than on their own 90 days or 12 months under a page that says "today".
-  const search = useSearchParams();
-  const { range, setRange, query, label } = useDateRange("analytics", { params: search });
-  const [rangeChosen, setRangeChosen] = useState(() => rangeFromParams(search, timezone) !== null);
+  const { range, setRange, query, label } = useDateRange("analytics");
+  const [rangeChosen, setRangeChosen] = useState(false);
   const windowValue = useMemo<AnalyticsWindowValue>(
     () => ({ range, query, label, timezone, chosen: rangeChosen }),
     [range, query, label, timezone, rangeChosen],
@@ -4069,7 +4065,7 @@ function AnalyticsInner(): React.JSX.Element {
 
       {/* Sticky toolbar: pick a view (only that slice renders) + KPI sort.
           Sits just below the app header (h-14 / lg:60px). */}
-      <div className="sticky top-14 z-30 rounded-xl border bg-background/95 p-2 shadow-sm backdrop-blur lg:top-[60px]">
+      <div className="sticky top-[var(--dash-header-h,3.5rem)] z-30 rounded-xl border bg-background/95 p-2 shadow-sm backdrop-blur">
         <div className="flex flex-wrap items-center gap-2">
           {/* Wide screens: segmented chips */}
           <div className="hidden min-w-0 flex-1 flex-wrap items-center gap-1.5 md:flex">
@@ -4088,7 +4084,7 @@ function AnalyticsInner(): React.JSX.Element {
           <Button variant="outline" size="sm" className="md:hidden" onClick={() => { setSheetOpen(true); }}>
             View: {viewLabel} <ChevronDown className="ml-1 h-4 w-4" />
           </Button>
-          <div className="ml-auto flex items-center gap-1.5">
+          <div className="ml-auto flex items-center gap-1.5 max-lg:flex-wrap">
             {/* In the sticky bar on purpose: a reporting page is long, and a
                 window control that scrolls out of sight is how a figure gets
                 read as the all-time number. */}
@@ -4164,14 +4160,5 @@ function AnalyticsInner(): React.JSX.Element {
       )}
     </div>
     </AnalyticsWindowContext.Provider>
-  );
-}
-
-// useSearchParams requires a Suspense boundary (the History page's pattern).
-export default function AnalyticsPage(): React.JSX.Element {
-  return (
-    <Suspense fallback={<div className="py-10 text-center text-muted-foreground">Loading…</div>}>
-      <AnalyticsInner />
-    </Suspense>
   );
 }

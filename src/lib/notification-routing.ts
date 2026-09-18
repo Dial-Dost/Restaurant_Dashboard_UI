@@ -24,11 +24,6 @@ export const MODULE_ROUTES: Record<string, string> = {
     Inventory: '/dashboard/inventory',
     Employees: '/dashboard/employees',
     Analytics: '/dashboard/analytics',
-    // Client item 9: a report bell opens the Email reports view (its history
-    // and files); a 2.0.1 inbox schedule's bell names Accounting, whose card
-    // points there.
-    Reports: '/dashboard/reports?view=email',
-    Accounting: '/dashboard/accounting',
 };
 
 /**

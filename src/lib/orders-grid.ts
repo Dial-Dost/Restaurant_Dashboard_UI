@@ -39,7 +39,7 @@
 //
 // PURE — no React, no fetch — so `__tests__/orders-grid.test.ts` pins it.
 
-import { PERM_ORDER_ADD, answered, can, hasPermission, isWaiterOnly, showsMoney, type ScopedSession } from './session-scope';
+import { PERM_ORDER_ADD, can, hasPermission, isWaiterOnly, showsMoney, type ScopedSession } from './session-scope';
 
 /**
  * "Bark Order" — POST /orders/:id/bark's `validateAction` argument, quoted from
@@ -88,18 +88,10 @@ export const canBarkFromBoard = (session: ScopedSession | null | undefined): boo
  *   null     — neither: the control is not drawn.
  *
  * The void route wins whenever it is held, because it is the stricter record.
- * The same rule as the owner app's `_mayCancelKot`, so one person is offered
- * the same button on the phone and on the laptop. Never offered on a ticket
- * that is already cancelled (terminal) or closed (settled — a refund, not a
- * cancel).
- *
- * CLIENT ITEM 3 (2026-09-17) — "On the waiter dashboard, Cancel KOT option
- * should be removed." A waiter-only session is offered NEITHER route, even
- * when the tenant granted it Void Orders: every route that can cancel a
- * ticketed order now refuses that login (`cancel_needs_senior`). The role
- * outranks the grant here, and only here — the client named the waiter, not a
- * permission. The server's `cancel_kot` is obeyed when it said no; its absence
- * (a session stored before the flag) falls through to the rule below.
+ * The same two-route rule as the owner app's `_mayCancelKot`, so one waiter is
+ * offered the same button on the phone and on the laptop. Never offered on a
+ * ticket that is already cancelled (terminal) or closed (settled — a refund,
+ * not a cancel).
  */
 export type CancelKotRoute = 'void' | 'status';
 
@@ -109,7 +101,6 @@ export const cancelKotRoute = (
 ): CancelKotRoute | null => {
     const normalized = (status ?? '').trim().toLowerCase();
     if (normalized === 'cancelled' || normalized === 'closed') { return null; }
-    if (isWaiterOnly(session) || answered(session, 'cancel_kot') === false) { return null; }
     if (can(session, 'void_order')) { return 'void'; }
     if (hasPermission(session?.actions_set, PERM_ORDER_ADD)) { return 'status'; }
     return null;

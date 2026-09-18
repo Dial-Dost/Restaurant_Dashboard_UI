@@ -10,7 +10,6 @@ import { Percent } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { setBillDiscount, splitBill, mergeTables, refundBill, getLoyalty, redeemLoyalty, printSplitBills, type SplitPart, type LoyaltyAccount } from "@/lib/db"
 import { isRefusedAction } from "@/lib/error-message"
-import { nextPartyAfterPrint, readReprintNeeded } from "@/lib/next-party"
 import { BillCustomerDialog } from "@/components/bill-customer-dialog"
 
 type Which = null | "discount" | "split" | "merge" | "refund" | "loyalty"
@@ -22,19 +21,11 @@ export function BillActions({
   tableName,
   isAdmin,
   onChanged,
-  onReprintNeeded,
 }: {
   restaurantId: string
   tableName: string
   isAdmin: boolean
   onChanged: () => void
-  /**
-   * CLIENT ITEM 6 — a merge wrote onto a bill the guest is already holding and
-   * the server answered `reprint_needed`. The page says it with a Reprint that
-   * prints this table as its Print Bill button does; `lead` is what the merge
-   * did, said first, because that toast replaces the merge's own.
-   */
-  onReprintNeeded: (resp: unknown, lead: string) => void
 }) {
   const { toast } = useToast()
   const [dialog, setDialog] = useState<Which>(null)
@@ -98,18 +89,12 @@ export function BillActions({
     setBusy(true)
     try {
       const r = await printSplitBills(restaurantId, tableName, { mode: "even", parts: Number(splitN) || 2 })
-      const where = r.jobs[0]?.destination
-        ? `Going to ${r.jobs[0].destination}, one after another.`
-        : "One document per part, one after another."
-      // CLIENT ITEM 6: a split print is a print of this bill, so the server
-      // opened (or found) the next party's seat — said in its words, as the
-      // Print Bill button says it — and the floor is read again for its tile.
-      const nextParty = nextPartyAfterPrint(r)
       toast({
         title: `Printing ${String(r.parts)} bill${r.parts === 1 ? "" : "s"}`,
-        description: nextParty.message ? `${where} ${nextParty.message}` : where,
+        description: r.jobs[0]?.destination
+          ? `Going to ${r.jobs[0].destination}, one after another.`
+          : "One document per part, one after another.",
       })
-      onChanged()
     } catch (e) {
       const msg = String((e as Error)?.message ?? e)
       // The web and the API deploy on separate pipelines, and the backend's can
@@ -126,28 +111,9 @@ export function BillActions({
   }
 
   const doMerge = async () => {
-    const from = mergeSrc.trim()
-    if (!from) {return}
+    if (!mergeSrc.trim()) {return}
     setBusy(true)
-    try {
-      const r = await mergeTables(restaurantId, from, tableName)
-      // Refused before anything moved, in the server's words (a waiter merging
-      // into a printed bill, a locked bill) — returned, not thrown, so the
-      // sentence survives a production build. The dialog stays open.
-      if (isRefusedAction(r)) {
-        toast({ title: "Not merged", description: r.error, variant: "destructive" })
-        return
-      }
-      const merged = `Merged ${from} into ${tableName}`
-      // CLIENT ITEM 6: merged onto a printed bill (a manager taking "12 #2"
-      // into 12) — the guest's paper is now short, so the Reprint is offered.
-      if (readReprintNeeded(r, tableName)) {
-        onReprintNeeded(r, `${merged}.`)
-      } else {
-        toast({ title: merged })
-      }
-      onChanged(); close()
-    }
+    try { await mergeTables(restaurantId, mergeSrc.trim(), tableName); toast({ title: `Merged ${mergeSrc.trim()} into ${tableName}` }); onChanged(); close() }
     catch (e) { fail(e) } finally { setBusy(false) }
   }
   const doRefund = async () => {
@@ -187,7 +153,7 @@ export function BillActions({
           {/* First, because it is the only one of these that is a CORRECTION
               rather than a decision: somebody noticed the wrong name on a bill
               they are about to hand over. */}
-          <DropdownMenuItem onClick={() => { setCustomerOpen(true); }}>Edit name / GSTIN / address…</DropdownMenuItem>
+          <DropdownMenuItem onClick={() => { setCustomerOpen(true); }}>Edit name / GSTIN…</DropdownMenuItem>
           <DropdownMenuItem onClick={() => { setDialog("discount"); }}>Discount</DropdownMenuItem>
           <DropdownMenuItem onClick={() => { setDialog("loyalty"); }}>Loyalty</DropdownMenuItem>
           <DropdownMenuItem onClick={() => { setDialog("split"); }}>Split bill</DropdownMenuItem>

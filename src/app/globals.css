@@ -230,6 +230,51 @@
 }
 
 /* ---------------------------------------------------------------------------
+   Mobile: a `grid` with no `grid-cols-*` must not be wider than its container.
+   Nearly every dashboard page opens with `<div className="grid gap-4">`. With
+   no explicit columns the single column is an IMPLICIT track, and an implicit
+   track is sized `auto` — i.e. never narrower than the min-content of its
+   widest child. One wide table or one row of nowrap buttons anywhere on the
+   page therefore stretched the WHOLE page (measured: 364px of content in a
+   343px column at 375px), so every card bled off the right edge and the page
+   scrolled sideways.
+
+   `minmax(0, 1fr)` is exactly what Tailwind's own `grid-cols-1` uses. It only
+   touches implicit tracks, so every `grid-cols-N` layout is untouched, and
+   nothing in this app uses `grid-flow-col` / `auto-cols-*`.
+
+   BELOW 1024px ONLY. The brief was phones and tablets; from `lg` up the desktop
+   site keeps the browser default, so it lays out exactly as it always has.
+   --------------------------------------------------------------------------- */
+@media (max-width: 1023.98px) {
+  .grid {
+    grid-auto-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Mobile: how tall the sticky dashboard header is, for anything that sticks
+   BELOW it (the Analytics toolbar). Below 1024px the outlet switcher takes its
+   own second header row, but only for a multi-outlet restaurant — the slot is
+   empty otherwise — so the offset has to follow the DOM, not the breakpoint.
+   A browser without `:has()` keeps the one-row value, which is what every
+   single-outlet restaurant needs anyway.
+   --------------------------------------------------------------------------- */
+.dashboard-shell {
+  --dash-header-h: 3.5rem;
+}
+@media (max-width: 1023.98px) {
+  .dashboard-shell:has(.dashboard-outlet-slot:not(:empty)) {
+    --dash-header-h: calc(6rem + 1px);
+  }
+}
+@media (min-width: 1024px) {
+  .dashboard-shell {
+    --dash-header-h: 60px;
+  }
+}
+
+/* ---------------------------------------------------------------------------
    H3 — A SCROLLBAR YOU CAN ACTUALLY GRAB.
    V3: "Enlarge the scrollbar handle and track in the dashboard UI to make it
    much easier to click and drag manually when standard scrolling is difficult."
@@ -311,44 +356,4 @@
   .dashboard-shell::-webkit-scrollbar-thumb {
     min-height: 64px;
   }
-}
-
-/* ---------------------------------------------------------------------------
-   CLIENT ITEMS 1 AND 2 — THE FLOOR'S FIVE COLOURS, FIXED.
-   "The fresh table 12 in green, and the table 12 whose bill has been printed
-   but not settled in orange."
-
-   Free green, seated amber, running red, bill printed orange, reserved blue,
-   and a neutral ink for the next party's "#2" chip. FIXED PER SCHEME and never
-   the accent: an owner on a green accent would otherwise have "occupied" and
-   "free" in two greens. The values are the app's (AppShellScheme floor*),
-   transcribed in src/lib/floor-state.ts FLOOR_INKS; floor-state.test.ts holds
-   these three blocks to that table, and every ink to 4.5:1 on its cards and a
-   CIEDE2000 distance of 12 from every other.
-   --------------------------------------------------------------------------- */
-:root {
-  --floor-free: #2B6326;
-  --floor-seated: #7A5B00;
-  --floor-running: #B0283C;
-  --floor-printed: #A84A06;
-  --floor-reserved: #2F5F8F;
-  --floor-next-party: #5F6670;
-}
-
-.dark {
-  --floor-free: #6CC070;
-  --floor-seated: #E2C458;
-  --floor-running: #E0697A;
-  --floor-printed: #F28C3A;
-  --floor-reserved: #79A7D8;
-  --floor-next-party: #B9B4A8;
-}
-
-[data-palette="gaia"].dark {
-  --floor-free: #9BC4A0;
-  --floor-seated: #E2C458;
-  --floor-running: #D9705F;
-  --floor-printed: #F0934A;
-  --floor-reserved: #8FB0D0;
-  --floor-next-party: #B3AC99;
 }

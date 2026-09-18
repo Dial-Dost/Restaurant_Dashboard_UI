@@ -220,9 +220,9 @@ function InventoryPageInner() {
 
   return (
     <div className="grid gap-4 md:gap-8">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between max-lg:flex-wrap max-lg:gap-2">
         <h1 className="text-lg font-semibold md:text-2xl">Inventory</h1>
-        <div className="flex gap-2">
+        <div className="flex gap-2 max-lg:flex-wrap">
           {isAdmin && (
             <Button variant="outline" onClick={() => { setCategoriesOpen(true); }}>
               <Tags className="mr-2 h-4 w-4" /> Categories

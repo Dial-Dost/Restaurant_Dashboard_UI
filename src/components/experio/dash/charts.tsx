@@ -27,9 +27,9 @@ export function Stat({
 }) {
   return (
     <div className="flex h-full flex-col justify-end gap-1">
-      <div className="flex items-baseline gap-2">
+      <div className="flex items-baseline gap-2 max-md:flex-wrap max-md:gap-y-1">
         <span
-          className="exp-count text-[30px] font-bold leading-none tracking-tight text-ink tabular-nums"
+          className="exp-count text-[24px] font-bold leading-none tracking-tight text-ink tabular-nums sm:text-[30px]"
           data-count-to={value}
           data-count-prefix={prefix}
           data-count-suffix={suffix}

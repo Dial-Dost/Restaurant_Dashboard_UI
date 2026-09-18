@@ -24,7 +24,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { SearchInput } from "@/components/ui/search-input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { PlusCircle, Sparkles, Tags, X } from "lucide-react";
@@ -356,12 +355,11 @@ export function TagBadgesDialog({
         </DialogHeader>
 
         <div className="flex flex-wrap items-center gap-2">
-          <SearchInput
+          <Input
             placeholder="Search dishes or categories…"
-            aria-label="Search dishes or categories"
             value={search}
-            wrapperClassName="w-full max-w-[260px]"
-            onValueChange={setSearch}
+            className="max-w-[260px]"
+            onChange={(e) => { setSearch(e.target.value); }}
           />
           <Select value={filter} onValueChange={setFilter}>
             <SelectTrigger className="w-[190px]" aria-label="Filter by badge"><SelectValue /></SelectTrigger>

@@ -34,17 +34,4 @@ export interface Table {
   // and is why this is one nullable object rather than three loose fields that
   // would each have to default to something; see `serverBillPrintState`.
   bill_print?: BillPrintState | null;
-  // CLIENT ITEM 6 — the next party at a printed table (src/lib/next-party.ts).
-  // `parent_table` is the root's name when this row is the SEAT the server
-  // opened beside a printed table ("12 #2" -> "12"), null on every room table;
-  // `party_no` is its party number; `display_name` is what a tile prints big.
-  // A separate table for money, always: only labels ever fold into the root.
-  // Absent on a backend older than migration 053, which is "a room table".
-  parent_table?: string | null;
-  party_no?: number | null;
-  display_name?: string;
-  // CLIENT ITEMS 1 AND 2 — has anything been ORDERED here yet? Seated-but-not-
-  // ordered and running are different colours on the floor (src/lib/floor-state.ts).
-  // Absent on a backend older than the field.
-  has_order?: boolean;
 }

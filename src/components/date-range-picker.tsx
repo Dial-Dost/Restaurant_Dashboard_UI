@@ -294,7 +294,7 @@ export function RangeNote({
   return (
     <span
       title={rangeTooltip(range, timezone)}
-      className={cn("whitespace-nowrap text-xs text-muted-foreground", className)}
+      className={cn("text-xs text-muted-foreground sm:whitespace-nowrap", className)}
     >
       {prefix} {rangeLabel(range, timezone)}
     </span>

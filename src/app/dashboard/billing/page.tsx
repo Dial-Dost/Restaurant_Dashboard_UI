@@ -146,8 +146,8 @@ export default function BillingPage() {
 
   return (
     <div className="space-y-6 p-1">
-      <div className="flex items-center justify-between gap-3">
-        <div>
+      <div className="flex items-center justify-between gap-3 max-lg:flex-wrap">
+        <div className="max-lg:min-w-0 max-lg:flex-[1_1_16rem]">
           <h1 className="text-2xl font-bold tracking-tight">Subscription &amp; billing</h1>
           <p className="text-sm text-muted-foreground">Manage your plan, upgrade for more features, and view invoices.</p>
         </div>

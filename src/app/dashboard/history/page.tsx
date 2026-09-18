@@ -1,8 +1,7 @@
 "use client"
 
-import { Suspense, useEffect, useState } from "react"
+import { useEffect, useState } from "react"
 import Link from "next/link"
-import { useSearchParams } from "next/navigation"
 import { ChevronDown } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart"
@@ -76,16 +75,14 @@ function Stat({ label, value }: { label: string; value: string }) {
   )
 }
 
-function HistoryInner(): React.JSX.Element {
+export default function HistoryPage() {
   const { user } = useAuth()
   const { currency } = useCurrency()
   const { timezone } = useTimezone()
   // ONE window for the page: the month table, the chart, the totals and the
   // settled-bill browser below are all cut on it, so nothing on this screen can
-  // disagree with anything else on it. Seeded from ?from=&to= first, so a link
-  // naming a month (the Overview's month to date, item 10) opens on it.
-  const search = useSearchParams()
-  const { range, setRange } = useDateRange("history", { params: search, fallback: historyDefault })
+  // disagree with anything else on it.
+  const { range, setRange } = useDateRange("history", { fallback: historyDefault })
   const months = monthsBack(range.from, timezone)
   const [rows, setRows] = useState<MonthlyHistoryRow[]>([])
   const [loading, setLoading] = useState(true)
@@ -253,14 +250,5 @@ function HistoryInner(): React.JSX.Element {
         description="Every bill this business has settled, within the selected period. Open a month above to jump straight to its bills."
       />
     </div>
-  )
-}
-
-// useSearchParams requires a Suspense boundary (the Accounting page's pattern).
-export default function HistoryPage(): React.JSX.Element {
-  return (
-    <Suspense fallback={<div className="py-10 text-center text-muted-foreground">Loading…</div>}>
-      <HistoryInner />
-    </Suspense>
   )
 }

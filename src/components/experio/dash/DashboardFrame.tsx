@@ -4,12 +4,18 @@ import { ChevronDown, Search } from "lucide-react";
 import { VIEWS } from "./viewData";
 
 /** Grid placement for the five persistent cells (A..E). */
+/* From `sm` up this is the original 2-row layout (A B / C D E). On a phone the
+ * frame is ~345px wide, so a 3- or 4-column stat cell came out 67–94px and its
+ * headline number ("₹86,412") was cut off mid-digit. Below `sm` the same five
+ * cells are re-flowed into three rows — the two stats side by side, the hero
+ * chart full width, then the two detail cells — using `order`, so the DOM (and
+ * the assembly animation that staggers over it) is unchanged. */
 const CELL_POS = [
-  "col-span-4 row-span-1", // A — primary stat
-  "col-span-8 row-span-1", // B — hero chart
-  "col-span-3 row-span-1", // C — secondary stat
-  "col-span-4 row-span-1", // D — mid widget
-  "col-span-5 row-span-1", // E — list / detail
+  "order-1 col-span-6 row-span-1 sm:order-none sm:col-span-4", // A — primary stat
+  "order-3 col-span-12 row-span-1 sm:order-none sm:col-span-8", // B — hero chart
+  "order-2 col-span-6 row-span-1 sm:order-none sm:col-span-3", // C — secondary stat
+  "order-4 col-span-5 row-span-1 sm:order-none sm:col-span-4", // D — mid widget
+  "order-5 col-span-7 row-span-1 sm:order-none sm:col-span-5", // E — list / detail
 ];
 
 /**
@@ -129,7 +135,7 @@ export default function DashboardFrame() {
           </header>
 
           {/* Cells */}
-          <div className="grid min-h-0 flex-1 grid-cols-12 grid-rows-2 gap-3.5 p-4">
+          <div className="grid min-h-0 flex-1 grid-cols-12 grid-rows-3 gap-2.5 p-3 sm:grid-rows-2 sm:gap-3.5 sm:p-4">
             {CELL_POS.map((pos, cellIdx) => (
               <div
                 key={cellIdx}

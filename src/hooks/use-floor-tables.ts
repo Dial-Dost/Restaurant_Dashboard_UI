@@ -26,14 +26,12 @@
   the read is not allowed to look like a deletion.
 */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
 
 import { getBookings, getTableStatus, getTables, requestBackend } from "@/lib/db";
 import { applyServerSections, loadLayout, saveLayout, type TableLayout } from "@/app/dashboard/tables/sections";
 import type { Table } from "@/app/dashboard/tables/data";
 import { hasPermission, PERM_MANAGE_SECTIONS } from "@/lib/session-scope";
-import { roomTables } from "@/lib/next-party";
-import { coalesceReloads, floorSignature, whenFloorChanged } from "@/lib/floor-refresh";
 
 /**
  * A table that is part of a clubbed ("combined") reservation, as derived from
@@ -58,10 +56,6 @@ export interface FloorSession {
 }
 
 export interface FloorTables {
-    /**
-     * Every table the server listed — including a next-party seat ("12 #2",
-     * client item 6) unless the hook was asked for `roomOnly`.
-     */
     tables: Table[];
     /** Keyed by LOWERCASED table name, the way every caller looks a table up. */
     occupancyByName: Record<string, TableOccupancy>;
@@ -79,12 +73,6 @@ export interface FloorTables {
     serverZonesRef: RefObject<string[] | null>;
     setTables: Dispatch<SetStateAction<Table[]>>;
     reload: () => Promise<void>;
-    /**
-     * The LIGHT re-read (client items 1-2, src/lib/floor-refresh.ts): one
-     * /get-tables read, and `reload` only when it differs from the read the last
-     * reload painted. What a poll or a realtime event calls; coalesced.
-     */
-    refresh: () => Promise<void>;
     reloadZones: () => Promise<void>;
 }
 
@@ -94,14 +82,8 @@ export interface FloorTables {
  *   screen needs it too, but only to WARN before it destroys an occupied table.
  *   Kept as a switch anyway so a future read-only consumer can skip N status
  *   calls it would never draw.
- * @param roomOnly  the LAYOUT screen's view: a next-party seat is a second name
- *   for a table already in the room, opened when its bill printed and retired
- *   minutes later, so the floor-plan editor never lists, drags or deletes it.
  */
-export function useFloorTables(
-    session: FloorSession | null | undefined,
-    { withOccupancy = true, roomOnly = false }: { withOccupancy?: boolean; roomOnly?: boolean } = {},
-): FloorTables {
+export function useFloorTables(session: FloorSession | null | undefined, { withOccupancy = true } = {}): FloorTables {
     const restaurantId = session?.restaurantUsername;
     const outletId = session?.outlet_id;
     /*
@@ -122,9 +104,6 @@ export function useFloorTables(
     const layoutRef = useRef<TableLayout>({ sections: [] });
     const [serverZones, setServerZones] = useState<string[] | null>(null);
     const serverZonesRef = useRef<string[] | null>(null);
-    // The /get-tables read the last reload painted, as floorSignature — what
-    // `refresh` compares a fresh read against.
-    const paintedReadRef = useRef<string>("");
 
     const commitLayout = useCallback((next: TableLayout) => {
         layoutRef.current = next;
@@ -150,14 +129,9 @@ export function useFloorTables(
     // decides which zones exist, the column decides which zone each table is in,
     // and the stored layout only decides the order. Deleted tables drop out; new
     // ones land under whatever their row says.
-    // THE REMEMBERED ARRANGEMENT IS THE ROOM'S. It is shared with the floor-plan
-    // screen and kept in storage, so a next-party seat must never enter it: the
-    // Tables screen would append "12 #2" to a zone and the floor plan would drop
-    // it again on every visit. Seats are placed beside their table at render
-    // time instead (withNextPartySeats).
     useEffect(() => {
         if (!restaurantId || tables.length === 0) { return; }
-        const reconciled = applyServerSections(layoutRef.current, roomTables(tables), serverZones);
+        const reconciled = applyServerSections(layoutRef.current, tables, serverZones);
         if (JSON.stringify(reconciled) === JSON.stringify(layoutRef.current)) { return; }
         commitLayout(reconciled);
     }, [tables, serverZones, restaurantId, commitLayout]);
@@ -202,7 +176,6 @@ export function useFloorTables(
 
         try {
             const data = await getTables(restaurantId);
-            paintedReadRef.current = floorSignature(data);
             /*
               `getTables` maps the row down to the fields the rest of the app uses
               and drops `section`, so the raw row is read once more purely for the
@@ -298,26 +271,25 @@ export function useFloorTables(
         }
     }, [restaurantId, withOccupancy, reloadZones, commitZones]);
 
-    // Loaded once here; each screen then reloads after its own writes. (A
-    // `tables:changed` DOM event used to be listened for too, but it was only
-    // ever dispatched from db.ts — a "use server" module, where `window` does not
-    // exist — so it never arrived. The Tables screen polls and follows the
-    // realtime events through `refresh` instead.)
     useEffect(() => {
         if (!restaurantId) { return; }
         reload().catch((error: unknown) => { console.error("Failed to load tables", error); });
+
+        // Both screens, plus the orders page, broadcast this after a write, so a
+        // table occupied on one tab redraws on the other without a poll.
+        const handler = (): void => {
+            reload().catch((err: unknown) => { console.error("tables:changed handler failed", err); });
+        };
+        if (typeof window !== "undefined") {
+            window.addEventListener("tables:changed", handler);
+        }
+        return () => {
+            if (typeof window !== "undefined") { window.removeEventListener("tables:changed", handler); }
+        };
     }, [restaurantId, reload]);
 
-    const refresh = useMemo(() => coalesceReloads(async () => {
-        if (!restaurantId) { return; }
-        await whenFloorChanged(() => getTables(restaurantId), () => paintedReadRef.current, reload);
-    }), [restaurantId, reload]);
-
-    // One array per load, not per render: both screens key memos and effects on it.
-    const shownTables = useMemo(() => (roomOnly ? roomTables(tables) : tables), [roomOnly, tables]);
-
     return {
-        tables: shownTables,
+        tables,
         occupancyByName,
         combinedByName,
         serverZones,
@@ -328,7 +300,6 @@ export function useFloorTables(
         serverZonesRef,
         setTables,
         reload,
-        refresh,
         reloadZones,
     };
 }

@@ -26,12 +26,9 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Separator } from "@/components/ui/separator"
-import { billItemLabel } from "@/lib/bill-escpos"
 import { formatRoundOff, roundOffOf } from "@/lib/bill-round-off"
 import { getMisBillDetail, getMisKotDetail, type ClosedBillDetail, type MisOrderDetail } from "@/lib/db"
-import { GROSS, ITEM_TOTAL, NET } from "@/lib/gross-net"
 import { formatMoney } from "@/lib/mis-reports"
-import { NC_SETTLE_LABEL, isNcSettleMethod } from "@/lib/nc-settle"
 import { formatFullDateTime } from "@/lib/tz"
 
 export interface DrillRequest {
@@ -131,25 +128,10 @@ export function DrillDownDialog({ request, onClose, restaurantId, outletId, time
                             <Field label="Table" value={bill.table_name ?? "—"} />
                             <Field label="Covers" value={bill.covers ?? "—"} />
                             <Field label="Settled" value={when(bill.settled_at ?? bill.closed_at)} />
-                            {/* The NC marker is not a mode, and has one name on every
-                                screen — the closed-bill panel's and the app's. */}
-                            <Field label="Payment" value={isNcSettleMethod(bill.payment_method) ? NC_SETTLE_LABEL : (bill.payment_method ?? "—")} />
+                            <Field label="Payment" value={bill.payment_method ?? "—"} />
                             <Field label="Waiter / closed by" value={bill.closed_by ?? "—"} />
                             <Field label="Customer" value={bill.customer ?? "—"} />
                             {"customer_gstin" in bill ? <Field label="Customer GSTIN" value={bill.customer_gstin?.trim() ? bill.customer_gstin.trim() : "—"} /> : null}
-                            {/* Client item 7 — read-only here, like everything on a
-                                control report's drill-down; only when the server
-                                sends the field. */}
-                            {"customer_address" in bill ? (
-                                <div className="col-span-2 sm:col-span-4">
-                                    <Field
-                                        label="Customer address"
-                                        value={bill.customer_address?.trim()
-                                            ? <span className="block whitespace-pre-line break-words">{bill.customer_address.trim()}</span>
-                                            : "—"}
-                                    />
-                                </div>
-                            ) : null}
                             <Field label="Seated" value={when(bill.seated_at)} />
                             <Field label="Opened" value={when(bill.created_at)} />
                         </div>
@@ -176,12 +158,10 @@ export function DrillDownDialog({ request, onClose, restaurantId, outletId, time
                                 Items ({bill.items.length})
                             </div>
                             <div className="rounded-md border">
-                                {/* A comped line reads "<dish> (NC)" beside its 0.00, as the bill
-                                    printed it — a bare 0.00 says nothing about why. */}
                                 {bill.items.map((item, i) => (
                                     <div key={`${item.name}-${String(i)}`} className="flex items-baseline justify-between gap-4 border-b px-3 py-1.5 text-sm last:border-b-0">
                                         <span className="min-w-0">
-                                            <span className="text-muted-foreground">{item.quantity} ×</span> {billItemLabel(item.name, item.nc)}
+                                            <span className="text-muted-foreground">{item.quantity} ×</span> {item.name}
                                             {item.note ? <span className="ml-1 text-xs text-muted-foreground">({item.note})</span> : null}
                                         </span>
                                         <span className="shrink-0 font-mono tabular-nums">{money(item.line_total)}</span>
@@ -195,23 +175,16 @@ export function DrillDownDialog({ request, onClose, restaurantId, outletId, time
 
                         {/* The ladder, in the same order and with the same names the
                             reports use. Two screens naming the same figure two
-                            different things is how an owner stops trusting both —
-                            which is why the top rung is "Item total", not "gross":
-                            Gross is the bill's grand total, at the bottom. The row
-                            this dialog opens from prints that same figure under
-                            "Gross", so the bottom rung says Gross too — never the
-                            receipt's "Grand total". The app's drill-down (the
-                            reportWords body in modules.dart) says the same three
-                            words. */}
+                            different things is how an owner stops trusting both. */}
                         <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm">
-                            <Line label={ITEM_TOTAL} value={money(bill.items_subtotal)} />
+                            <Line label="Items subtotal (gross)" value={money(bill.items_subtotal)} />
                             {bill.discount_amount ? (
                                 <Line
                                     label={`Discount${bill.discount_type === "percent" ? ` (${String(bill.discount_value)}%)` : ""}${bill.coupon_code ? ` · ${bill.coupon_code}` : ""}`}
                                     value={`− ${money(bill.discount_amount)}`}
                                 />
                             ) : null}
-                            <Line label={NET} value={money(bill.taxable_base)} />
+                            <Line label="Net" value={money(bill.taxable_base)} />
                             {bill.service_charge ? (
                                 <Line label={`Service charge${bill.service_charge_percent ? ` (${String(bill.service_charge_percent)}%)` : ""}`} value={money(bill.service_charge)} />
                             ) : null}
@@ -225,7 +198,7 @@ export function DrillDownDialog({ request, onClose, restaurantId, outletId, time
                                 <Line label="Round off" value={formatRoundOff(roundOffOf(bill)!, money)} />
                             ) : null}
                             <Separator className="my-1.5" />
-                            <Line label={GROSS} value={money(bill.grand_total)} strong />
+                            <Line label="Grand total" value={money(bill.grand_total)} strong />
                             {bill.refunded && (
                                 <div className="mt-2 rounded border border-destructive/40 bg-destructive/5 px-2 py-1.5 text-xs">
                                     <div className="flex items-baseline justify-between gap-4 font-medium text-destructive">
@@ -275,12 +248,10 @@ export function DrillDownDialog({ request, onClose, restaurantId, outletId, time
                                 <span className="font-mono text-sm tabular-nums">{money(kot.value)}</span>
                             </div>
                             <div className="rounded-md border">
-                                {/* Marked, never re-priced: a ticket's value is what was cooked
-                                    (or voided), so a comped dish keeps its figure here. */}
                                 {kot.items.map((item, i) => (
                                     <div key={`${item.name}-${String(i)}`} className="flex items-baseline justify-between gap-4 border-b px-3 py-1.5 text-sm last:border-b-0">
                                         <span className="min-w-0">
-                                            <span className="text-muted-foreground">{item.quantity} ×</span> {billItemLabel(item.name, item.nc)}
+                                            <span className="text-muted-foreground">{item.quantity} ×</span> {item.name}
                                             {item.station ? <Badge variant="secondary" className="ml-1.5 text-[10px]">{item.station}</Badge> : null}
                                             {item.note ? <span className="ml-1 text-xs text-muted-foreground">({item.note})</span> : null}
                                         </span>

@@ -21,17 +21,9 @@
 //    dashboard is in, so Reports opens showing what the user already thinks
 //    they are looking at.
 //  * COLUMNS persist per user per report; SORT and PAGING are per visit.
-//  * THE SESSION (Lunch, Dinner, custom times) sits beside the date range and is
-//    kept exactly like it — for the session, and on the URL — because it is half
-//    of the same question: which hours of which days. See `time-slot-picker.tsx`.
-//  * EMAIL (client item 9) lives here too: an Email button beside Export sends
-//    the report on screen for the days on screen (`email-dialog.tsx`), and the
-//    "Email reports" view (`?view=email`, `email-reports.tsx`) holds the address
-//    book, the schedules and the delivery history. Same permission as every
-//    report on this page, so a waiter never reaches either.
 //
-// EVERY NUMBER ON THIS SCREEN IS THE SERVER'S. The money ladder — Item total →
-// Discount → Net → Service Charge → Tax → Round Off → Gross — is pinned
+// EVERY NUMBER ON THIS SCREEN IS THE SERVER'S. The money ladder — Gross →
+// Discount → Net → Tax → Service Charge → Round Off → Grand Total — is pinned
 // once in the backend's `mis_report_math.ts` and all fifteen reports derive from
 // it there. Nothing here re-derives, re-rounds or cross-foots a figure. The only
 // arithmetic in this file counts rows.
@@ -47,9 +39,10 @@ import {
     Info,
     Layers,
     Loader2,
-    Mail,
     Printer,
+    Search,
     Store,
+    X,
 } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
@@ -62,14 +55,14 @@ import {
     DropdownMenuSeparator,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { SearchInput } from "@/components/ui/search-input"
+import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { DateRangePicker } from "@/components/date-range-picker"
 import { useAuth } from "@/context/AuthContext"
 import { useCurrency } from "@/hooks/use-currency"
 import { useDateRange } from "@/hooks/use-date-range"
 import { useToast } from "@/hooks/use-toast"
-import { getMisCatalogue, getMisReport, getOutlets, getReportTimeSlots, saveReportTimeSlots, type MisQuery, type OutletRow } from "@/lib/db"
+import { getMisCatalogue, getMisReport, getOutlets, type MisQuery, type OutletRow } from "@/lib/db"
 import {
     CLOCK_LABELS,
     MIS_REPORTS,
@@ -93,22 +86,6 @@ import {
     type SortState,
 } from "@/lib/mis-reports"
 import { ALL_OUTLETS, getSelectedOutletId } from "@/lib/outlet"
-import {
-    ALL_DAY,
-    clampNotices,
-    loadSlotSelection,
-    reconcileSlotSelection,
-    saveSlotSelection,
-    slotQuery,
-    slotDefinitionKey,
-    slotSelectionFromParams,
-    timeSlotPhrase,
-    timeWiseOptions,
-    withSlotParams,
-    type MisBucket,
-    type ReportTimeSlots,
-    type TimeSlotSelection,
-} from "@/lib/report-time-slots"
 import { formatFullDateTime, timezoneCaption } from "@/lib/tz"
 import { cn } from "@/lib/utils"
 
@@ -117,10 +94,6 @@ import { ContextPanel } from "./context-panels"
 import { DrillDownDialog, type DrillRequest } from "./drill-down"
 import { ReportTable } from "./report-table"
 import { runExport, exportSummary, type ExportContext, type ExportFormat } from "./export"
-import { TimeSlotPicker } from "./time-slot-picker"
-import { EmailReportDialog } from "./email-dialog"
-import { EmailReportsPanel } from "./email-reports"
-import { EMAIL_AREA_TITLE, EMAIL_BUTTON_LABEL, EMAIL_BUTTON_TOOLTIP } from "@/lib/report-email"
 
 /** Server's own ceiling (MIS_MAX_PAGE). Asking for more just gets clamped. */
 const MAX_PAGE_SIZE = 500
@@ -137,35 +110,6 @@ function ReportsInner() {
     const userKey = user?.employeeId ?? user?.restaurantUsername ?? "anon"
 
     const { range, setRange, query, timezone } = useDateRange("reports", { params })
-
-    // --- Which view: the reports, or Email reports ----------------------------
-    // On the URL like the session, so a link (and the bell's "Open Reports →
-    // Email reports") reopens the right one.
-    const [view, setView] = useState<"report" | "email">(() => (params?.get("view") === "email" ? "email" : "report"))
-    const [emailOpen, setEmailOpen] = useState(false)
-    // A bell tapped while this page is already open pushes `?view=email` onto
-    // the same route; the page stays mounted, so follow the URL here too.
-    const viewParam = params?.get("view")
-    useEffect(() => { if (viewParam === "email") {setView("email")} }, [viewParam])
-    const chooseView = useCallback((next: "report" | "email") => {
-        setView(next)
-        if (typeof window !== "undefined") {
-            const qs = new URLSearchParams(window.location.search)
-            if (next === "email") {qs.set("view", "email")} else {qs.delete("view")}
-            const search = qs.toString()
-            window.history.replaceState(window.history.state, "", `${window.location.pathname}${search ? `?${search}` : ""}${window.location.hash}`)
-        }
-    }, [])
-
-    // --- Which part of the day ------------------------------------------------
-    // Seeded like the range: the URL first (a link to "Dinner, 1–15 Aug" opens on
-    // Dinner), then this session's choice, then all day. It is only SENT once the
-    // presets route has answered: a remembered "Lunch" against a server that
-    // cannot slice would be a filter the toolbar claims and the numbers ignore,
-    // so until then the picker is absent and the report is the whole day.
-    const [slotSel, setSlotSel] = useState<TimeSlotSelection>(() => slotSelectionFromParams(params) ?? loadSlotSelection("reports"))
-    const [slotCatalogue, setSlotCatalogue] = useState<ReportTimeSlots | null>(null)
-    const [slotsSettled, setSlotsSettled] = useState(false)
 
     // --- Which report ---------------------------------------------------------
     // Seeded from `?report=` so a link to "the Void KOT report" opens on it.
@@ -187,7 +131,7 @@ function ReportsInner() {
 
     const [searchInput, setSearchInput] = useState("")
     const [search, setSearch] = useState("")
-    const [bucket, setBucket] = useState<MisBucket>("day")
+    const [bucket, setBucket] = useState<"day" | "hour">("day")
     const [limit, setLimit] = useState(100)
     const [offset, setOffset] = useState(0)
     const [sort, setSort] = useState<SortState | null>(null)
@@ -247,55 +191,16 @@ function ReportsInner() {
         return () => { active = false }
     }, [rid, canSwitchOutlet])
 
+    // Debounced search: a control report is an expensive query, and firing one
+    // per keystroke on "Bill No. 10423" is nine wasted round trips.
     useEffect(() => {
-        if (!rid) {return}
-        let active = true
-        void getReportTimeSlots(rid)
-            .then((cat) => {
-                if (!active) {return}
-                setSlotCatalogue(cat)
-                // A remembered session the restaurant has since deleted is not a
-                // filter any more — say "All day" rather than send a dead id.
-                if (cat) {setSlotSel((sel) => reconcileSlotSelection(sel, cat.slots))}
-            })
-            .catch(() => { if (active) {setSlotCatalogue(null)} })
-            .finally(() => { if (active) {setSlotsSettled(true)} })
-        return () => { active = false }
-    }, [rid])
-
-    const chooseSlot = useCallback((next: TimeSlotSelection) => {
-        setSlotSel(next)
-        saveSlotSelection("reports", next)
-        // On the address bar too, so the link an owner copies reopens Dinner.
-        // replaceState, not a navigation: nothing on this page re-reads the URL
-        // after its first paint, and a history entry per click would make Back useless.
-        if (typeof window !== "undefined") {
-            const nextSearch = withSlotParams(window.location.search, next)
-            window.history.replaceState(window.history.state, "", `${window.location.pathname}${nextSearch}${window.location.hash}`)
-        }
-    }, [])
-
-    const onSlotsSaved = useCallback((next: ReportTimeSlots) => {
-        setSlotCatalogue(next)
-        chooseSlot(reconcileSlotSelection(slotSel, next.slots))
-    }, [chooseSlot, slotSel])
+        const t = setTimeout(() => { setSearch(searchInput.trim()) }, 350)
+        return () => { clearTimeout(t) }
+    }, [searchInput])
 
     // Any change to WHAT is being asked returns to the first page. Staying on
     // page 7 of a new question shows an empty grid that looks like no data.
-    const effectiveSlot = slotCatalogue ? slotSel : ALL_DAY
-    // The two newer segments exist only where the presets route does; a bucket
-    // the server cannot answer is sent as the day-wise table it would return.
-    const bucketOptions = timeWiseOptions(slotCatalogue !== null)
-    const effectiveBucket: MisBucket = bucketOptions.some((b) => b.value === bucket) ? bucket : "day"
-    // The cut actually SENT — only the time-wise report takes one. Named once, so
-    // the request and the key below can never be built from two different cuts.
-    const sentBucket = def?.timeWise ? effectiveBucket : undefined
-    // The pick AND what stands behind it: editing Lunch's hours or name is a new
-    // question under the same `slot=lunch`, and on "By session" saving ANY preset
-    // is one — All day picked included, since those rows are the presets. Either
-    // must refetch (and return to page one) although the URL has not changed.
-    const slotDefKey = slotDefinitionKey(effectiveSlot, slotCatalogue?.slots ?? [], sentBucket)
-    useEffect(() => { setOffset(0) }, [activeKey, search, outletId, bucket, limit, range.from, range.to, slotDefKey])
+    useEffect(() => { setOffset(0) }, [activeKey, search, outletId, bucket, limit, range.from, range.to])
     // Switching tabs drops the previous report's payload rather than leaving it
     // on screen under the new report's heading. The two do not share a column
     // set, so the old rows would render as a grid of blanks beneath the new
@@ -339,25 +244,17 @@ function ReportsInner() {
     const resetColumns = useCallback(() => { setHiddenPersisted(defaultHidden(columns)) }, [columns, setHiddenPersisted])
 
     // --- The query and the fetch ---------------------------------------------
-    // `sentBucket` is settled above, beside the slot key it feeds.
-    const slotParams = slotQuery(effectiveSlot)
     const baseQuery = useMemo<MisQuery>(() => ({
         from: query.from,
         to: query.to,
         days: query.days,
         outletId,
         search: search || undefined,
-        bucket: sentBucket,
-        slot: slotParams.slot,
-        timeFrom: slotParams.timeFrom,
-        timeTo: slotParams.timeTo,
-    }), [query.from, query.to, query.days, outletId, search, sentBucket, slotParams.slot, slotParams.timeFrom, slotParams.timeTo])
+        bucket: def?.timeWise ? bucket : undefined,
+    }), [query.from, query.to, query.days, outletId, search, def?.timeWise, bucket])
 
-    // A remembered slot waits for the presets to answer, so the first request is
-    // the question the reader asked rather than an all-day one thrown away.
-    const waitForSlots = !slotsSettled && slotSel.kind !== "all"
     useEffect(() => {
-        if (!rid || !def || waitForSlots) {return}
+        if (!rid || !def) {return}
         let active = true
         setLoading(true)
         void getMisReport(rid, def.path, { ...baseQuery, ...(def.paged ? { limit, offset } : {}) })
@@ -369,7 +266,7 @@ function ReportsInner() {
             .catch(() => { if (active) { setPayload(null); setFailed(true) } })
             .finally(() => { if (active) {setLoading(false)} })
         return () => { active = false }
-    }, [rid, def, baseQuery, limit, offset, waitForSlots, slotDefKey])
+    }, [rid, def, baseQuery, limit, offset])
 
     // --- What the grid is showing --------------------------------------------
     const rawRows = useMemo(() => (payload && def ? rowsOf(payload, def) : []), [payload, def])
@@ -412,7 +309,7 @@ function ReportsInner() {
         setExporting(format)
         try {
             const exportRows = await collectRows()
-            const matrix = buildExportMatrix(shownColumns, exportRows, totals, totalsLabelFor(page, exportRows.length), formatOpts.timezone)
+            const matrix = buildExportMatrix(shownColumns, exportRows, totals, totalsLabelFor(page, exportRows.length))
             const ctx: ExportContext = {
                 matrix, meta, def, format: formatOpts, search,
                 sortLabel, wholeRange: !def.paged || exportRows.length >= (page?.total ?? exportRows.length),
@@ -436,10 +333,6 @@ function ReportsInner() {
     const outletLabel = meta?.outlet_scope === "all"
         ? "All outlets (combined)"
         : (meta?.outlet_name ?? "This outlet")
-    // What the SERVER cut on — never the picker's value — so a slot it declined
-    // is not claimed in the chip or the caption.
-    const slotPhrase = meta?.time_slot ? timeSlotPhrase(meta.time_slot) : null
-    const clamp = clampNotices(meta?.window.clamped)
 
     return (
         <div className="flex flex-col gap-4">
@@ -452,27 +345,7 @@ function ReportsInner() {
                     <p className="text-xs text-muted-foreground">
                         Control &amp; MIS documents · all dates on the restaurant&apos;s calendar · {timezoneCaption(timezone)}
                     </p>
-                    <div className="mt-2 flex w-max items-center gap-1 rounded-lg border bg-muted/40 p-1" role="tablist" aria-label="Reports or email">
-                        {([["report", "Reports"], ["email", EMAIL_AREA_TITLE]] as const).map(([value, label]) => (
-                            <button
-                                key={value}
-                                type="button"
-                                role="tab"
-                                aria-selected={view === value}
-                                onClick={() => { chooseView(value) }}
-                                className={cn(
-                                    "inline-flex items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1 text-sm transition-colors",
-                                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                                    view === value ? "bg-background font-semibold text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
-                                )}
-                            >
-                                {value === "email" && <Mail className="h-3.5 w-3.5" />}
-                                {label}
-                            </button>
-                        ))}
-                    </div>
                 </div>
-                {view === "report" && (
                 <div className="flex flex-wrap items-center gap-2">
                     {canSwitchOutlet && outlets.length > 1 ? (
                         <Select
@@ -500,26 +373,8 @@ function ReportsInner() {
                         </Badge>
                     )}
                     <DateRangePicker value={range} onChange={setRange} timezone={timezone} disabled={!rid} />
-                    {slotCatalogue && (
-                        <TimeSlotPicker
-                            value={slotSel}
-                            slots={slotCatalogue.slots}
-                            canEdit={slotCatalogue.can_edit}
-                            onChange={chooseSlot}
-                            onSave={(drafts) => saveReportTimeSlots(rid, drafts)}
-                            onSaved={onSlotsSaved}
-                            disabled={!rid}
-                        />
-                    )}
                 </div>
-                )}
             </div>
-
-            {view === "email" ? (
-                rid
-                    ? <EmailReportsPanel rid={rid} timezone={timezone} />
-                    : <p className="text-sm text-muted-foreground">No restaurant on this session.</p>
-            ) : (<>
 
             {/* The tab strip. Fifteen reports, scrollable rather than wrapped, so
                 the strip stays one line and the grid below never shifts down as
@@ -567,42 +422,50 @@ function ReportsInner() {
                     title={CLOCK_LABELS[def.clock].long}
                 >
                     <CalendarClock className="mr-1 h-3 w-3" />
-                    Dated {CLOCK_LABELS[def.clock].short}{slotPhrase ? ` · ${slotPhrase}` : ""}
+                    Dated {CLOCK_LABELS[def.clock].short}
                 </Badge>
             </div>
 
             {/* Toolbar: search, time-wise, columns, export. */}
             <div className="flex flex-wrap items-center gap-2">
-                {/* Debounced: a control report is an expensive query, and firing
-                    one per keystroke on "Bill No. 10423" is nine wasted round
-                    trips. Emptying the box asks again at once. */}
-                <SearchInput
-                    value={searchInput}
-                    onValueChange={setSearchInput}
-                    onQueryChange={setSearch}
-                    debounceMs={350}
-                    placeholder="Bill No., KOT, table, mode…"
-                    className="h-9 w-[230px]"
-                    aria-label="Search this report by bill number, KOT, table or payment mode"
-                />
+                <div className="relative">
+                    <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                        value={searchInput}
+                        onChange={(e) => { setSearchInput(e.target.value) }}
+                        placeholder="Bill No., KOT, table, mode…"
+                        className="h-9 w-[230px] pl-8 pr-8"
+                        aria-label="Search this report by bill number, KOT, table or payment mode"
+                    />
+                    {searchInput && (
+                        <button
+                            type="button"
+                            onClick={() => { setSearchInput("") }}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                            aria-label="Clear search"
+                        >
+                            <X className="h-3.5 w-3.5" />
+                        </button>
+                    )}
+                </div>
 
                 {/* Time-wise. Rendered ONLY on the report it changes: a toggle that
                     is present but inert on fourteen of fifteen tabs teaches the user that
                     the controls here do not do anything. */}
                 {def.timeWise && (
-                    <div className="flex min-h-9 max-w-full flex-wrap items-center gap-0.5 rounded-md border bg-muted/40 p-0.5">
+                    <div className="flex h-9 items-center gap-0.5 rounded-md border bg-muted/40 p-0.5">
                         <CalendarClock className="mx-1.5 h-3.5 w-3.5 text-muted-foreground" />
-                        {bucketOptions.map((b) => (
+                        {(["day", "hour"] as const).map((b) => (
                             <button
-                                key={b.value}
+                                key={b}
                                 type="button"
-                                onClick={() => { setBucket(b.value) }}
+                                onClick={() => { setBucket(b) }}
                                 className={cn(
-                                    "whitespace-nowrap rounded px-2.5 py-1 text-xs transition-colors",
-                                    effectiveBucket === b.value ? "bg-background font-semibold shadow-sm" : "text-muted-foreground hover:text-foreground",
+                                    "rounded px-2.5 py-1 text-xs capitalize transition-colors",
+                                    bucket === b ? "bg-background font-semibold shadow-sm" : "text-muted-foreground hover:text-foreground",
                                 )}
                             >
-                                {b.label}
+                                {b === "day" ? "Day-wise" : "Hour-wise"}
                             </button>
                         ))}
                     </div>
@@ -646,27 +509,10 @@ function ReportsInner() {
                     </DropdownMenuContent>
                 </DropdownMenu>
 
-                {/* Email: the server builds and sends the files, for whole days —
-                    so it waits for a restaurant, not for rows on screen. */}
-                <Button
-                    variant="outline" size="sm" className="h-9"
-                    disabled={!rid}
-                    title={EMAIL_BUTTON_TOOLTIP}
-                    aria-label={EMAIL_BUTTON_TOOLTIP}
-                    onClick={() => { setEmailOpen(true) }}
-                >
-                    <Mail className="mr-1.5 h-4 w-4" /> {EMAIL_BUTTON_LABEL}
-                </Button>
-
                 <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
-                    {meta && clamp.range && (
+                    {meta?.window.clamped && (
                         <Badge variant="outline" className="border-amber-500/50 text-amber-600 dark:text-amber-400">
                             Range shortened to {meta.window.from} – {meta.window.to}
-                        </Badge>
-                    )}
-                    {clamp.slot && (
-                        <Badge variant="outline" className="border-amber-500/50 text-amber-600 dark:text-amber-400">
-                            {clamp.slot}
                         </Badge>
                     )}
                     {def.paged && page ? <span>{pageCaption(page, rows.length)}</span> : <span>{rows.length} row{rows.length === 1 ? "" : "s"}</span>}
@@ -700,7 +546,7 @@ function ReportsInner() {
                 <div className="flex items-center gap-3">
                     {meta && (
                         <span title={`Built at ${formatFullDateTime(meta.generated_at, meta.timezone)}`}>
-                            {meta.window.from} → {meta.window.to}{slotPhrase ? ` · ${slotPhrase}` : ""} · {outletLabel}
+                            {meta.window.from} → {meta.window.to} · {outletLabel}
                         </span>
                     )}
                     {meta?.notes.length ? (
@@ -764,21 +610,6 @@ function ReportsInner() {
                 timezone={timezone}
                 currencySymbol={currencySymbol}
             />
-
-            <EmailReportDialog
-                open={emailOpen}
-                onOpenChange={setEmailOpen}
-                rid={rid}
-                reportKey={def.key}
-                from={query.from}
-                to={query.to}
-                slotPhrase={slotPhrase}
-                outletId={outletId}
-                fallbackOutletId={outlets.find((o) => o.is_active)?.id ?? outlets[0]?.id}
-                outletLabel={outletLabel}
-                onOpenArea={() => { chooseView("email") }}
-            />
-            </>)}
         </div>
     )
 }

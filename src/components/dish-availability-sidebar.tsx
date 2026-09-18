@@ -35,9 +35,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
 import { Button } from "@/components/ui/button"
-import { SearchInput } from "@/components/ui/search-input"
+import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
-import { CircleSlash, UtensilsCrossed } from "lucide-react"
+import { CircleSlash, Search, UtensilsCrossed } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { getMenuItems, setMenuItemAvailability } from "@/lib/db"
 import type { MenuItem } from "@/app/dashboard/menu/data"
@@ -116,7 +116,10 @@ export function DishAvailabilitySidebar({ rid }: { rid: string }) {
           <span className="hidden sm:inline">Dish availability</span>
           {/* The count is the reason to open it: "3 off" is a standing reminder
               to put them back, and it is visible without opening anything. */}
-          {offCount > 0 && <Badge variant="destructive" className="ml-1">{offCount} off</Badge>}
+          {/* On a phone the badge shows the number alone — " off" is still there
+              for a screen reader — because those 25px are what keeps the header's
+              icon buttons at full size on a 360px screen. */}
+          {offCount > 0 && <Badge variant="destructive" className="ml-1">{offCount}<span className="sr-only sm:not-sr-only">&nbsp;off</span></Badge>}
         </Button>
       </SheetTrigger>
       <SheetContent side="right" className="flex w-full flex-col sm:max-w-md">
@@ -127,14 +130,16 @@ export function DishAvailabilitySidebar({ rid }: { rid: string }) {
           </SheetDescription>
         </SheetHeader>
 
-        <SearchInput
-          wrapperClassName="mt-4"
-          placeholder="Search dishes…"
-          aria-label="Search dishes"
-          value={query}
-          onValueChange={setQuery}
-          autoFocus
-        />
+        <div className="relative mt-4">
+          <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+          <Input
+            className="pl-8"
+            placeholder="Search dishes…"
+            value={query}
+            onChange={(e) => { setQuery(e.target.value) }}
+            autoFocus
+          />
+        </div>
 
         <div className="mt-3 flex-1 overflow-y-auto pr-1">
           {loading && items.length === 0 ? (

@@ -36,7 +36,6 @@ import type { RestaurantProfile} from "@/lib/db";
 import { getRestaurantProfile, updateRestaurantProfile, getRequireTableOtp, setRequireTableOtp } from "@/lib/db"
 import { PERM_SETTINGS, hasPermission } from "@/lib/mis-capture"
 import { BillPrintSettingsCard } from "./bill-print-settings"
-import { KotPrintSettingsCard } from "./kot-print-settings"
 import { FeedbackValetCard } from "./feedback-valet-settings"
 import { BillingCountersCard } from "./billing-counters"
 import { PaymentMethodsCard } from "./payment-methods-settings"
@@ -431,18 +430,6 @@ export function SettingsForm() {
 
         {user?.restaurantUsername ? (
           <BillPrintSettingsCard restaurantId={user.restaurantUsername} isAdmin={hasRole("admin")} />
-        ) : null}
-
-        {/* Directly under the bill-print card because both answer "what comes
-            out of the printers" — and above the money cards because this one is
-            the recovery control somebody is hunting for while a kitchen printer
-            is producing blank tickets. Gated on the settings permission the
-            backend's POST requires, not on the admin role. */}
-        {user?.restaurantUsername ? (
-          <KotPrintSettingsCard
-            restaurantId={user.restaurantUsername}
-            canEdit={hasPermission(user.actions_set, PERM_SETTINGS)}
-          />
         ) : null}
 
         {/* How this restaurant takes money: the same list the owner app's

@@ -68,7 +68,7 @@ export default function Finale() {
         <div className="exp-solutions mt-2 -mr-[0.45em] text-[clamp(11px,1.3vw,17px)] font-medium italic tracking-[0.45em] text-ink">
           SOLUTIONS
         </div>
-        <p className="exp-final-sub mt-4 text-[18px] font-medium text-ink-2">
+        <p className="exp-final-sub mt-4 text-[18px] font-medium text-ink-2 max-sm:px-6 max-sm:text-center">
           CuisineFlow — the whole restaurant, one login.
         </p>
 

@@ -51,9 +51,6 @@ import { useTranslation } from '@/context/LanguageContext';
 import { useAuth } from '@/context/AuthContext';
 import { canEditDishAvailability, canOpenEmployeesPage, canOpenFloorPlan, isWaiterOnly as sessionIsWaiterOnly } from '@/lib/session-scope';
 import { DishAvailabilitySidebar } from '@/components/dish-availability-sidebar';
-// The nav's keyword table lives in lib so every link into a section (the
-// Overview's cards, the glance box) asks the same question this nav does.
-import { hasKeywordAction, sectionKeywords } from '@/lib/dashboard-sections';
 import { RealtimeProvider } from '@/context/RealtimeContext';
 import { TimezoneProvider } from '@/lib/use-timezone';
 import Dock, { type DockSectionData } from '@/components/ui/Dock';
@@ -63,6 +60,16 @@ import '@/components/ui/Dock.css';
 const inter = Inter({ subsets: ['latin'] });
 
 const normalizeActionName = (value: string) => value.trim().toLowerCase();
+
+const hasKeywordAction = (actionNames: Set<string>, keywords: string[]) => {
+  if (keywords.length === 0) {return true;}
+  for (const actionName of actionNames) {
+    if (keywords.some((keyword) => actionName.includes(keyword.toLowerCase()))) {
+      return true;
+    }
+  }
+  return false;
+};
 
 function LayoutContent({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -132,9 +139,9 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
     {
       title: 'Operations',
       items: [
-        { href: '/dashboard', label: t('dashboard'), icon: <Home className="h-6 w-6" />, exact: true, actionKeywords: sectionKeywords('/dashboard') },
-        { href: '/dashboard/orders', label: t('orders'), icon: <ListOrdered className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/orders') },
-        { href: '/dashboard/tables', label: t('tables'), icon: <Package className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/tables') },
+        { href: '/dashboard', label: t('dashboard'), icon: <Home className="h-6 w-6" />, exact: true, actionKeywords: [] },
+        { href: '/dashboard/orders', label: t('orders'), icon: <ListOrdered className="h-6 w-6" />, actionKeywords: ['order', 'bill', 'payment'] },
+        { href: '/dashboard/tables', label: t('tables'), icon: <Package className="h-6 w-6" />, actionKeywords: ['table'] },
         /*
           D5 — FLOOR PLAN IS ITS OWN DESTINATION, BESIDE TABLES AND NOT INSIDE IT.
           Tables is the SERVICE screen (occupy, covers, release, take orders);
@@ -146,69 +153,69 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
           by the permission its own route demands.
         */
         ...(canEditFloorPlan
-          ? [{ href: '/dashboard/floor-plan', label: 'Floor plan', icon: <LayoutGrid className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/floor-plan') }]
+          ? [{ href: '/dashboard/floor-plan', label: 'Floor plan', icon: <LayoutGrid className="h-6 w-6" />, actionKeywords: [] as string[] }]
           : []),
-        { href: '/dashboard/waitlist', label: 'Waitlist', icon: <Hourglass className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/waitlist') },
-        { href: '/dashboard/bookings', label: t('bookings'), icon: <ShoppingCart className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/bookings') },
-        { href: '/dashboard/menu', label: 'Menu', icon: <BookOpen className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/menu') },
+        { href: '/dashboard/waitlist', label: 'Waitlist', icon: <Hourglass className="h-6 w-6" />, actionKeywords: ['table', 'order', 'waitlist'] },
+        { href: '/dashboard/bookings', label: t('bookings'), icon: <ShoppingCart className="h-6 w-6" />, actionKeywords: ['booking'] },
+        { href: '/dashboard/menu', label: 'Menu', icon: <BookOpen className="h-6 w-6" />, actionKeywords: ['menu'] },
       ],
     },
     {
       title: 'Inventory',
       items: [
-        { href: '/dashboard/inventory', label: t('inventory'), icon: <ClipboardList className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/inventory') },
-        { href: '/dashboard/purchase-orders', label: 'Purchase orders', icon: <Truck className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/purchase-orders') },
+        { href: '/dashboard/inventory', label: t('inventory'), icon: <ClipboardList className="h-6 w-6" />, actionKeywords: ['inventory', 'stock'] },
+        { href: '/dashboard/purchase-orders', label: 'Purchase orders', icon: <Truck className="h-6 w-6" />, actionKeywords: ['inventory', 'stock', 'purchase', 'vendor'] },
       ],
     },
     {
       title: 'Guests',
       items: [
-        { href: '/dashboard/customers', label: t('customers'), icon: <Users className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/customers') },
-        { href: '/dashboard/feedback', label: 'Feedback', icon: <FileText className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/feedback') },
+        { href: '/dashboard/customers', label: t('customers'), icon: <Users className="h-6 w-6" />, actionKeywords: ['customer'] },
+        { href: '/dashboard/feedback', label: 'Feedback', icon: <FileText className="h-6 w-6" />, actionKeywords: ['feedback'] },
         ...(hasRole('admin')
-          ? [{ href: '/dashboard/coupons', label: 'Coupons', icon: <Ticket className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/coupons') }]
+          ? [{ href: '/dashboard/coupons', label: 'Coupons', icon: <Ticket className="h-6 w-6" />, actionKeywords: [] as string[] }]
           : []),
       ],
     },
     {
       title: 'Team',
       items: [
-        { href: '/dashboard/attendance', label: 'Attendance', icon: <Clock className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/attendance') },
+        { href: '/dashboard/attendance', label: 'Attendance', icon: <Clock className="h-6 w-6" />, actionKeywords: [] },
         ...(hasRole('admin')
-          ? [{ href: '/dashboard/valet', label: 'Valet Dashboard', icon: <Activity className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/valet') }]
+          ? [{ href: '/dashboard/valet', label: 'Valet Dashboard', icon: <Activity className="h-6 w-6" />, actionKeywords: ['valet', 'parking'] }]
           : []),
       ],
     },
     {
       title: 'Insights',
       items: [
-        { href: '/dashboard/analytics', label: t('analytics'), icon: <LineChart className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/analytics') },
+        { href: '/dashboard/analytics', label: t('analytics'), icon: <LineChart className="h-6 w-6" />, actionKeywords: ['analytics', 'apc', 'report'] },
         // Simulation is analytics-derived (same backend action gate), so it sits
         // beside Analytics and opens for exactly the same roles.
-        { href: '/dashboard/simulation', label: 'Simulation', icon: <SlidersHorizontal className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/simulation') },
-        { href: '/dashboard/history', label: 'History', icon: <History className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/history') },
+        { href: '/dashboard/simulation', label: 'Simulation', icon: <SlidersHorizontal className="h-6 w-6" />, actionKeywords: ['analytics', 'apc', 'report'] },
+        { href: '/dashboard/history', label: 'History', icon: <History className="h-6 w-6" />, actionKeywords: ['analytics', 'report'] },
         // The MIS / control report set (Item Wise, Void KOT, Bill Edit, …).
         // Gated on ACCOUNTING, not analytics: every /reports/mis/* route carries
         // the SAME ACCOUNTING_PERM as the rest of /reports/*, so keywording it
         // like its Insights neighbours would show the tab to a user whose every
         // request inside it comes back 403.
-        { href: '/dashboard/reports', label: 'Reports', icon: <FileSpreadsheet className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/reports') },
+        { href: '/dashboard/reports', label: 'Reports', icon: <FileSpreadsheet className="h-6 w-6" />, actionKeywords: ['report', 'accounting', 'finance'] },
       ],
     },
     {
       title: 'Money',
       items: [
-        { href: '/dashboard/accounting', label: 'Accounting', icon: <FileText className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/accounting') },
-        { href: '/dashboard/cash', label: 'Cash register', icon: <Wallet className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/cash') },
+        { href: '/dashboard/accounting', label: 'Accounting', icon: <FileText className="h-6 w-6" />, actionKeywords: ['report', 'accounting', 'finance'] },
+        { href: '/dashboard/cash', label: 'Cash register', icon: <Wallet className="h-6 w-6" />, actionKeywords: ['report', 'accounting', 'finance', 'cash'] },
         ...(hasRole('admin')
-          ? [{ href: '/dashboard/billing', label: 'Billing & plan', icon: <CreditCard className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/billing') }]
+          ? [{ href: '/dashboard/billing', label: 'Billing & plan', icon: <CreditCard className="h-6 w-6" />, actionKeywords: [] as string[] }]
           : []),
       ],
     },
     {
       title: 'Setup',
       items: [
-        { href: '/dashboard/outlets', label: 'Outlets', icon: <Globe className="h-6 w-6" />, actionKeywords: sectionKeywords('/dashboard/outlets') },
+        { href: '/dashboard/outlets', label: 'Outlets', icon: <Globe className="h-6 w-6" />, actionKeywords: ['outlet', 'branch', 'setting', 'profile'] },
       ],
     },
   ]
@@ -354,15 +361,47 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
          where the OS draws an overlay scrollbar and a permanent grey bar down
          the side of somebody's ordering screen would be a regression. */
       <div className={`dashboard-shell ${inter.className} flex min-h-screen w-full flex-col`}>
-        <header className="sticky top-0 flex h-14 items-center gap-4 border-b bg-background px-4 lg:h-[60px] lg:px-6 z-40">
-        <Link href={isValet ? "/dashboard/valet" : isWaiterOnly ? "/dashboard/orders" : "/dashboard"} className="flex items-center gap-2 font-semibold">
+        {/* THE HEADER ON A PHONE, MEASURED.
+            Logo + wordmark + outlet switcher (190px) + dish availability + five
+            40px icon buttons at `gap-4` is ~640px of controls. In a 375px
+            `nowrap` row flexbox "fitted" them by crushing every icon button to
+            24px wide — a touch target nobody can hit — and with the outlet
+            switcher present it still overflowed.
+
+            A 768px tablet is no better: the worst case (multi-outlet admin with
+            the labelled dish button and its "3 off" badge) needs ~880px, and
+            measured there the icon buttons came out 16px wide and the avatar 8px.
+
+            So BELOW `lg` (1024px) it is a three-column GRID — logo | space |
+            buttons — with tight gaps, the wordmark from 480px up only, the icon
+            buttons at their full 40px, and the outlet switcher explicitly on
+            row 2 (`col-span-full row-start-2`). That wrapper is `empty:hidden`,
+            so a single-outlet restaurant — where the switcher renders nothing
+            — keeps the one-row header.
+
+            A grid and not `flex-wrap`, because wrapping is decided by content:
+            with the "3 off" badge showing, the buttons were a few pixels too
+            wide for a 360px phone and dropped to a THIRD row, and everything
+            that sticks below the header (globals.css: --dash-header-h) was
+            then offset wrongly. In the grid the row count is fixed — one, or
+            two with the switcher — and on a very narrow phone the icon buttons
+            give up a few pixels each instead.
+
+            DOM order is unchanged (so is keyboard focus order), and from `lg`
+            up the header is `flex` again with exactly the old classes
+            (`lg:contents` dissolves the button group), so desktop is untouched. */}
+        <header className="dashboard-header sticky top-0 z-40 grid min-h-14 grid-cols-[auto_minmax(0,1fr)_minmax(0,auto)] items-center gap-x-1 gap-y-1 border-b bg-background px-3 py-2 sm:px-4 lg:flex lg:h-[60px] lg:gap-4 lg:px-6 lg:py-0">
+        <Link href={isValet ? "/dashboard/valet" : isWaiterOnly ? "/dashboard/orders" : "/dashboard"} className="flex shrink-0 items-center gap-2 font-semibold">
                 <Package className="h-6 w-6" />
-                <span>CuisineFlow</span>
+                <span className="hidden min-[480px]:inline">CuisineFlow</span>
             </Link>
           <div className="w-full flex-1">
             {/* Add nav items here */}
           </div>
-          <OutletSwitcher />
+          <div className="dashboard-outlet-slot col-span-full row-start-2 empty:hidden [&>button]:w-full sm:[&>button]:max-w-sm lg:[&>button]:w-[190px]">
+            <OutletSwitcher />
+          </div>
+          <div className="flex min-w-0 items-center justify-end gap-1 sm:gap-2 lg:contents">
           {/* Clicking one resolves its target server-side, then opens the exact
               record — or explains why it can't be opened from this outlet. */}
           {/* H4 — in the HEADER, so it opens over whatever the person was doing
@@ -454,6 +493,7 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          </div>
         </header>
         {/* NO `p-` SHORTHAND HERE, and that is not a style preference.
             `p-4 pb-20 lg:p-6` looks like "16px all round, 80px at the bottom,

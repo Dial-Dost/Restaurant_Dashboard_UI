@@ -107,8 +107,8 @@ export default function CashPage() {
 
   return (
     <div className="space-y-6 p-1">
-      <div className="flex items-center justify-between gap-3">
-        <div>
+      <div className="flex items-center justify-between gap-3 max-lg:flex-wrap">
+        <div className="max-lg:min-w-0 max-lg:flex-[1_1_16rem]">
           <h1 className="text-2xl font-bold tracking-tight">Cash register</h1>
           <p className="text-sm text-muted-foreground">Open a drawer with a float, then count down at end of shift to see the variance.</p>
           <p className="text-xs text-muted-foreground">All times in restaurant time · {timezoneCaption(timezone)}</p>
@@ -183,8 +183,8 @@ export default function CashPage() {
       )}
 
       <Card>
-        <CardHeader className="flex flex-row items-center justify-between gap-3">
-          <div>
+        <CardHeader className="flex flex-row items-center justify-between gap-3 max-lg:flex-wrap">
+          <div className="max-lg:min-w-0 max-lg:flex-[1_1_12rem]">
             <CardTitle>Past sessions</CardTitle>
             <CardDescription>
               Closed registers with their cash variance (Z-reports). <RangeNote range={range} timezone={timezone} />

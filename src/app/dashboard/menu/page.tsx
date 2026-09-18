@@ -26,7 +26,6 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { SearchInput } from "@/components/ui/search-input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -45,7 +44,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { PlusCircle, MoreVertical, Trash2, Utensils, GripVertical, Upload, ChefHat, X, Pencil, Flame } from "lucide-react";
+import { PlusCircle, MoreVertical, Trash2, Utensils, GripVertical, Upload, ChefHat, X, Pencil, Flame, Search } from "lucide-react";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -762,9 +761,9 @@ export default function MenuPage() {
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
         <div className="grid gap-4 md:gap-8">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between max-lg:flex-wrap max-lg:gap-2">
             <h1 className="text-lg font-semibold md:text-2xl">Menu Management</h1>
-            <div className="flex gap-2">
+            <div className="flex gap-2 max-lg:flex-wrap">
                                 <Label htmlFor="import-menu-file" className="sr-only">
                                     Import menu file
                                 </Label>
@@ -908,14 +907,26 @@ export default function MenuPage() {
             <CardDescription>
                 A list of all items on your menu, grouped by category. Drag items to re-categorize or re-order.
             </CardDescription>
-            <div className="pt-2">
-                <SearchInput
+            <div className="relative max-w-sm pt-2">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
                     value={menuSearch}
-                    onValueChange={setMenuSearch}
+                    onChange={(e) => { setMenuSearch(e.target.value); }}
                     placeholder="Search menu…"
                     aria-label="Search menu items"
-                    wrapperClassName="max-w-sm"
+                    className="pl-9 pr-9"
                 />
+                {isSearching && (
+                    <button
+                        type="button"
+                        aria-label="Clear menu search"
+                        title="Clear search"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground hover:text-foreground"
+                        onClick={() => { setMenuSearch(""); }}
+                    >
+                        <X className="h-4 w-4" />
+                    </button>
+                )}
             </div>
             {isSearching && (
                 <p className="text-sm text-muted-foreground">
@@ -1146,10 +1157,10 @@ function OrganiseByKitchenDialog({
                         Assign every dish to its kitchen section — each section has its own display in the kitchen.
                     </DialogDescription>
                 </DialogHeader>
-                <SearchInput
+                <Input
                     placeholder="Search items, categories or sections…"
                     value={search}
-                    onValueChange={setSearch}
+                    onChange={(e) => { setSearch(e.target.value); }}
                 />
                 <div className="max-h-[55vh] space-y-4 overflow-y-auto pr-1">
                     {groups.filter((g) => g.rows.length > 0 || !g.unmanaged).map((g) => (

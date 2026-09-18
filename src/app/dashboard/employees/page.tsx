@@ -681,7 +681,7 @@ function EmployeesPageInner() {
 
   return (
     <div className="grid gap-4 md:gap-8">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between max-lg:flex-wrap max-lg:gap-2">
         <h1 className="text-lg font-semibold md:text-2xl">Employee List</h1>
         {/* POST /restaurant/users carries its own permission; without it the
             dialog's Save button is the only thing that would tell you. */}
@@ -903,8 +903,8 @@ function EmployeesPageInner() {
 
       {canSeeRoles ? (
       <Card>
-        <CardHeader className="flex flex-row items-start justify-between gap-4">
-          <div>
+        <CardHeader className="flex flex-row items-start justify-between gap-4 max-lg:flex-wrap">
+          <div className="max-lg:min-w-0 max-lg:flex-[1_1_14rem]">
             <CardTitle>Role Access Control</CardTitle>
             <CardDescription>
               Create custom roles and configure detailed access for each area. Core roles (admin, employee, valet) are protected.

@@ -30,7 +30,6 @@ import {
   UNALLOCATED_METHOD, type SettlementBreakdown,
 } from "@/lib/settlement-breakdown"
 import type { RangeQuery } from "@/lib/date-range"
-import { AFTER_REFUNDS } from "@/lib/gross-net"
 
 /** The colours the bar uses, in the order the modes are ranked. */
 const BAR_TONES = [
@@ -108,7 +107,7 @@ export function SettlementBreakdownCard({ rid, range }: { rid: string; range: Ra
                 <th className="py-1 pr-3 text-right font-medium">Collected</th>
                 <th className="py-1 pr-3 text-right font-medium">Share</th>
                 <th className="py-1 pr-3 text-right font-medium">Bills</th>
-                <th className="py-1 text-right font-medium">{AFTER_REFUNDS}</th>
+                <th className="py-1 text-right font-medium">Net of refunds</th>
               </tr>
             </thead>
             <tbody>
@@ -165,9 +164,8 @@ export function SettlementBreakdownCard({ rid, range }: { rid: string; range: Ra
             </p>
           )}
           <p>
-            Collected is what was taken at the till; After refunds is what survived them, tax still
-            in. A refund has no method of its own, so it is charged back to the method(s) its bill was
-            paid with.
+            Collected is what was taken at the till; Net is what survived refunds. A refund has no
+            method of its own, so it is charged back to the method(s) its bill was paid with.
           </p>
         </div>
       </div>

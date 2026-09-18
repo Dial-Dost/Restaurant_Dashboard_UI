@@ -24,13 +24,11 @@ import {
 } from '@/components/ui/dialog';
 import { ArrowUpRight, Activity, CircleUser, CreditCard, DollarSign, ChevronRight } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
-import { showsMoney } from '@/lib/session-scope';
-import { canAccessByKeywords, canOpenDashboardSection, sectionKeywords } from '@/lib/dashboard-sections';
+import { isWaiterOnly as sessionIsWaiterOnly } from '@/lib/session-scope';
 import { getBookings, getCustomers, getTables, getMonthlyApcInsight } from '@/lib/db';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { cn } from '@/lib/utils';
-import { countRoomsInUse, tableOptionLabel } from '@/lib/next-party';
 import type { Booking } from './bookings/data';
 import type { Customer } from './customers/page';
 import type { Table as TableType } from './tables/data';
@@ -40,6 +38,18 @@ type ApcRange = 'day' | 'week' | 'month';
 
 // Which metric card's breakdown dialog is open (null = none).
 type DetailKey = 'revenue' | 'bookings' | 'customers' | 'tables' | 'apc';
+
+const normalizeActionName = (value: string) => value.trim().toLowerCase();
+
+const hasKeywordAction = (actionNames: Set<string>, keywords: string[]) => {
+  if (keywords.length === 0) {return true;}
+  for (const actionName of actionNames) {
+    if (keywords.some((keyword) => actionName.includes(keyword.toLowerCase()))) {
+      return true;
+    }
+  }
+  return false;
+};
 
 // A card that opens its breakdown dialog — hover/focus affordance matches the
 // rest of the dashboard (border + subtle elevation shift).
@@ -135,31 +145,51 @@ export default function Dashboard() {
   const totalRevenue = dashboardRevenue ?? customerRevenueFallback;
   const totalBookings = bookings.length;
   const newCustomers = customers.filter(c => c.totalBookings === 1).length;
-  // THE ROOM'S TABLES (client item 6). The next party's seat at a printed 12
-  // ("12 #2") is a second name for a table already counted: 12 is in use if
-  // it, or its next party, is.
-  const roomUse = countRoomsInUse(tables, t => t.status !== "Available");
-  const activeTables = roomUse.inUse;
-  const totalTables = roomUse.rooms;
+  const activeTables = tables.filter(t => t.status !== "Available").length;
+  const totalTables = tables.length;
 
-  // Section access IS the dashboard layout's nav gating (lib/dashboard-sections),
-  // so we never offer a link into a section the signed-in user would be
-  // redirected out of — a valet has only the valet board, a scoped waiter only
-  // the two screens they work from (the server's `scope.waiter_only`, never a
-  // guess from role names), everyone else the nav's own keyword gate.
-  const canOpenSection = (href: string) => canOpenDashboardSection(user, href);
-  const canOpenAnalytics = canOpenSection('/dashboard/analytics');
-  const canOpenTables = canOpenSection('/dashboard/tables');
-  const canOpenBookings = canOpenSection('/dashboard/bookings');
-  const canOpenCustomers = canOpenSection('/dashboard/customers');
-  const canOpenOrders = canOpenSection('/dashboard/orders');
+  // Section access mirrors the dashboard layout's nav gating, so we never offer
+  // a link into a section the signed-in user would be redirected out of.
+  const actionNames = useMemo(
+    () => new Set((user?.action_names ?? []).map(normalizeActionName).filter((name) => name.length > 0)),
+    [user?.action_names],
+  );
+  const hasAllActions = Array.isArray(user?.actions_set) && user.actions_set.includes('*');
+  const hasRole = (role: string) => {
+    if (!user) {return false;}
+    if (user.role === role) {return true;}
+    return Array.isArray(user.role_all) ? user.role_all.includes(role) : false;
+  };
+  const canAccessByAction = (keywords: string[]) => {
+    if (hasAllActions) {return true;}
+    if (actionNames.size === 0) {return true;}
+    return hasKeywordAction(actionNames, keywords);
+  };
+  const isValet = hasRole('valet') && !hasRole('admin');
   /*
-    WHO GETS "TODAY AT A GLANCE" — the Flutter Overview's rule (OverviewScope.money):
-    not a scoped waiter, and holding the analytics action /analytics/headline is
-    gated on. Without the second half a cashier got the card and a permanent
-    "Could not load today's figures", because the route answers them 403.
+    THE SERVER'S ANSWER, NOT A SECOND GUESS AT IT.
+
+    This read `hasRole('waiter') && !hasRole('admin')` — a test on the SPELLING
+    of a role rather than on authority. A waiter granted any custom role carries
+    that role's UUID in `role_all`, the test flipped, and every tile on this
+    overview opened up, money included. `scope.waiter_only` is the backend's one
+    answer (role_scope.ts); see src/lib/session-scope.ts.
   */
-  const showsHeadline = showsMoney(user) && canAccessByKeywords(user, sectionKeywords('/dashboard/analytics'));
+  const isWaiterOnly = sessionIsWaiterOnly(user);
+  const canOpenSection = (href: string, keywords: string[]) => {
+    if (!user) {return false;}
+    if (isValet) {return false;}
+    // The two screens a scoped waiter works from — kept in step with the
+    // dashboard layout's own allow-list, so a tile here never links somewhere
+    // the shell would immediately bounce them out of.
+    if (isWaiterOnly) {return href === '/dashboard/orders' || href === '/dashboard/tables';}
+    return canAccessByAction(keywords);
+  };
+  const canOpenAnalytics = canOpenSection('/dashboard/analytics', ['analytics', 'apc', 'report']);
+  const canOpenTables = canOpenSection('/dashboard/tables', ['table']);
+  const canOpenBookings = canOpenSection('/dashboard/bookings', ['booking']);
+  const canOpenCustomers = canOpenSection('/dashboard/customers', ['customer']);
+  const canOpenOrders = canOpenSection('/dashboard/orders', ['order', 'bill', 'payment']);
 
   const occupiedTables = tables.filter(t => t.status !== 'Available');
   const bookingsByStatus = bookings.reduce<Record<string, number>>((acc, b) => {
@@ -270,7 +300,7 @@ export default function Dashboard() {
             <div className="max-h-64 space-y-1 overflow-y-auto">
               {occupiedTables.map((t) => (
                 <div key={t.id} className="flex items-center justify-between border-b py-1 last:border-b-0">
-                  <span>{tableOptionLabel(t)} · {t.capacity} seats</span>
+                  <span>{t.name} · {t.capacity} seats</span>
                   <Badge variant="outline">{t.status}</Badge>
                 </div>
               ))}
@@ -338,7 +368,7 @@ export default function Dashboard() {
 
   return (
     <>
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between max-lg:flex-wrap max-lg:gap-2">
         <h1 className="text-lg font-semibold md:text-2xl">Dashboard</h1>
         <Button asChild>
           <Link href="/dashboard/bookings">Create Booking</Link>
@@ -348,7 +378,7 @@ export default function Dashboard() {
           else on the overview. Deliberately the first thing on the page: it is
           the set of numbers an owner opens this screen to see, and the cards
           below it are the follow-up questions. */}
-      {user?.restaurantUsername && showsHeadline ? <HeadlineStats rid={user.restaurantUsername} /> : null}
+      {user?.restaurantUsername ? <HeadlineStats rid={user.restaurantUsername} /> : null}
       <div className="grid gap-4 md:grid-cols-2 md:gap-8 lg:grid-cols-5">
         <ClickableCard label="Total revenue breakdown" onClick={() => { setDetail('revenue'); }}>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">

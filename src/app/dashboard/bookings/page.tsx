@@ -29,7 +29,6 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { SearchInput } from "@/components/ui/search-input";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -39,7 +38,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
-import { ChevronDown, ChevronRight, Link2, MoreHorizontal, PlusCircle } from "lucide-react";
+import { ChevronDown, ChevronRight, Link2, MoreHorizontal, PlusCircle, Search, X } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -71,7 +70,6 @@ import { formatDate, formatDateTime, formatFullDateTime, formatLongDate, formatT
 import { useTimezone } from "@/lib/use-timezone";
 import { type Booking } from "./data";
 import { type Table as TableType } from "../tables/data";
-import { roomTables } from "@/lib/next-party";
 
 const bookingSchema = z.object({
   customer: z.string().min(1, "Customer name is required."),
@@ -505,7 +503,7 @@ function BookingsPageInner() {
 
   return (
     <div className="grid gap-4 md:gap-8">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between max-lg:flex-wrap max-lg:gap-2">
         <h1 className="text-lg font-semibold md:text-2xl">Bookings</h1>
         <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
           <DialogTrigger asChild>
@@ -560,13 +558,26 @@ function BookingsPageInner() {
             </div>
           </div>
           <div className="flex flex-col gap-2 pt-2 sm:flex-row sm:items-center">
-            <SearchInput
-              value={query}
-              onValueChange={setQuery}
-              placeholder="Search name, phone, table, status, source, date…"
-              aria-label="Search bookings"
-              wrapperClassName="w-full sm:max-w-sm"
-            />
+            <div className="relative w-full sm:max-w-sm">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={query}
+                onChange={(e) => { setQuery(e.target.value); }}
+                placeholder="Search name, phone, table, status, source, date…"
+                aria-label="Search bookings"
+                className="pl-8 pr-8"
+              />
+              {query ? (
+                <button
+                  type="button"
+                  onClick={() => { setQuery(""); }}
+                  aria-label="Clear search"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              ) : null}
+            </div>
             <p className="text-xs text-muted-foreground">
               {query
                 ? `${visibleBookings.length} of ${bookings.length} booking${bookings.length === 1 ? "" : "s"} match`
@@ -1188,11 +1199,7 @@ function BookingForm({ onSubmit, afterSubmit, tables }: { onSubmit: (data: Booki
   // until they pick — the form never fills this in on its own.
   const [seatingSelection, setSeatingSelection] = useState<string[]>([]);
 
-  // The ROOM only (client item 6): a next-party seat ("12 #2") is opened by a
-  // bill print and retired once idle, so a reservation on it would point at a
-  // deleted table by the time the guests arrive. The server's other booking
-  // doors (assign, combine, suggest) already leave it out.
-  const availableTables = roomTables(tables).filter((t) => t.status === "Available");
+  const availableTables = tables.filter((t) => t.status === "Available");
   const guests = Number(watch("guests")) || 0;
   const time = watch("time") ?? "";
   const startIso = bookingStartIso(time);

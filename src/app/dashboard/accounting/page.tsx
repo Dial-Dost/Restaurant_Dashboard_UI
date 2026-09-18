@@ -24,11 +24,10 @@ import {
   type BalanceSheet, type ReconciliationRow, type DiscountsReport, type OpenBillSummary,
 } from "@/lib/db"
 import { reportModeName } from "@/lib/payment-methods"
-import { readAccountingSales } from "@/lib/gross-net"
 import { formatDate, formatFullDateTime, monthKeyInZone, timezoneCaption, todayInZone } from "@/lib/tz"
 import { useTimezone } from "@/lib/use-timezone"
 
-const salesChartConfig = { sales: { label: "Gross sales", color: "hsl(var(--primary))" } }
+const salesChartConfig = { sales: { label: "Sales", color: "hsl(var(--primary))" } }
 
 // Open bills are bounded by table count, so one page almost always covers them all.
 const PAGE_SIZE = 25
@@ -53,9 +52,6 @@ function AccountingInner() {
   const search = useSearchParams()
   const { range, setRange } = useDateRange("accounting", { params: search })
   const { from, to } = range
-  // A link that is about particular bills (item 10: a payment mode's own bills,
-  // the Split bills) names the filter and anchors #settled-bills.
-  const linkedMethod = search.get("method")?.trim()
   const [loading, setLoading] = useState(true)
   const [sales, setSales] = useState<SalesReport | null>(null)
   const [gst, setGst] = useState<GstReport | null>(null)
@@ -96,18 +92,6 @@ function AccountingInner() {
   }, [rid, from, to])
 
   useEffect(() => { void load() }, [load])
-
-  // The anchor is only there once the figures above it have painted, which is
-  // after the browser gave up looking for it — so it is brought into view once,
-  // when the first load lands.
-  const [revealed, setRevealed] = useState(false)
-  useEffect(() => {
-    if (loading || revealed || typeof window === "undefined" || window.location.hash !== "#settled-bills") {return}
-    const el = document.getElementById("settled-bills")
-    if (!el) {return}
-    el.scrollIntoView({ block: "start" })
-    queueMicrotask(() => { setRevealed(true) })
-  }, [loading, revealed])
 
   const onAddExpense = async () => {
     const amount = Number(exAmount)
@@ -177,7 +161,6 @@ function AccountingInner() {
   }
 
   const byDay = (sales?.by_day ?? []).map((d) => ({ date: d.date.slice(5), sales: d.sales }))
-  const salesWords = readAccountingSales(sales)
 
   return (
     <div className="grid gap-4 md:gap-8">
@@ -213,21 +196,8 @@ function AccountingInner() {
       </div>
       {/* Summary cards drill down to the section holding their source records. */}
       <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
-        {/* NET, in the client's word: after discount, before service charge, tax
-            and round off. The old card showed net_sales — the grand total less
-            refunds, tax and all — under this name; that figure is still here, as
-            what it is. Gross is the grand total. See lib/gross-net.ts. */}
         <a href="#sales-section" className="block" title="Jump to daily sales">
-          <Card className="h-full transition-shadow hover:shadow-md">
-            <CardHeader className="pb-2">
-              <CardDescription>{salesWords.headline.label} ↗</CardDescription>
-              <CardTitle className="text-2xl">{money(salesWords.headline.value)}</CardTitle>
-              <div className="text-xs text-muted-foreground">
-                Gross sales {money(salesWords.grossSales)}
-                {salesWords.netSales !== null ? <> · Gross after refunds {money(salesWords.grossAfterRefunds)}</> : null}
-              </div>
-            </CardHeader>
-          </Card>
+          <Card className="h-full transition-shadow hover:shadow-md"><CardHeader className="pb-2"><CardDescription>Net sales ↗</CardDescription><CardTitle className="text-2xl">{money(sales?.net_sales)}</CardTitle></CardHeader></Card>
         </a>
         <a href="#gst-section" className="block" title="Jump to GST breakdown">
           <Card className="h-full transition-shadow hover:shadow-md"><CardHeader className="pb-2"><CardDescription>GST collected ↗</CardDescription><CardTitle className="text-2xl">{money(gst?.total_tax)}</CardTitle></CardHeader></Card>
@@ -316,23 +286,20 @@ function AccountingInner() {
       {/* The source records behind every figure above — same date range. The
           card's own picker drives THIS page window (setRange), not a private
           one, so changing the days from down here moves the totals too. */}
-      <div id="settled-bills" className="scroll-mt-20">
-        <ClosedBillsSection
-          rid={rid}
-          from={from}
-          to={to}
-          range={range}
-          onRangeChange={setRange}
-          initialMethod={linkedMethod}
-          description="The individual settled bills behind the sales, GST and discount figures above. Open one for its line items, taxes, service charge, payment and settlement trail."
-        />
-      </div>
+      <ClosedBillsSection
+        rid={rid}
+        from={from}
+        to={to}
+        range={range}
+        onRangeChange={setRange}
+        description="The individual settled bills behind the sales, GST and discount figures above. Open one for its line items, taxes, service charge, payment and settlement trail."
+      />
 
       <Card id="discounts-section" className="scroll-mt-20">
         <CardHeader>
           <CardTitle>Discounts &amp; offers</CardTitle>
           <CardDescription>
-            Money given away on settled bills in this range. Bill totals are stored after discount,
+            Money given away on settled bills in this range. Bill totals are stored net of discount,
             so the sales and P&amp;L figures above already reflect these — nothing here is double-counted.
           </CardDescription>
         </CardHeader>

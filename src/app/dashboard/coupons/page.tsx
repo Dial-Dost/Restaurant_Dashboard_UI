@@ -162,7 +162,7 @@ export default function CouponsPage() {
 
   return (
     <div className="grid gap-4 md:gap-8">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between max-lg:flex-wrap max-lg:gap-2">
         <h1 className="text-lg font-semibold md:text-2xl">Coupons</h1>
         <Button onClick={openNew}>
           <PlusCircle className="mr-2 h-4 w-4" /> New coupon

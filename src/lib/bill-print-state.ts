@@ -5,13 +5,6 @@
 // their view. Any subsequent actions (like reprinting or overrides) must be
 // restricted to Super Admins."
 //
-// CLIENT ITEMS 1 AND 2 (2.0.2) CHANGED TWO THINGS. "If a bill is not settled,
-// the table completely vanishes; bills are settled only at night" — so the
-// table no longer leaves anybody's view (retiresTable is false for everyone).
-// And a waiter may now add to a printed bill after confirming it, so the one
-// reprint a waiter MAY make is the one whose paper is out of date (the server's
-// `paper_stale`, backend migration 055): "Print updated bill".
-//
 // ============================================================================
 // THE DEFECT THIS EXISTS TO NOT REPEAT: A DEVICE THAT REMEMBERS
 // ============================================================================
@@ -94,17 +87,6 @@ export interface BillPrintState {
     bill_printed_at: string | null;
     /** The LATEST print, ISO or null, so a till can say "last printed 19:42". */
     printed_at: string | null;
-    /**
-     * CLIENT ITEMS 1 AND 2 (backend migration 055): is the paper the guest is
-     * holding OUT OF DATE? true / false, or null when nothing was printed or the
-     * print's content was never recorded. Absent on a backend older than the
-     * field — which reads exactly like null.
-     */
-    paper_stale?: boolean | null;
-    /** The table name on that paper when it is not this table's (a moved party). */
-    printed_as?: string | null;
-    /** The grand total on that paper. Money: absent from a waiter's payload. */
-    printed_total?: number | null;
 }
 
 /** A seating whose bill has never been printed. */
@@ -176,29 +158,11 @@ export const billPrintStateFields = (payload: unknown): BillPrintState | null =>
     const row = asRecord(payload);
     if (!row) { return null; }
     if (!BILL_PRINT_STATE_KEYS.some((key) => key in row)) { return null; }
-    const printedAs = typeof row.printed_as === 'string' ? row.printed_as.trim() : '';
-    const printedTotal = typeof row.printed_total === 'number' && Number.isFinite(row.printed_total) ? row.printed_total : null;
     return {
         print_count: asCount(row.print_count),
         bill_printed_at: asInstant(row.bill_printed_at),
         printed_at: asInstant(row.printed_at) ?? asInstant(row.last_printed_at),
-        // Carried only when the server sent them, so a payload from before 055
-        // stays field-for-field what it was.
-        ...(typeof row.paper_stale === 'boolean' || row.paper_stale === null ? { paper_stale: row.paper_stale } : {}),
-        ...(printedAs ? { printed_as: printedAs } : {}),
-        ...(printedTotal !== null ? { printed_total: printedTotal } : {}),
     };
-};
-
-/**
- * IS THE PAPER OUT OF DATE? — the server's `paper_stale`, tri-state. Only a
- * boolean the server sent counts; anything else (absent, a string, a backend
- * older than migration 055) is null, "nobody can say", which every reader treats
- * as the 2.0.1 rule.
- */
-export const paperStaleOf = (payload: unknown): boolean | null => {
-    const row = asRecord(payload);
-    return typeof row?.paper_stale === 'boolean' ? row.paper_stale : null;
 };
 
 /**
@@ -220,13 +184,6 @@ export interface BillPrintScope {
     /** May the Print Bill control be drawn and pressed at all right now? */
     print: boolean;
     /**
-     * The control's words: "Print updated bill" when the bill is printed and its
-     * paper is out of date, "Print Bill" otherwise. The same words on the app.
-     */
-    printLabel: string;
-    /** The paper is printed and out of date — what the next print replaces. */
-    updated: boolean;
-    /**
      * This reader has used up their one print and a second one is somebody
      * else's to make. Drives the sentence shown in the button's place — a waiter
      * handed a blank space where a control was will press it again on the next
@@ -234,45 +191,32 @@ export interface BillPrintScope {
      */
     reprintNeedsSenior: boolean;
     /**
-     * Does this table leave THIS reader's view? ALWAYS FALSE, since client
-     * items 1 and 2 (app 2.0.2): "if a bill is not settled, the table completely
-     * vanishes; bills are settled only at night." A printed table stays on every
-     * floor and every list — orange — until it is settled. Kept as a field, false
-     * for everyone, so the app and the web answer the same question the same way.
+     * Does this table now leave THIS reader's view?
+     *
+     * NEVER a release, never a settle, never a write of any kind — a row is
+     * filtered out of one list, on one screen, for one identity. The table is
+     * still occupied, still owes the money, and is still on every manager's
+     * screen. That difference is the whole of "clear/reset from their view"
+     * versus "clear the table", and it has to be that way: C2 forbids this same
+     * waiter from settling, so "clear the table" could not have been what was
+     * meant.
      */
-    retiresTable: false;
+    retiresTable: boolean;
 }
 
-/** The label of the print control once the paper is out of date. The app says the same. */
-export const PRINT_UPDATED_BILL_LABEL = 'Print updated bill';
-/** The label of the print control otherwise. */
-export const PRINT_BILL_LABEL = 'Print Bill';
+/** Everyone senior, and every identity the server has not positively scoped. */
+const UNSCOPED_PRINT_SCOPE: BillPrintScope = { print: true, reprintNeedsSenior: false, retiresTable: false };
 
 /**
  * @param printed the SERVER's answer for this seating's bill — see
  *        {@link serverSaysBillPrinted}. Never a device memory.
- * @param paperStale the SERVER's `paper_stale` ({@link paperStaleOf}): the one
- *        reprint a waiter may make is the one that fixes out-of-date paper
- *        (the backend's refuseWaiterBillReprint lets exactly that through).
- *        Null or absent — unknown — keeps the 2.0.1 rule.
  */
 export const billPrintScope = (
     session: ScopedSession | null | undefined,
     printed: boolean,
-    paperStale: boolean | null = null,
 ): BillPrintScope => {
-    const updated = printed && paperStale === true;
-    const printLabel = updated ? PRINT_UPDATED_BILL_LABEL : PRINT_BILL_LABEL;
-    if (!isWaiterOnly(session)) {
-        return { print: true, printLabel, updated, reprintNeedsSenior: false, retiresTable: false };
-    }
-    return {
-        print: !printed || updated,
-        printLabel,
-        updated,
-        reprintNeedsSenior: printed && !updated,
-        retiresTable: false,
-    };
+    if (!isWaiterOnly(session)) { return UNSCOPED_PRINT_SCOPE; }
+    return { print: !printed, reprintNeedsSenior: printed, retiresTable: printed };
 };
 
 // ---------------------------------------------------------------------------
@@ -384,130 +328,3 @@ export const isReprintOfPrintedBill = (stamp: unknown): boolean => serverSaysBil
  */
 export const billReceiptIsReprint = (source: 'open' | 'settled', stamp: unknown): boolean =>
     source === 'open' && isReprintOfPrintedBill(stamp);
-
-// ---------------------------------------------------------------------------
-// THE UPDATED BILL — client items 1 and 2 (backend migration 055)
-// ---------------------------------------------------------------------------
-
-/**
- * The banner on a print that REPLACES out-of-date paper. BYTE-FOR-BYTE the
- * backend's `UPDATED_BILL_MARKER` (bill_paper_digest.ts), for the reason
- * {@link REPRINT_MARKER} is: the same bill prints through either path.
- */
-export const UPDATED_BILL_MARKER = '** UPDATED BILL **';
-
-/**
- * The line under that banner, as the server sent it on POST /print/bill/claim
- * (`revised_note`, "Replaces the bill printed 13:32") — or null when this print
- * replaces nothing. The server resolves the clock in the restaurant's zone, so
- * this page never formats it. Only a claim that also said `revised: true`
- * counts.
- */
-export const billRevisedNoteOf = (claim: unknown): string | null => {
-    const row = asRecord(claim);
-    if (row?.revised !== true) { return null; }
-    const note = typeof row.revised_note === 'string' ? row.revised_note.trim() : '';
-    return note || 'Replaces an earlier printed bill';
-};
-
-/**
- * THE CLAIM'S OWN JOB — what the print page names when it also sends that paper
- * to a thermal printer (POST /publish/bill `paperJobId`), so the server files
- * the claim's record of the paper against the new job instead of leaving the
- * seating's latest paper unknown. Null when the claim recorded nothing (no
- * ledger) or answered no id.
- */
-export const billPaperJobIdOf = (claim: unknown): string | null => {
-    const row = asRecord(claim);
-    const id = typeof row?.jobId === 'string' ? row.jobId.trim() : '';
-    return id || null;
-};
-
-/**
- * What "Remove service charge & print" hands the orders page's print flow: the
- * tab it opened inside its own click (a popup blocker would kill one opened
- * later), and the bill the server has ALREADY claimed the print of — so the
- * page renders it without claiming a second time.
- */
-export interface PrintBillHandoff {
-    printWindow: Window | null;
-    printableBill: Record<string, unknown> | null;
-    /** The claim's ledger row (client items 1-2): named again if the page also sends this paper to a thermal printer. */
-    paperJobId?: string | null;
-    /**
-     * Client items 1-2: "Replaces the bill printed 13:32" when this paper
-     * replaces out-of-date paper. Without it the page stamps "** REPRINT **"
-     * where the thermal and app copies of the same bill say "** UPDATED BILL **".
-     */
-    revisedNote?: string | null;
-}
-
-/**
- * THE HANDOFF, READ OFF POST /bills/service-charge-waiver/print (render
- * 'client'). That answer carries the claim's own fields
- * (claimClientRenderedBillPrint): `printable_bill`, `jobId`, `revised` and
- * `revised_note` — all of which the page's own claim would have read.
- */
-export const printBillHandoffOf = (answer: unknown, printWindow: Window | null): PrintBillHandoff => ({
-    printWindow,
-    printableBill: asRecord(asRecord(answer)?.printable_bill),
-    paperJobId: billPaperJobIdOf(answer),
-    revisedNote: billRevisedNoteOf(answer),
-});
-
-/**
- * WHAT A HANDED-OFF PRINT PUTS ON THE PAPER — the same four things the page's
- * own claim sets. `priorPrintState` comes off `printable_bill`, read BEFORE the
- * claim was recorded, so it answers "was this already printed"; `fallback` is
- * the floor's row when the bill carried no print state.
- */
-export const handedOffPrint = (handoff: PrintBillHandoff, fallback: BillPrintState | null): {
-    printableBill: Record<string, unknown> | null;
-    paperJobId: string | null;
-    revisedNote: string | null;
-    priorPrintState: BillPrintState | null;
-} => ({
-    printableBill: handoff.printableBill,
-    paperJobId: handoff.paperJobId ?? null,
-    revisedNote: handoff.revisedNote ?? null,
-    priorPrintState: billPrintStateFields(handoff.printableBill) ?? fallback,
-});
-
-/** "Settle anyway" — the override on the stale-paper warning. The app says the same. */
-export const SETTLE_ANYWAY_LABEL = 'Settle anyway';
-
-/**
- * THE WARNING BEFORE A SETTLE AGAINST OUT-OF-DATE PAPER.
- *
- * "The printed bill (13:32) shows ₹2,100.00; the bill is now ₹2,220.00. Print
- * the updated bill before taking payment." — or without the amounts when the
- * reader was not sent them. Null when the paper is not KNOWN to be stale: the
- * warning never fires on a guess. It never blocks: the till books the current
- * total either way, and "Settle anyway" is recorded (settled_with_stale_paper).
- *
- * THE TWO AMOUNTS ARE QUOTED ONLY WHEN THEY DIFFER. GET /bill-for-table's
- * `paper_stale` fingerprints the WHOLE paper — the lines and charges, and also
- * the guest's GSTIN and address — so a paper can be out of date with the
- * total unchanged. "shows ₹2,100.00; the bill is now ₹2,100.00" would then be
- * nonsense, so equal totals (to the paisa) get the sentence without amounts.
- */
-export const stalePaperSettleWarning = (input: {
-    paperStale: boolean | null | undefined;
-    printedClock?: string | null;
-    printedTotal?: number | null;
-    grandTotal?: number | null;
-    currency?: string;
-}): string | null => {
-    if (input.paperStale !== true) { return null; }
-    const cur = input.currency ?? '₹';
-    const money = (n: number): string => `${cur}${n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-    const when = (input.printedClock ?? '').trim();
-    const paper = `The printed bill${when ? ` (${when})` : ''}`;
-    const printed = typeof input.printedTotal === 'number' && Number.isFinite(input.printedTotal) ? input.printedTotal : null;
-    const now = typeof input.grandTotal === 'number' && Number.isFinite(input.grandTotal) ? input.grandTotal : null;
-    const amountsDiffer = printed !== null && now !== null && Math.round(printed * 100) !== Math.round(now * 100);
-    const amounts = amountsDiffer
-        ? `${paper} shows ${money(printed)}; the bill is now ${money(now)}.`
-        : `${paper} no longer matches the bill.`;
-    return `${amounts} Print the updated bill before taking payment.`;
-};

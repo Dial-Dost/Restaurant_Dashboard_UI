@@ -17,7 +17,7 @@ export default function Hero() {
             <span className="exp-hero-line block">One system.</span>
           </span>
         </h1>
-        <p className="exp-hero-sub mt-7 max-w-[34ch] text-[20px] font-medium leading-relaxed text-ink-2 opacity-0">
+        <p className="exp-hero-sub mt-7 max-w-[min(34ch,84vw)] text-[20px] font-medium leading-relaxed text-ink-2 opacity-0">
           POS, kitchen, floor and books — built for Indian restaurants.
         </p>
       </div>

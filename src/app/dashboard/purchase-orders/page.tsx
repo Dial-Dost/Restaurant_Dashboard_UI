@@ -162,8 +162,8 @@ export default function PurchaseOrdersPage() {
 
   return (
     <div className="space-y-6 p-1">
-      <div className="flex items-center justify-between gap-3">
-        <div>
+      <div className="flex items-center justify-between gap-3 max-lg:flex-wrap">
+        <div className="max-lg:min-w-0 max-lg:flex-[1_1_16rem]">
           <h1 className="text-2xl font-bold tracking-tight">Purchase orders</h1>
           <p className="text-sm text-muted-foreground">Order stock from vendors, then receive against the PO to update inventory.</p>
         </div>
@@ -244,8 +244,8 @@ export default function PurchaseOrdersPage() {
 
       {/* List */}
       <Card>
-        <CardHeader className="flex flex-row items-center justify-between gap-3">
-          <div>
+        <CardHeader className="flex flex-row items-center justify-between gap-3 max-lg:flex-wrap">
+          <div className="max-lg:min-w-0 max-lg:flex-[1_1_12rem]">
             <CardTitle>Orders</CardTitle>
             <CardDescription>Receiving against an order adds the items to inventory.</CardDescription>
           </div>

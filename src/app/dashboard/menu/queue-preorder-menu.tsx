@@ -24,12 +24,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { SearchInput } from "@/components/ui/search-input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { ArrowDown, ArrowUp, ListFilter, RotateCcw, Timer } from "lucide-react";
+import { ArrowDown, ArrowUp, ListFilter, RotateCcw, Search, Timer } from "lucide-react";
 import {
     getQueueMenuConfig,
     resetQueueMenuConfig,
@@ -288,12 +287,16 @@ function QueuePreorderDialog({
                                     })}
                                 </div>
 
-                                <SearchInput
-                                    value={query}
-                                    onValueChange={setQuery}
-                                    placeholder="Find a dish"
-                                    aria-label="Find a dish"
-                                />
+                                <div className="relative">
+                                    <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                                    <Input
+                                        value={query}
+                                        onChange={(e) => { setQuery(e.target.value); }}
+                                        placeholder="Find a dish"
+                                        className="pl-8"
+                                        aria-label="Find a dish"
+                                    />
+                                </div>
 
                                 <div className="max-h-64 space-y-1 overflow-y-auto rounded-md border p-2">
                                     {shown.length === 0 && <p className="p-2 text-sm text-muted-foreground">No dishes match.</p>}

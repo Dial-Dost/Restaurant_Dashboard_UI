@@ -111,26 +111,6 @@ export const formatDateTime = (value: Instant, timeZone: string, fallback = '—
 };
 
 /**
- * `2026-07-28 20:06` — an instant as a SPREADSHEET cell: the restaurant's wall
- * clock, year first.
- *
- * Not the grid's `28/07/26 20:06`. A CSV opened in Excel on a month-first
- * locale reads `01/09/26` as 9 January and leaves `14/09/26` as text, so one
- * column mixes wrong dates with strings; neither form sorts in date order; and
- * a two-digit year is ambiguous across a two-year report window. Year-first
- * with the full year is read the same way by Excel in every locale and sorts
- * correctly even as plain text. The owner app writes the identical string for
- * the same instant and zone (RestaurantTime.sheet), so the two clients' files
- * agree cell for cell.
- */
-export const formatSheetDateTime = (value: Instant, timeZone: string, fallback = '—'): string => {
-    const d = toDate(value);
-    if (!d) {return fallback;}
-    const p = partsIn(d, timeZone, NUMERIC_PARTS);
-    return `${p.year}-${p.month}-${p.day} ${String(Number(p.hour) % 24).padStart(2, '0')}:${p.minute}`;
-};
-
-/**
  * `Tue, 28 Jul 2026, 20:06:07 IST` — the unambiguous form, with the zone named.
  * For tooltips, confirmation dialogs and anywhere an accountant has to be able
  * to reconcile the number against a paper trail.
