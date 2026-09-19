@@ -1,5 +1,6 @@
 import type {Config} from 'tailwindcss';
 import colors from 'tailwindcss/colors';
+import plugin from 'tailwindcss/plugin';
 
 export default {
   darkMode: ['class'],
@@ -18,9 +19,12 @@ export default {
     },
     extend: {
       fontFamily: {
-        sans: ['"Inter"', 'sans-serif'],
-        body: ['Alegreya', 'serif'],
-        headline: ['Alegreya', 'serif'],
+        // next/font registers a hashed family behind this variable; the bare
+        // string "Inter" only resolved inside the dashboard shell, which
+        // carries inter.className directly.
+        sans: ['var(--font-inter)', 'system-ui', 'sans-serif'],
+        // Gaia's serif — figures and names only, never body copy.
+        serif: ['var(--font-cormorant)', 'Georgia', 'serif'],
         code: ['monospace'],
       },
       colors: {
@@ -33,10 +37,13 @@ export default {
         emerald: { ...colors.emerald, DEFAULT: '#0fa678' },
         violet: { ...colors.violet, DEFAULT: '#7c5cfc' },
         background: 'hsl(var(--background))',
+        'background-deep': 'hsl(var(--background-deep))',
         foreground: 'hsl(var(--foreground))',
         card: {
           DEFAULT: 'hsl(var(--card))',
           foreground: 'hsl(var(--card-foreground))',
+          top: 'hsl(var(--card-top))',
+          bottom: 'hsl(var(--card-bottom))',
         },
         popover: {
           DEFAULT: 'hsl(var(--popover))',
@@ -57,10 +64,33 @@ export default {
         accent: {
           DEFAULT: 'hsl(var(--accent))',
           foreground: 'hsl(var(--accent-foreground))',
+          // The 5-stop accent ramp (AppColors.copperRamp) + the ink dark
+          // enough to sit on an accent-filled control.
+          hi: 'hsl(var(--accent-hi))',
+          base: 'hsl(var(--accent-base))',
+          mid: 'hsl(var(--accent-mid))',
+          deep: 'hsl(var(--accent-deep))',
+          shadow: 'hsl(var(--accent-shadow))',
+          on: 'hsl(var(--accent-on))',
         },
         destructive: {
           DEFAULT: 'hsl(var(--destructive))',
           foreground: 'hsl(var(--destructive-foreground))',
+        },
+        // Status inks — never colour-alone; the shared StatusChip pairs them
+        // with a label and a dot.
+        success: 'hsl(var(--success))',
+        warning: 'hsl(var(--warning))',
+        info: 'hsl(var(--info))',
+        neutral: 'hsl(var(--neutral))',
+        // The third ink weight (text-tertiary), and the app's extra grounds.
+        tertiary: 'hsl(var(--text-tertiary))',
+        inset: 'hsl(var(--inset))',
+        divider: 'hsl(var(--divider))',
+        glow: {
+          bright: 'hsl(var(--glow-bright))',
+          mid: 'hsl(var(--glow-mid))',
+          deep: 'hsl(var(--glow-deep))',
         },
         border: 'hsl(var(--border))',
         input: 'hsl(var(--input))',
@@ -88,6 +118,17 @@ export default {
         md: 'calc(var(--radius) - 2px)',
         sm: 'calc(var(--radius) - 4px)',
       },
+      boxShadow: {
+        // ForkCard's ambient shadow: resting / hovered; `none` under Gaia.
+        card: 'var(--shadow-card)',
+        'card-hover': 'var(--shadow-card-hover)',
+      },
+      transitionDuration: {
+        // AppDurations: fast 140, base 220, slow 350.
+        fast: '140ms',
+        base: '220ms',
+        slow: '350ms',
+      },
       keyframes: {
         'accordion-down': {
           from: {
@@ -105,12 +146,26 @@ export default {
             height: '0',
           },
         },
+        // SkeletonBox's opacity pulse (skeleton.dart: 0.45 -> 1.0, 1100ms,
+        // easeInOut, reversing).
+        'skeleton-pulse': {
+          '0%, 100%': { opacity: '0.45' },
+          '50%': { opacity: '1' },
+        },
       },
       animation: {
         'accordion-down': 'accordion-down 0.2s ease-out',
         'accordion-up': 'accordion-up 0.2s ease-out',
+        'skeleton-pulse': 'skeleton-pulse 2.2s ease-in-out infinite',
       },
     },
   },
-  plugins: [require('tailwindcss-animate')],
+  plugins: [
+    require('tailwindcss-animate'),
+    // `gaia:` — styles that only apply while the Gaia design system is worn.
+    // The shape/type overrides live in the shared components, not per page.
+    plugin(({ addVariant }) => {
+      addVariant('gaia', '[data-palette="gaia"] &');
+    }),
+  ],
 } satisfies Config;

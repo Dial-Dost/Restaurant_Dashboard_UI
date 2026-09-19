@@ -49,7 +49,7 @@ function readSource(relative: string): string {
     for (const base of [process.cwd(), path.join(__dirname, '..', '..', '..')]) {
         const full = path.join(base, relative);
         // A fixed list of this repo's own source files, not user input.
-        // eslint-disable-next-line security/detect-non-literal-fs-filename
+         
         if (fs.existsSync(full)) { return fs.readFileSync(full, 'utf8'); }
     }
     throw new Error(`readSource could not find ${relative} from ${process.cwd()}`);
@@ -304,6 +304,18 @@ describe('what prints only when it is there', () => {
         expect(withRound[at - 1]).toBe('<RULE>');
         expect(withRound[at + 1]).toContain('Grand Total');
         expect(escposLines(buildBillEscPos(gaia({ roundOff: 0 }))).join('\n')).not.toContain('Round off');
+    });
+
+    it('comped lines disclose their worth as "NC value (not charged)" under the Grand Total, ruled off; none prints nothing', () => {
+        const padL = (t: string, n: number): string => t.padStart(n);
+        const lines = escposLines(buildBillEscPos(gaia({ ncValue: 250 })));
+        const grand = lines.findIndex((l) => l.includes('Grand Total'));
+        expect(lines[grand + 1]).toBe('<RULE>');
+        expect(lines[grand + 2]).toBe(padL('NC value (not charged)', 33) + padL('250.00', 11));
+        expect(lines[grand + 3]).toBe('<RULE>');
+        for (const none of [null, 0, undefined]) {
+            expect(escposLines(buildBillEscPos(gaia({ ncValue: none }))).join('\n')).not.toContain('NC value');
+        }
     });
 });
 
@@ -764,7 +776,7 @@ describe('the print page draws and encodes this bill', () => {
     });
 
     it('the on-screen ladder is ONE grid, so every label ends on one edge and a figure sits on its label\'s last line', () => {
-        expect(print).toMatch(/data-testid="receipt-totals" className="grid" style=\{RECEIPT_LADDER_GRID\}/);
+        expect(print).toMatch(/data-testid="receipt-totals" className="grid" style=\{narrow \? ladderGrid : RECEIPT_LADDER_GRID\}/);
         const row = print.slice(print.indexOf('function ReceiptLadderRow('), print.indexOf('function PrintPageContents('));
         // Two cells of the shared grid — no grid of its own per row.
         expect(row).not.toMatch(/className=\{`grid/);
@@ -774,8 +786,10 @@ describe('the print page draws and encodes this bill', () => {
     });
 
     it('an item whose figures fill their columns gets the whole width, and its figures their own line', () => {
-        expect(print).toContain('billItemRow(item.quantity, item.price, RECEIPT_TEXT_COLUMNS)');
-        expect(print).toMatch(/if \(!row\.fits\) \{[\s\S]*?<td colSpan=\{4\}[^>]*>\{item\.name\}<\/td>[\s\S]*?<td colSpan=\{4\} className="[^"]*text-right[^"]*">\{`\$\{row\.qtyText\} x \$\{row\.priceText\}  \$\{row\.amountText\}`\}<\/td>/);
+        // The page's paper geometry: RECEIPT_TEXT_COLUMNS on a full slip, fewer on a narrow one.
+        expect(print).toContain('billItemRow(item.quantity, item.price, geo.textCols)');
+        expect(print).toContain('textCols: RECEIPT_TEXT_COLUMNS,');
+        expect(print).toMatch(/if \(!row\.fits\) \{[\s\S]*?<td colSpan=\{4\}[^>]*>\{itemName\}<\/td>[\s\S]*?<td colSpan=\{4\} className="[^"]*text-right[^"]*">\{`\$\{row\.qtyText\} x \$\{row\.priceText\} {2}\$\{amountText\}`\}<\/td>/);
     });
 
     it('Date / Dine In and Cashier / Bill No. wrap onto a second line rather than squeezing a value', () => {

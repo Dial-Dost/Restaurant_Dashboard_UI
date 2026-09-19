@@ -1,47 +1,25 @@
 "use client";
 
 /*
-  TABLES — D5's SERVICE HALF. NOTHING ON THIS PAGE CHANGES THE FLOOR PLAN.
+  TABLES — D5's SERVICE HALF, drawn in the app's own floor language.
 
-  D5: "In the Tables Section users may NOT move, change layout, format, or delete
-  tables."
+  The whole tile is the control (tap → the table sheet), the tile is washed in
+  its state's fixed ink (green Free, amber Seated, red Running, orange Bill
+  printed, blue Reserved), the legend counts those same five states in their own
+  inks, and the sections render in the SERVER's order with "Unassigned" last.
+  Layout acts live on /dashboard/floor-plan; nothing here changes the floor.
 
-  This page used to be both screens at once: the same card carried a drag grip, a
-  Delete, an Edit seating, a covers box, Occupy, Release and Take Orders. Every
-  layout act has moved to /dashboard/floor-plan; what is left is the job the
-  floor actually does all night — seat a party, correct the covers, release the
-  table, open its orders. There is no grip, no Add Table, no section editing, and
-  — C7/H8 — no Delete anywhere on it.
-
-  THE SPLIT IS THE SERVER'S, NOT A UI CONVENTION. Every route this page calls
-  (/get-tables, /table-status, /occupy-table, /release-table, /table-covers)
-  rides on the "Table Occupied" permission, which the core waiter role holds;
-  every route the floor-plan page calls rides on "Table Added", "Table Deleted"
-  or "Manage Table Sections", which it does not. Removing the layout controls
-  from here removes controls that were already refusing for most of the people
-  looking at them.
-
-  D1 + D2 — THE TWO CLOCKS, AND THE SERVER OWNS THEM.
-  D1, the "barking" time: how long since the order was placed, so a waiter can
-  see the table that is waiting. D2: the live duration from the order to bill
-  settlement, freezing at the real figure once the bill closes.
-
-  Both are read off the SERVER's `service` block (`src/lib/service-clock.ts`),
-  not subtracted here. They used to be `Date.now() - created_at` in this file
-  while the owner app did its own version — one rule, two implementations, which
-  is how the same table reads 40 minutes on the laptop and 30 on the phone. The
-  backend measures it once, against its own clock, which also means a floor
-  laptop whose clock is ten minutes fast no longer paints the whole floor late.
-
-  ZONES ARE STILL SHOWN, and that is not a layout control: a waiter needs to know
-  the Patio from the Main Hall to walk to the right table. They are headings
-  here. Rearranging them is the other page.
+  D1 + D2 — the two clocks stay on the card ([web-extra]); the sheet carries the
+  app's own "On table / Latest order" chips. Both read the SERVER's `service`
+  block (src/lib/service-clock.ts), never a local subtraction.
 */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
-import { useRouter } from "next/navigation";
+import * as React from "react";
 import Link from "next/link";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { LayoutGrid, HelpCircle } from "lucide-react";
+
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
     Dialog,
     DialogContent,
@@ -51,197 +29,148 @@ import {
     DialogTitle,
 } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { EmptyState } from "@/components/ui/empty-state";
+import { LoadErrorState } from "@/components/ui/load-error-state";
+import { SectionHeader } from "@/components/ui/section-header";
+import { SkeletonBox } from "@/components/ui/fork-skeleton";
+import { CacheStalePill } from "@/components/ui/stale-pill";
+import { InfoChip, StatusChip } from "@/components/ui/status-chip";
+import { FocusBanner, useFocusRequest } from "@/components/focus-banner";
 import { LiveGrossBar } from "@/components/live-gross";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { cn } from "@/lib/utils";
-import { Users, Link2, LayoutGrid, Clock, Timer, ArrowRightLeft } from "lucide-react";
-import { type Table } from "./data";
-import { applyServerSections, isUnassignedSection } from "./sections";
-import { seatingLeftTableUnattended } from "@/lib/table-assignment";
-import { isRefusedAction } from "@/lib/error-message";
-import {
-    occupyTable,
-    releaseTable,
-    updateTableCovers,
-    getOrders,
-    moveTableParty,
-    moveOrderToTable,
-} from "@/lib/db";
+import { FloorColourKey, FloorLegendChip, useFloorInks } from "@/components/tables/floor-chips";
+import { TableBox } from "@/components/tables/table-box";
+import { TableSheet } from "@/components/tables/table-sheet";
+import { useFloor } from "@/components/tables/use-floor";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/hooks/use-toast";
-import { useFloorTables, type CombinedInfo, type TableOccupancy } from "@/hooks/use-floor-tables";
-import { canMoveOrderToTable, canMoveTableParty, canOpenFloorPlan } from "@/lib/session-scope";
+import { useCurrency } from "@/hooks/use-currency";
+import { useTimezone } from "@/lib/use-timezone";
+import { getOrders, moveOrderToTable, moveTableParty } from "@/lib/db";
+import { isRefusedAction } from "@/lib/error-message";
+import { canOpenFloorPlan } from "@/lib/session-scope";
+import { announceReprintNeeded, readReprintNeeded } from "@/lib/reprint-needed";
 import {
     isTableMoveEvent,
-    kotTicketLabel,
-    movedOrderSentence,
     movedPartySentence,
-    orderMoveDestinations,
     partyMoveDestinations,
     refreshAfterTableMove,
 } from "@/lib/table-move";
+import type { ServiceClockCarrier } from "@/lib/service-clock";
+import { visibleMoneyText } from "@/lib/order-prices";
+import { OrderPad, type OrderPadRequest } from "@/components/order-pad/order-pad";
 import {
-    elapsedSincePlaced,
-    elapsedToSettlement,
-    formatDuration,
-    latestAsOfMs,
-    monotonicNow,
-    tableServiceClockOf,
-    waitTone,
-    type ServiceClockCarrier,
-} from "@/lib/service-clock";
+    floorLegend,
+    floorScopeOf,
+    isNextPartyRow,
+    moveOrderKitchenHas,
+    moveOrderKitchenSentence,
+    moveOrderTitle,
+    movedDishesOf,
+    movedOrderDishesSentence,
+    orderDishLines,
+    printedBacklogFilterOn,
+    printedPartyMoveNote,
+    sameTableFamily,
+    seatsLabel,
+    tableSentenceName,
+    tableSentenceNameOf,
+    composeFloorSections,
+    type FloorRow,
+    type FloorTileState,
+} from "@/lib/api/tables-floor";
 
 /*
-  The slice of an order this page reads, and nothing more.
-
-  Deliberately NOT the orders page's own `Order` type: that lives in a 4,000-line
-  client module and importing it here drags the whole orders screen into this
-  bundle to borrow three fields. `ServiceClockCarrier` names the one the clocks
-  need — the SERVER's `service` block — and these two are what turns a list of
-  orders into a per-TABLE clock.
+  The slice of an order this page reads — deliberately NOT the orders page's own
+  `Order` type (importing it drags the whole orders screen into this bundle).
 */
 interface TableOrder extends ServiceClockCarrier {
+    id: string;
     table: string;
     status: string;
-    /*
-      D4 — the two fields a KOT reassignment needs, and no more.
-
-      `id` is what POST /tables/move-order is addressed by. `kot_nos` is the
-      handle the pass quotes, drawn beside each order in the move dialog so the
-      person pressing the button is looking at the same number the kitchen is —
-      moving "the 19:42 one" is how the wrong ticket gets moved. Absent on a
-      backend older than the field, which `kotTicketLabel` reads as "draw
-      nothing".
-    */
-    id: string;
     kot_nos?: number[] | null;
+    created_at?: string | null;
+    barked_at?: string | null;
+    items?: { id?: string | null; name: string; quantity: number; price?: number; note?: string | null }[] | null;
+    total?: unknown;
 }
-
-/** The two clocks a table card shows, already reduced from its orders. */
-interface TableClocks {
-    /** D1 — ms since the OLDEST unserved order on this table was placed. */
-    sincePlacedMs: number;
-    /** D2 — ms from that order to settlement; still counting unless `settled`. */
-    spanMs: number;
-    settled: boolean;
-}
-
-const TONE_CLASS: Record<ReturnType<typeof waitTone>, string> = {
-    calm: "border-slate-600 text-slate-300",
-    watch: "border-amber-500 text-amber-400",
-    late: "border-red-500 text-red-400",
-};
 
 /*
-  D3 + D4 — MOVING A LIVE PARTY, AND MOVING ONE MIS-KEYED TICKET.
-
-  ============================================================================
-  WHY BOTH OF THESE ARE ON THE TABLES PAGE AND NOT ON THE FLOOR PLAN
-  ============================================================================
-  This page's header states the split D5 asks for: /dashboard/floor-plan is the
-  LAYOUT screen (add, rename, delete, rearrange, zone), /dashboard/tables is the
-  SERVICE screen (seat, correct the covers, release, open the orders). The test
-  that decides which side a control belongs on is NOT "does it involve tables" —
-  every control on both pages involves tables. It is the one the header already
-  gives and the one the SERVER draws:
-
-      LAYOUT acts ride on "Table Added" / "Table Deleted" / "Manage Table
-      Sections". SERVICE acts ride on "Table Occupied".
-
-  POST /tables/move is gated on 090ea8d4 — "Table Occupied", the SERVICE
-  permission, the one the core waiter role holds and the same id behind Occupy,
-  Release and Covers on the cards above. The backend's own comment above that
-  route says why in as many words: "service, not administration; the person who
-  sat them down is the person who moves them." Putting it on the floor plan would
-  contradict the permission it actually rides on and would hide it from the
-  waiter it was gated for.
-
-  And it does not change the floor: after a move there are exactly as many
-  tables, in the same zones, in the same places. WHAT MOVED IS THE PARTY — their
-  covers, their orders, their bill, their waiter, their booking. That is a
-  service act performed on a room whose layout is untouched, which is precisely
-  the line D5 draws. A floor plan with a table missing out of it is not a floor
-  plan; a floor plan whose guests have walked to another table is the same floor
-  plan.
-
-  D4's order move is on the same page for the mirror reason: it rides on "Add
-  Orders" (4ad474d4), the everyday floor permission, it is a correction to a
-  TICKET rather than to the room, and it is reached from the very order list this
-  page already opens.
-
-  ============================================================================
-  TWO ACTS, ONE DIALOG, AND THEY ARE NOT INTERCHANGEABLE
-  ============================================================================
-  Moving the PARTY takes everything with them and frees the source table.
-  Moving an ORDER takes one ticket and leaves the party exactly where they are.
-  Confusing the two costs money in opposite directions, so each half names its
-  own consequences before it runs — the same wording the owner app uses, because
-  a restaurant running both must not be taught two different things about one
-  act.
-
-  THE CONFIRMATION IS THE INTERACTION. Neither call is idempotent and neither is
-  queueable offline (routes/tables.ts argues both at length), so there is no undo
-  and no retry: the sentence in front of the button is the last point at which a
-  mistake is cheap.
+  D3 + D4 — the party move and the single-ticket move, one dialog. Each order
+  block names the ticket the way the pass knows it, lists its dishes, says
+  whether the kitchen has it, and spells the kitchen consequence before the
+  button — the same sentences the owner app builds in order_moves.dart.
 */
 function MoveTableDialog({
     open,
     onOpenChange,
-    table,
-    covers,
-    allTables,
-    isSeated,
+    row,
+    allRows,
     orders,
     mayMoveParty,
     mayMoveOrder,
+    showsMoney,
+    currencySymbol,
     busy,
     onMoveParty,
     onMoveOrder,
 }: {
     open: boolean;
     onOpenChange: (open: boolean) => void;
-    table: Table | null;
-    covers: number;
-    allTables: Table[];
-    isSeated: (tableName: string) => boolean;
+    row: FloorRow | null;
+    allRows: FloorRow[];
     orders: TableOrder[];
     mayMoveParty: boolean;
     mayMoveOrder: boolean;
+    showsMoney: boolean;
+    currencySymbol: string;
     busy: boolean;
-    onMoveParty: (toTable: string) => void;
-    onMoveOrder: (orderId: string, toTable: string) => void;
-}): ReactElement | null {
-    const [partyDestination, setPartyDestination] = useState("");
-    const [orderDestinations, setOrderDestinations] = useState<Record<string, string>>({});
+    onMoveParty: (toTable: string, destinationSentence: string) => void;
+    onMoveOrder: (order: TableOrder, toTable: string) => void;
+}): React.JSX.Element | null {
+    const [partyDestination, setPartyDestination] = React.useState("");
+    const [orderDestinations, setOrderDestinations] = React.useState<Record<string, string>>({});
 
     // Reopening on a different table must not carry the previous table's
-    // destination across — the commonest way a confirmed move lands somewhere
-    // nobody chose.
-    useEffect(() => {
+    // destination across.
+    React.useEffect(() => {
         setPartyDestination("");
         setOrderDestinations({});
-    }, [table?.name, open]);
+    }, [row?.name, open]);
 
-    const sourceName = table?.name ?? "";
-    const partyOptions = useMemo(
-        () => partyMoveDestinations(allTables, isSeated, sourceName, covers),
-        [allTables, isSeated, sourceName, covers],
-    );
-    const orderOptions = useMemo(
-        () => orderMoveDestinations(allTables, sourceName),
-        [allTables, sourceName],
+    const sourceName = row?.name ?? "";
+    const covers = row?.covers ?? row?.capacity ?? 1;
+    const byName = React.useMemo(() => {
+        const map = new Map<string, FloorRow>();
+        for (const r of allRows) { map.set(r.name.toLowerCase(), r); }
+        return map;
+    }, [allRows]);
+    const isSeated = React.useCallback(
+        (name: string): boolean => byName.get(name.toLowerCase())?.seated === true,
+        [byName],
     );
 
-    if (!table) { return null; }
+    // Free tables that seat the covers — and never the source's own table
+    // family ("12" cannot move to "12 #2").
+    const partyOptions = React.useMemo(() => {
+        if (row === null) { return []; }
+        const candidates = allRows.filter((r) => !sameTableFamily(row.raw, r.raw));
+        return partyMoveDestinations(candidates, isSeated, sourceName, covers);
+    }, [allRows, row, isSeated, sourceName, covers]);
+
+    const orderOptions = React.useMemo(
+        () => allRows.filter((r) => r.name !== "" && r.name.toLowerCase() !== sourceName.toLowerCase()),
+        [allRows, sourceName],
+    );
+
+    if (row === null) { return null; }
+    const from = tableSentenceNameOf(row.raw);
+    const partyTo = partyDestination === "" ? "" : tableSentenceName(partyDestination);
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="sm:max-w-lg">
+            <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-lg">
                 <DialogHeader>
-                    <DialogTitle>Move from {table.name}</DialogTitle>
+                    <DialogTitle>Move from {from}</DialogTitle>
                     <DialogDescription>
                         Move the whole party to another table, or send one mis-keyed order to the table it
                         should have been rung in on.
@@ -249,47 +178,40 @@ function MoveTableDialog({
                 </DialogHeader>
 
                 {mayMoveParty ? (
-                    <div className="space-y-2 border-b pb-4">
-                        <Label className="text-xs uppercase tracking-wide text-muted-foreground">
-                            Move the whole party
-                        </Label>
+                    <div className="space-y-2 border-b border-divider pb-4">
+                        <div className="micro-label">Move the whole party</div>
                         {partyOptions.length === 0 ? (
-                            /* The server refuses an occupied destination by name (it answers
-                               400 and the message names Merge) and refuses one too small for
-                               the covers, so offering either here and then explaining the
-                               refusal would be a worse way to teach the same thing than not
-                               offering it. When nothing fits, say what would fix it. */
                             <p className="text-xs text-muted-foreground">
-                                No free table seats {covers} right now. Free one up, or raise its max seats on the
-                                floor plan.
+                                No free table seats {covers} right now. Free one up, or raise its max seats.
                             </p>
                         ) : (
                             <>
                                 <Select value={partyDestination} onValueChange={setPartyDestination}>
                                     <SelectTrigger><SelectValue placeholder="Move the party to…" /></SelectTrigger>
                                     <SelectContent>
-                                        {partyOptions.map((option) => (
-                                            <SelectItem key={option.name} value={option.name}>
-                                                {option.name} — seats {option.max_capacity}
-                                            </SelectItem>
-                                        ))}
+                                        {partyOptions.map((option) => {
+                                            const raw = byName.get(option.name.toLowerCase())?.raw ?? {};
+                                            return (
+                                                <SelectItem key={option.name} value={option.name}>
+                                                    Table {tableSentenceName(option.name)} — {seatsLabel(raw) || `max ${String(option.max_capacity)}`}
+                                                </SelectItem>
+                                            );
+                                        })}
                                     </SelectContent>
                                 </Select>
-                                {/* NAMED CONSEQUENCES, because this moves money as well as
-                                    people. One transaction on the server: a party half-moved
-                                    would split the bill, make the floor lie about who is
-                                    sitting where, and count the covers behind APC against a
-                                    table nobody is at. */}
                                 <p className="text-xs text-muted-foreground">
                                     The guests, their {covers} cover{covers === 1 ? "" : "s"}, every order and the
-                                    running bill move together. {table.name} becomes free.
+                                    running bill move together. {from} becomes free.
+                                    {row.printed && partyDestination !== ""
+                                        ? ` ${printedPartyMoveNote(from, partyTo)}`
+                                        : ""}
                                 </p>
                                 <Button
                                     className="w-full"
                                     disabled={busy || partyDestination === ""}
-                                    onClick={() => { onMoveParty(partyDestination); }}
+                                    onClick={() => { onMoveParty(partyDestination, partyTo); }}
                                 >
-                                    Move everything to {partyDestination || "…"}
+                                    Move everything to {partyTo || "…"}
                                 </Button>
                             </>
                         )}
@@ -298,28 +220,38 @@ function MoveTableDialog({
 
                 {mayMoveOrder ? (
                     <div className="space-y-3">
-                        <Label className="text-xs uppercase tracking-wide text-muted-foreground">
-                            Move one order to the right table
-                        </Label>
+                        <div className="micro-label">Move one order to the right table</div>
                         {orders.length === 0 ? (
                             <p className="text-xs text-muted-foreground">
-                                There are no live orders on {table.name} to move.
+                                No live order on this table to move.
                             </p>
                         ) : orderOptions.length === 0 ? (
                             <p className="text-xs text-muted-foreground">There is no other table to move it to.</p>
                         ) : (
                             orders.map((order) => {
-                                const kot = kotTicketLabel(order.kot_nos);
+                                const raw = order as unknown as Record<string, unknown>;
+                                const title = moveOrderTitle(raw);
+                                const dishes = orderDishLines(raw);
+                                const kitchenHas = moveOrderKitchenHas(raw);
+                                const total = Number(order.total);
+                                const totalText = showsMoney && Number.isFinite(total)
+                                    ? visibleMoneyText(currencySymbol, total)
+                                    : null;
                                 const destination = orderDestinations[order.id] ?? "";
                                 return (
-                                    <div key={order.id} className="space-y-1.5 rounded-md border p-2">
+                                    <div key={order.id} className="space-y-1.5 rounded-md border border-border p-2.5">
                                         <div className="flex items-center justify-between gap-2 text-xs">
-                                            {/* The KOT number, where there is one. This is the handle
-                                                the pass quotes; picking an order by its position in a
-                                                list is how the wrong ticket gets moved. */}
-                                            <span className="font-medium">{kot || `Order ${order.id}`}</span>
+                                            <span className="font-semibold text-foreground">
+                                                {totalText !== null ? `${title} · ${totalText}` : title}
+                                            </span>
                                             <Badge variant="outline" className="text-[10px]">{order.status}</Badge>
                                         </div>
+                                        {dishes.length > 0 ? (
+                                            <p className="text-[11px] leading-snug text-muted-foreground">{dishes.join(", ")}</p>
+                                        ) : null}
+                                        <p className="text-[11px] font-medium text-muted-foreground">
+                                            {kitchenHas ? "The kitchen has this one" : "Not sent to the kitchen yet"}
+                                        </p>
                                         <Select
                                             value={destination}
                                             onValueChange={(value) => {
@@ -330,34 +262,26 @@ function MoveTableDialog({
                                                 <SelectValue placeholder="Move this order to…" />
                                             </SelectTrigger>
                                             <SelectContent>
-                                                {/* EVERY other table, occupied included — a mis-keyed
-                                                    ticket usually belongs to a table that already has
-                                                    guests on it, and the party at THIS table stays
-                                                    seated either way. */}
                                                 {orderOptions.map((option) => (
                                                     <SelectItem key={option.name} value={option.name}>
-                                                        {option.name} — {isSeated(option.name) ? "seated" : "free, this will seat it"}
+                                                        Table {option.name} — {option.seated ? "Seated" : "Free — this will seat it"}
                                                     </SelectItem>
                                                 ))}
                                             </SelectContent>
                                         </Select>
-                                        {/* WHAT THE KITCHEN SEES is the half that makes this safe, so
-                                            it is said before anything happens. If the docket is
-                                            already on the pass it is paper for the wrong table, and
-                                            the server prints a correction carrying the SAME KOT
-                                            number so the two can be paired. If it was never printed
-                                            there is nothing to correct and nothing prints. */}
                                         <p className="text-[11px] leading-snug text-muted-foreground">
-                                            {kot
-                                                ? `The kitchen already has ${kot} for ${table.name}, so a correction docket prints at the new table with the same number. ${table.name} keeps its guests and its other orders.`
-                                                : `The kitchen has not been sent this order yet, so nothing prints now — it will print at the new table when it is sent.`}
+                                            {moveOrderKitchenSentence({
+                                                fromTable: row.name,
+                                                toTable: destination === "" ? "the new table" : destination,
+                                                barked: kitchenHas,
+                                            })}
                                         </p>
                                         <Button
                                             size="sm"
                                             variant="outline"
-                                            className="w-full h-8 text-xs"
+                                            className="h-8 w-full text-xs"
                                             disabled={busy || destination === ""}
-                                            onClick={() => { onMoveOrder(order.id, destination); }}
+                                            onClick={() => { onMoveOrder(order, destination); }}
                                         >
                                             Move this order to {destination || "…"}
                                         </Button>
@@ -376,509 +300,168 @@ function MoveTableDialog({
     );
 }
 
-/*
-  ONE TABLE, AS A PLACE PEOPLE ARE SITTING.
-
-  Everything on it is a SERVICE act. The props it does not take are as much the
-  point as the ones it does: no onRemove, no onEdit, no drag listeners.
-*/
-function ServiceTable({
-    table,
-    occupancy,
-    combined,
-    clocks,
-    onOpenOrders,
-    onOccupy,
-    onRelease,
-    onUpdateCovers,
-    onMove,
-    canMove,
-    busyTableName,
-}: {
-    table: Table;
-    occupancy: TableOccupancy | null;
-    combined?: CombinedInfo | null;
-    clocks: TableClocks | null;
-    onOpenOrders: (tableName: string, linkedOrderId?: string | null, preview?: boolean) => void;
-    onOccupy: (tableName: string, numCovers: number) => void;
-    onRelease: (tableName: string) => void;
-    onUpdateCovers: (tableName: string, numCovers: number) => void;
-    /** D3/D4 — opens the move dialog for THIS table. Occupied tables only. */
-    onMove: (tableName: string) => void;
-    /**
-     * Does this session hold either move permission? Drawn per-card rather than
-     * per-page because the card is where the act starts; the dialog asks each
-     * half's own question again, and both routes refuse independently — a
-     * control whose only defence is being undrawn is not a control.
-     */
-    canMove: boolean;
-    busyTableName: string | null;
-}) {
-    const [coverCount, setCoverCount] = useState(String(occupancy?.num_covers ?? table.capacity));
-
-    useEffect(() => {
-        setCoverCount(String(occupancy?.num_covers ?? table.capacity));
-    }, [occupancy?.num_covers, table.capacity]);
-
-    const isOccupied = Boolean(occupancy?.is_occupied);
-    // A table with an active booking window ("Booked") or an upcoming reservation
-    // ("Reserved") is Reserved (blue) — clearly distinct from physically Occupied
-    // (red) and still orderable/occupiable (the Occupy action below stays enabled).
-    const isReserved = !isOccupied && (table.status === "Reserved" || table.status === "Booked");
-    const parsedCoverCount = Math.max(1, Number(coverCount) || 1);
-    const isBusy = busyTableName === table.name;
-    // The OTP chip is rendered ONLY while the restaurant's table-OTP gate is on.
-    // With the gate off the backend already nulls `order_otp`, so this is belt
-    // and braces against a stale cached snapshot showing a dead code.
-    const showOtp = isOccupied && table.otp_required === true && Boolean(table.order_otp);
-    const tone = clocks ? waitTone(clocks.sincePlacedMs) : "calm";
-
+/** Skeleton floor: a header line and two zones of grey tiles. */
+function FloorSkeleton(): React.JSX.Element {
     return (
-        <Card
-            className={cn(
-                "transition-all min-w-0",
-                isOccupied ? "bg-red-950/40 border-red-900" : isReserved ? "bg-blue-950/30 border-blue-800" : "bg-slate-800/50 border-slate-700",
-                "hover:shadow-lg hover:border-slate-600",
-            )}
-        >
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2 p-3">
-                <CardTitle className="text-xs font-medium sm:text-sm flex items-center gap-2 min-w-0">
-                    {/* 1.8 — selecting an OCCUPIED table opens its preview (its KOTs,
-                        one block each, with Add Order and Print Bill on top)
-                        rather than dropping a new-order dialog over them. A free
-                        table has nothing to preview, so it still goes straight
-                        to taking the order. */}
-                    <button
-                        type="button"
-                        className="truncate text-left hover:underline"
-                        title={isOccupied ? `Preview ${table.name}'s KOTs` : table.name}
-                        onClick={() => { onOpenOrders(table.name, null, isOccupied); }}
-                    >
-                        {table.name}
-                    </button>
-                </CardTitle>
-            </CardHeader>
-            <CardContent className="p-3 pt-0">
-                <div className="space-y-2">
-                    <div className="flex flex-wrap items-center gap-2">
-                        <Badge
-                            variant={isOccupied ? "destructive" : "default"}
-                            className={cn(
-                                "text-[10px] sm:text-xs",
-                                isOccupied && "bg-red-600 text-white",
-                                !isOccupied && isReserved && "bg-blue-600 text-white",
-                            )}
-                        >
-                            {isOccupied ? "Occupied" : isReserved ? "Reserved" : "Available"}
-                        </Badge>
-                        {occupancy ? (
-                            <Badge variant="outline" className="text-[10px] sm:text-xs bg-slate-700/50">
-                                {occupancy.num_covers} covers
-                            </Badge>
-                        ) : null}
-                        {showOtp ? (
-                            <Badge className="text-[10px] sm:text-xs font-mono font-bold tracking-widest bg-amber-500 text-black hover:bg-amber-500">
-                                OTP {table.order_otp}
-                            </Badge>
-                        ) : null}
-                        {!isOccupied && isReserved ? (
-                            <Badge variant="secondary" className="text-[10px] sm:text-xs">
-                                {table.status === "Booked" ? "In booking window" : "Upcoming"}
-                            </Badge>
-                        ) : null}
-                        {combined ? (
-                            <Badge
-                                variant="outline"
-                                className="text-[10px] sm:text-xs border-amber-600 text-amber-400"
-                                title={`Clubbed with ${combined.partners.join(", ")} for ${combined.customer} at ${combined.time}`}
-                            >
-                                <Link2 className="mr-1 h-3 w-3" />
-                                + {combined.partners.join(" + ")}
-                            </Badge>
-                        ) : null}
+        <div className="space-y-4" data-testid="floor-skeleton">
+            <SkeletonBox width={220} height={22} />
+            {[0, 1].map((zone) => (
+                <div key={zone} className="rounded-lg border border-border bg-inset p-3">
+                    <SkeletonBox width={160} height={14} />
+                    <div className="mt-3 grid grid-cols-[repeat(auto-fill,minmax(168px,1fr))] gap-3">
+                        {Array.from({ length: 4 }).map((_, i) => (
+                            <SkeletonBox key={i} height={128} />
+                        ))}
                     </div>
-
-                    {/* D1 + D2. Drawn ONLY when the SERVER actually sent a clock for
-                        this table: `tableServiceClockOf` answers null otherwise, and a
-                        badge reading "0s" on a table that has been waiting twenty
-                        minutes is worse than no badge at all. */}
-                    {clocks ? (
-                        <div className="flex flex-wrap items-center gap-1.5">
-                            <Badge
-                                variant="outline"
-                                className={cn("text-[10px] sm:text-xs tabular-nums", TONE_CLASS[tone])}
-                                title="D1 — time since the oldest order on this table was placed."
-                            >
-                                <Clock className="mr-1 h-3 w-3" />
-                                {formatDuration(clocks.sincePlacedMs)} since order
-                            </Badge>
-                            <Badge
-                                variant="outline"
-                                className="text-[10px] sm:text-xs tabular-nums border-slate-600 text-slate-300"
-                                title={clocks.settled
-                                    ? "D2 — the final order-to-settlement time for this table."
-                                    : "D2 — order to settlement, still running. It stops when the bill is settled."}
-                            >
-                                <Timer className="mr-1 h-3 w-3" />
-                                {clocks.settled ? "Settled in " : "Open "}{formatDuration(clocks.spanMs)}
-                            </Badge>
-                        </div>
-                    ) : null}
-
-                    <div className="flex items-center text-muted-foreground text-xs">
-                        <Users className="h-3 w-3 mr-1" />
-                        <span>
-                            Seats: {table.capacity}
-                            {table.max_capacity > table.capacity ? ` · max ${String(table.max_capacity)}` : ""}
-                        </span>
-                    </div>
-                    {combined ? (
-                        <p className="text-[10px] leading-snug text-amber-400/90">
-                            Combined reservation — {combined.customer} ({combined.time})
-                        </p>
-                    ) : null}
                 </div>
-            </CardContent>
-            <div className="px-3 pb-3 space-y-2">
-                <div className="grid gap-1.5 grid-cols-2">
-                    <div className="space-y-1">
-                        <Label htmlFor={`covers-${String(table.id)}`} className="text-[9px] uppercase tracking-wide text-muted-foreground">
-                            Covers
-                        </Label>
-                        <Input
-                            id={`covers-${String(table.id)}`}
-                            type="number"
-                            min={1}
-                            value={coverCount}
-                            onChange={(event) => { setCoverCount(event.target.value); }}
-                            className="h-8 text-sm"
-                        />
-                    </div>
-                    <Button
-                        variant={isOccupied ? "outline" : "default"}
-                        className="col-span-1 self-end h-8 text-xs"
-                        disabled={isBusy}
-                        onClick={() => {
-                            if (isOccupied) { onUpdateCovers(table.name, parsedCoverCount); } else { onOccupy(table.name, parsedCoverCount); }
-                        }}
-                    >
-                        {isOccupied ? "Update" : "Occupy"}
-                    </Button>
-                </div>
-                {isOccupied ? (
-                    <Button
-                        variant="outline"
-                        className="w-full h-8 text-xs"
-                        disabled={isBusy}
-                        onClick={() => { onRelease(table.name); }}
-                    >
-                        Release
-                    </Button>
-                ) : null}
-                {isOccupied ? (
-                    <Button variant="ghost" className="w-full h-8 text-xs" onClick={() => { onOpenOrders(table.name, occupancy?.linkedOrderId ?? null); }}>
-                        {occupancy?.linkedOrderId ? "View Order" : "Take Orders"}
-                    </Button>
-                ) : null}
-                {/* D3/D4 — offered only on an OCCUPIED table, because both acts are
-                    about a party or a ticket that exists. There is nothing to move
-                    off an empty table, and a Move button on one would be a control
-                    whose every press the server refuses. */}
-                {isOccupied && canMove ? (
-                    <Button
-                        variant="ghost"
-                        className="w-full h-8 text-xs"
-                        disabled={isBusy}
-                        onClick={() => { onMove(table.name); }}
-                    >
-                        <ArrowRightLeft className="mr-1 h-3 w-3" /> Move
-                    </Button>
-                ) : null}
-            </div>
-        </Card>
+            ))}
+        </div>
     );
 }
 
-export default function TablesPage() {
-    const router = useRouter();
+export default function TablesPage(): React.JSX.Element {
     const { user } = useAuth();
     const { toast } = useToast();
+    const { currencySymbol } = useCurrency();
+    const { timezone } = useTimezone();
+    const inks = useFloorInks();
 
-    const floor = useFloorTables(user);
-    const { tables: tablesData, occupancyByName, combinedByName, serverZones, layout, reload: loadTables } = floor;
+    const floor = useFloor(user, "service");
+    const { rows, byName, zones, zoneError, zoneOrder, zoneBorn } = floor;
+    const scope = React.useMemo(() => floorScopeOf(user ?? undefined, "service"), [user]);
 
-    const [busyTableName, setBusyTableName] = useState<string | null>(null);
-    const [orders, setOrders] = useState<TableOrder[]>([]);
-    /*
-      THE SERVER OWNS THE DURATION; THIS PAGE OWNS ONLY THE TICK.
+    const [busy, setBusy] = React.useState(false);
+    const [sheetName, setSheetName] = React.useState<string | null>(null);
+    const [moveTableName, setMoveTableName] = React.useState<string | null>(null);
+    // The staff order pad, opened in place from the table sheet.
+    const [padRequest, setPadRequest] = React.useState<OrderPadRequest | null>(null);
+    const [printedFilterAsked, setPrintedFilterAsked] = React.useState(false);
+    const [orders, setOrders] = React.useState<TableOrder[]>([]);
 
-      These badges used to be `Date.now() - created_at`, computed here, while the
-      owner app computed its own version of the same subtraction — one rule,
-      implemented twice, drifting. The backend's `service_clock.ts` answers it
-      once and ships the figure with `as_of`, the SERVER instant it was measured
-      at, precisely so the two screens cannot disagree about the table the
-      manager is standing next to.
+    /* ── The orders behind the table sheet (SERVER-owned durations) ── */
+    // tables-floor.md ~120: the Flutter tile carries NO timers — the "On
+    // table" / "Latest order" chips live in the table sheet, which ticks its own.
 
-      And a till's wall clock is not evidence: a floor laptop ten minutes fast
-      used to paint every table ten minutes late the moment an order landed.
-
-      So the only thing measured here is HOW LONG THIS DEVICE HAS HELD THE
-      RESPONSE — a difference between two readings of one local timer, which is
-      unaffected by that timer being wrong. It is zeroed when the SERVER
-      re-measured (`as_of` advancing), never merely when this component's state
-      object changed, which would rewind every badge on the floor.
-
-      One interval for the whole page rather than one per card: thirty tables
-      each owning a timer is thirty React re-render cascades a second on a laptop
-      that is also driving the floor.
-    */
-    const [tickMs, setTickMs] = useState(0);
-    const clockOriginRef = useRef<{ asOf: number; at: number }>({ asOf: 0, at: monotonicNow() });
-    const ordersAsOfMs = useMemo(() => latestAsOfMs(orders), [orders]);
-    useEffect(() => {
-        if (ordersAsOfMs > clockOriginRef.current.asOf) {
-            clockOriginRef.current = { asOf: ordersAsOfMs, at: monotonicNow() };
-            setTickMs(0);
-        }
-    }, [ordersAsOfMs]);
-    useEffect(() => {
-        const id = setInterval(() => {
-            setTickMs(Math.max(0, monotonicNow() - clockOriginRef.current.at));
-        }, 1000);
-        return () => { clearInterval(id); };
-    }, []);
-
-    // Whoever may edit the floor gets a way to it from here; everyone else is not
-    // told about a page whose every control would refuse them.
-    const showFloorPlanLink = canOpenFloorPlan(user);
-
-    /*
-      D3 / D4 — the two move permissions, asked separately.
-
-      They are genuinely different grants: POST /tables/move rides on "Table
-      Occupied" (the service permission a waiter holds) and POST
-      /tables/move-order on "Add Orders" (the same id that gates the KOT
-      reprint). A tenant can hold one and not the other, so the dialog draws only
-      the halves this session can actually use, and the Move button appears when
-      EITHER is held — holding neither means every control inside would refuse,
-      which is not a dialog worth opening.
-    */
-    const mayMoveParty = canMoveTableParty(user);
-    const mayMoveOrder = canMoveOrderToTable(user);
-    const mayMoveAnything = mayMoveParty || mayMoveOrder;
-    const [moveTableName, setMoveTableName] = useState<string | null>(null);
-
-    /*
-      THE ORDERS BEHIND THE CLOCKS.
-
-      GET /orders rides on "View Orders", which the core waiter role holds, so
-      this read is available to exactly the people who need the clocks. A failure
-      leaves `orders` empty and the cards simply draw no clock — never a zero.
-
-      Polled on the same 20s beat the orders page uses, and refreshed on the
-      `tables:changed` broadcast, so seating a party or taking an order updates
-      the clock without a reload.
-
-      D3/D4 — and after a MOVE, here or anywhere else. The clocks are grouped by
-      each ticket's table, so a grid-only refresh left a moved party's clock on
-      the table it had left until the next poll. `reloadOrders` is what the move
-      handlers call (through refreshAfterTableMove), and the server's
-      `table:moved` / `table:order_moved` socket events do the same for a move
-      made on another device.
-    */
-    const ordersActiveRef = useRef(true);
-    const reloadOrders = useCallback(async (): Promise<void> => {
+    const ordersActiveRef = React.useRef(true);
+    const reloadOrders = React.useCallback(async (): Promise<void> => {
         if (!user?.restaurantUsername) { return; }
         try {
-            const rows = await getOrders(user.restaurantUsername);
-            if (ordersActiveRef.current) { setOrders(Array.isArray(rows) ? rows : []); }
+            const list = await getOrders(user.restaurantUsername);
+            if (ordersActiveRef.current) { setOrders(Array.isArray(list) ? list : []); }
         } catch (error: unknown) {
             console.warn("Failed to load orders for the table clocks", error);
         }
     }, [user?.restaurantUsername]);
-    useEffect(() => {
+    const { refresh } = floor;
+    React.useEffect(() => {
         if (!user?.restaurantUsername) { return; }
         ordersActiveRef.current = true;
         const pull = (): void => { void reloadOrders(); };
         const onRealtime = (event: Event): void => {
             if (!isTableMoveEvent((event as Event & { detail?: { event?: unknown } }).detail?.event)) { return; }
-            void refreshAfterTableMove({ tables: loadTables, orders: reloadOrders });
+            void refreshAfterTableMove({ tables: () => { refresh(); return Promise.resolve(); }, orders: reloadOrders });
         };
         pull();
         const id = setInterval(pull, 20000);
-        if (typeof window !== "undefined") {
-            window.addEventListener("tables:changed", pull);
-            window.addEventListener("realtime:event", onRealtime);
-        }
+        window.addEventListener("tables:changed", pull);
+        window.addEventListener("realtime:event", onRealtime);
         return () => {
             ordersActiveRef.current = false;
             clearInterval(id);
-            if (typeof window !== "undefined") {
-                window.removeEventListener("tables:changed", pull);
-                window.removeEventListener("realtime:event", onRealtime);
-            }
+            window.removeEventListener("tables:changed", pull);
+            window.removeEventListener("realtime:event", onRealtime);
         };
-    }, [user?.restaurantUsername, reloadOrders, loadTables]);
+    }, [user?.restaurantUsername, reloadOrders, refresh]);
 
-    /*
-      D1 + D2 per table, FROM THE SERVER'S CLOCKS.
+    /* ── Focus request ("Open T4" from a notification) ─────────────── */
+    const focus = useFocusRequest();
+    const focusTable = focus?.tableName ?? focus?.idOf(["table_name"]) ?? null;
+    const focusFound = focusTable !== null && rows.some((r) => r.name === focusTable);
 
-      Each order carries the duration the server measured for it. This reduces
-      them to one figure per table by the SERVER's own rule — earliest order,
-      still running while ANY order on the table is unsettled, stopping at the
-      last settlement — which is `tableServiceClockOf`, a restatement of the
-      backend's `tableServiceClock` over inputs the backend computed. The running
-      table bill (GET /bill-for-table) publishes exactly that clock for one
-      table; this grid draws thirty of them off one polled feed rather than
-      asking for thirty bills a poll.
-
-      Both badges come from the SAME reduced clock, so a card can no longer say
-      "40m since order / settled in 3m" — the two figures are two readings of one
-      duration, not two independent picks from the row list.
-
-      Cancelled tickets are left out: a cancelled order is not something the
-      table is waiting for, and counting one would leave a red "48m since order"
-      badge on a table whose food was called off an hour ago.
-
-      A table whose orders carry no clock at all — a backend older than the
-      field, or rows the server could not date — yields nothing here, and the
-      card draws no badge. ABSENT IS NOT ZERO.
-    */
-    const clocksByTable = useMemo(() => {
-        const byTable = new Map<string, TableOrder[]>();
-        for (const order of orders) {
-            if (!order.table || order.status === "Cancelled") { continue; }
-            const key = order.table.toLowerCase();
-            const bucket = byTable.get(key);
-            if (bucket) { bucket.push(order); } else { byTable.set(key, [order]); }
+    /* ── The five-state legend, counted off the tiles' own rule ────── */
+    // An idle next-party seat is not a free TABLE (the root is already
+    // counted) and it carries the root's booking — so Free/Reserved
+    // next-party rows are left out of the count.
+    const floorStates = React.useMemo<FloorTileState[]>(
+        () => rows
+            .filter((r) => !(isNextPartyRow(r.raw) && (r.state === "free" || r.state === "reserved")))
+            .map((r) => r.state),
+        [rows],
+    );
+    const filterOn = printedBacklogFilterOn(printedFilterAsked, floorStates);
+    // The last printed bill settled with the filter on: the floor already
+    // reads it as off; the REQUEST itself is dropped too (the app's
+    // PrintedBacklogFilter does the same), so a later print does not
+    // silently re-narrow the floor.
+    React.useEffect(() => {
+        if (printedFilterAsked && !floorStates.includes("printed")) {
+            setPrintedFilterAsked(false);
         }
-
-        const result: Record<string, TableClocks> = {};
-        for (const [key, rows] of byTable) {
-            const clock = tableServiceClockOf(rows);
-            if (clock === null) { continue; }
-            const span = elapsedToSettlement(clock, tickMs);
-            result[key] = {
-                sincePlacedMs: elapsedSincePlaced(clock, tickMs),
-                spanMs: span.ms,
-                settled: span.settled,
-            };
-        }
-        return result;
-    }, [orders, tickMs]);
-
-    const tablesByKey = useMemo(
-        () => new Map(tablesData.map((table) => [table.name.toLowerCase(), table])),
-        [tablesData],
+    }, [printedFilterAsked, floorStates]);
+    const shownRows = React.useMemo(
+        () => (filterOn ? rows.filter((r) => r.state === "printed") : rows),
+        [rows, filterOn],
     );
 
-    // Zones are read straight off the server's reconciliation — shown as
-    // headings, never editable from here.
-    const renderSections = useMemo(() => {
-        const reconciled = applyServerSections(layout, tablesData, serverZones);
-        return reconciled.sections.map((section) => ({
-            id: section.id,
-            name: section.name,
-            tables: section.tables
-                .map((name) => tablesByKey.get(name))
-                .filter((table): table is Table => Boolean(table)),
-        }));
-    }, [layout, tablesData, tablesByKey, serverZones]);
-
-    const hasCustomSections = renderSections.some((section) => !isUnassignedSection(section.id));
-    const totalTables = tablesData.length;
-    const occupiedCount = Object.values(occupancyByName).filter((entry) => entry.is_occupied).length;
-    const reservedCount = tablesData.filter((table) => {
-        const occupancy: TableOccupancy | undefined = occupancyByName[table.name.toLowerCase()];
-        return !occupancy?.is_occupied && (table.status === "Reserved" || table.status === "Booked");
-    }).length;
-
-    /*
-      D3/D4 — the party move and the order move, both of them ONE call.
-
-      NEITHER IS RETRIED AND NEITHER IS QUEUED. routes/tables.ts declines
-      idempotent() and the offline outbox for both, and argues it: a replay
-      bounces off the precondition the first execution consumed ("T1 is not
-      seated") having changed nothing, and a move held on a till for twenty
-      minutes and replayed against a floor that has moved on lands on a
-      destination somebody else has since seated — by which time whoever pressed
-      it is long gone and believes the guests were moved. So a failure here is
-      reported and stops; it is never silently re-attempted.
-
-      A REFUSAL IS A RESULT, NOT AN EXCEPTION, for the reason handleReleaseTable
-      gives: an Error thrown out of a Server Action has its message redacted in
-      production, and the server's sentence ("T7 is occupied — use Merge…") is
-      the entire value of the response.
-    */
-    const moveTable = useMemo(
-        () => tablesData.find((table) => table.name === moveTableName) ?? null,
-        [tablesData, moveTableName],
+    const sections = React.useMemo(
+        () => composeFloorSections(shownRows, zones, zoneOrder, zoneBorn, {
+            // An empty zone has no backlog, so the filter hides it.
+            includeEmptyZones: !filterOn,
+        }),
+        [shownRows, zones, zoneOrder, zoneBorn, filterOn],
     );
 
-    /*
-      WHO IS SITTING WHERE, AND HOW MANY OF THEM — reduced once for the move
-      dialog rather than indexed per candidate table.
+    const legendChips = React.useMemo(
+        () => floorLegend(floorStates, true).map((row) => (
+            <FloorLegendChip
+                key={row.state}
+                state={row.state}
+                label={row.label}
+                inks={inks}
+                filterOn={filterOn}
+                onToggleFilter={row.state === "printed"
+                    ? () => { setPrintedFilterAsked((v) => !v); }
+                    : undefined}
+            />
+        )),
+        [floorStates, inks, filterOn],
+    );
 
-      Reduced rather than read through `occupancyByName[...]` at each call site
-      because the destination filter asks the question ONCE PER TABLE ON THE
-      FLOOR every time the dialog re-renders, and because one derivation is one
-      place for "seated" to be defined. `partyMoveDestinations` takes the
-      predicate rather than the map for exactly that reason.
-    */
-    const seating = useMemo(() => {
-        const seated = new Set<string>();
-        const covers = new Map<string, number>();
-        for (const [name, occupancy] of Object.entries(occupancyByName)) {
-            if (occupancy.is_occupied) { seated.add(name); }
-            covers.set(name, occupancy.num_covers);
-        }
-        return { seated, covers };
-    }, [occupancyByName]);
+    /* ── Moves ─────────────────────────────────────────────────────── */
+    const moveRow = moveTableName !== null ? byName.get(moveTableName.toLowerCase()) ?? null : null;
+    const liveOrdersFor = (tableName: string): TableOrder[] =>
+        orders.filter((order) =>
+            (order.table || "").toLowerCase() === tableName.toLowerCase()
+            && order.status !== "Cancelled"
+            && order.status !== "Closed");
 
-    /*
-      HOW MANY PEOPLE ARE ACTUALLY BEING MOVED.
-
-      The seated cover count, which is the figure the server measures the
-      destination against (assertCoversFitTable) and the figure the confirmation
-      quotes back. Falls back to the table's laid-up capacity only when the
-      occupancy read has not arrived — never to 1, which would offer the whole
-      floor to a party of eight.
-    */
-    const moveCovers = useMemo((): number => {
-        if (!moveTable) { return 1; }
-        return seating.covers.get(moveTable.name.toLowerCase()) ?? moveTable.capacity;
-    }, [moveTable, seating]);
-
-    const isTableSeated = (tableName: string): boolean => seating.seated.has(tableName.toLowerCase());
-
-    /** The live tickets on one table — what D4's per-order picker lists. */
-    const ordersForTable = (tableName: string): TableOrder[] =>
-        orders.filter(
-            (order) =>
-                (order.table || "").toLowerCase() === tableName.toLowerCase()
-                // A cancelled or closed ticket is not something that can be
-                // moved: the first is terminal (the server refuses every
-                // modification) and the second belongs to a settled bill.
-                && order.status !== "Cancelled"
-                && order.status !== "Closed",
-        );
+    const reloadBoth = React.useCallback(async (): Promise<void> => {
+        await refreshAfterTableMove({ tables: () => { refresh(); return Promise.resolve(); }, orders: reloadOrders });
+    }, [refresh, reloadOrders]);
 
     const handleMoveParty = async (toTable: string): Promise<void> => {
-        if (!user?.restaurantUsername || !moveTableName) { return; }
+        if (!user?.restaurantUsername || moveTableName === null) { return; }
         const fromTable = moveTableName;
-        setBusyTableName(fromTable);
+        setBusy(true);
         try {
             const result = await moveTableParty(user.restaurantUsername, fromTable, toTable);
             if (isRefusedAction(result)) {
                 toast({ title: "Party not moved", description: result.error, variant: "destructive" });
                 return;
             }
+            // A printed party's destination gets its own green seat; the server
+            // names it (next_party_message) and the toast passes it on.
+            const said = (result as unknown as Record<string, unknown>).next_party_message;
+            const seat = typeof said === "string" ? said.trim() : "";
             toast({
                 title: "Party moved",
-                description: movedPartySentence(result.from_table, result.to_table, result.moved_orders),
+                description: movedPartySentence(result.from_table, result.to_table, result.moved_orders)
+                    + (seat === "" ? "" : ` ${seat}`),
             });
+            const reprints = readReprintNeeded(result);
+            if (reprints.length > 0) { announceReprintNeeded(reprints); }
             setMoveTableName(null);
-            await refreshAfterTableMove({ tables: loadTables, orders: reloadOrders });
+            await reloadBoth();
         } catch (error: unknown) {
             toast({
                 title: "Unable to move the party",
@@ -886,25 +469,35 @@ export default function TablesPage() {
                 variant: "destructive",
             });
         } finally {
-            setBusyTableName(null);
+            setBusy(false);
         }
     };
 
-    const handleMoveOrder = async (orderId: string, toTable: string): Promise<void> => {
-        if (!user?.restaurantUsername || !moveTableName) { return; }
-        setBusyTableName(moveTableName);
+    const handleMoveOrder = async (order: TableOrder, toTable: string): Promise<void> => {
+        if (!user?.restaurantUsername || moveTableName === null) { return; }
+        setBusy(true);
         try {
-            const result = await moveOrderToTable(user.restaurantUsername, orderId, toTable);
+            const result = await moveOrderToTable(user.restaurantUsername, order.id, toTable);
             if (isRefusedAction(result)) {
                 toast({ title: "Order not moved", description: result.error, variant: "destructive" });
                 return;
             }
-            // The correction docket's outcome is the SERVER's and it is not a
-            // detail: "KOT-26 is printing, tell the pass" and "nothing was on the
-            // pass for it" are two different things for staff to go and do.
-            toast({ title: "Order moved", description: movedOrderSentence(result.to_table, result.print) });
+            const served = movedDishesOf(result);
+            toast({
+                title: "Order moved",
+                description: movedOrderDishesSentence({
+                    toTable: result.to_table,
+                    printed: result.print?.printed === true,
+                    kotNo: result.print?.kot_no,
+                    dishes: served.length > 0 ? served : orderDishLines(order as unknown as Record<string, unknown>),
+                }),
+            });
+            // A move between printed bills names the reprints it caused; the
+            // shell's listener asks "Print the updated bill?" per table.
+            const reprints = readReprintNeeded(result);
+            if (reprints.length > 0) { announceReprintNeeded(reprints); }
             setMoveTableName(null);
-            await refreshAfterTableMove({ tables: loadTables, orders: reloadOrders });
+            await reloadBoth();
         } catch (error: unknown) {
             toast({
                 title: "Unable to move that order",
@@ -912,226 +505,202 @@ export default function TablesPage() {
                 variant: "destructive",
             });
         } finally {
-            setBusyTableName(null);
+            setBusy(false);
         }
     };
 
-    const openOrdersForTable = (tableName: string, linkedOrderId?: string | null, preview?: boolean): void => {
-        const params = new URLSearchParams();
-        params.set("table", tableName);
-        if (linkedOrderId) { params.set("highlightOrder", linkedOrderId); }
-        // 1.8 — the orders screen draws this table's preview whenever `table` is
-        // set; `preview` only stops it opening the new-order dialog on top.
-        if (preview) { params.set("preview", "1"); }
-        router.push(`/dashboard/orders?${params.toString()}`);
-    };
+    /* ── Render ────────────────────────────────────────────────────── */
+    const showFloorPlanLink = canOpenFloorPlan(user);
+    const sheetRow = sheetName !== null ? byName.get(sheetName.toLowerCase()) ?? null : null;
 
-    const handleOccupyTable = async (tableName: string, numCovers: number) => {
-        if (!user?.restaurantUsername) { return; }
-        setBusyTableName(tableName);
-        try {
-            const res = await occupyTable(user.restaurantUsername, tableName, numCovers);
-            // Seating is supposed to make the seater this table's waiter. Say what
-            // actually happened, here, at the moment of seating. The bug this
-            // replaces was silent on both ends: the server skipped the assignment
-            // without logging and the client never asked, so a floor running with
-            // no waiter on any table looked completely normal for weeks.
-            const assignment = res.assignment;
-            const unattended = seatingLeftTableUnattended(assignment);
-            toast({
-                title: unattended ? "Occupied — but no waiter assigned" : "Table occupied",
-                description: `${tableName} is now marked occupied with ${String(numCovers)} cover${numCovers === 1 ? "" : "s"}.`
-                    + (assignment ? ` ${assignment.message}` : ""),
-                variant: unattended ? "destructive" : undefined,
-            });
-            await loadTables();
-        } catch (error: unknown) {
-            toast({
-                title: "Unable to update table",
-                description: error instanceof Error ? error.message : "Failed to mark the table occupied.",
-                variant: "destructive",
-            });
-        } finally {
-            setBusyTableName(null);
-        }
-    };
+    const header = (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+                <h1 className="text-lg font-semibold md:text-2xl">Tables</h1>
+                <p className="text-sm text-muted-foreground">
+                    Seat parties, correct covers, release tables and open their orders.
+                </p>
+            </div>
+            {showFloorPlanLink ? (
+                <Button variant="outline" asChild>
+                    <Link href="/dashboard/floor-plan">
+                        <LayoutGrid className="mr-2 h-4 w-4" />
+                        Edit floor plan
+                    </Link>
+                </Button>
+            ) : null}
+        </div>
+    );
 
-    const handleUpdateTableCovers = async (tableName: string, numCovers: number) => {
-        if (!user?.restaurantUsername) { return; }
-        setBusyTableName(tableName);
-        try {
-            await updateTableCovers(user.restaurantUsername, tableName, numCovers);
-            toast({
-                title: "Covers updated",
-                description: `${tableName} now has ${String(numCovers)} cover${numCovers === 1 ? "" : "s"}.`,
-            });
-            await loadTables();
-        } catch (error: unknown) {
-            toast({
-                title: "Unable to update covers",
-                description: error instanceof Error ? error.message : "Failed to save the cover count.",
-                variant: "destructive",
-            });
-        } finally {
-            setBusyTableName(null);
-        }
-    };
+    if (!user) {
+        return <div className="grid gap-4 md:gap-8">{header}<FloorSkeleton /></div>;
+    }
 
-    const handleReleaseTable = async (tableName: string) => {
-        if (!user?.restaurantUsername) { return; }
-        setBusyTableName(tableName);
-        try {
-            const result = await releaseTable(user.restaurantUsername, tableName);
-            // A REFUSAL IS A RESULT, NOT AN EXCEPTION. The server answers a
-            // blocked release with the sentence naming what the release would
-            // have destroyed ("would write off ₹1,240 of unpaid orders — settle
-            // or void them first"); an Error thrown out of a Server Action has
-            // its message redacted in production, so that sentence only reaches
-            // this toast because it comes back as a value.
-            if (isRefusedAction(result)) {
-                toast({
-                    title: "Table not released",
-                    description: result.error,
-                    variant: "destructive",
-                });
-                return;
-            }
-            toast({ title: "Table released", description: `${tableName} is now available.` });
-            await loadTables();
-        } catch (error: unknown) {
-            toast({
-                title: "Unable to release table",
-                description: error instanceof Error ? error.message : "Failed to mark the table available.",
-                variant: "destructive",
-            });
-        } finally {
-            setBusyTableName(null);
-        }
-    };
+    if (floor.loading) {
+        return <div className="grid gap-4 md:gap-8">{header}<FloorSkeleton /></div>;
+    }
+
+    if (floor.error != null) {
+        return (
+            <div className="grid gap-4 md:gap-8">
+                {header}
+                <LoadErrorState
+                    whatFailed="Couldn't load the floor."
+                    error={floor.error}
+                    onRetry={floor.retry}
+                />
+            </div>
+        );
+    }
 
     return (
-        <div className="grid gap-4 md:gap-8">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                    <h1 className="text-lg font-semibold md:text-2xl">Tables</h1>
-                    <p className="text-sm text-muted-foreground">
-                        Seat parties, correct covers, release tables and open their orders.
-                    </p>
-                </div>
-                {showFloorPlanLink ? (
-                    /* The only route from here to the layout half, and it is a LINK —
-                       going to the floor plan is a deliberate trip, not something you
-                       fall into from a table card mid-service. */
-                    <Button variant="outline" asChild>
-                        <Link href="/dashboard/floor-plan">
-                            <LayoutGrid className="mr-2 h-4 w-4" />
-                            Edit floor plan
-                        </Link>
-                    </Button>
-                ) : null}
-            </div>
+        <div className="relative grid gap-4 md:gap-8">
+            {header}
 
-            {/* H5 — the live gross, ABOVE the tables, which is where the
-                requirement puts it and also where it is read: a manager walking
-                the floor wants "what is out there" before "which table". */}
-            {user?.restaurantUsername ? <LiveGrossBar rid={user.restaurantUsername} /> : null}
+            {focus !== null ? (
+                <FocusBanner
+                    found={focusFound}
+                    message={focusFound
+                        ? `Highlighted ${focusTable} — tap it to manage the bill.`
+                        : `${focusTable ?? "That table"} is not on this floor plan — it may have been removed, or belong to another outlet.`}
+                    onDismiss={focus.dismiss}
+                    showAllLabel="Show all tables"
+                />
+            ) : null}
 
-            <Card>
-                <CardHeader>
-                    <CardTitle>Table Status Overview</CardTitle>
-                    <CardDescription className="text-sm text-muted-foreground">
-                        {totalTables > 0
-                            ? <>
-                                {occupiedCount} occupied · {reservedCount} reserved · {Math.max(0, totalTables - occupiedCount - reservedCount)} free,
-                                of {totalTables} table{totalTables === 1 ? "" : "s"}.
-                                {" "}Each occupied table shows how long since its order went in, and how long its bill has been running.
-                            </>
-                            : "No tables have been added yet."}
-                    </CardDescription>
-                </CardHeader>
-                <CardContent>
-                    {totalTables > 0 ? (
-                        <div className="space-y-8">
-                            {renderSections.map((section) => {
-                                const reserved = isUnassignedSection(section.id);
-                                const showHeader = !reserved || hasCustomSections;
-                                if (reserved && !hasCustomSections && section.tables.length === 0) {
-                                    return null;
-                                }
-                                if (section.tables.length === 0) {
-                                    // An EMPTY zone is a floor-plan fact, not a service one.
-                                    // On the plan it is a drop target; here it would be a
-                                    // heading over nothing.
-                                    return null;
-                                }
-                                const seats = section.tables.reduce((sum, table) => sum + (table.capacity || 0), 0);
-                                return (
-                                    <div key={section.id}>
-                                        {showHeader ? (
-                                            <div className="mb-4 flex flex-wrap items-center gap-2">
-                                                <h3 className="text-lg font-semibold flex items-center md:text-xl">
-                                                    <LayoutGrid className="mr-2 h-5 w-5" /> {section.name}
-                                                    <span className="ml-3 text-xs font-normal text-muted-foreground">
-                                                        {section.tables.length} table{section.tables.length === 1 ? "" : "s"} · {seats} seats
-                                                    </span>
-                                                </h3>
-                                            </div>
-                                        ) : null}
-                                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-8 gap-4">
-                                            {section.tables.map((table) => (
-                                                <ServiceTable
-                                                    key={table.id}
-                                                    table={table}
-                                                    occupancy={occupancyByName[table.name.toLowerCase()] ?? null}
-                                                    combined={combinedByName[table.name.toLowerCase()] ?? null}
-                                                    clocks={clocksByTable[table.name.toLowerCase()] ?? null}
-                                                    onOpenOrders={openOrdersForTable}
-                                                    onOccupy={(name, covers) => { void handleOccupyTable(name, covers); }}
-                                                    onRelease={(name) => { void handleReleaseTable(name); }}
-                                                    onUpdateCovers={(name, covers) => { void handleUpdateTableCovers(name, covers); }}
-                                                    onMove={(name) => { setMoveTableName(name); }}
-                                                    canMove={mayMoveAnything}
-                                                    busyTableName={busyTableName}
-                                                />
-                                            ))}
-                                        </div>
+            {/* H5/6.4 — the live gross ABOVE the tables. */}
+            <LiveGrossBar rid={user.restaurantUsername} />
+
+            {rows.length === 0 && zones.length === 0 ? (
+                <EmptyState
+                    icon={<LayoutGrid />}
+                    title="No tables on the floor yet."
+                    caption={showFloorPlanLink
+                        ? "Tables are added on the floor plan."
+                        : "Ask an admin to add them on the floor plan."}
+                    action={showFloorPlanLink ? (
+                        <Button variant="outline" asChild>
+                            <Link href="/dashboard/floor-plan">Open floor plan</Link>
+                        </Button>
+                    ) : undefined}
+                />
+            ) : (
+                <div className="space-y-3">
+                    {/* The counted legend for a senior; the count-free colour key
+                        for a waiter (no floor summary). Below 620px the legend
+                        drops under the title. */}
+                    {scope.floorSummary ? (
+                        <>
+                            <SectionHeader
+                                title="Tables"
+                                count={rows.length}
+                                trailing={(
+                                    <div className="hidden flex-wrap items-center gap-1.5 min-[620px]:flex">
+                                        {legendChips}
                                     </div>
-                                );
-                            })}
-                        </div>
+                                )}
+                            />
+                            <div className="flex flex-wrap items-center gap-1.5 min-[620px]:hidden">
+                                {legendChips}
+                            </div>
+                        </>
                     ) : (
-                        <div className="text-center text-muted-foreground py-12">
-                            <p className="mb-2">You have no tables configured for your restaurant.</p>
-                            {showFloorPlanLink ? (
-                                <p className="text-sm">
-                                    Tables are added on the{" "}
-                                    <Link href="/dashboard/floor-plan" className="underline">floor plan</Link>.
-                                </p>
-                            ) : (
-                                <p className="text-sm">Ask an admin to add them on the floor plan.</p>
-                            )}
-                        </div>
+                        <FloorColourKey inks={inks} />
                     )}
-                </CardContent>
-            </Card>
 
-            {/* D3/D4. One dialog for the whole page rather than one per card —
-                thirty cards each mounting a Dialog is thirty Radix portals on a
-                laptop that is also driving the floor, for a control that can only
-                ever be open on one table at a time. */}
+                    {zoneError !== "" ? (
+                        <div className="flex items-center gap-2.5 rounded-md border border-warning/28 bg-warning/12 px-3.5 py-2.5">
+                            <p className="min-w-0 flex-1 text-xs text-warning">
+                                Section list unavailable — sections with no tables in them are missing from this floor plan. {zoneError}
+                            </p>
+                            <Button variant="outline" size="sm" onClick={() => { floor.refresh(); }}>Retry</Button>
+                        </div>
+                    ) : null}
+
+                    {sections.map((section) => (
+                        <div
+                            key={section.key === "" ? "::unassigned" : section.key}
+                            className="rounded-lg border border-border bg-inset p-3 pb-3.5 gaia:rounded-[2px]"
+                        >
+                            <div className="flex flex-wrap items-center gap-2">
+                                {section.key === ""
+                                    ? <HelpCircle aria-hidden className="h-[15px] w-[15px] shrink-0 text-muted-foreground" />
+                                    : <LayoutGrid aria-hidden className="h-[15px] w-[15px] shrink-0 text-muted-foreground" />}
+                                <span className="text-[11px] font-bold uppercase tracking-[0.8px] text-muted-foreground">
+                                    {section.name}
+                                </span>
+                                {section.rows.length === 0 && section.key !== "" ? (
+                                    <StatusChip status="neutral" label="Empty" dense />
+                                ) : (
+                                    <>
+                                        <InfoChip label={`${String(section.rows.length)} ${section.rows.length === 1 ? "table" : "tables"}`} />
+                                        <InfoChip label={`${String(section.rows.reduce((n, r) => n + r.capacity, 0))} seats`} />
+                                    </>
+                                )}
+                            </div>
+                            <div className="mt-3">
+                                {section.rows.length === 0 ? (
+                                    <p className="text-sm text-muted-foreground">Nothing here yet.</p>
+                                ) : (
+                                    <div className="grid grid-cols-[repeat(auto-fill,minmax(168px,1fr))] gap-3">
+                                        {section.rows.map((row) => (
+                                            <TableBox
+                                                key={row.name}
+                                                row={row}
+                                                inks={inks}
+                                                focused={focusTable !== null && row.name === focusTable}
+                                                showsMoney={scope.money}
+                                                maySettle={scope.settle}
+                                                currencySymbol={currencySymbol}
+                                                timeZone={timezone}
+                                                onOpen={(r) => { setSheetName(r.name); }}
+                                            />
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            )}
+
+            <CacheStalePill offline={floor.offline} fromCache={floor.fromCache} updatedAt={floor.updatedAt} />
+
+            <TableSheet
+                open={sheetRow !== null}
+                onOpenChange={(open) => { if (!open) { setSheetName(null); } }}
+                row={sheetRow}
+                allRows={rows}
+                inks={inks}
+                user={user}
+                orders={orders}
+                onReload={() => { refresh(); void reloadOrders(); }}
+                onOpenMove={(tableName) => { setMoveTableName(tableName); }}
+                onOpenPad={setPadRequest}
+            />
+
+            {padRequest !== null && user.restaurantUsername ? (
+                <OrderPad
+                    request={padRequest}
+                    restaurantId={user.restaurantUsername}
+                    onClose={() => { setPadRequest(null); }}
+                    onSent={() => { refresh(); void reloadOrders(); }}
+                />
+            ) : null}
+
             <MoveTableDialog
                 open={moveTableName !== null}
                 onOpenChange={(next) => { if (!next) { setMoveTableName(null); } }}
-                table={moveTable}
-                covers={moveCovers}
-                allTables={tablesData}
-                isSeated={isTableSeated}
-                orders={moveTableName ? ordersForTable(moveTableName) : []}
-                mayMoveParty={mayMoveParty}
-                mayMoveOrder={mayMoveOrder}
-                busy={busyTableName !== null}
+                row={moveRow}
+                allRows={rows}
+                orders={moveTableName !== null ? liveOrdersFor(moveTableName) : []}
+                mayMoveParty={scope.moveTable}
+                mayMoveOrder={scope.moveOrder}
+                showsMoney={scope.money}
+                currencySymbol={currencySymbol}
+                busy={busy}
                 onMoveParty={(toTable) => { void handleMoveParty(toTable); }}
-                onMoveOrder={(orderId, toTable) => { void handleMoveOrder(orderId, toTable); }}
+                onMoveOrder={(order, toTable) => { void handleMoveOrder(order, toTable); }}
             />
         </div>
     );

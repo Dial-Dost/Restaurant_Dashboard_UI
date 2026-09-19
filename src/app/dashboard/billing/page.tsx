@@ -1,13 +1,21 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { ArrowRight, BadgeCheck, CreditCard, ReceiptText, Store } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Check, RefreshCw, Crown } from "lucide-react"
+import { ForkCard } from "@/components/ui/fork-card"
+import { StatCard } from "@/components/ui/stat-card"
+import { StatusChip, InfoChip, type StatusChipStatus } from "@/components/ui/status-chip"
+import { MicroStat } from "@/components/ui/micro-stat"
+import { SectionHeader } from "@/components/ui/section-header"
+import { EmptyState } from "@/components/ui/empty-state"
+import { LoadErrorState } from "@/components/ui/load-error-state"
+import { SkeletonBox, SkeletonRows } from "@/components/ui/fork-skeleton"
+import { CacheStalePill } from "@/components/ui/stale-pill"
+import { useCachedFetch } from "@/hooks/use-cached-fetch"
 import { useAuth } from "@/context/AuthContext"
-import { formatDate, formatFullDateTime } from "@/lib/tz"
-import { useTimezone } from "@/lib/use-timezone"
 import { useToast } from "@/hooks/use-toast"
+import { daysLate, daysLeft, plural, subscriptionState } from "@/components/subscription-banner"
 import {
   getBilling, changePlan, billingPayCreate, billingPayVerify,
   type BillingInfo, type BillingPlan,
@@ -23,10 +31,23 @@ const FEATURE_LABELS: Record<string, string> = {
   multi_outlet: "Multi-outlet",
 }
 
+const COPPER = "hsl(var(--accent-base))"
+const COPPER_HI = "hsl(var(--accent-hi))"
+const DANGER = "hsl(var(--destructive))"
+const WARNING = "hsl(var(--warning))"
+
+interface RazorpayResponse { razorpay_order_id: string; razorpay_payment_id: string; razorpay_signature: string }
+interface RazorpayInstance { open: () => void }
+type RazorpayCtor = new (opts: Record<string, unknown>) => RazorpayInstance
+const razorpayCtor = (): RazorpayCtor | undefined =>
+  (window as unknown as { Razorpay?: RazorpayCtor }).Razorpay
+
+const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e))
+
 function loadRazorpay(): Promise<boolean> {
   return new Promise((resolve) => {
     if (typeof window === "undefined") {resolve(false); return;}
-    if ((window as any).Razorpay) {resolve(true); return;}
+    if (razorpayCtor()) {resolve(true); return;}
     const s = document.createElement("script")
     s.src = "https://checkout.razorpay.com/v1/checkout.js"
     s.onload = () => { resolve(true); }
@@ -35,59 +56,68 @@ function loadRazorpay(): Promise<boolean> {
   })
 }
 
-function daysUntil(iso: string | null): number | null {
-  if (!iso) {return null}
-  const ms = new Date(iso).getTime() - Date.now()
-  return Number.isNaN(ms) ? null : Math.ceil(ms / 86_400_000)
+/** The app's _stageColor for invoice statuses. */
+function stageStatus(status: string): StatusChipStatus {
+  const s = status.toLowerCase()
+  if (s.includes("pending") || s.includes("verifying")) {return "warning"}
+  if (s.includes("paid")) {return "success"}
+  if (s.includes("cancel")) {return "danger"}
+  return "neutral"
 }
 
-const STATUS_STYLES: Record<string, string> = {
-  active: "bg-green-100 text-green-800",
-  trial: "bg-blue-100 text-blue-800",
-  past_due: "bg-amber-100 text-amber-900",
-  suspended: "bg-red-100 text-red-700",
-  cancelled: "bg-red-100 text-red-700",
-  expired: "bg-red-100 text-red-700",
+const money = (cents: number): string =>
+  `₹${((cents || 0) / 100).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`
+
+function useNarrow(): boolean {
+  const [narrow, setNarrow] = useState(false)
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 759px)")
+    const on = (): void => { setNarrow(mq.matches) }
+    on()
+    mq.addEventListener("change", on)
+    return () => { mq.removeEventListener("change", on) }
+  }, [])
+  return narrow
 }
 
-export default function BillingPage() {
-  const { timezone } = useTimezone()
+function FooterRow({ chip, text }: { chip: React.ReactNode; text: string }): React.JSX.Element {
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      <span className="shrink-0">{chip}</span>
+      <span className="line-clamp-2 min-w-0 text-xs text-muted-foreground">{text}</span>
+    </div>
+  )
+}
+
+export default function BillingPage(): React.JSX.Element {
   const { user } = useAuth()
   const { toast } = useToast()
   const rid = user?.restaurantUsername ?? ""
-
-  const [loading, setLoading] = useState(true)
+  const narrow = useNarrow()
   const [busy, setBusy] = useState(false)
-  const [info, setInfo] = useState<BillingInfo | null>(null)
 
-  const money = (cents: number) => `₹${(Number(cents || 0) / 100).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`
+  const billing = useCachedFetch<BillingInfo>(
+    `billing:${rid}`,
+    useCallback(() => getBilling(rid), [rid]),
+    { enabled: rid.length > 0 },
+  )
+  const info = billing.data
+  const load = billing.refresh
 
-  const load = useCallback(async () => {
-    if (!rid) {return}
-    setLoading(true)
-    try {
-      setInfo(await getBilling(rid))
-    } catch (e: any) {
-      toast({ title: "Couldn't load billing", description: String(e?.message ?? e), variant: "destructive" })
-    } finally {
-      setLoading(false)
-    }
-  }, [rid, toast])
-
-  useEffect(() => { void load() }, [load])
-
-  const payInvoice = async (invoiceId: string) => {
+  const payInvoice = async (invoiceId: string): Promise<void> => {
     const ok = await loadRazorpay()
     if (!ok) { toast({ title: "Couldn't load the payment window", variant: "destructive" }); return }
     const order = await billingPayCreate(rid, invoiceId)
-    const rzp = new (window as any).Razorpay({
+    const Razorpay = razorpayCtor()
+    if (!Razorpay) { return }
+    const rzp = new Razorpay({
       key: order.key_id,
       amount: order.amount,
       currency: order.currency,
       order_id: order.order_id,
       name: "Restaurant Dash",
       description: "Subscription payment",
-      handler: async (resp: any) => {
+      handler: async (resp: RazorpayResponse) => {
         try {
           await billingPayVerify(rid, {
             invoice_id: invoiceId,
@@ -96,171 +126,198 @@ export default function BillingPage() {
             razorpay_signature: resp.razorpay_signature,
           })
           toast({ title: "Payment successful", description: "Your plan is now active." })
-          await load()
-        } catch (e: any) {
-          toast({ title: "Payment verification failed", description: String(e?.message ?? e), variant: "destructive" })
+          load()
+        } catch (e) {
+          toast({ title: "Payment verification failed", description: errText(e), variant: "destructive" })
         }
       },
       modal: {
-        ondismiss: async () => {
+        ondismiss: () => {
           toast({ title: "Payment cancelled", description: "Your invoice is still pending — you can pay it anytime." })
-          await load()
+          load()
         },
       },
     })
     rzp.open()
   }
 
-  const choosePlan = async (plan: BillingPlan) => {
+  const choosePlan = async (plan: BillingPlan): Promise<void> => {
     setBusy(true)
     try {
       const r = await changePlan(rid, plan.id)
-      if (r.mode === "noop") { toast({ title: "You're already on this plan." }); await load(); return }
+      if (r.mode === "noop") { toast({ title: `You're already on ${plan.name}.` }); load(); return }
       if (r.mode === "downgrade_scheduled") {
-        toast({ title: "Downgrade scheduled", description: `You'll move to ${plan.name} at the end of your current period.` })
-        await load(); return
+        toast({ title: `Scheduled — switches to ${plan.name} at period end.` })
+        load(); return
       }
-      // upgrade
       if (r.invoice) {
         if (info?.online_pay) {
+          // [web-extra] Pay in the browser straight away.
           await payInvoice(r.invoice.id)
         } else {
-          toast({ title: "Invoice created", description: "Your provider will confirm the payment to activate the plan." })
-          await load()
+          toast({ title: `Invoice created for ${plan.name}. Your provider will confirm the payment.` })
+          load()
         }
       } else {
-        toast({ title: `Switched to ${plan.name}` })
-        await load()
+        toast({ title: `Switched to ${plan.name}.` })
+        load()
       }
-    } catch (e: any) {
-      toast({ title: "Couldn't change plan", description: String(e?.message ?? e), variant: "destructive" })
+    } catch (e) {
+      toast({ title: "Couldn't change plan", description: errText(e), variant: "destructive" })
     } finally {
       setBusy(false)
     }
   }
 
-  const sub = info?.subscription
+  if (billing.loading) {
+    return (
+      <div className="mx-auto w-full max-w-3xl space-y-3 p-1" aria-busy="true">
+        <SkeletonBox height={120} className="mb-6 rounded-lg" />
+        <SkeletonRows rows={6} />
+      </div>
+    )
+  }
+  if (billing.error != null || !info) {
+    return (
+      <LoadErrorState whatFailed="Could not load billing" error={billing.error} onRetry={billing.retry} />
+    )
+  }
+  if (!info.configured) {
+    return (
+      <EmptyState
+        icon={<CreditCard />}
+        title="Billing not set up"
+        caption="Billing isn't set up for this workspace yet."
+      />
+    )
+  }
+
+  const sub = info.subscription
+  const st = subscriptionState(sub)
+  const { status, trialLeft, periodLeft, renewing, overdue } = st
   const currentPlanId = sub?.plan_id ?? null
-  const trialDays = sub?.status === "trial" ? daysUntil(sub.trial_ends_at) : null
-  const periodDays = sub?.status === "active" ? daysUntil(sub?.current_period_end ?? null) : null
+  const pending = info.pending_plan
+
+  const renewal = (): string => {
+    if (overdue) {
+      const late = periodLeft == null ? 0 : daysLate(periodLeft)
+      return late >= 1 ? `Payment overdue by ${plural(late, "day")}` : "Payment overdue"
+    }
+    if (renewing) {return "Renewing — payment not confirmed yet"}
+    if (status !== "active" || periodLeft == null) {return ""}
+    const days = daysLeft(periodLeft)
+    return days <= 0 ? "Renews today" : `Renews in ${plural(days, "day")}`
+  }
+  const trial = (): string => {
+    if (trialLeft == null) {return ""}
+    if (trialLeft < 0) {return "Trial expired"}
+    const days = daysLeft(trialLeft)
+    return days <= 0 ? "Trial ends today" : `Trial — ${plural(days, "day")} left`
+  }
+  const subCaption = [trial(), renewal(), sub == null ? "Unlimited starter (no plan assigned)." : ""]
+    .filter((s) => s.length > 0)
+    .join(" · ")
+
+  const footer = overdue ? (
+    <FooterRow
+      chip={<StatusChip label="Renewal failed" status="danger" dense />}
+      text="This subscription did not renew. Settle it to keep your plan."
+    />
+  ) : renewing ? (
+    <FooterRow
+      chip={<StatusChip label="Renewing" status="warning" dense />}
+      text="The billing period ended and the payment has not confirmed yet."
+    />
+  ) : pending ? (
+    <FooterRow
+      chip={<StatusChip label="Scheduled" status="warning" dense />}
+      text={`Switches to ${pending.name} at period end.`}
+    />
+  ) : undefined
 
   return (
-    <div className="space-y-6 p-1">
-      <div className="flex items-center justify-between gap-3 max-lg:flex-wrap">
-        <div className="max-lg:min-w-0 max-lg:flex-[1_1_16rem]">
-          <h1 className="text-2xl font-bold tracking-tight">Subscription &amp; billing</h1>
-          <p className="text-sm text-muted-foreground">Manage your plan, upgrade for more features, and view invoices.</p>
+    <div className="relative mx-auto w-full max-w-3xl p-1">
+      <StatCard
+        value={info.plan?.name ?? "No plan"}
+        caption={<span className="uppercase tracking-[0.06em]">{subCaption ? `Current plan · ${subCaption}` : "Current plan"}</span>}
+        tag={status || undefined}
+        tagColor={overdue ? DANGER : renewing ? WARNING : COPPER_HI}
+        footer={footer}
+      />
+
+      <div className="mt-8">
+        <SectionHeader title="Plans" count={info.plans.length} />
+        <div className="space-y-3">
+          {info.plans.map((plan) => {
+            const isCurrent = plan.id === currentPlanId && status === "active"
+            const features = Object.entries(FEATURE_LABELS)
+              .filter(([k]) => plan.features[k] !== false)
+              .map(([, label]) => label)
+            const limits = plan.limits as Partial<Record<string, string | number>>
+            return (
+              <ForkCard key={plan.id} selected={isCurrent}>
+                <div className="flex items-start gap-3">
+                  <div className="min-w-0 flex-1 truncate text-[15px] font-semibold">{plan.name}</div>
+                  <MicroStat
+                    value={plan.price_cents === 0 ? "Free" : `${money(plan.price_cents)}/mo`}
+                    label="per month"
+                    alignEnd
+                  />
+                </div>
+                {features.length > 0 && (
+                  <p className="mt-2 text-xs text-muted-foreground">{features.join(" · ")}</p>
+                )}
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  <InfoChip
+                    icon={<BadgeCheck />}
+                    label={limits.employees != null ? `Up to ${limits.employees} staff` : "Unlimited staff"}
+                  />
+                  <InfoChip
+                    icon={<Store />}
+                    label={limits.outlets != null ? `Up to ${limits.outlets} outlet(s)` : "Unlimited outlets"}
+                  />
+                </div>
+                <div className="mt-3 flex justify-end">
+                  {isCurrent ? (
+                    <StatusChip label="Current plan" color={COPPER} />
+                  ) : (
+                    <Button size="sm" disabled={busy} onClick={() => void choosePlan(plan)}>
+                      Choose <ArrowRight />
+                    </Button>
+                  )}
+                </div>
+              </ForkCard>
+            )
+          })}
         </div>
-        <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
-          <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} /> Refresh
-        </Button>
       </div>
 
-      {loading && !info ? (
-        <p className="py-10 text-center text-sm text-muted-foreground">Loading…</p>
-      ) : !info?.configured ? (
-        <Card><CardContent className="py-8 text-center text-sm text-muted-foreground">Billing isn&apos;t set up for this workspace yet. Please contact support.</CardContent></Card>
-      ) : (
-        <>
-          {/* Current plan */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                Current plan: {info.plan?.name ?? "No plan"}
-                {sub?.status && <span className={`rounded px-2 py-0.5 text-xs font-medium ${STATUS_STYLES[sub.status] ?? "bg-muted"}`}>{sub.status}</span>}
-              </CardTitle>
-              <CardDescription>
-                {trialDays != null ? `Trial — ${trialDays > 0 ? `${trialDays} day(s) left` : "expired"}.` : null}
-                {periodDays != null ? `Renews in ${periodDays} day(s).` : null}
-                {!sub ? "You're on an unlimited starter (no plan assigned)." : null}
-                {info.pending_plan ? ` Scheduled change → ${info.pending_plan.name} at period end.` : null}
-              </CardDescription>
-            </CardHeader>
-          </Card>
-
-          {/* Tiers */}
-          <div className="grid gap-4 md:grid-cols-3">
-            {info.plans.map((plan) => {
-              const isCurrent = plan.id === currentPlanId && sub?.status === "active"
-              const features = Object.entries(FEATURE_LABELS).filter(([k]) => plan.features?.[k] !== false)
-              const empLimit = (plan.limits as any)?.employees
-              const outletLimit = (plan.limits as any)?.outlets
-              const dearer = info.plan ? plan.price_cents > info.plan.price_cents : true
-              return (
-                <Card key={plan.id} className={isCurrent ? "border-primary ring-1 ring-primary" : ""}>
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      {plan.name}
-                      {isCurrent && <Crown className="h-4 w-4 text-primary" />}
-                    </CardTitle>
-                    <CardDescription>
-                      <span className="text-2xl font-bold text-foreground">{plan.price_cents === 0 ? "Free" : money(plan.price_cents)}</span>
-                      {plan.price_cents > 0 && <span className="text-xs"> /month</span>}
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    <ul className="space-y-1 text-sm">
-                      {features.map(([k, label]) => (
-                        <li key={k} className="flex items-center gap-2"><Check className="h-4 w-4 text-green-600" /> {label}</li>
-                      ))}
-                      <li className="text-muted-foreground">{empLimit ? `Up to ${empLimit} staff` : "Unlimited staff"}</li>
-                      <li className="text-muted-foreground">{outletLimit ? `Up to ${outletLimit} outlet(s)` : "Unlimited outlets"}</li>
-                    </ul>
-                    {isCurrent ? (
-                      <Button className="w-full" disabled variant="secondary">Current plan</Button>
-                    ) : (
-                      <Button className="w-full" disabled={busy} onClick={() => choosePlan(plan)}>
-                        {dearer ? "Upgrade" : "Switch"}
-                      </Button>
-                    )}
-                  </CardContent>
-                </Card>
-              )
-            })}
-          </div>
-
-          {/* Invoices */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Invoices</CardTitle>
-              <CardDescription>
-                {info.online_pay ? "Pay pending invoices online." : "Online payment isn't enabled — your provider confirms payments."}
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              {info.invoices.length === 0 ? (
-                <p className="py-4 text-center text-sm text-muted-foreground">No invoices yet.</p>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead className="text-left text-muted-foreground">
-                      <tr className="border-b">
-                        <th className="py-2 pr-3">Date</th><th className="py-2 pr-3">Note</th>
-                        <th className="py-2 pr-3 text-right">Amount</th><th className="py-2 pr-3">Status</th><th></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {info.invoices.map((inv) => (
-                        <tr key={inv.id} className="border-b last:border-0">
-                          <td className="py-2 pr-3 whitespace-nowrap" title={formatFullDateTime(inv.created_at, timezone)}>{formatDate(inv.created_at, timezone)}</td>
-                          <td className="py-2 pr-3">{inv.note ?? "—"}</td>
-                          <td className="py-2 pr-3 text-right">{money(inv.amount_cents)}</td>
-                          <td className="py-2 pr-3">{inv.status}</td>
-                          <td className="py-2 text-right">
-                            {inv.status === "pending" && info.online_pay && (
-                              <Button size="sm" onClick={() => void payInvoice(inv.id)}>Pay</Button>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+      {info.invoices.length > 0 && (
+        <div className="mt-6">
+          <SectionHeader title="Invoices" count={info.invoices.length} />
+          <div className="space-y-2.5">
+            {info.invoices.map((inv) => (
+              <ForkCard key={inv.id} className="px-4 py-3">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[7px] border border-border bg-inset">
+                    <ReceiptText className="h-4 w-4 text-accent-base" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-semibold tabular-nums">{money(inv.amount_cents)}</div>
+                    {inv.note && <div className="mt-0.5 truncate text-xs text-muted-foreground">{inv.note}</div>}
+                  </div>
+                  <StatusChip label={inv.status} status={stageStatus(inv.status)} dense={narrow} />
+                  {inv.status === "pending" && info.online_pay && (
+                    <Button size="sm" onClick={() => void payInvoice(inv.id)}>Pay</Button>
+                  )}
                 </div>
-              )}
-            </CardContent>
-          </Card>
-        </>
+              </ForkCard>
+            ))}
+          </div>
+        </div>
       )}
+
+      <CacheStalePill offline={billing.offline} fromCache={billing.fromCache} updatedAt={billing.updatedAt} />
     </div>
   )
 }

@@ -91,7 +91,7 @@ export function OrdersScopeNotice({ scope, visibleCount, station, large = false,
               {elsewhere} live order{elsewhere === 1 ? " is" : "s are"} on{" "}
               {suggestion ? <strong className="font-semibold">{suggestion.outlet_name}</strong> : "another outlet"}
               . Orders are scoped to the outlet you are viewing, so nothing has been lost — it is somewhere else.
-              {scope.current_outlet_has_tables === false
+              {!scope.current_outlet_has_tables
                 ? " This outlet has no tables yet, so guest QR orders can never land here."
                 : ""}
             </p>
@@ -128,7 +128,7 @@ export function OrdersScopeNotice({ scope, visibleCount, station, large = false,
           <p className={titleCls}>No live orders{stationSuffix} in {where}</p>
           <p className={bodyCls}>
             Nothing is open right now.{" "}
-            {scope.current_outlet_has_tables === false
+            {!scope.current_outlet_has_tables
               ? "This outlet has no tables yet, so guest QR orders can't land here — add tables in the Tables module."
               : "New table, QR and takeaway orders appear here the moment they are placed."}
           </p>

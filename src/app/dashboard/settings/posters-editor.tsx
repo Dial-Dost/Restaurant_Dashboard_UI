@@ -23,6 +23,16 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -78,7 +88,7 @@ const readFileAsBase64 = (file: File): Promise<string> =>
     const reader = new FileReader()
     reader.onerror = () => { reject(new Error("Could not read that file.")) }
     reader.onload = () => {
-      const out = String(reader.result ?? "")
+      const out = typeof reader.result === "string" ? reader.result : ""
       // FileReader gives a data URL; the API takes either form, but sending the
       // bare payload keeps the request smaller by the prefix.
       resolve(out.includes(",") ? (out.split(",").pop() ?? out) : out)
@@ -101,7 +111,7 @@ function PosterRow({
   disabled: boolean
   onPatch: (patch: Parameters<typeof updatePoster>[2]) => Promise<void>
   onDelete: () => Promise<void>
-}) {
+}): React.JSX.Element {
   const [confirming, setConfirming] = useState(false)
   const showing = isShowing(poster, today)
   // Reserve the preview's box from the stored intrinsic size so the list does
@@ -112,7 +122,6 @@ function PosterRow({
   return (
     <div className="flex flex-col gap-3 rounded-lg border p-3 sm:flex-row">
       <div className="w-full shrink-0 sm:w-44">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={poster.image_url}
           alt={poster.title || "Poster"}
@@ -233,26 +242,34 @@ function PosterRow({
             </div>
           </div>
 
-          {confirming ? (
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground">Delete this poster?</span>
-              <Button type="button" variant="destructive" size="sm" disabled={disabled} onClick={() => { void onDelete() }}>
-                Delete
-              </Button>
-              <Button type="button" variant="ghost" size="sm" onClick={() => { setConfirming(false) }}>Cancel</Button>
-            </div>
-          ) : (
-            <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => { setConfirming(true) }}>
-              Delete
-            </Button>
-          )}
+          <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => { setConfirming(true) }}>
+            Delete
+          </Button>
+          <AlertDialog open={confirming} onOpenChange={setConfirming}>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Delete poster?</AlertDialogTitle>
+                <AlertDialogDescription>It will stop showing on your guest menu immediately.</AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  disabled={disabled}
+                  onClick={() => { setConfirming(false); void onDelete() }}
+                >
+                  Delete
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
       </div>
     </div>
   )
 }
 
-export function PostersEditor(props: { restaurantId: string; isAdmin: boolean }) {
+export function PostersEditor(props: { restaurantId: string; isAdmin: boolean }): React.JSX.Element | null {
   const { restaurantId, isAdmin } = props
   const { toast } = useToast()
 
@@ -283,7 +300,7 @@ export function PostersEditor(props: { restaurantId: string; isAdmin: boolean })
   )
   const full = library ? posters.length >= library.max_posters : false
 
-  const onPick = async (file: File | null) => {
+  const onPick = async (file: File | null): Promise<void> => {
     if (!file || !library) {return}
     // The SIZE pre-check is here so a 12 MB photo never leaves the laptop; the
     // TYPE check is deliberately left to the server, which validates the bytes
@@ -325,7 +342,7 @@ export function PostersEditor(props: { restaurantId: string; isAdmin: boolean })
     }
   }
 
-  const onPatch = async (id: string, patch: Parameters<typeof updatePoster>[2]) => {
+  const onPatch = async (id: string, patch: Parameters<typeof updatePoster>[2]): Promise<void> => {
     setBusy(true)
     try {
       await updatePoster(restaurantId, id, patch)
@@ -345,7 +362,7 @@ export function PostersEditor(props: { restaurantId: string; isAdmin: boolean })
     }
   }
 
-  const onDelete = async (id: string) => {
+  const onDelete = async (id: string): Promise<void> => {
     setBusy(true)
     try {
       await deletePoster(restaurantId, id)

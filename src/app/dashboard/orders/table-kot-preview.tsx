@@ -200,7 +200,7 @@ export function TableKotPreview({
             {canEditCustomer ? (
             <>
             <Button variant="outline" size="sm" onClick={() => { setCustomerOpen(true); }}>
-              <Pencil className="h-3.5 w-3.5" /> Edit name / GSTIN
+              <Pencil className="h-3.5 w-3.5" /> Edit name / GSTIN / address
             </Button>
             <BillCustomerDialog
               open={customerOpen}

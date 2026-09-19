@@ -4,11 +4,10 @@
 import type { ReactNode} from 'react';
 import React, { createContext, useState, useContext, useEffect } from 'react';
 import { signOutUser } from '@/services/authService';
-import type { User } from '@/lib/db';
 import { refreshSession } from '@/lib/db';
 import type { SessionScope } from '@/lib/session-scope';
 
-interface AuthUser {
+export interface AuthUser {
   uid: string;
   employeeId: string; // employee UUID
   employeeUsername?: string;
@@ -36,6 +35,13 @@ interface AuthUser {
     Those are re-hydrated from /auth/me on mount below rather than guessed at.
   */
   scope?: SessionScope;
+  /*
+    The subscription plan's feature-flag map, shipped on login and /auth/me —
+    the same payload Flutter reads into `Profile.features`. ADDITIVE readers
+    only (usePlanFeatures): a missing map means "everything allowed", so a
+    session stored before this field existed hides nothing.
+  */
+  features?: Record<string, unknown>;
 }
 
 interface AuthContextType {
@@ -57,16 +63,17 @@ const APP_ROLES = ['admin', 'employee', 'valet', 'waiter', 'cashier', 'captain',
 const isAppRole = (value: unknown): value is AuthUser['role'] =>
   typeof value === 'string' && (APP_ROLES as readonly string[]).includes(value);
 
-const safeJsonParse = (str: string | null) => {
+/** The `authUser` payload this module wrote earlier — or null, never a throw. */
+const safeJsonParse = (str: string | null): AuthUser | null => {
   if (!str) {return null;}
   try {
-    return JSON.parse(str);
-  } catch (e) {
+    return JSON.parse(str) as AuthUser;
+  } catch {
     return null;
   }
 };
 
-export const AuthProvider = ({ children }: { children: ReactNode }) => {
+export const AuthProvider = ({ children }: { children: ReactNode }): React.JSX.Element => {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -128,6 +135,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         if (Array.isArray(fresh.actions_set)) { next.actions_set = fresh.actions_set; }
         if (Array.isArray(fresh.action_names)) { next.action_names = fresh.action_names; }
         if (fresh.scope && typeof fresh.scope.waiter_only === 'boolean') { next.scope = fresh.scope; }
+        if (fresh.features && typeof fresh.features === 'object' && !Array.isArray(fresh.features)) { next.features = fresh.features; }
         // Persist so the NEXT page load starts from the server's answer too.
         try { localStorage.setItem('authUser', JSON.stringify(next)); } catch { /* private mode, quota */ }
         return next;
@@ -138,13 +146,13 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     // `user` itself would re-run this every time it updates its own answer.
   }, [user?.employeeId]);
 
-  const login = (userData: AuthUser) => {
+  const login = (userData: AuthUser): void => {
     setUser(userData);
     localStorage.setItem('authUser', JSON.stringify(userData));
   };
 
-  const logout = () => {
-    signOutUser(); // Call mock signout service
+  const logout = (): void => {
+    void signOutUser(); // Call mock signout service — fire-and-forget
     setUser(null);
     localStorage.removeItem('authUser');
   };
@@ -156,7 +164,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   );
 };
 
-export const useAuth = () => {
+export const useAuth = (): AuthContextType => {
   const context = useContext(AuthContext);
   if (context === undefined) {
     throw new Error('useAuth must be used within an AuthProvider');

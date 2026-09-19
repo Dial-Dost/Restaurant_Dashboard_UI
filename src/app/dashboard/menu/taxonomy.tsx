@@ -43,11 +43,10 @@
 //    accountant.
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { AlertTriangle, Info, Layers, Loader2, Plus, RotateCcw, Ruler, Search } from "lucide-react"
+import { AlertTriangle, Info, Loader2, Plus, RotateCcw, Search } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import {
     Dialog,
     DialogContent,
@@ -91,7 +90,7 @@ export interface TaxonomyMenuItem {
 /** "no group" — a real, chosen value that CLEARS the assignment, not an absence. */
 const NO_GROUP = "__none__"
 
-function Hint({ children, tone = "info" }: { children: React.ReactNode; tone?: "info" | "warn" }) {
+function Hint({ children, tone = "info" }: { children: React.ReactNode; tone?: "info" | "warn" }): React.JSX.Element {
     const Icon = tone === "warn" ? AlertTriangle : Info
     return (
         <div className={cn(
@@ -106,106 +105,56 @@ function Hint({ children, tone = "info" }: { children: React.ReactNode; tone?: "
     )
 }
 
-export function MenuTaxonomyCard({ restaurantId, menuItems, canEdit }: {
+/**
+ * The "Menu groups" dialog, opened straight from the menu toolbar (Flutter:
+ * the `Menu groups` toolbar button → misOpenMenuGroups). Owns the axis and the
+ * assignment map the inner dialog edits; the unclassified count lives inside
+ * the dialog, where Flutter also shows it.
+ */
+export function MenuGroupsDialog({ restaurantId, canEdit, onClose }: {
     restaurantId: string
-    menuItems: TaxonomyMenuItem[]
     canEdit: boolean
-}) {
-    const [open, setOpen] = useState<null | "groups" | "sizes">(null)
+    onClose: () => void
+}): React.JSX.Element {
     const [kind, setKind] = useState("revenue")
     const [map, setMap] = useState<MenuGroupAssignments | null>(null)
-    // "Nothing configured" and "could not be read" are the same empty screen and
-    // opposite facts. The read answers null for the second — including when
-    // migration 039 has not been applied — and this keeps them apart, because
-    // "every dish is classified" is a claim, and claiming it off a failed request
-    // is how an owner stops trusting the number beside it.
-    const [failed, setFailed] = useState(false)
     const [loading, setLoading] = useState(true)
 
     const load = useCallback(() => {
         if (!restaurantId) {return}
         setLoading(true)
         void getMenuGroupAssignments(restaurantId, kind)
-            .then((m) => { setFailed(m === null); setMap(m) })
+            .then(setMap)
             .finally(() => { setLoading(false) })
     }, [restaurantId, kind])
     useEffect(() => { load() }, [load])
 
-    const groups = map?.groups ?? []
-    const unclassified = map?.unclassified_items ?? 0
-
     return (
-        <Card>
-            <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                <div>
-                    <CardTitle className="flex items-center gap-2">
-                        <Layers className="h-5 w-5 text-primary" /> Groups &amp; sizes
-                    </CardTitle>
-                    <CardDescription>
-                        A <b>group</b>{" "}is how the money is cut — Food, Beverage, Liquor — and it is what the Group
-                        Summary reports on. A <b>size</b>{" "}is a price point of one dish (Half / Full), and it is what
-                        stops one dish&apos;s sales being split across three differently-named rows.
-                    </CardDescription>
-                </div>
-                <div className="flex shrink-0 gap-2">
-                    <Button variant="outline" size="sm" onClick={() => { setOpen("groups") }}>
-                        <Layers className="mr-2 h-4 w-4" /> Groups
-                    </Button>
-                    <Button variant="outline" size="sm" disabled={menuItems.length === 0} onClick={() => { setOpen("sizes") }}>
-                        <Ruler className="mr-2 h-4 w-4" /> Item sizes
-                    </Button>
-                </div>
-            </CardHeader>
-            <CardContent className="space-y-3">
-                {loading ? (
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                        <Loader2 className="h-4 w-4 animate-spin" /> Reading this outlet&apos;s classification…
-                    </div>
-                ) : failed ? (
-                    <p className="text-sm text-destructive">
-                        This outlet&apos;s classification could not be read — which is not the same as &ldquo;nothing
-                        configured&rdquo;. Reload before editing, so a save here cannot overwrite something this
-                        screen never saw.
-                    </p>
-                ) : groups.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">
-                        No groups configured. Every sale reports under <b>Unclassified</b>{" "}on the Group Summary —
-                        which is honest, and is what every restaurant starts with. Two or three groups make that
-                        report useful.
-                    </p>
-                ) : (
-                    <div className="flex flex-wrap items-center gap-2">
-                        {groups.filter((g) => g.active).map((g) => (
-                            <Badge key={g.id} variant="outline" className="font-normal">{g.name}</Badge>
-                        ))}
-                        {unclassified > 0 ? (
-                            <Badge variant="outline" className="border-amber-500/50 font-normal text-amber-700 dark:text-amber-400">
-                                {unclassified} item{unclassified === 1 ? "" : "s"} unclassified
-                            </Badge>
-                        ) : (
-                            <Badge variant="outline" className="border-emerald-500/50 font-normal text-emerald-700 dark:text-emerald-400">
-                                Every dish is classified
-                            </Badge>
-                        )}
-                    </div>
-                )}
-            </CardContent>
+        <GroupsDialog
+            restaurantId={restaurantId} kind={kind} setKind={setKind}
+            map={map} loading={loading} reload={load} canEdit={canEdit}
+            onClose={onClose}
+        />
+    )
+}
 
-            {open === "groups" ? (
-                <GroupsDialog
-                    restaurantId={restaurantId} kind={kind} setKind={setKind}
-                    map={map} loading={loading} reload={load} canEdit={canEdit}
-                    onClose={() => { setOpen(null) }}
-                />
-            ) : null}
-
-            {open === "sizes" ? (
-                <SizesDialog
-                    restaurantId={restaurantId} menuItems={menuItems} canEdit={canEdit}
-                    onClose={() => { setOpen(null) }}
-                />
-            ) : null}
-        </Card>
+/**
+ * The "Item sizes" dialog. `initialDishId` pre-scopes it to one dish — the
+ * detail sheet's "Price points" button (Flutter: misOpenMenuVariations with
+ * the tapped dish's id) opens it that way.
+ */
+export function MenuSizesDialog({ restaurantId, menuItems, canEdit, initialDishId, onClose }: {
+    restaurantId: string
+    menuItems: TaxonomyMenuItem[]
+    canEdit: boolean
+    initialDishId?: string | null
+    onClose: () => void
+}): React.JSX.Element {
+    return (
+        <SizesDialog
+            restaurantId={restaurantId} menuItems={menuItems} canEdit={canEdit}
+            initialDishId={initialDishId} onClose={onClose}
+        />
     )
 }
 
@@ -224,31 +173,44 @@ function GroupsDialog({
     reload: () => void
     canEdit: boolean
     onClose: () => void
-}) {
+}): React.JSX.Element {
     const { toast } = useToast()
     const [busy, setBusy] = useState(false)
     const [newName, setNewName] = useState("")
     const [itemSearch, setItemSearch] = useState("")
+    // Finding 40: the dish list toggles between the exceptions (the default,
+    // tidy view), EVERY dish with its resolution, and only the unclassified —
+    // so "which dishes are Unclassified" can be browsed, not just counted.
+    const [dishView, setDishView] = useState<"exceptions" | "all" | "unclassified">("exceptions")
 
     const fail = (e: unknown): void => {
-        toast({ title: "Not saved", description: String((e as Error)?.message ?? e), variant: "destructive" })
+        toast({
+            title: "Not saved",
+            description: e instanceof Error && e.message ? e.message : "The change was not saved.",
+            variant: "destructive",
+        })
     }
 
     const groups = map?.groups ?? []
     const active = groups.filter((g) => g.active)
     const categories = map?.categories ?? []
-    const items = map?.items ?? []
+    const items = useMemo(() => map?.items ?? [], [map])
 
     const shownItems = useMemo(() => {
         const q = itemSearch.trim().toLowerCase()
         // Default view is the items that CARRY AN OVERRIDE plus anything searched
         // for: listing 300 dishes with an empty picker each would bury the ~5 that
         // are genuine exceptions, which is the workflow this screen is built around.
-        const base = q.length > 0
-            ? items.filter((i) => i.name.toLowerCase().includes(q))
-            : items.filter((i) => i.group_id !== null)
-        return base.slice(0, 60)
-    }, [items, itemSearch])
+        const inView = dishView === "all"
+            ? items
+            : dishView === "unclassified"
+                ? items.filter((i) => i.group_id === null && !i.resolved_group_name)
+                : q.length > 0 ? items : items.filter((i) => i.group_id !== null)
+        const base = q.length > 0 ? inView.filter((i) => i.name.toLowerCase().includes(q)) : inView
+        // The full list is the point of "All dishes"; only the exceptions view
+        // keeps the old cap, where a search is the way in.
+        return dishView === "exceptions" ? base.slice(0, 60) : base
+    }, [items, itemSearch, dishView])
 
     const add = async (): Promise<void> => {
         if (!newName.trim()) {return}
@@ -297,7 +259,14 @@ function GroupsDialog({
         <Dialog open onOpenChange={(v) => { if (!v && !busy) {onClose()} }}>
             <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
                 <DialogHeader>
-                    <DialogTitle>Menu groups</DialogTitle>
+                    <DialogTitle className="flex flex-wrap items-center gap-2">
+                        Menu groups
+                        {!loading && (map?.unclassified_items ?? 0) > 0 ? (
+                            <Badge variant="outline" className="border-warning/50 text-[11px] font-medium text-warning">
+                                {map?.unclassified_items} dish{map?.unclassified_items === 1 ? "" : "es"} in no group
+                            </Badge>
+                        ) : null}
+                    </DialogTitle>
                     <DialogDescription>
                         File each category under a group and the whole menu is classified. Use a per-dish
                         override only for the genuine exception.
@@ -396,9 +365,28 @@ function GroupsDialog({
                         </div>
 
                         <div className="space-y-1.5">
-                            <Label className="text-xs uppercase tracking-wide text-muted-foreground">
-                                Per-dish exceptions
-                            </Label>
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                                    Dishes — the exceptions
+                                </Label>
+                                <div className="inline-flex rounded-md border p-0.5" role="group" aria-label="Which dishes to list">
+                                    {([
+                                        ["exceptions", "Overrides"],
+                                        ["all", `All dishes (${items.length})`],
+                                        ["unclassified", "Unclassified"],
+                                    ] as const).map(([v, label]) => (
+                                        <Button
+                                            key={v} type="button" size="sm"
+                                            variant={dishView === v ? "secondary" : "ghost"}
+                                            className="h-7 px-2.5 text-xs"
+                                            aria-pressed={dishView === v}
+                                            onClick={() => { setDishView(v) }}
+                                        >
+                                            {label}
+                                        </Button>
+                                    ))}
+                                </div>
+                            </div>
                             <div className="relative max-w-sm">
                                 <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                                 <Input
@@ -408,7 +396,11 @@ function GroupsDialog({
                             </div>
                             {shownItems.length === 0 ? (
                                 <p className="text-xs text-muted-foreground">
-                                    {itemSearch.trim() ? "No dish matches that." : "No per-dish overrides — every dish takes its category's group, which is the usual and the tidier answer."}
+                                    {itemSearch.trim()
+                                        ? "No dish matches that."
+                                        : dishView === "unclassified"
+                                            ? "Every dish resolves to a group."
+                                            : "No per-dish overrides — every dish takes its category's group, which is the usual and the tidier answer."}
                                 </p>
                             ) : (
                                 <div className="max-h-64 space-y-1 overflow-y-auto rounded-md border p-2">
@@ -420,6 +412,8 @@ function GroupsDialog({
                                                     <span className="ml-1.5 text-xs text-muted-foreground">
                                                         ({i.resolved_group_name} — from its category)
                                                     </span>
+                                                ) : i.group_id === null ? (
+                                                    <span className="ml-1.5 text-xs font-medium text-warning">Unclassified</span>
                                                 ) : null}
                                             </span>
                                             <Select
@@ -476,16 +470,17 @@ function GroupsDialog({
 // SIZES (VARIATIONS)
 // ---------------------------------------------------------------------------
 
-function SizesDialog({ restaurantId, menuItems, canEdit, onClose }: {
+function SizesDialog({ restaurantId, menuItems, canEdit, initialDishId, onClose }: {
     restaurantId: string
     menuItems: TaxonomyMenuItem[]
     canEdit: boolean
+    initialDishId?: string | null
     onClose: () => void
-}) {
+}): React.JSX.Element {
     const { toast } = useToast()
     const { currencySymbol } = useCurrency()
     const [search, setSearch] = useState("")
-    const [dishId, setDishId] = useState<string | null>(null)
+    const [dishId, setDishId] = useState<string | null>(initialDishId ?? null)
     const [variations, setVariations] = useState<MenuVariationRecord[]>([])
     const [loading, setLoading] = useState(false)
     const [busy, setBusy] = useState(false)
@@ -494,9 +489,16 @@ function SizesDialog({ restaurantId, menuItems, canEdit, onClose }: {
 
     const money = (v: unknown): string => formatAmount(v, currencySymbol)
     const dish = menuItems.find((m) => m.id === dishId) ?? null
+    // Opened from a dish's own tile (Flutter misOpenMenuVariations): scoped to
+    // THAT dish — its name is the headline and the picker is not offered.
+    const scoped = initialDishId != null && dish !== null
 
     const fail = (e: unknown): void => {
-        toast({ title: "Not saved", description: String((e as Error)?.message ?? e), variant: "destructive" })
+        toast({
+            title: "Not saved",
+            description: e instanceof Error && e.message ? e.message : "The change was not saved.",
+            variant: "destructive",
+        })
     }
 
     const load = useCallback((id: string) => {
@@ -540,7 +542,8 @@ function SizesDialog({ restaurantId, menuItems, canEdit, onClose }: {
         <Dialog open onOpenChange={(vv) => { if (!vv && !busy) {onClose()} }}>
             <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
                 <DialogHeader>
-                    <DialogTitle>Item sizes</DialogTitle>
+                    {scoped ? <p className="micro-label">Price points</p> : null}
+                    <DialogTitle>{scoped ? dish.name : "Item sizes"}</DialogTitle>
                     <DialogDescription>
                         A dish&apos;s price points — Half and Full, 30ml and 60ml. A line that names one is billed at
                         that price and reports under it, instead of becoming a second dish with a different name.
@@ -548,7 +551,7 @@ function SizesDialog({ restaurantId, menuItems, canEdit, onClose }: {
                 </DialogHeader>
 
                 <div className="grid gap-3 sm:grid-cols-12">
-                    <div className="space-y-1.5 sm:col-span-5">
+                    <div className={cn("space-y-1.5 sm:col-span-5", scoped && "hidden")}>
                         <Label>Dish</Label>
                         <div className="relative">
                             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -578,7 +581,7 @@ function SizesDialog({ restaurantId, menuItems, canEdit, onClose }: {
                         </div>
                     </div>
 
-                    <div className="space-y-2 sm:col-span-7">
+                    <div className={cn("space-y-2", scoped ? "sm:col-span-12" : "sm:col-span-7")}>
                         {!dish ? (
                             <p className="py-8 text-center text-sm text-muted-foreground">
                                 Pick a dish to see or add its sizes.
@@ -595,10 +598,13 @@ function SizesDialog({ restaurantId, menuItems, canEdit, onClose }: {
                                 </div>
 
                                 {variations.length === 0 ? (
-                                    <p className="text-sm text-muted-foreground">
-                                        No sizes. Every line of this dish is billed at its base price, and reports as one
-                                        row — which is right for a dish that only comes one way.
-                                    </p>
+                                    <div className="rounded-md border border-dashed p-4 text-center">
+                                        <p className="text-sm font-medium">One price, no sizes</p>
+                                        <p className="mt-1 text-sm text-muted-foreground">
+                                            Every line of this dish is billed at its base price of {money(dish.price)}, and
+                                            reports as one row — which is right for a dish that only comes one way.
+                                        </p>
+                                    </div>
                                 ) : (
                                     <div className="space-y-1.5">
                                         {variations.map((v) => (
@@ -618,6 +624,12 @@ function SizesDialog({ restaurantId, menuItems, canEdit, onClose }: {
                                                     aria-label={`Price of size ${v.name}`}
                                                     onBlur={(e) => {
                                                         const p = parseMoney(e.target.value)
+                                                        if (p !== null && p <= 0) {
+                                                            // Finding 41: refused here, in the server's own words.
+                                                            e.target.value = v.price.toFixed(2)
+                                                            toast({ title: "Not saved", description: "A size must cost something. Free food is a comp, not a ₹0 price.", variant: "destructive" })
+                                                            return
+                                                        }
                                                         if (p !== null && p !== v.price) {void patch(v, { price: p })}
                                                     }}
                                                 />

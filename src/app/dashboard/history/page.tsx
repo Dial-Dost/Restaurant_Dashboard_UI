@@ -1,39 +1,51 @@
 "use client"
 
-import { useEffect, useState } from "react"
-import Link from "next/link"
-import { ChevronDown } from "lucide-react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart"
-import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts"
+// Month-by-month business summary, up to 3 years back — the web
+// `_HistoryModule` (restaurant_owner_app/lib/screens/modules.dart
+// 16652–17092). Every card on this screen opens the record behind it: the
+// three headline totals break down month by month, each chart mark opens its
+// month's reading, and each month card opens the month's own detail sheet —
+// the metric breakdown AND the settled bills that made it, every one of which
+// opens the bill itself, Reprint and all (client item 8).
+
+import { useCallback, useMemo, useState, type ReactElement } from "react"
+import { Calendar, ChevronRight, Hourglass, Receipt, Star, Utensils, Equal } from "lucide-react"
+
+import { ForkCard } from "@/components/ui/fork-card"
+import { StatCard } from "@/components/ui/stat-card"
+import { SectionHeader } from "@/components/ui/section-header"
+import { EmptyState } from "@/components/ui/empty-state"
+import { LoadErrorState } from "@/components/ui/load-error-state"
+import { SkeletonRows, SkeletonStats } from "@/components/ui/fork-skeleton"
+import { CacheStalePill } from "@/components/ui/stale-pill"
+import { InfoChip } from "@/components/ui/status-chip"
+import { DrillSheet } from "@/components/ui/drill-sheet"
+import { Columns, HBarRow } from "@/components/ui/fork-charts"
 import { useAuth } from "@/context/AuthContext"
 import { useCurrency } from "@/hooks/use-currency"
-import { timezoneCaption, todayInZone } from "@/lib/tz"
+import { todayInZone } from "@/lib/tz"
 import { useTimezone } from "@/lib/use-timezone"
+import { useCachedFetch } from "@/hooks/use-cached-fetch"
+import { fetchMonthlyHistory } from "@/lib/api/history"
 import { ClosedBillsSection } from "@/components/closed-bills"
-import { DateRangePicker, RangeNote } from "@/components/date-range-picker"
+import { MonthDetailSheet } from "@/components/history/month-detail-sheet"
+import { DateRangePicker } from "@/components/date-range-picker"
 import { useDateRange } from "@/hooks/use-date-range"
 import { addDays, rangeLabel, type DateRange } from "@/lib/date-range"
-import { getMonthlyHistory, type MonthlyHistoryRow } from "@/lib/db"
-
-const chartConfig = {
-  revenue: { label: "Revenue", color: "hsl(var(--primary))" },
-}
+import type { MonthlyHistoryRow } from "@/lib/db"
 
 // History exists to show YEARS, so it opens on the last twelve months rather
 // than the 30-day default every other reporting screen uses — a month-by-month
 // table cut to one month is a single row, which looks like a broken page.
-// Applied only on a first visit; a window the owner picked wins (see
-// `useDateRange`'s `fallback`).
+// Applied only on a first visit; a window the owner picked wins.
 const historyDefault = (timezone: string): DateRange => {
   const today = todayInZone(timezone)
   return { from: addDays(today, -364), to: today, preset: "custom" }
 }
 
 // The backend's month series is "the last N months", so a range is served by
-// asking for enough months to reach `from` and then keeping the ones inside the
-// window. 36 is the endpoint's own ceiling; a longer range simply shows what
-// the server retains, which the caption states rather than hides.
+// asking for enough months to reach `from` and keeping the ones inside the
+// window. 36 is the endpoint's own ceiling.
 const MAX_HISTORY_MONTHS = 36
 const monthsBack = (from: string, timezone: string): number => {
   const [fy, fm] = from.split("-").map(Number)
@@ -50,205 +62,299 @@ function prettyMonth(ym: string): string {
   return idx >= 0 && idx < 12 ? `${MONTH_NAMES[idx]} ${y}` : ym
 }
 
-// "2026-06" → that month's real first/last day (not a blind "-31").
-function monthRange(ym: string): { from: string; to: string } | null {
-  const [y, m] = ym.split("-").map(Number)
-  if (!y || !m) {return null}
-  const lastDay = new Date(y, m, 0).getDate() // day 0 of next month = last of this one
-  const mm = String(m).padStart(2, "0")
-  return { from: `${y}-${mm}-01`, to: `${y}-${mm}-${String(lastDay).padStart(2, "0")}` }
-}
+const hasActivity = (r: MonthlyHistoryRow): boolean =>
+  r.revenue > 0 || r.orders > 0 || r.feedback_count > 0 || r.new_customers > 0
 
-// Drill-down: "2026-06" → the accounting page filtered to that whole month.
-function monthDrilldownHref(ym: string): string {
-  const r = monthRange(ym)
-  return r ? `/dashboard/accounting?from=${r.from}&to=${r.to}` : "/dashboard/accounting"
-}
-
-// One labeled figure in the expanded month panel.
-function Stat({ label, value }: { label: string; value: string }) {
+/** Quiet label / value / trailing-qualifier line inside a drill-down sheet —
+ *  the app's `_detailRow`. Wraps rather than rows, so the figure is never the
+ *  thing that gets truncated on a phone. */
+function DetailRow({ label, value, trailing }: { label: string; value: string; trailing?: string }): ReactElement {
   return (
-    <div className="rounded-md border bg-background p-3">
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="mt-1 text-sm font-semibold">{value}</div>
+    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-0.5 py-[5px]">
+      <span className="text-sm">{label}</span>
+      <span className="flex items-center gap-3">
+        {trailing != null && <span className="text-xs text-muted-foreground">{trailing}</span>}
+        <span className="text-sm font-semibold tabular-nums">{value}</span>
+      </span>
     </div>
   )
 }
 
-export default function HistoryPage() {
+/** The copper "DETAILS ›" footer that makes a stat tile read as expandable. */
+function DetailsFooter(): ReactElement {
+  return (
+    <span className="flex items-center text-[10px] font-semibold uppercase tracking-[0.11em] text-accent-foreground">
+      Details
+      <ChevronRight aria-hidden className="ml-0.5 h-3.5 w-3.5" />
+    </span>
+  )
+}
+
+type TileDrill = "revenue" | "bills" | "customers"
+
+export default function HistoryPage(): ReactElement {
   const { user } = useAuth()
-  const { currency } = useCurrency()
+  const { currencySymbol } = useCurrency()
   const { timezone } = useTimezone()
-  // ONE window for the page: the month table, the chart, the totals and the
-  // settled-bill browser below are all cut on it, so nothing on this screen can
-  // disagree with anything else on it.
+  const rid = user?.restaurantUsername ?? ""
+  // ONE window for the page: the tiles, the chart, the month list and the
+  // settled-bill browser below are all cut on it, so nothing on this screen
+  // can disagree with anything else on it.
   const { range, setRange } = useDateRange("history", { fallback: historyDefault })
   const months = monthsBack(range.from, timezone)
-  const [rows, setRows] = useState<MonthlyHistoryRow[]>([])
-  const [loading, setLoading] = useState(true)
-  const [hideEmpty, setHideEmpty] = useState(true)
-  const [openMonth, setOpenMonth] = useState<string | null>(null)
-  // Seeds the closed-bills section below; a month row can narrow it to that month.
-  const [billRange, setBillRange] = useState<{ from: string; to: string } | null>(null)
-  const money = (n: number | null | undefined) => `${currency}${Number(n ?? 0).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`
 
-  useEffect(() => {
-    if (!user?.restaurantUsername) {return}
-    let active = true
-    setLoading(true)
-    getMonthlyHistory(user.restaurantUsername, months)
-      .then((d) => { if (active) {setRows(d)} })
-      .finally(() => { if (active) {setLoading(false)} })
-    return () => { active = false }
-  }, [user?.restaurantUsername, months])
-
-  const hasActivity = (r: MonthlyHistoryRow) => r.revenue > 0 || r.orders > 0 || r.feedback_count > 0 || r.new_customers > 0
-  // Trim the server's month series to the SELECTED window. A month is kept when
-  // it overlaps the range at all: an owner who picks 10 Aug - 20 Sep is asking
-  // about both months, and dropping a partly-covered month would silently
-  // subtract real trade from the totals below.
-  const inRange = rows.filter((r) => r.month >= range.from.slice(0, 7) && r.month <= range.to.slice(0, 7))
-  const visible = hideEmpty ? inRange.filter(hasActivity) : inRange
-  const chartData = [...inRange].reverse().map((r) => ({ month: prettyMonth(r.month), revenue: r.revenue }))
-  const totals = inRange.reduce(
-    (acc, r) => ({ revenue: acc.revenue + r.revenue, bills: acc.bills + r.bills, orders: acc.orders + r.orders, customers: acc.customers + r.new_customers }),
-    { revenue: 0, bills: 0, orders: 0, customers: 0 },
+  const history = useCachedFetch(
+    `history:${rid}:${months}`,
+    useCallback(() => fetchMonthlyHistory(rid, months), [rid, months]),
+    { enabled: rid !== "" },
   )
 
+  // History figures render as the app renders them: whole rupees.
+  const money = useCallback((v: number | null | undefined): string => `${currencySymbol}${Math.round(v ?? 0)}`, [currencySymbol])
+
+  // Trim the server's month series to the SELECTED window. A month is kept
+  // when it overlaps the range at all: an owner who picks 10 Aug – 20 Sep is
+  // asking about both months, and dropping a partly-covered one would silently
+  // subtract real trade from the totals below.
+  const rows = useMemo(() => history.data ?? [], [history.data])
+  const inRange = useMemo(() => {
+    const fromMonth = range.from.slice(0, 7)
+    const toMonth = range.to.slice(0, 7)
+    return rows.filter((r) => r.month >= fromMonth && r.month <= toMonth)
+  }, [rows, range.from, range.to])
+  const withData = useMemo(() => inRange.filter(hasActivity), [inRange])
+  const totals = useMemo(() => inRange.reduce(
+    (acc, r) => ({
+      revenue: acc.revenue + (r.revenue || 0),
+      bills: acc.bills + (r.bills || 0),
+      customers: acc.customers + (r.new_customers || 0),
+    }),
+    { revenue: 0, bills: 0, customers: 0 },
+  ), [inRange])
+  // Chart the most recent 12 months with any activity, chronological — a long
+  // window still reads as one clean year, and dead months are skipped.
+  const chart = useMemo(
+    () => withData.slice(0, 12).map((r) => ({ label: prettyMonth(r.month), value: r.revenue || 0 })).reverse(),
+    [withData],
+  )
+  const chartTotal = useMemo(() => chart.reduce((a, d) => a + d.value, 0), [chart])
+  const chartMax = useMemo(() => chart.reduce((a, d) => (d.value > a ? d.value : a), 0), [chart])
+
+  const [tileDrill, setTileDrill] = useState<TileDrill | null>(null)
+  const [chartDrill, setChartDrill] = useState<number | null>(null)
+  const [openMonth, setOpenMonth] = useState<MonthlyHistoryRow | null>(null)
+
+  const chartPoint = chartDrill === null ? null : chart[chartDrill] ?? null
+  const chartRank = useMemo(() => {
+    if (chartPoint === null) { return 0 }
+    const ranked = [...chart].sort((a, b) => b.value - a.value)
+    return ranked.findIndex((e) => e.label === chartPoint.label) + 1
+  }, [chart, chartPoint])
+
+  const tileTitle: Record<TileDrill, string> = {
+    revenue: "Revenue by month",
+    bills: "Bills by month",
+    customers: "New customers by month",
+  }
+
   return (
-    <div className="grid gap-4 md:gap-8">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-semibold md:text-2xl">History</h1>
-          <p className="text-sm text-muted-foreground">Month-by-month summary of the whole business, up to 3 years back.</p>
-          <p className="text-xs text-muted-foreground">All times in restaurant time · {timezoneCaption(timezone)}</p>
+    <div className="grid gap-6">
+      <div className="grid gap-3">
+        <SectionHeader
+          title="History"
+          className="mb-0"
+          // The window is spelled out by the date control directly under this
+          // header; on a phone this chip is wider than the room beside the
+          // title, so it is left out there.
+          trailing={<InfoChip icon={<Calendar />} label={rangeLabel(range, timezone)} className="max-[419px]:hidden" />}
+        />
+        {/* Every figure below is cut on this window, so it sits above them. */}
+        <DateRangePicker value={range} onChange={setRange} timezone={timezone} align="start" className="w-full justify-start" />
+      </div>
+
+      {history.loading ? (
+        <div className="grid gap-6">
+          <SkeletonStats tiles={3} />
+          <SkeletonRows rows={4} title={false} />
         </div>
-        <DateRangePicker value={range} onChange={setRange} timezone={timezone} />
-      </div>
-
-      <RangeNote range={range} timezone={timezone} prefix="Every figure on this page covers" className="text-sm" />
-
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Card><CardHeader className="pb-2"><CardDescription>Total revenue</CardDescription><CardTitle className="text-xl">{money(totals.revenue)}</CardTitle></CardHeader></Card>
-        <Card><CardHeader className="pb-2"><CardDescription>Bills</CardDescription><CardTitle className="text-xl">{totals.bills}</CardTitle></CardHeader></Card>
-        <Card><CardHeader className="pb-2"><CardDescription>Orders</CardDescription><CardTitle className="text-xl">{totals.orders}</CardTitle></CardHeader></Card>
-        <Card><CardHeader className="pb-2"><CardDescription>New customers</CardDescription><CardTitle className="text-xl">{totals.customers}</CardTitle></CardHeader></Card>
-      </div>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Revenue by month</CardTitle>
-          <CardDescription>{rangeLabel(range, timezone)} · {chartData.length} month{chartData.length === 1 ? "" : "s"}.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {loading ? (
-            <div className="py-10 text-center text-muted-foreground">Loading…</div>
-          ) : (
-            <ChartContainer config={chartConfig} className="h-[260px] w-full">
-              <BarChart data={chartData} margin={{ top: 5, right: 10, left: -20, bottom: 5 }}>
-                <CartesianGrid vertical={false} />
-                <XAxis dataKey="month" interval={months > 12 ? 2 : 0} tick={{ fontSize: 11 }} />
-                <YAxis />
-                <ChartTooltip content={<ChartTooltipContent />} />
-                <Bar dataKey="revenue" fill="var(--color-revenue)" radius={[3, 3, 0, 0]} />
-              </BarChart>
-            </ChartContainer>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <CardTitle>Monthly summary</CardTitle>
-              <CardDescription>
-                Revenue, volume, guests and service quality per month. <RangeNote range={range} timezone={timezone} />
-              </CardDescription>
-            </div>
-            <label className="flex items-center gap-2 text-sm text-muted-foreground">
-              <input type="checkbox" checked={hideEmpty} onChange={(e) => { setHideEmpty(e.target.checked); }} className="h-4 w-4 accent-current" />
-              Hide empty months
-            </label>
+      ) : history.error != null ? (
+        <LoadErrorState whatFailed="Couldn't load this section." error={history.error} onRetry={history.retry} />
+      ) : (
+        <div className="relative grid gap-6">
+          <div className="flex flex-wrap gap-3">
+            <StatCard
+              value={money(totals.revenue)}
+              caption="TOTAL REVENUE"
+              footer={<DetailsFooter />}
+              onClick={() => { setTileDrill("revenue") }}
+              className="w-[200px] min-w-[140px] max-[479px]:w-[calc(50%-6px)]"
+            />
+            <StatCard
+              value={String(Math.round(totals.bills))}
+              caption="BILLS"
+              footer={<DetailsFooter />}
+              onClick={() => { setTileDrill("bills") }}
+              className="w-[200px] min-w-[140px] max-[479px]:w-[calc(50%-6px)]"
+            />
+            <StatCard
+              value={String(Math.round(totals.customers))}
+              caption="NEW CUSTOMERS"
+              footer={<DetailsFooter />}
+              onClick={() => { setTileDrill("customers") }}
+              className="w-[200px] min-w-[140px] max-[479px]:w-[calc(50%-6px)]"
+            />
           </div>
-        </CardHeader>
-        <CardContent>
-          {loading ? (
-            <div className="py-10 text-center text-muted-foreground">Loading…</div>
-          ) : visible.length === 0 ? (
-            <p className="py-6 text-center text-sm text-muted-foreground">No activity recorded in this range yet.</p>
+
+          {/* The chart card is omitted outright when no month has activity. */}
+          {chart.length > 0 && (
+            <ForkCard className="p-4">
+              <SectionHeader title="Revenue by month" className="mb-3" />
+              {chart.length >= 10 ? (
+                <Columns
+                  values={chart.map((d) => d.value)}
+                  labels={chart.map((d) => d.label)}
+                  formatValue={money}
+                  tooltip={(i) => `${chart[i].label} · ${money(chart[i].value)}`}
+                  onSelect={(i) => { setChartDrill(i) }}
+                />
+              ) : (
+                <div>
+                  {chart.map((d, i) => (
+                    <HBarRow
+                      key={d.label}
+                      label={d.label}
+                      fraction={chartMax > 0 ? Math.min(1, d.value / chartMax) : 0}
+                      value={money(d.value)}
+                      tooltip={`${d.label} · ${money(d.value)}`}
+                      onSelect={() => { setChartDrill(i) }}
+                    />
+                  ))}
+                </div>
+              )}
+            </ForkCard>
+          )}
+
+          {withData.length === 0 ? (
+            <EmptyState
+              icon={<Hourglass />}
+              title="No activity yet"
+              caption="Month-by-month history builds up as bills close."
+            />
           ) : (
-            <div className="divide-y rounded-md border">
-              {visible.map((r) => {
-                const open = openMonth === r.month
-                return (
-                  <div key={r.month} className={hasActivity(r) ? "" : "text-muted-foreground"}>
-                    <button
-                      type="button"
-                      onClick={() => { setOpenMonth(open ? null : r.month); }}
-                      aria-expanded={open}
-                      className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left transition hover:bg-muted/50"
-                    >
-                      <span className="font-medium">{prettyMonth(r.month)}</span>
-                      <span className="flex items-center gap-3">
-                        <span className="font-semibold">{money(r.revenue)}</span>
-                        <ChevronDown className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`} />
-                      </span>
-                    </button>
-                    {open && (
-                      <div className="border-t bg-muted/20 px-3 py-4">
-                        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-                          <Stat label="Revenue" value={money(r.revenue)} />
-                          <Stat label="Bills" value={String(r.bills)} />
-                          <Stat label="Orders" value={String(r.orders)} />
-                          <Stat label="Avg bill" value={r.avg_bill != null ? money(r.avg_bill) : "—"} />
-                          <Stat label="Discounts" value={r.discounts > 0 ? money(r.discounts) : "—"} />
-                          <Stat label="Feedback" value={r.feedback_count > 0 ? `${r.feedback_count}× · ${r.avg_rating ?? "—"}/5` : "—"} />
-                          <Stat label="New customers" value={r.new_customers ? String(r.new_customers) : "—"} />
-                          <Stat label="Avg TAT" value={r.avg_tat_min != null ? `${Math.round(r.avg_tat_min)} min` : "—"} />
+            <div>
+              <SectionHeader title="Month by month" count={withData.length} />
+              <div className="space-y-2">
+                {withData.map((r) => {
+                  const fb = r.feedback_count || 0
+                  // The card is a control, not a summary: it opens the month's
+                  // own detail — the metric breakdown AND the settled bills
+                  // that made it.
+                  return (
+                    <ForkCard key={r.month} onClick={() => { setOpenMonth(r) }} chevron={false} className="px-4 py-3.5">
+                      <div className="flex items-center gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-sm font-semibold">{prettyMonth(r.month)}</div>
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            <InfoChip icon={<Receipt />} label={`${r.bills} bills`} />
+                            <InfoChip icon={<Utensils />} label={`${r.orders} orders`} />
+                            <InfoChip icon={<Equal />} label={`avg ${money(r.avg_bill ?? 0)}`} />
+                            {fb > 0 && <InfoChip icon={<Star />} label={`${fb} feedback · ${r.avg_rating ?? "—"}/5`} />}
+                          </div>
                         </div>
-                        <div className="mt-4 flex flex-wrap items-center gap-4">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const range = monthRange(r.month)
-                              if (!range) {return}
-                              setBillRange(range)
-                              document.getElementById("closed-bills-section")?.scrollIntoView({ behavior: "smooth" })
-                            }}
-                            className="text-sm font-medium text-primary underline-offset-2 hover:underline"
-                          >
-                            Browse {prettyMonth(r.month)}&apos;s bills ↓
-                          </button>
-                          <Link
-                            href={monthDrilldownHref(r.month)}
-                            title={`Open ${prettyMonth(r.month)} in Accounting`}
-                            className="text-sm font-medium text-primary underline-offset-2 hover:underline"
-                          >
-                            Open {prettyMonth(r.month)} in Accounting →
-                          </Link>
-                        </div>
+                        <span className="shrink-0 text-[20px] font-light tracking-[-0.02em] tabular-nums">{money(r.revenue)}</span>
+                        <ChevronRight aria-hidden className="h-[18px] w-[18px] shrink-0 text-tertiary" />
                       </div>
-                    )}
-                  </div>
-                )
-              })}
+                    </ForkCard>
+                  )
+                })}
+              </div>
             </div>
           )}
-        </CardContent>
-      </Card>
 
-      {/* Seeded from the page window, and re-seeded when a month row asks for
-          its own bills — so the bill list is never showing a different period
-          from the table above it. `ownDateFilter` keeps its two inputs so a
-          month drill-down can narrow it without moving the whole page. */}
+          <CacheStalePill offline={history.offline} fromCache={history.fromCache} updatedAt={history.updatedAt} />
+        </div>
+      )}
+
+      {/* CLIENT ITEM 8 — the window's settled bills, on the page itself, with
+          a search: an old bill is found by its number, table or cashier rather
+          than three taps down a month. Hard-bound to the page window — one
+          window on the screen, by design. */}
       <ClosedBillsSection
-        rid={user?.restaurantUsername ?? ""}
-        from={billRange?.from ?? range.from}
-        to={billRange?.to ?? range.to}
-        ownDateFilter
-        description="Every bill this business has settled, within the selected period. Open a month above to jump straight to its bills."
+        rid={rid}
+        from={range.from}
+        to={range.to}
+        surface="history"
+        pageSize={15}
       />
+
+      {/* The headline tiles' drill-downs — per-month rows with the qualifier
+          Flutter puts beside each figure. */}
+      <DrillSheet
+        open={tileDrill !== null}
+        onOpenChange={(o) => { if (!o) { setTileDrill(null) } }}
+        eyebrow="History"
+        title={tileDrill === null ? "" : tileTitle[tileDrill]}
+      >
+        {tileDrill === "revenue" && (
+          <div>
+            {withData.map((r) => (
+              <DetailRow key={r.month} label={prettyMonth(r.month)} value={money(r.revenue)} trailing={`${r.bills} bills`} />
+            ))}
+            {withData.length === 0 && <p className="text-sm text-muted-foreground">No months with revenue yet.</p>}
+          </div>
+        )}
+        {tileDrill === "bills" && (
+          <div>
+            {withData.map((r) => (
+              <DetailRow key={r.month} label={prettyMonth(r.month)} value={String(r.bills)} trailing={`avg ${money(r.avg_bill ?? 0)}`} />
+            ))}
+            {withData.length === 0 && <p className="text-sm text-muted-foreground">No bills closed yet.</p>}
+          </div>
+        )}
+        {tileDrill === "customers" && (
+          <div>
+            {withData.map((r) => (
+              <DetailRow key={r.month} label={prettyMonth(r.month)} value={String(r.new_customers)} trailing={`${r.orders} orders`} />
+            ))}
+            {withData.length === 0 && <p className="text-sm text-muted-foreground">No customers recorded yet.</p>}
+          </div>
+        )}
+      </DrillSheet>
+
+      {/* A tapped chart mark: the same figure with the context a bare bar
+          cannot carry — share of total, rank. */}
+      <DrillSheet
+        open={chartPoint !== null}
+        onOpenChange={(o) => { if (!o) { setChartDrill(null) } }}
+        eyebrow="Data point"
+        title={chartPoint?.label ?? ""}
+      >
+        {chartPoint !== null && (
+          <div>
+            <KvLine k="Value" v={money(chartPoint.value)} />
+            <KvLine k="Share of total" v={chartTotal > 0 ? `${((chartPoint.value / chartTotal) * 100).toFixed(1)}%` : "—"} />
+            <KvLine k="Rank" v={chartRank > 0 ? `${chartRank} of ${chart.length}` : "—"} />
+            <KvLine k="Total across all" v={money(chartTotal)} />
+          </div>
+        )}
+      </DrillSheet>
+
+      <MonthDetailSheet
+        rid={rid}
+        month={openMonth}
+        title={openMonth === null ? "" : prettyMonth(openMonth.month)}
+        onClose={() => { setOpenMonth(null) }}
+      />
+    </div>
+  )
+}
+
+/** Token-styled key/value line — the app's `_kv` inside a drill sheet. */
+function KvLine({ k, v }: { k: string; v: string }): ReactElement {
+  return (
+    <div className="flex items-start gap-4 py-1.5">
+      <span className="micro-label w-[148px] shrink-0 pt-0.5">{k}</span>
+      <span className="min-w-0 text-[13px] font-medium">{v}</span>
     </div>
   )
 }

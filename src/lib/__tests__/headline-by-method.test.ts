@@ -27,7 +27,7 @@ function readSource(relative: string): string {
     for (const base of [process.cwd(), path.join(__dirname, '..', '..', '..')]) {
         const full = path.join(base, relative);
         // A fixed list of this repo's own source files, not user input.
-        // eslint-disable-next-line security/detect-non-literal-fs-filename
+         
         if (fs.existsSync(full)) { return fs.readFileSync(full, 'utf8'); }
     }
     throw new Error(`readSource could not find ${relative} from ${process.cwd()}`);
@@ -36,10 +36,10 @@ function readSource(relative: string): string {
 /** Source with comments removed, so a pin reads the CODE rather than the prose beside it. */
 const code = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
-const fig = (value: number, label: string) => ({ value, label, hint: `${label} hint` });
+const fig = (value: number, label: string): { value: number; label: string; hint: string } => ({ value, label, hint: `${label} hint` });
 
 /** The live shape of GET /analytics/headline with the by-method fields. */
-const headline = (over: Record<string, unknown> = {}) => ({
+const headline = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
     today: '2026-09-14',
     month_from: '2026-09-01',
     timezone: 'Asia/Kolkata',
@@ -192,7 +192,7 @@ describe('the Unallocated warning', () => {
 describe('what renders nothing', () => {
     it('an OLDER backend that never sent the rows — not "no money by any method"', () => {
         const h = headline();
-        delete (h as Record<string, unknown>).today_by_method;
+        delete (h).today_by_method;
         expect(readHeadlineByMethod(h)).toBeNull();
     });
 
@@ -221,8 +221,10 @@ describe('the Overview card draws it', () => {
     });
 
     it('names each mode by the owner label, keyed and matched on the stored id', () => {
-        expect(src).toMatch(/title=\{m\.label\}/);
-        expect(src).toMatch(/\{m\.label\}/);
+        // The row is now an HBarRow, labelled (and tooltipped) by the owner label.
+        expect(src).toMatch(/label=\{m\.label\}/);
+        expect(src).toMatch(/tooltip=\{`\$\{m\.label\} · /);
+        expect(src).not.toMatch(/label=\{m\.method\}/);
         expect(src).not.toMatch(/title=\{m\.method\}/);
         expect(src).not.toMatch(/^\s*\{m\.method\}\s*$/m);
         expect(src).toMatch(/key=\{m\.method\}/);
@@ -230,17 +232,20 @@ describe('the Overview card draws it', () => {
     });
 
     it('renders it inside the loaded card, under the tiles', () => {
-        expect(src).toMatch(/\{tiles\(data\)\}\s*\{byMethod\(data\)\}/);
+        const grid = src.indexOf('{figures}');
+        const block = src.indexOf('{b != null && hasSettlements(b) && (');
+        expect(grid).toBeGreaterThan(-1);
+        expect(block).toBeGreaterThan(grid);
     });
 
     it('does not draw an empty block', () => {
-        expect(src).toMatch(/if \(!b \|\| !hasSettlements\(b\)\) \{ return null \}/);
+        expect(src).toMatch(/\{b != null && hasSettlements\(b\) && \(/);
     });
 
     it('warns through unallocatedWarning, never off the netted sum alone', () => {
-        expect(src).toMatch(/const warning = unallocatedWarning\(b, money\)/);
-        expect(src).toMatch(/\(b\.split_bills > 0 \|\| warning\)/);
-        expect(src).toMatch(/\{warning && \(/);
+        expect(src).toMatch(/const warning = b \? unallocatedWarning\(b, money\) : null/);
+        expect(src).toMatch(/\{b\.split_bills > 0 && \(/);
+        expect(src).toMatch(/\{warning != null && \(/);
         expect(src).not.toMatch(/b\.unallocated !== 0/);
     });
 

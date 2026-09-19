@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { Bars, Delta, Donut, Heat, Rows, Sparkline, Stat, Timeline } from "./charts";
 
-export type View = {
+export interface View {
   name: string;
   headline: string;
   icon: ReactNode;
@@ -19,7 +19,7 @@ export type View = {
    * C secondary stat, D mid widget, E list/detail. Cards persist across
    * views; only these contents morph. */
   cells: { title: string; content: ReactNode }[];
-};
+}
 
 /* Every number below is example data, but every METRIC is one the product
  * actually computes and every label is a real module doing its real job:

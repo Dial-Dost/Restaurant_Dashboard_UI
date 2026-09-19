@@ -17,7 +17,7 @@ import {
 } from "../settlement-breakdown";
 import type { MisReportPayload } from "../mis-reports";
 
-const payload = (over: Record<string, unknown> = {}): MisReportPayload => ({
+const payload = (over: Record<string, unknown> = {}): MisReportPayload => (({
   meta: {} as MisReportPayload["meta"],
   columns: [],
   rows: [
@@ -27,7 +27,7 @@ const payload = (over: Record<string, unknown> = {}): MisReportPayload => ({
   ],
   totals: { bills: 22, amount: 25000, refund: 500, net_amount: 24500, split_bills: 2, unallocated: 0 },
   ...over,
-} as unknown as MisReportPayload);
+}));
 
 describe("reading the settlement report", () => {
   it("shapes every mode and ranks the largest first", () => {

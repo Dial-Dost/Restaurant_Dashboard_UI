@@ -58,7 +58,9 @@ const TableRow = React.forwardRef<
   <tr
     ref={ref}
     className={cn(
-      "border-b transition-colors hover:bg-muted/50 data-[state=selected]:bg-muted",
+      // 5%-white divider hairline, quieter than --border; hover is a 4% ink
+      // wash, not an opaque surface.
+      "border-b border-divider transition-colors hover:bg-foreground/[0.04] data-[state=selected]:bg-muted",
       className
     )}
     {...props}
@@ -73,7 +75,10 @@ const TableHead = React.forwardRef<
   <th
     ref={ref}
     className={cn(
-      "h-12 px-4 text-left align-middle font-medium text-muted-foreground [&:has([role=checkbox])]:pr-0",
+      // Column heads speak the micro-label voice: 10px, w600, +0.11em,
+      // UPPERCASE, tertiary ink (labelSmall).
+      "h-10 px-4 text-left align-middle text-[10px] font-semibold uppercase tracking-[0.11em] text-tertiary [&:has([role=checkbox])]:pr-0",
+      "gaia:font-normal gaia:tracking-[0.18em] gaia:text-muted-foreground",
       className
     )}
     {...props}

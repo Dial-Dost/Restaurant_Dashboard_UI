@@ -1,551 +1,911 @@
 "use client"
 
-// Browse and re-open SETTLED bills.
-//
-// `/bill-for-table` only ever returns the bill still on the floor, so before this
-// there was no way anywhere in the app to look at a bill once it was paid. This
-// section wraps GET /bills/closed (paged list) + GET /bills/closed/:id (the full
-// bill), and is mounted by both Accounting and History.
+// Browse and re-open SETTLED bills — the web `_ClosedBillsList` /
+// `_ClosedBillSheet` (restaurant_owner_app/lib/screens/modules.dart
+// 23349–24062), mounted by Accounting and History and embedded in History's
+// month sheet.
 //
 // The money split it renders comes straight from the backend, which guarantees
 //   taxable_base + service_charge + tax_total + round_off === grand_total
 // and lifts a "Service Charge" entry out of the tax breakdown so it is never
-// shown twice. Nothing is recomputed here.
+// shown twice. Nothing is recomputed here — the identity is DISPLAYED rather
+// than trusted (the check line under the grand total), so a bill that ever
+// stopped balancing is visible instead of silent.
 
-import { useCallback, useEffect, useMemo, useState } from "react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { useCallback, useEffect, useMemo, useState, type ReactElement, type ReactNode } from "react"
 import { useToast } from "@/hooks/use-toast"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Badge } from "@/components/ui/badge"
-import { Pencil, Printer, Receipt } from "lucide-react"
+import { ForkCard } from "@/components/ui/fork-card"
+import { DrillSheet } from "@/components/ui/drill-sheet"
+import { SectionHeader } from "@/components/ui/section-header"
+import { EmptyState } from "@/components/ui/empty-state"
+import { LoadErrorState } from "@/components/ui/load-error-state"
+import { SkeletonBox, SkeletonRows } from "@/components/ui/fork-skeleton"
+import { CacheStalePill } from "@/components/ui/stale-pill"
+import { InfoChip, StatusChip } from "@/components/ui/status-chip"
+import { AppSearchField } from "@/components/ui/app-search-field"
+import {
+  AlertCircle,
+  BarChart2,
+  CalendarClock,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Clock,
+  CreditCard,
+  Building2,
+  Image as ImageIcon,
+  Printer,
+  Receipt,
+  Undo2,
+  UserRound,
+  Users,
+} from "lucide-react"
 import { useCurrency } from "@/hooks/use-currency"
 import { useAuth } from "@/context/AuthContext"
 import { usePaymentMethods } from "@/hooks/use-payment-methods"
 import { closedBillMethodFilterOptions, paymentMethodLabel } from "@/lib/payment-methods"
-import { BillCustomerDialog } from "@/components/bill-customer-dialog"
 import { canEditSettledBillCustomer } from "@/lib/bill-customer"
 import { formatRoundOff, roundOffOf } from "@/lib/bill-round-off"
-import { getClosedBills, getClosedBill, reprintSettledBill, type ClosedBillSummary, type ClosedBillDetail } from "@/lib/db"
+import { reprintSettledBill } from "@/lib/db"
+import { useCachedFetch } from "@/hooks/use-cached-fetch"
+import {
+  fetchClosedBillDetail,
+  fetchClosedBillsPage,
+  type HistoryBillDetail,
+  type HistoryBillSummary,
+} from "@/lib/api/history"
+import {
+  billBalanceIdentity,
+  billCustomerChip,
+  billTitle,
+  billWhen,
+  methodLabelWithNc,
+  ncLineLabel,
+  ncSettlementOf,
+  settledBillCustomerLines,
+} from "@/components/history/settled-bill-lib"
+import {
+  EditSettledBillCustomerButton,
+  type SettledBillCustomerSaved,
+} from "@/components/history/bill-customer-details-dialog"
+import { MoveBillTillButton } from "@/components/history/move-bill-till-dialog"
 import { DateRangePicker, RangeNote } from "@/components/date-range-picker"
-import type { DateRange } from "@/lib/date-range"
+import { rangeLabel, type DateRange } from "@/lib/date-range"
 import { formatDateTime } from "@/lib/tz"
 import { useTimezone } from "@/lib/use-timezone"
 import { elapsedToSettlement, formatDuration, readServiceClock } from "@/lib/service-clock"
 
-const PAGE_SIZE = 25
-
-// The method filter is the restaurant's own modes — every one it has configured,
-// switched off or not, because old bills keep their mode — plus "Split", whose
-// bills carry their real modes in payment_splits (listed in the detail view).
-// The value is the stored id, which is what GET /bills/closed filters on.
-
 // Settlement instants are accounting evidence — they render in the restaurant's
 // zone, never the viewer's, so a closed bill reads the same as the till printed.
-const dateTime = (v: string | null | undefined, timeZone: string) => formatDateTime(v, timeZone)
+const dateTime = (v: string | null | undefined, timeZone: string): string => formatDateTime(v, timeZone)
 
-interface Props {
-  rid: string
-  /**
-   * Date range. With `ownDateFilter` off (Accounting) it is the page's range and
-   * the section keeps no dates of its own (see `range`). With it on (History) these SEED
-   * the section's own inputs — a month drill-down re-seeds them — and the user
-   * can then edit them freely.
-   */
+/** Which of the two write surfaces this list serves — History gets everything
+ *  but the Accounting-only till move (client item 8); the two also word their
+ *  search hint and empty captions differently. */
+export type ClosedBillSurface = "accounting" | "history"
+
+/* ────────────────────────────────────────────────────────────────────────
+   The paged list — `_ClosedBillsList`. Owns its own paging (limit/offset)
+   so every call site gets "Load more" without repeating the plumbing.
+   ──────────────────────────────────────────────────────────────────────── */
+
+export interface ClosedBillsFilter {
   from?: string
   to?: string
-  ownDateFilter?: boolean
-  /**
-   * Host-owned window (ignored with `ownDateFilter`). "In Accounting in settled
-   * bills the date frame is not selectable": the only picker was the page
-   * toolbar, a long scroll above this card, and the card did not even say which
-   * days it listed. With `onRangeChange` the header carries the SAME picker,
-   * bound to the SAME window — one window, two controls, so the list and the
-   * totals above it can never describe different days. `range` alone renders a
-   * read-only note instead.
-   */
-  range?: DateRange
-  onRangeChange?: (range: DateRange) => void
-  description?: string
+  search?: string
+  payment_method?: string
 }
 
-export function ClosedBillsSection({ rid, from, to, ownDateFilter = false, range, onRangeChange, description }: Props) {
-  const { toast } = useToast()
-  const { methods: paymentMethods } = usePaymentMethods(rid)
-  const methodOptions = useMemo(() => closedBillMethodFilterOptions(paymentMethods), [paymentMethods])
-  const { timezone } = useTimezone()
-  /** The bill currently being sent to a printer, so the button can say so. */
-  const [reprinting, setReprinting] = useState<string | null>(null)
-  const { currencySymbol } = useCurrency()
+export function ClosedBillsList({
+  rid,
+  filter,
+  pageSize = 15,
+  emptyCaption,
+  surface = "history",
+}: {
+  rid: string
+  filter: ClosedBillsFilter
+  /** Accounting also gets the till move (client item 8); History does not. */
+  surface?: ClosedBillSurface
+  /** 15 on the pages, 10 inside History's month sheet. */
+  pageSize?: number
+  /** Window-specific: "No bills were closed in 1–15 Aug." */
+  emptyCaption: string
+}): ReactElement {
   const { user } = useAuth()
   /*
-    R2 ITEM 1 — "This option has to come in the past bills section in accounting."
-    Gated on the permission the Reprint button's route (E5, POST
-    /print/bill/settled) is gated on, which is also the new route's gate. Hidden,
-    not greyed, for everyone else: the route would refuse them.
+    R2 ITEM 1 — the same permission the Reprint button's route (E5, POST
+    /print/bill/settled) is gated on, which is also the customer-details
+    route's gate. Hidden, not greyed, for everyone else: the route would
+    refuse them.
   */
   const canEditCustomer = canEditSettledBillCustomer(user)
-  const [customerOpen, setCustomerOpen] = useState(false)
-  const money = (n: number | null | undefined) =>
-    `${currencySymbol}${Number(n ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  const { currencySymbol } = useCurrency()
+  const { timezone } = useTimezone()
+  const { methods: paymentMethods } = usePaymentMethods(rid)
+  const money = useCallback((n: number | null | undefined) =>
+    `${currencySymbol}${(n ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+  [currencySymbol])
 
-  const [ownFrom, setOwnFrom] = useState(from ?? "")
-  const [ownTo, setOwnTo] = useState(to ?? "")
-  // Re-seed the section's own inputs whenever the host hands down a new range
-  // (History's "browse this month's bills"). No-op while the host owns the dates.
-  useEffect(() => {
-    if (!ownDateFilter) {return}
-    setOwnFrom(from ?? "")
-    setOwnTo(to ?? "")
-  }, [from, to, ownDateFilter])
-  const effFrom = ownDateFilter ? ownFrom : from
-  const effTo = ownDateFilter ? ownTo : to
+  const filterKey = JSON.stringify([filter.from ?? "", filter.to ?? "", filter.search ?? "", filter.payment_method ?? ""])
+  // Cache-primed first page: instant paint from the saved copy, silent refresh,
+  // and a failed refresh keeps the rows on screen under the stale pill
+  // (finding 28) instead of blanking them into the failed state.
+  const first = useCachedFetch(
+    `closed-bills:${rid}:${pageSize}:${filterKey}`,
+    useCallback(() => fetchClosedBillsPage(rid, {
+      from: filter.from,
+      to: filter.to,
+      search: filter.search,
+      payment_method: filter.payment_method,
+      limit: pageSize,
+      offset: 0,
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }), [rid, pageSize, filterKey]),
+    { enabled: rid !== "" },
+  )
 
-  const [search, setSearch] = useState("")
-  const [method, setMethod] = useState("")
-  const [table, setTable] = useState("")
-
-  const [bills, setBills] = useState<ClosedBillSummary[]>([])
-  const [total, setTotal] = useState(0)
-  const [hasMore, setHasMore] = useState(false)
-  const [loading, setLoading] = useState(true)
+  // Pages 2+ are appended locally and reset whenever the first page's identity
+  // changes (a new filter or window starts the list over).
+  const [extra, setExtra] = useState<HistoryBillSummary[]>([])
+  const [extraMeta, setExtraMeta] = useState<{ total: number; hasMore: boolean } | null>(null)
   const [loadingMore, setLoadingMore] = useState(false)
-  const [failed, setFailed] = useState(false)
+  useEffect(() => { setExtra([]); setExtraMeta(null) }, [rid, pageSize, filterKey])
 
-  const [openId, setOpenId] = useState<string | null>(null)
-  const [detail, setDetail] = useState<ClosedBillDetail | null>(null)
-  const [detailLoading, setDetailLoading] = useState(false)
+  // Server-truth patches from the per-row customer edit, so a correction is
+  // visible on the row it was made from without a full reload (finding 32).
+  const [patches, setPatches] = useState<Record<string, SettledBillCustomerSaved>>({})
+  const patchRow = useCallback((id: string, saved: SettledBillCustomerSaved) => {
+    setPatches((prev) => ({ ...prev, [id]: { ...prev[id], ...saved } }))
+  }, [])
 
-  // Debounced first page — reruns on every filter change.
-  useEffect(() => {
-    if (!rid) {return}
-    let active = true
-    setLoading(true)
-    const t = setTimeout(() => {
-      void getClosedBills(rid, {
-        limit: PAGE_SIZE,
-        offset: 0,
-        from: effFrom || undefined,
-        to: effTo || undefined,
-        search: search.trim() || undefined,
-        payment_method: method || undefined,
-        table: table.trim() || undefined,
-      })
-        .then((page) => {
-          if (!active) {return}
-          // null = the request failed. An empty page is a real "no bills", so the
-          // two render differently.
-          setFailed(page === null)
-          setBills(page?.bills ?? [])
-          setTotal(page?.total ?? 0)
-          setHasMore(page?.has_more ?? false)
-        })
-        .catch(() => {
-          if (active) {setFailed(true); setBills([]); setTotal(0); setHasMore(false)}
-        })
-        .finally(() => { if (active) {setLoading(false)} })
-    }, 300)
-    return () => { active = false; clearTimeout(t) }
-  }, [rid, effFrom, effTo, search, method, table])
+  const rows = useMemo(() => {
+    const base = first.data?.bills ?? []
+    const seen = new Set(base.map((b) => b.id))
+    // Ordering is (settled_at desc, id desc) — a total order — but de-dupe by
+    // id anyway so a bill settled mid-scroll can never appear twice.
+    const all = [...base, ...extra.filter((b) => !seen.has(b.id))]
+    return all.map((b) => (b.id in patches ? { ...b, ...patches[b.id] } : b))
+  }, [first.data, extra, patches])
+
+  const total = extraMeta?.total ?? first.data?.total ?? 0
+  const hasMore = extra.length > 0 ? (extraMeta?.hasMore ?? false) : (first.data?.has_more ?? false)
 
   const loadMore = useCallback(async () => {
-    if (loadingMore || !hasMore) {return}
+    if (loadingMore || !hasMore) { return }
     setLoadingMore(true)
     try {
-      const page = await getClosedBills(rid, {
-        limit: PAGE_SIZE,
-        offset: bills.length,
-        from: effFrom || undefined,
-        to: effTo || undefined,
-        search: search.trim() || undefined,
-        payment_method: method || undefined,
-        table: table.trim() || undefined,
+      const page = await fetchClosedBillsPage(rid, {
+        from: filter.from,
+        to: filter.to,
+        search: filter.search,
+        payment_method: filter.payment_method,
+        limit: pageSize,
+        offset: rows.length,
       })
-      if (!page) {setHasMore(false); return}
-      // Ordering is (settled_at desc, id desc) — a total order — but de-dupe by id
-      // anyway so a bill settled mid-scroll can never appear twice.
-      const seen = new Set(bills.map((b) => b.id))
+      const seen = new Set(rows.map((b) => b.id))
       const fresh = page.bills.filter((b) => !seen.has(b.id))
-      setTotal(page.total)
       // Nothing new means the offset can never advance — stop instead of looping.
-      if (fresh.length === 0) {setHasMore(false); return}
-      setBills((prev) => [...prev, ...fresh])
-      setHasMore(page.has_more)
+      setExtraMeta({ total: page.total, hasMore: fresh.length === 0 ? false : page.has_more })
+      if (fresh.length > 0) { setExtra((prev) => [...prev, ...fresh]) }
+    } catch {
+      // Rows already on screen stay; the button remains for another try.
     } finally {
       setLoadingMore(false)
     }
-  }, [rid, bills, effFrom, effTo, search, method, table, hasMore, loadingMore])
+  }, [rid, filter.from, filter.to, filter.search, filter.payment_method, pageSize, rows, hasMore, loadingMore])
 
-  const openBill = useCallback(async (id: string) => {
-    setOpenId(id)
-    setDetail(null)
-    setDetailLoading(true)
-    try {
-      setDetail(await getClosedBill(rid, id))
-    } finally {
-      setDetailLoading(false)
-    }
-  }, [rid])
+  /** The bill sheet currently open (the row's title carries it while it loads). */
+  const [openBill, setOpenBill] = useState<{ id: string; title: string } | null>(null)
 
-  const clearFilters = () => { setSearch(""); setMethod(""); setTable(""); setOwnFrom(""); setOwnTo("") }
-  const hasFilters = Boolean(search || method || table || (ownDateFilter && (ownFrom || ownTo)))
+  if (first.loading) {
+    // Three quiet card placeholders — never a bare "Loading…" line (finding 52).
+    return (
+      <div className="space-y-2">
+        {[0, 1, 2].map((i) => <SkeletonBox key={i} height={60} className="rounded-lg" />)}
+      </div>
+    )
+  }
+  if (first.error != null) {
+    return (
+      <LoadErrorState
+        whatFailed="Couldn't load settled bills"
+        error={first.error}
+        onRetry={first.retry}
+      />
+    )
+  }
 
   return (
-    <Card id="closed-bills-section" className="scroll-mt-20">
-      <CardHeader>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="min-w-0">
-            <CardTitle>Closed bills</CardTitle>
-            <CardDescription>
-              {description ?? "Every settled bill — open one to see its line items, taxes, service charge, discount, payment and who settled it."}
-            </CardDescription>
-          </div>
-          {ownDateFilter ? (
-            <div className="flex w-full items-center gap-2 sm:w-auto">
-              <Input type="date" value={ownFrom} onChange={(e) => { setOwnFrom(e.target.value) }} className="min-w-0 flex-1 sm:w-auto sm:flex-none" aria-label="Settled from" />
-              <span className="text-muted-foreground">→</span>
-              <Input type="date" value={ownTo} onChange={(e) => { setOwnTo(e.target.value) }} className="min-w-0 flex-1 sm:w-auto sm:flex-none" aria-label="Settled to" />
+    <div className="relative">
+      {rows.length === 0 ? (
+        <EmptyState icon={<Receipt />} title="No settled bills" caption={emptyCaption} />
+      ) : (
+        <div className="space-y-2">
+          {rows.map((b) => (
+            <BillRow
+              key={b.id}
+              bill={b}
+              money={money}
+              timezone={timezone}
+              methodLabel={(m) => methodLabelWithNc(m, paymentMethodLabel(m, paymentMethods))}
+              onOpen={() => { setOpenBill({ id: b.id, title: billTitle(b) }) }}
+              edit={canEditCustomer ? (
+                <EditSettledBillCustomerButton
+                  restaurantId={rid}
+                  bill={b}
+                  compact
+                  onSaved={(saved) => { patchRow(b.id, saved) }}
+                />
+              ) : null}
+            />
+          ))}
+          {hasMore ? (
+            <div className="flex justify-center pt-1">
+              <Button variant="ghost" size="sm" disabled={loadingMore} onClick={() => { void loadMore() }}>
+                <ChevronDown className="mr-1.5 h-4 w-4" />
+                {loadingMore ? "Loading…" : `Load more (${rows.length} of ${total})`}
+              </Button>
             </div>
-          ) : range && onRangeChange ? (
-            <DateRangePicker value={range} onChange={onRangeChange} timezone={timezone} align="end" />
-          ) : range ? (
-            <RangeNote range={range} timezone={timezone} />
+          ) : total > 0 ? (
+            <p className="pt-1 text-center text-xs text-muted-foreground">All {total} shown</p>
           ) : null}
         </div>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          <Input
-            placeholder="Bill no, table, method, coupon, cashier…"
-            value={search}
-            onChange={(e) => { setSearch(e.target.value) }}
-          />
-          <Input placeholder="Table (exact, e.g. T2)" value={table} onChange={(e) => { setTable(e.target.value) }} />
-          <select
-            value={method}
-            onChange={(e) => { setMethod(e.target.value) }}
-            aria-label="Payment method"
-            className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:border-ring"
-          >
-            <option value="">All payment methods</option>
-            {methodOptions.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
-          </select>
+      )}
+      <CacheStalePill offline={first.offline} fromCache={first.fromCache} updatedAt={first.updatedAt} />
+
+      <SettledBillSheet
+        rid={rid}
+        open={openBill}
+        onClose={() => { setOpenBill(null) }}
+        onCustomerSaved={(id, saved) => { patchRow(id, saved) }}
+        allowTillMove={surface === "accounting"}
+      />
+    </div>
+  )
+}
+
+/* ── One row — `_closedBillRow`: its own hoverable card control ─────────── */
+
+function BillRow({
+  bill,
+  money,
+  timezone,
+  methodLabel,
+  onOpen,
+  edit,
+}: {
+  bill: HistoryBillSummary
+  money: (n: number | null | undefined) => string
+  timezone: string
+  methodLabel: (method: string) => string
+  onOpen: () => void
+  edit: ReactNode
+}): ReactElement {
+  const method = (bill.payment_method ?? "").trim()
+  const when = billWhen(bill)
+  const covers = bill.covers
+  const customer = billCustomerChip(bill)
+  const gstin = (bill.customer_gstin ?? "").trim()
+  return (
+    <ForkCard onClick={onOpen} chevron={false} className="px-4 py-3">
+      <div className="flex items-center gap-3">
+        <div
+          aria-hidden
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border border-border bg-inset text-accent-foreground gaia:rounded-[2px]"
+        >
+          <Receipt className="h-4 w-4" />
         </div>
-
-        <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-          <span>{loading ? "Loading…" : `Showing ${bills.length} of ${total} settled bill${total === 1 ? "" : "s"}`}</span>
-          {hasFilters && <Button variant="ghost" size="sm" onClick={clearFilters}>Clear filters</Button>}
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-semibold text-foreground">{billTitle(bill)}</div>
+          <div className="mt-1 flex flex-wrap gap-1.5">
+            {when !== "" && <InfoChip icon={<Clock />} label={dateTime(when, timezone)} />}
+            {covers != null && covers > 0 && <InfoChip icon={<Users />} label={`${covers} covers`} />}
+            {method !== "" && method !== "—" && <InfoChip icon={<CreditCard />} label={methodLabel(method)} />}
+            {bill.refunded && <InfoChip icon={<Undo2 />} label="Refunded" />}
+            {/* ROUND 2 ITEM 1 — who the bill was for, so a correction is
+                visible on the row it was made from. */}
+            {customer !== "" && <InfoChip icon={<UserRound />} label={customer} />}
+            {gstin !== "" && <InfoChip icon={<Building2 />} label={`GSTIN ${gstin}`} />}
+          </div>
         </div>
+        {edit}
+        <span className="shrink-0 text-sm font-semibold tabular-nums">{money(bill.grand_total)}</span>
+        <ChevronRight aria-hidden className="h-4 w-4 shrink-0 text-tertiary" />
+      </div>
+    </ForkCard>
+  )
+}
 
-        {loading ? (
-          <p className="py-8 text-center text-sm text-muted-foreground">Loading…</p>
-        ) : failed ? (
-          <p className="py-8 text-center text-sm text-muted-foreground">
-            Couldn&apos;t load closed bills — the server is unreachable, or your role doesn&apos;t include the &quot;View Bill&quot; permission.
-          </p>
-        ) : bills.length === 0 ? (
-          <p className="py-8 text-center text-sm text-muted-foreground">No settled bills match these filters.</p>
-        ) : (
-          <>
-            <div className="divide-y overflow-hidden rounded-md border">
-              {bills.map((b) => (
-                <button
-                  key={b.id}
-                  type="button"
-                  onClick={() => void openBill(b.id)}
-                  className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2.5 text-left text-sm transition hover:bg-muted/50"
-                >
-                  <Receipt className="h-4 w-4 shrink-0 text-muted-foreground" />
-                  <span className="font-medium">#{b.bill_no ?? "—"}</span>
-                  <span className="text-muted-foreground">{b.table_name ?? "No table"}</span>
-                  <span className="text-muted-foreground">{dateTime(b.settled_at ?? b.closed_at, timezone)}</span>
-                  <span className="ml-auto flex items-center gap-2">
-                    {b.refunded && <Badge variant="destructive">Refunded</Badge>}
-                    {b.coupon_code && <Badge variant="outline">{b.coupon_code}</Badge>}
-                    {b.payment_method && <Badge variant="secondary">{paymentMethodLabel(b.payment_method, paymentMethods)}</Badge>}
-                    <span className="font-semibold">{money(b.grand_total)}</span>
-                  </span>
-                </button>
-              ))}
-            </div>
-            {hasMore && (
-              <div className="flex justify-center">
-                <Button variant="outline" size="sm" disabled={loadingMore} onClick={() => void loadMore()}>
-                  {loadingMore ? "Loading…" : "Load more"}
-                </Button>
-              </div>
-            )}
-          </>
-        )}
-      </CardContent>
+/* ────────────────────────────────────────────────────────────────────────
+   The bill sheet — `_ClosedBillSheet` + `_closedBillBody`: bottom sheet
+   below 760px, centred dialog above, with Reprint and the customer edit
+   under the body for whoever holds their permission.
+   ──────────────────────────────────────────────────────────────────────── */
 
-      <Dialog open={openId !== null} onOpenChange={(o) => { if (!o) { setOpenId(null); setDetail(null) } }}>
-        <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>
-              Bill #{detail?.bill_no ?? "—"}
-              {detail?.table_name ? <span className="text-muted-foreground"> · {detail.table_name}</span> : null}
-            </DialogTitle>
-            <DialogDescription>
-              {detail ? `Settled ${dateTime(detail.settled_at ?? detail.closed_at, timezone)}` : "Loading this bill…"}
-            </DialogDescription>
-          </DialogHeader>
+// The till move ("Move to another till") is Accounting's own control — client
+// item 8: a cash-up correction is reconciled in Accounting. This sheet serves
+// History too, so the move shows only when the Accounting list mounts it
+// (`allowTillMove`), behind the route's own Record Payment gate.
+function SettledBillSheet({
+  rid,
+  open,
+  onClose,
+  onCustomerSaved,
+  allowTillMove = false,
+}: {
+  rid: string
+  open: { id: string; title: string } | null
+  onClose: () => void
+  onCustomerSaved: (billId: string, saved: SettledBillCustomerSaved) => void
+  allowTillMove?: boolean
+}): ReactElement {
+  const { toast } = useToast()
+  const { user } = useAuth()
+  const { currencySymbol } = useCurrency()
+  const { timezone } = useTimezone()
+  const { methods: paymentMethods } = usePaymentMethods(rid)
+  const canWrite = canEditSettledBillCustomer(user)
+  const money = useCallback((n: number | null | undefined) =>
+    `${currencySymbol}${(n ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+  [currencySymbol])
 
-          {detailLoading ? (
-            <p className="py-10 text-center text-sm text-muted-foreground">Loading…</p>
-          ) : !detail ? (
-            <p className="py-10 text-center text-sm text-muted-foreground">Couldn&apos;t load this bill.</p>
+  const id = open?.id ?? ""
+  const detail = useCachedFetch(
+    `closed-bill:${rid}:${id}`,
+    useCallback(() => fetchClosedBillDetail(rid, id), [rid, id]),
+    { enabled: id !== "" },
+  )
+  // The sheet repaints from the server's ANSWER at once; the silent re-read
+  // below is the truth that replaces it.
+  const [savedPatch, setSavedPatch] = useState<SettledBillCustomerSaved | null>(null)
+  useEffect(() => { setSavedPatch(null) }, [id])
+  const bill = useMemo(
+    () => (detail.data === null ? null : savedPatch === null ? detail.data : { ...detail.data, ...savedPatch }),
+    [detail.data, savedPatch],
+  )
+
+  const [reprinting, setReprinting] = useState(false)
+
+  // While a DIFFERENT bill loads, the hook still holds the previous one — the
+  // header must not wear the old bill's number or status for a beat.
+  const shown = detail.loading ? null : bill
+  const refunded = shown?.refunded === true
+  const method = (shown?.payment_method ?? "").trim()
+  const methodShown = methodLabelWithNc(method, paymentMethodLabel(method, paymentMethods))
+  const title = shown !== null && (shown.bill_no ?? "").trim() !== "" ? billTitle(shown) : (open?.title ?? "Bill")
+
+  return (
+    <DrillSheet
+      open={open !== null}
+      onOpenChange={(o) => { if (!o) { onClose() } }}
+      eyebrow="Settled bill"
+      title={(
+        <span className="inline-flex max-w-full items-center gap-2">
+          <span className="min-w-0 truncate">{title}</span>
+          {shown !== null && (refunded ? (
+            <StatusChip status="danger" dense label={`Refunded ${money(shown.refund_amount)}`} />
           ) : (
-            <BillDetailBody detail={detail} money={money} />
+            <StatusChip status="success" dense label={method === "" ? "Closed" : methodShown} />
+          ))}
+        </span>
+      )}
+    >
+      {detail.loading ? (
+        <SkeletonRows rows={3} title={false} />
+      ) : detail.error != null || bill === null ? (
+        <LoadErrorState whatFailed="Couldn't load this bill." error={detail.error ?? new Error("Couldn't load this bill.")} onRetry={detail.retry} />
+      ) : (
+        <div className="space-y-4">
+          <BillDetailBody bill={bill} money={money} timezone={timezone} methodShown={methodShown} />
+
+          {allowTillMove && (
+            <MoveBillTillButton
+              restaurantId={rid}
+              billId={bill.id}
+              billLabel={title}
+              currentCounterId={(bill as { counter_id?: string | null }).counter_id ?? null}
+              onMoved={() => { detail.refresh() }}
+            />
           )}
 
-          {detail && (
-            <DialogFooter className="flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between">
-              {/* SAID BEFORE IT IS PRESSED, not after. The paper carries a
-                  REPRINT banner in the largest type the printer has, because a
-                  second copy that looks like an original gets paid twice or
-                  filed as a second sale — and somebody about to hand it to a
-                  guest should know that is what comes out. */}
+          {canWrite && (
+            <div className="space-y-3 pt-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={reprinting}
+                  onClick={() => {
+                    setReprinting(true)
+                    void reprintSettledBill(rid, bill.id)
+                      .then((r) => {
+                        // The server does the work, including saying "REPRINT";
+                        // failures are ITS sentence, verbatim.
+                        toast(r.ok
+                          ? { title: r.destination ? `Reprinting at ${r.destination}.` : "Reprint sent to the printer." }
+                          : { title: r.message, variant: "destructive" })
+                      })
+                      .finally(() => { setReprinting(false) })
+                  }}
+                >
+                  <Printer className="mr-2 h-4 w-4" />
+                  {reprinting ? "Sending…" : "Reprint bill"}
+                </Button>
+                {/* ROUND 2 ITEM 1 — beside the reprint, behind the same gate:
+                    correct who the bill was for, then reprint it. */}
+                <EditSettledBillCustomerButton
+                  restaurantId={rid}
+                  bill={bill}
+                  onSaved={(saved) => {
+                    setSavedPatch((prev) => ({ ...prev, ...saved }))
+                    onCustomerSaved(bill.id, saved)
+                    detail.refresh()
+                  }}
+                />
+              </div>
+              {/* SAID BEFORE IT IS PRESSED: the paper carries a REPRINT banner
+                  in the largest type the printer has, because a second copy
+                  that looks like an original gets paid twice. */}
               <p className="text-xs text-muted-foreground">
                 Prints a second copy, marked <span className="font-semibold">REPRINT</span>, with the
                 figures exactly as this bill was settled.
               </p>
-              <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-              {canEditCustomer ? (
-                <Button size="sm" variant="outline" onClick={() => { setCustomerOpen(true) }}>
-                  <Pencil className="mr-2 h-4 w-4" />
-                  Edit name / GSTIN
-                </Button>
-              ) : null}
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={reprinting === detail.id}
-                onClick={() => {
-                  const id = detail.id
-                  setReprinting(id)
-                  void reprintSettledBill(rid, id)
-                    .then((r) => {
-                      toast(r.ok
-                        ? {
-                          title: "Sent to the printer",
-                          description: r.destination ? `Printing at ${r.destination}.` : "The reprint is on its way.",
-                        }
-                        // The SERVER'S sentence, verbatim. "Couldn't reprint"
-                        // sends an owner hunting; "no printer is online for
-                        // bills" tells them what to do.
-                        : { title: "Could not reprint", description: r.message, variant: "destructive" })
-                    })
-                    .finally(() => { setReprinting((cur) => (cur === id ? null : cur)) })
-                }}
-              >
-                <Printer className="mr-2 h-4 w-4" />
-                {reprinting === detail.id ? "Sending…" : "Reprint bill"}
-              </Button>
-              </div>
-            </DialogFooter>
+            </div>
           )}
-        </DialogContent>
-      </Dialog>
-
-      {detail && canEditCustomer ? (
-        <BillCustomerDialog
-          open={customerOpen}
-          onOpenChange={setCustomerOpen}
-          restaurantId={rid}
-          target={{ kind: "bill", billId: detail.id, billNo: detail.bill_no }}
-          initial={detail}
-          onSaved={(saved) => {
-            const id = detail.id
-            // THE ROW REFRESHES FROM THE SERVER'S ANSWER at once, then from a
-            // fresh read — the read is the truth, and the answer is what keeps
-            // the old name from sitting on screen while it is in flight.
-            setDetail((cur) => (cur?.id === id ? { ...cur, customer: saved.customer, customer_gstin: saved.customer_gstin } : cur))
-            void getClosedBill(rid, id)
-              .then((fresh) => { if (fresh) { setDetail((cur) => (cur?.id === id ? fresh : cur)) } })
-              .catch(() => { /* the answer above already stands */ })
-          }}
-        />
-      ) : null}
-    </Card>
+        </div>
+      )}
+    </DrillSheet>
   )
 }
 
-function Row({ label, value, bold, muted }: { label: string; value: string; bold?: boolean; muted?: boolean }) {
+/* ── The sheet body — `_closedBillBody`, the receipt's words ────────────── */
+
+function RuleLine(): ReactElement {
+  return <div aria-hidden className="h-px bg-divider" />
+}
+
+function MoneyRow({
+  label,
+  value,
+  sub,
+  strong = false,
+  tint,
+}: {
+  label: string
+  value: string
+  sub?: string | null
+  strong?: boolean
+  tint?: "success" | "warning" | "danger" | "copper"
+}): ReactElement {
+  const tintClass =
+    tint === "success" ? "text-success" :
+    tint === "warning" ? "text-warning" :
+    tint === "danger" ? "text-destructive" :
+    tint === "copper" ? "text-accent-foreground" : ""
   return (
-    <div className={`flex items-center justify-between gap-4 text-sm ${bold ? "font-semibold" : ""} ${muted ? "text-muted-foreground" : ""}`}>
-      <span>{label}</span>
-      <span className="tabular-nums">{value}</span>
+    <div className="flex items-start justify-between gap-4 py-1.5">
+      <div className="min-w-0">
+        <div className={strong ? "text-sm font-semibold" : "text-sm"}>{label}</div>
+        {sub != null && sub !== "" && <div className="mt-0.5 text-xs text-muted-foreground">{sub}</div>}
+      </div>
+      <span className={`shrink-0 tabular-nums ${strong ? `text-[19px] font-normal tracking-[-0.02em] ${tintClass === "" ? "text-foreground" : tintClass}` : `text-sm font-medium ${tintClass}`}`}>
+        {value}
+      </span>
     </div>
   )
 }
 
-function Fact({ label, value }: { label: string; value: string }) {
+function DetailCard({ heading, children }: { heading: string; children: ReactNode }): ReactElement {
   return (
-    <div className="rounded-md border p-2">
-      <p className="text-xs text-muted-foreground">{label}</p>
-      <p className="text-sm font-medium">{value}</p>
+    <ForkCard className="p-4">
+      <SectionHeader title={heading} className="mb-1.5" />
+      {children}
+    </ForkCard>
+  )
+}
+
+/** Token-styled key/value row — the app's `_kv`: letter-spaced micro key,
+ *  quiet value. */
+export function KvRow({ k, v }: { k: string; v: string }): ReactElement {
+  return (
+    <div className="flex items-start gap-4 py-1.5">
+      <span className="micro-label w-[148px] shrink-0 pt-0.5">{k}</span>
+      <span className="min-w-0 text-[13px] font-medium">{v}</span>
     </div>
   )
 }
 
-function BillDetailBody({ detail, money }: { detail: ClosedBillDetail; money: (n: number | null | undefined) => string }) {
-  const { timezone } = useTimezone()
-  const d = detail
-  const discountLabel = d.discount_type === "percent" ? `Discount (${d.discount_value}%)` : "Discount"
-  /*
-    THE SERVICE DURATION, AS THE SERVER MEASURED IT.
+function BillDetailBody({
+  bill,
+  money,
+  timezone,
+  methodShown,
+}: {
+  bill: HistoryBillDetail
+  money: (n: number | null | undefined) => string
+  timezone: string
+  methodShown: string
+}): ReactElement {
+  const d = bill
+  const items = d.items
+  // `taxes[]` carries the per-rate lines ONLY — the service charge has its own
+  // field and its own row below, never a line in here.
+  const taxes = d.taxes
+  // The wire rows can carry a per-part reference the shared type leaves out.
+  const splits = d.payment_splits as { method?: string; payment_method?: string; amount?: number; value?: number; reference?: string }[]
+  const orders = d.orders
 
-    A settled bill's clock is a FACT about a finished service, not a counter, so
-    there is no ticking here and no local delta — `elapsedToSettlement` on a
-    stopped clock ignores one. Null when the backend sent no clock at all, and
-    the Fact below is then not drawn: ABSENT IS NOT ZERO, and "0m" beside a real
-    waiter's name is a worse answer than nothing.
-  */
+  const subtotal = d.items_subtotal
+  const discount = d.discount_amount
+  const service = d.service_charge
+  const taxTotal = d.tax_total
+  const servicePct = d.service_charge_percent
+  const coupon = (d.coupon_code ?? "").trim()
+  const method = (d.payment_method ?? "").trim()
+  const ncSettled = ncSettlementOf(d)
+  const ncTotal = d.nc_total ?? 0
+  // What rounded the settled total to the rupee (backend migration 048), as
+  // recorded at settle. Null on a bill that needed none.
+  const roundOff = roundOffOf(d)
+  // The contract's invariant, shown rather than trusted — with the round-off as
+  // its fourth rung, or every rounded bill would read as not adding up.
+  const identity = billBalanceIdentity(d, roundOff)
+
+  // The customer slot, worded as the printed paper words it — Name:, the
+  // GSTIN line, then one Address: line per stored line (finding 38).
+  const customerLines = settledBillCustomerLines(d)
+
+  const when = billWhen(d)
+  const apc = d.apc ?? 0
+  const targetApc = d.target_apc
+  // The service duration AS THE SERVER MEASURED IT — a settled bill's clock is
+  // a fact about a finished service, so no ticking and no local delta. Absent
+  // is not zero: no clock, no chip.
   const closedClock = readServiceClock(d)
   const serviceSpan = closedClock === null ? null : formatDuration(elapsedToSettlement(closedClock).ms)
 
+  // "Handled by" — combined "who · when" rows, omitting anything absent.
+  const handled = (label: string, by: string | null | undefined, at: string | null | undefined): { k: string; v: string } | null => {
+    const who = (by ?? "").trim()
+    const inst = (at ?? "").trim()
+    if (who === "" && inst === "") { return null }
+    const whenStr = inst === "" ? "" : dateTime(inst, timezone)
+    return { k: label, v: who === "" ? whenStr : whenStr === "" ? who : `${who} · ${whenStr}` }
+  }
+  const at = (label: string, iso: string | null | undefined): { k: string; v: string } | null => {
+    const inst = (iso ?? "").trim()
+    return inst === "" ? null : { k: label, v: dateTime(inst, timezone) }
+  }
+  const trail = [
+    handled("Opened", d.created_by, d.created_at),
+    at("Seated", d.seated_at),
+    handled("Waiter confirmed", d.waiter_confirmed_by, d.waiter_confirmed_at),
+    handled("Admin approved", d.admin_approved_by, d.admin_approved_at),
+    handled("Closed", d.closed_by, d.closed_at),
+    at("Settled", d.settled_at),
+    at("Discount applied", d.discount_applied_at),
+    at("Table released", d.left_at),
+    handled("Refunded", d.refunded_by, d.refunded_at),
+  ].filter((r): r is { k: string; v: string } => r !== null)
+
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
+      {customerLines.length > 0 && (
+        <div className="space-y-0.5 text-sm">
+          {customerLines.map((l, i) => <div key={i}>{l}</div>)}
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-1.5">
+        {when !== "" && <InfoChip icon={<Clock />} label={dateTime(when, timezone)} />}
+        {d.covers != null && d.covers > 0 && <InfoChip icon={<Users />} label={`${d.covers} covers`} />}
+        {apc > 0 && <InfoChip icon={<BarChart2 />} label={`APC ${money(apc)}`} />}
+        {(d.payment_proof_screenshot_url ?? "").trim() !== "" && <InfoChip icon={<ImageIcon />} label="Payment proof attached" />}
+        {/* Web-extra facts kept (finding 45): real backend data, chip-quiet. */}
+        {targetApc > 0 && <InfoChip icon={<BarChart2 />} label={`Target APC ${money(targetApc)}`} />}
+        {serviceSpan !== null && <InfoChip icon={<CalendarClock />} label={`Service time ${serviceSpan}`} />}
+      </div>
+
       {!d.totals_reconciled && (
-        <p className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+        <p className="rounded-[10px] border border-warning/28 bg-warning/12 p-2.5 text-xs text-warning">
           The line items below no longer add up to the amount that was charged — the order was edited after the bill was settled.
           The stored total ({money(d.grand_total)}) is what the guest actually paid.
         </p>
       )}
 
-      <div>
-        <p className="mb-2 text-xs font-semibold uppercase text-muted-foreground">Items</p>
-        <div className="divide-y rounded-md border">
-          {d.items.length === 0 ? (
-            <p className="p-3 text-sm text-muted-foreground">No line items recorded for this bill.</p>
-          ) : d.items.map((it, i) => (
-            <div key={`${it.name}-${i}`} className="flex items-start gap-3 p-2 text-sm">
-              <div className="min-w-0 flex-1">
-                <p className="font-medium">{it.name}</p>
-                <p className="text-xs text-muted-foreground">
-                  {it.quantity} × {money(it.price)}{it.note ? ` · ${it.note}` : ""}
-                </p>
-              </div>
-              <span className="tabular-nums font-medium">{money(it.line_total)}</span>
+      {items.length > 0 && (
+        <DetailCard heading="Items">
+          {items.map((it, i) => (
+            <div key={`${it.name}-${i}`}>
+              {i > 0 && <RuleLine />}
+              <MoneyRow
+                // A comped line is its own line at 0.00 — the paper's words.
+                label={ncLineLabel(it.name, it.nc)}
+                value={money(it.line_total)}
+                sub={`${it.quantity || 1} × ${money(it.price)}${(it.note ?? "").trim() === "" ? "" : ` · ${(it.note ?? "").trim()}`}`}
+              />
             </div>
           ))}
-        </div>
-      </div>
+        </DetailCard>
+      )}
 
-      <div className="space-y-1 rounded-md border p-3">
-        <Row label="Items subtotal" value={money(d.items_subtotal)} />
-        {d.discount_amount > 0 && (
-          <Row label={`${discountLabel}${d.coupon_code ? ` · ${d.coupon_code}` : ""}`} value={`− ${money(d.discount_amount)}`} muted />
+      <DetailCard heading="Money">
+        {subtotal > 0 && <MoneyRow label="Items subtotal" value={money(subtotal)} />}
+        {discount > 0 && (
+          <MoneyRow
+            label="Discount"
+            value={`− ${money(discount)}`}
+            sub={coupon === "" ? (d.discount_type ?? "Manual") : `Coupon ${coupon} · ${d.discount_type ?? "coupon"}`}
+            tint="success"
+          />
         )}
-        {d.discount_amount > 0 && <Row label="After discount" value={money(d.discounted_subtotal)} />}
-        {d.service_charge > 0 && (
-          <Row label={`Service charge${d.service_charge_percent ? ` (${d.service_charge_percent}%)` : ""}`} value={money(d.service_charge)} />
+        <RuleLine />
+        <MoneyRow label="Taxable base" value={money(identity.taxable)} />
+        {service !== 0 && (
+          <MoneyRow
+            label="Service charge"
+            value={money(service)}
+            sub={servicePct > 0 ? `${servicePct % 1 === 0 ? servicePct.toFixed(0) : servicePct.toFixed(2)}% of the taxable base` : null}
+          />
         )}
-        {d.taxes.map((t, i) => (
-          <Row key={`${t.name}-${i}`} label={`${t.name}${t.percentage ? ` (${t.percentage}%)` : ""}`} value={money(t.amount)} />
+        {/* Taxes rate by rate. The service charge above is deliberately NOT
+            one of them. */}
+        {taxes.map((t, i) => (
+          <MoneyRow key={`${t.name}-${i}`} label={`${t.name || "Tax"} ${t.percentage}%`} value={money(t.amount)} />
         ))}
-        {/* What rounded the settled total to the rupee (backend migration 048),
-            as recorded at settle — the line on the guest's paper. */}
-        {roundOffOf(d) !== null && (
-          <Row label="Round off" value={formatRoundOff(roundOffOf(d)!, (n) => money(n))} muted />
+        {(taxes.length > 0 || taxTotal !== 0) && <MoneyRow label="Tax total" value={money(taxTotal)} />}
+        {roundOff !== null && <MoneyRow label="Round off" value={formatRoundOff(roundOff, (n) => money(n))} />}
+        <RuleLine />
+        <MoneyRow label="Grand total" value={money(identity.grand)} strong tint="copper" />
+        {/* Beside the ladder, never in it: what the comped lines were worth. */}
+        {ncTotal > 0 && <MoneyRow label="NC value (not charged)" value={money(ncTotal)} />}
+        <div className="mt-1.5 flex items-start gap-1.5">
+          {identity.balances
+            ? <CheckCircle2 aria-hidden className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" />
+            : <AlertCircle aria-hidden className="mt-0.5 h-3.5 w-3.5 shrink-0 text-destructive" />}
+          <p className={`text-xs ${identity.balances ? "text-tertiary" : "text-destructive"}`}>
+            {money(identity.taxable)} base + {money(identity.service)} service + {money(identity.taxTotal)} tax
+            {roundOff === null ? "" : ` ${roundOff < 0 ? "−" : "+"} ${money(Math.abs(roundOff))} round off`} = {money(identity.grand)}
+          </p>
+        </div>
+      </DetailCard>
+
+      <DetailCard heading="Payment">
+        <MoneyRow label={method === "" ? "Method not recorded" : methodShown} value={money(identity.grand)} />
+        {/* A BILL SETTLED AS NC says why it took nothing, and on whose say-so. */}
+        {ncSettled !== null && (
+          <>
+            <RuleLine />
+            <MoneyRow
+              label="Settled as non-chargeable"
+              value={money(ncSettled.value)}
+              sub={`${ncSettled.kind === "" ? "" : `${ncSettled.kind} · `}authorised by ${ncSettled.authorisedBy}${ncSettled.reason === "" ? "" : ` · ${ncSettled.reason}`} · given away, before tax`}
+              tint="warning"
+            />
+            {(ncSettled.wouldHaveCharged ?? 0) > 0 && (
+              <MoneyRow label="Would have been (incl. tax)" value={money(ncSettled.wouldHaveCharged)} sub="Information only — in no report" />
+            )}
+          </>
         )}
-        <div className="border-t pt-1">
-          <Row label="Grand total" value={money(d.grand_total)} bold />
-        </div>
-        {d.refunded && <Row label="Refunded" value={`− ${money(d.refund_amount)}`} muted />}
-      </div>
-
-      <div>
-        <p className="mb-2 text-xs font-semibold uppercase text-muted-foreground">Payment</p>
-        <div className="space-y-1 rounded-md border p-3">
-          <Row label="Method" value={d.payment_method ?? "—"} />
-          {d.payment_splits.map((s, i) => (
-            <Row key={`${s.method}-${i}`} label={`↳ ${s.method}`} value={money(s.amount)} muted />
-          ))}
-          {d.payment_proof_screenshot_url && (
-            <a
-              href={d.payment_proof_screenshot_url}
-              target="_blank"
-              rel="noreferrer"
-              className="text-sm font-medium text-primary underline-offset-2 hover:underline"
-            >
-              View payment proof →
-            </a>
-          )}
-          {d.refunded && (
-            <p className="text-xs text-muted-foreground">
-              Refunded {dateTime(d.refunded_at, timezone)}{d.refunded_by ? ` by ${d.refunded_by}` : ""}
-              {d.refund_reason ? ` · ${d.refund_reason}` : ""}{d.refund_ref ? ` · ref ${d.refund_ref}` : ""}
-            </p>
-          )}
-        </div>
-      </div>
-
-      <div>
-        <p className="mb-2 text-xs font-semibold uppercase text-muted-foreground">Table &amp; guests</p>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          <Fact label="Table" value={d.table_name ?? "—"} />
-          <Fact label="Covers" value={d.covers != null ? String(d.covers) : "—"} />
-          <Fact label="APC" value={d.apc != null ? money(d.apc) : "—"} />
-          <Fact label="Target APC" value={d.target_apc ? money(d.target_apc) : "—"} />
-          <Fact label="Seated" value={dateTime(d.seated_at, timezone)} />
-          <Fact label="Left" value={dateTime(d.left_at, timezone)} />
-          {/*
-            D2 ON A FINISHED SERVICE — how long this table was in service, from
-            the first order to the settle.
-
-            THE SERVER'S FIGURE, not a subtraction done here. The same clock the
-            live floor screen showed while the table was open, frozen at the
-            settle, which is the whole point of the backend owning it: History
-            and the floor cannot report two different durations for one table,
-            and a laptop whose own clock is wrong cannot invent a third.
-
-            Drawn only when the backend actually sent a clock. An older server,
-            or a bill whose orders the server could not date, gets no Fact at all
-            rather than a fabricated "0m" against a real waiter's table.
-          */}
-          {serviceSpan ? <Fact label="Service time" value={serviceSpan} /> : null}
-          <Fact label="Customer" value={d.customer ?? "—"} />
-          {/* R2 item 1 — drawn only when the server sends the field at all; an
-              older backend's silence is not "no GSTIN". */}
-          {"customer_gstin" in d ? <Fact label="Customer GSTIN" value={d.customer_gstin?.trim() ? d.customer_gstin.trim() : "—"} /> : null}
-          <Fact label="Orders" value={String(d.orders.length)} />
-        </div>
-      </div>
-
-      <div>
-        <p className="mb-2 text-xs font-semibold uppercase text-muted-foreground">Settlement trail</p>
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          <Fact label="Opened by" value={d.created_by ?? "—"} />
-          <Fact label="Opened at" value={dateTime(d.created_at, timezone)} />
-          <Fact label="Confirmed by (waiter)" value={d.waiter_confirmed_by ?? "—"} />
-          <Fact label="Confirmed at" value={dateTime(d.waiter_confirmed_at, timezone)} />
-          <Fact label="Approved by (admin)" value={d.admin_approved_by ?? "—"} />
-          <Fact label="Approved at" value={dateTime(d.admin_approved_at, timezone)} />
-          <Fact label="Closed by" value={d.closed_by ?? "—"} />
-          <Fact label="Closed at" value={dateTime(d.closed_at, timezone)} />
-        </div>
-        {d.reason ? <p className="mt-2 text-xs text-muted-foreground">Note: {d.reason}</p> : null}
-      </div>
-
-      {d.orders.length > 0 && (
-        <div>
-          <p className="mb-2 text-xs font-semibold uppercase text-muted-foreground">Orders on this bill</p>
-          <div className="divide-y rounded-md border">
-            {d.orders.map((o) => (
-              <div key={o.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 p-2 text-sm">
-                <span className="font-mono text-xs text-muted-foreground">{o.id.slice(0, 8)}</span>
-                <span className="text-muted-foreground">{dateTime(o.created_at, timezone)}</span>
-                <Badge variant="outline">{o.status}</Badge>
-                <span className="ml-auto text-muted-foreground">{o.item_count} item{o.item_count === 1 ? "" : "s"}</span>
-                <span className="tabular-nums font-medium">{money(o.subtotal)}</span>
-              </div>
-            ))}
+        {/* Split payments: each part is its own tender, named individually. */}
+        {splits.map((s, i) => (
+          <div key={i}>
+            <RuleLine />
+            <MoneyRow
+              label={(s.method ?? s.payment_method ?? "Split part") || "Split part"}
+              value={money(s.amount ?? s.value)}
+              sub={(s.reference ?? "").trim() === "" ? "Split part" : `Ref ${(s.reference ?? "").trim()}`}
+            />
           </div>
-        </div>
+        ))}
+        {d.refunded && (
+          <>
+            <RuleLine />
+            <MoneyRow
+              label="Refunded"
+              value={`− ${money(d.refund_amount)}`}
+              sub={(d.refund_reason ?? "").trim() !== "" ? (d.refund_reason ?? "").trim() : ((d.refund_ref ?? "").trim() !== "" ? (d.refund_ref ?? "").trim() : "No reason recorded")}
+              tint="danger"
+            />
+          </>
+        )}
+        {(d.payment_proof_screenshot_url ?? "").trim() !== "" && (
+          <a
+            href={d.payment_proof_screenshot_url ?? "#"}
+            target="_blank"
+            rel="noreferrer"
+            className="text-sm font-medium text-accent-foreground underline-offset-2 hover:underline"
+          >
+            View payment proof →
+          </a>
+        )}
+      </DetailCard>
+
+      {orders.length > 0 && (
+        <DetailCard heading="Orders on this bill">
+          {orders.map((o, i) => (
+            <div key={o.id}>
+              {i > 0 && <RuleLine />}
+              <MoneyRow
+                label={`${o.status || "Order"} · ${o.item_count || 0} items`}
+                value={money(o.subtotal)}
+                sub={dateTime(o.created_at, timezone)}
+              />
+            </div>
+          ))}
+        </DetailCard>
+      )}
+
+      {trail.length > 0 && (
+        <DetailCard heading="Handled by">
+          {trail.map((r) => <KvRow key={r.k} k={r.k} v={r.v} />)}
+          {(d.reason ?? "").trim() !== "" && (
+            <p className="mt-1 text-xs text-muted-foreground">Note: {(d.reason ?? "").trim()}</p>
+          )}
+        </DetailCard>
       )}
     </div>
+  )
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+   The page-level section: header, search (+ Accounting's method filter),
+   and the list. History renders it plainly (SectionHeader + caption, no
+   card box, search only); Accounting keeps its card with the shared range
+   control in the header.
+   ──────────────────────────────────────────────────────────────────────── */
+
+interface Props {
+  rid: string
+  /** The HOST's window — the page range. The section keeps no dates of its
+   *  own: one window per screen, so the list and the totals above it can
+   *  never describe different days. */
+  from?: string
+  to?: string
+  /** With `onRangeChange`, the header carries the SAME live picker bound to
+   *  the SAME window; `range` alone renders a read-only note. */
+  range?: DateRange
+  onRangeChange?: (range: DateRange) => void
+  /** The caption under the title. */
+  description?: string
+  /** Card title (Accounting surface). */
+  title?: string
+  /** Which surface mounted it — decides chrome, filters and wording. */
+  surface?: ClosedBillSurface
+  /** 15 on the pages (Flutter's default), 10 inside the month sheet. */
+  pageSize?: number
+  /** An arrival preset for the method filter (a deep link's `?method=`). */
+  initialMethod?: string
+  /** Controlled method filter — lets the host re-aim the list after mount
+   *  (e.g. "Filter settled bills to this method" from a method sheet). */
+  method?: string
+  onMethodChange?: (method: string) => void
+  /** The methods present in the WINDOW (`sales.by_method`), already labelled.
+   *  When given, the dropdown lists only these (Flutter); otherwise every
+   *  configured mode. */
+  methodOptions?: { value: string; label: string }[]
+  /** @deprecated The section no longer keeps dates of its own; ignored. */
+  ownDateFilter?: boolean
+}
+
+export function ClosedBillsSection({
+  rid,
+  from,
+  to,
+  range,
+  onRangeChange,
+  description,
+  title,
+  surface = "accounting",
+  pageSize = 15,
+  initialMethod,
+  method: methodProp,
+  onMethodChange,
+  methodOptions: windowMethods,
+}: Props): ReactElement {
+  const { timezone } = useTimezone()
+  const { methods: paymentMethods } = usePaymentMethods(rid)
+  const methodOptions = useMemo(
+    () => windowMethods ?? closedBillMethodFilterOptions(paymentMethods),
+    [windowMethods, paymentMethods],
+  )
+  const [search, setSearch] = useState("")
+  const [ownMethod, setOwnMethod] = useState(initialMethod ?? "")
+  const method = methodProp ?? ownMethod
+  const setMethod = (m: string): void => {
+    setOwnMethod(m)
+    onMethodChange?.(m)
+  }
+
+  const effFrom = range?.from ?? from
+  const effTo = range?.to ?? to
+  const windowLabel = effFrom && effTo ? rangeLabel({ from: effFrom, to: effTo }, timezone) : "this period"
+
+  // Window-specific empty captions, worded per surface (finding 54).
+  const emptyCaption = surface === "history"
+    ? (search === ""
+      ? `No bills were closed in ${windowLabel}.`
+      : `No settled bill in ${windowLabel} matches "${search}".`)
+    : (search === "" && method === ""
+      ? `No bills were closed in ${windowLabel}.`
+      : `No settled bill in ${windowLabel} matches that filter.`)
+
+  const filter: ClosedBillsFilter = {
+    from: effFrom || undefined,
+    to: effTo || undefined,
+    search: search.trim() || undefined,
+    payment_method: method || undefined,
+  }
+
+  const searchField = (
+    <AppSearchField
+      placeholder={surface === "history" ? "Search bill no, table, cashier…" : "Search bill no, table, customer…"}
+      debounceMs={350}
+      onQuery={setSearch}
+      aria-label="Search settled bills"
+    />
+  )
+
+  const methodSelect = surface === "history" ? null : (
+    <select
+      value={method}
+      onChange={(e) => { setMethod(e.target.value) }}
+      aria-label="Payment method"
+      className="h-10 w-full rounded-md border border-input bg-inset px-3 text-sm outline-none focus:border-ring min-[760px]:w-[180px] min-[760px]:shrink-0"
+    >
+      <option value="">All methods</option>
+      {methodOptions.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+      {/* An arrival filter the configured modes do not list stays visible and
+          clearable rather than silently in force. */}
+      {method !== "" && !methodOptions.some((m) => m.value === method) && (
+        <option value={method}>{method}</option>
+      )}
+    </select>
+  )
+
+  if (surface === "history") {
+    // Flutter's History surface: a plain page section — SectionHeader, the
+    // window-naming sentence, the shared search box, then the cards.
+    return (
+      <section id="closed-bills-section" className="scroll-mt-20">
+        <SectionHeader title={title ?? "Settled bills"} className="mb-1.5" />
+        <p className="text-xs text-muted-foreground">
+          {description ?? `Every bill closed in ${windowLabel}, newest first — tap one to see it in full or reprint it.`}
+        </p>
+        <div className="mt-3">{searchField}</div>
+        <div className="mt-3">
+          <ClosedBillsList rid={rid} filter={filter} pageSize={pageSize} emptyCaption={emptyCaption} surface={surface} />
+        </div>
+      </section>
+    )
+  }
+
+  // Accounting surface (accounting.md 8.4): a page-level section too — header
+  // with the SAME live window control, caption, search beside a 180px method
+  // dropdown, then the bill cards on the page background.
+  return (
+    <section id="closed-bills-section" className="scroll-mt-20">
+      <SectionHeader
+        title={title ?? "Settled bills"}
+        className="mb-1.5"
+        trailing={range && onRangeChange ? (
+          <DateRangePicker value={range} onChange={onRangeChange} timezone={timezone} align="end" />
+        ) : range ? (
+          <RangeNote range={range} timezone={timezone} />
+        ) : undefined}
+      />
+      <p className="text-xs text-muted-foreground">
+        {description ?? "Every bill closed in this period, newest first — tap one for its items, taxes, payment and who closed it."}
+      </p>
+      <div className="mt-3 flex flex-col gap-2 min-[760px]:flex-row min-[760px]:items-center">
+        <div className="min-w-0 flex-1">{searchField}</div>
+        {methodSelect}
+      </div>
+      <div className="mt-3">
+        <ClosedBillsList rid={rid} filter={filter} pageSize={pageSize} emptyCaption={emptyCaption} surface={surface} />
+      </div>
+    </section>
   )
 }

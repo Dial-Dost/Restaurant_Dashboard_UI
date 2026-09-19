@@ -23,7 +23,7 @@ function readSource(relative: string): string {
   for (const base of [process.cwd(), path.join(__dirname, "..", "..", "..")]) {
     const full = path.join(base, relative);
     // Paths are this test's own repo-relative literals, never user input.
-    if (fs.existsSync(full)) { return fs.readFileSync(full, "utf8"); } // eslint-disable-line security/detect-non-literal-fs-filename
+    if (fs.existsSync(full)) { return fs.readFileSync(full, "utf8"); }  
   }
   throw new Error(`readSource could not find ${relative} from ${process.cwd()}`);
 }
@@ -139,8 +139,13 @@ function tokens(css: string, selector: string): Record<string, Hsl> {
   const body = css.slice(start, css.indexOf("}", start));
   const out: Record<string, Hsl> = {};
   for (const m of body.matchAll(/(--[a-z0-9-]+):\s*([^;]+);/g)) {
-    if (m[2].trim().endsWith("rem")) { continue; }
-    const parts = /^([\d.]+) ([\d.]+)% ([\d.]+)%$/.exec(m[2].trim());
+    const value = m[2].trim();
+    if (value.endsWith("rem")) { continue; }
+    // Non-colour tokens (a whole box-shadow, a var() alias, Gaia's `none`)
+    // are legitimate and skipped; a COLOUR token that is not a bare triple
+    // still fails loudly below.
+    if (value.startsWith("var(") || value === "none" || /\dpx/.test(value)) { continue; }
+    const parts = /^([\d.]+) ([\d.]+)% ([\d.]+)%$/.exec(value);
     if (!parts) { throw new Error(`${m[1]} in ${selector} is not a bare HSL triple: ${m[2]}`); }
     out[m[1]] = [Number(parts[1]), Number(parts[2]), Number(parts[3])];
   }
@@ -175,10 +180,12 @@ describe("the tone stylesheet", () => {
     expect(contrast([0, 0, 100], [0, 0, 100])).toBeCloseTo(1, 5);
   });
 
-  it("every non-white tone has a light-only block; white has none (it IS :root)", () => {
+  it("every non-white tone has a light-only, non-Gaia block; white has none (it IS :root)", () => {
+    // `:not([data-palette="gaia"])` because Gaia has no light variant in the
+    // app — a tone picked under Gaia is remembered, not applied.
     const src = css();
     for (const t of LIGHT_TONES) {
-      const selector = `[data-light-tone="${t.id}"]:not(.dark) {`;
+      const selector = `[data-light-tone="${t.id}"]:not(.dark):not([data-palette="gaia"]) {`;
       if (t.id === DEFAULT_LIGHT_TONE) { expect(src).not.toContain(selector); }
       else { expect(src).toContain(selector); }
     }
@@ -202,7 +209,7 @@ describe("the tone stylesheet", () => {
     // `data-palette` owns these in light mode; a tone setting one would
     // silently replace Rustic's copper or Gaia's champagne.
     for (const t of LIGHT_TONES.filter((x) => x.id !== DEFAULT_LIGHT_TONE)) {
-      const block = tokens(screenBlock(), `[data-light-tone="${t.id}"]:not(.dark)`);
+      const block = tokens(screenBlock(), `[data-light-tone="${t.id}"]:not(.dark):not([data-palette="gaia"])`);
       for (const owned of ["--primary", "--primary-foreground", "--ring", "--accent-foreground", "--chart-1", "--radius"]) {
         expect(block[owned]).toBeUndefined();
       }
@@ -211,7 +218,7 @@ describe("the tone stylesheet", () => {
 
   describe.each(LIGHT_TONES.filter((x) => x.id !== DEFAULT_LIGHT_TONE).map((t) => t.id))("%s meets WCAG AA", (id) => {
     const AA = 4.5;
-    const tone = (): Record<string, Hsl> => tokens(screenBlock(), `[data-light-tone="${id}"]:not(.dark)`);
+    const tone = (): Record<string, Hsl> => tokens(screenBlock(), `[data-light-tone="${id}"]:not(.dark):not([data-palette="gaia"])`);
     const palette = (pid: string): Record<string, Hsl> => tokens(readSource("src/app/palette.css"), `[data-palette="${pid}"]:not(.dark)`);
     const rusticOnTone = (): Record<string, Hsl> => tokens(screenBlock(), `[data-palette="rustic"][data-light-tone="beige"]:not(.dark),\n  [data-palette="rustic"][data-light-tone="grey"]:not(.dark)`);
 
@@ -232,17 +239,16 @@ describe("the tone stylesheet", () => {
       expect(contrast(t["--destructive-foreground"], t["--destructive"])).toBeGreaterThanOrEqual(AA);
     });
 
-    it("each palette's accent, as text on the tone and under its button label", () => {
+    it("the light palette's accent, as text on the tone and under its button label", () => {
+      // Rustic only: Gaia is dark-only, so no accent of its ever composes
+      // with a light tone.
       const t = tone();
-      const gaia = palette("gaia");
       const rustic = { ...palette("rustic"), ...rusticOnTone() };
-      for (const p of [gaia, rustic]) {
-        for (const surface of ["--background", "--card", "--muted"]) {
-          expect(contrast(p["--primary"], t[surface])).toBeGreaterThanOrEqual(AA);
-        }
-        expect(contrast(p["--accent-foreground"], t["--accent"])).toBeGreaterThanOrEqual(AA);
-        expect(contrast(p["--primary-foreground"], p["--primary"])).toBeGreaterThanOrEqual(AA);
+      for (const surface of ["--background", "--card", "--muted"]) {
+        expect(contrast(rustic["--primary"], t[surface])).toBeGreaterThanOrEqual(AA);
       }
+      expect(contrast(rustic["--accent-foreground"], t["--accent"])).toBeGreaterThanOrEqual(AA);
+      expect(contrast(rustic["--primary-foreground"], rustic["--primary"])).toBeGreaterThanOrEqual(AA);
     });
 
     it("borders are visible but quiet against the ground", () => {

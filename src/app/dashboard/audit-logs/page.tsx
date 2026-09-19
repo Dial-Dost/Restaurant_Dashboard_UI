@@ -1,371 +1,348 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CalendarDays, ChevronDown, Filter, Inbox, Loader2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import { useAuth } from '@/context/AuthContext';
-import { getAuditLogPage, undoAuditLog } from '@/lib/db';
+  DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { InfoChip } from "@/components/ui/status-chip";
+import { TickTag } from "@/components/ui/tick-tag";
+import { SectionHeader } from "@/components/ui/section-header";
+import { AppSearchField } from "@/components/ui/app-search-field";
+import { EmptyState } from "@/components/ui/empty-state";
+import { LoadErrorState } from "@/components/ui/load-error-state";
+import { SkeletonBox } from "@/components/ui/fork-skeleton";
+import { CacheStalePill } from "@/components/ui/stale-pill";
+import { AuditEntryCard } from "@/components/audit/audit-entry-card";
+import { AuditRangePicker, UndoConfirmDialog } from "@/components/audit/audit-dialogs";
+import { useCachedFetch } from "@/hooks/use-cached-fetch";
+import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/hooks/use-toast";
-import { formatDateTime, formatFullDateTime, timezoneCaption } from "@/lib/tz";
 import { useTimezone } from "@/lib/use-timezone";
+import { todayInZone } from "@/lib/tz";
+import { undoAuditLog } from "@/lib/db";
+import {
+  AUDIT_MAX_WINDOW, AUDIT_PAGE_SIZE, dayKeyBack, dayKeyMonthsBack, fetchAuditPage, rangeLabel,
+  type AuditFilters, type AuditLog, type AuditPage,
+} from "@/lib/api/audit-logs";
 
-export interface AuditLog {
-  id: string;
-  employee: string;
-  action: string;
-  category: string;
-  details: string;
-  timestamp: string;
-  // Additive undo metadata from GET /audit-logs.
-  undoable?: boolean;
-  undo_block_reason?: string | null;
-  undone?: boolean;
-  undo_log_id?: string | null;
-  undo_of?: string | null;
-}
+// db.ts imports the row type from here; it now lives with the fetchers.
+export type { AuditLog } from "@/lib/api/audit-logs";
 
 // Mirrors the backend Audit_log_category enum (+ "All").
 const CATEGORIES = ["All", "General", "Bill", "Orders", "Valet", "Inventory", "Tables", "Roles", "Customer", "Bookings", "Menu"];
 
+const PRESETS = ["All time", "Today", "Last 7 days", "Last 30 days", "Last 3 months", "A day…", "A range…"];
+const DAY_PRESET = 5;
+const RANGE_PRESET = 6;
+
 // "Undo Audited Action". The server independently re-checks this *and* the
 // original action's own permission — this is only a UI convenience filter.
-const UNDO_PERMISSION_ID = '6f2a4c81-9d35-4b7e-a0c2-5e8b1d3f7a94';
+const UNDO_PERMISSION_ID = "6f2a4c81-9d35-4b7e-a0c2-5e8b1d3f7a94";
 
-// Rows per fetch. The log runs to thousands of entries, so the page pulls one
-// batch at a time and appends as the sentinel below the table scrolls into view.
-const PAGE_SIZE = 50;
+interface FirstPage extends AuditPage { key: string }
+/** Rows scrolled in on top of the first page it was built from. */
+interface TrailWindow {
+  base: FirstPage;
+  rows: AuditLog[];
+  total: number;
+  hasMore: boolean;
+  appendError: string;
+}
 
-export default function AuditLogsPage() {
+const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+export default function AuditLogsPage(): React.JSX.Element {
   const { user } = useAuth();
   const { toast } = useToast();
   // An audit trail whose times drift with the reader's browser is not a trail.
   const { timezone } = useTimezone();
-  const [logs, setLogs] = useState<AuditLog[]>([]);
+  const rid = user?.restaurantUsername ?? "";
+
   const [category, setCategory] = useState("All");
   const [search, setSearch] = useState("");
+  const [searchKey, setSearchKey] = useState(0);
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
-  const [total, setTotal] = useState(0);
-  const [hasMore, setHasMore] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [preset, setPreset] = useState(0);
+  const [picker, setPicker] = useState<"day" | "range" | null>(null);
   const [confirmLog, setConfirmLog] = useState<AuditLog | null>(null);
-  const [undoing, setUndoing] = useState(false);
-  const hasShownAccessToastRef = useRef(false);
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
-  // Mirrors `logs` so loadMore can read the current offset without being
-  // re-created (and re-triggering the observer) on every append.
-  const logsRef = useRef<AuditLog[]>([]);
-  const loadingMoreRef = useRef(false);
-  useEffect(() => { logsRef.current = logs; }, [logs]);
 
-  const isAdmin = user?.role === 'admin' || (Array.isArray(user?.role_all) && user.role_all.includes('admin'));
-  // Admins always qualify; otherwise the employee must hold the undo action.
-  const canUndo = Boolean(
+  // Only Undo is gated (Flutter `_mayUndo`); reading the trail follows the nav.
+  const isAdmin = user?.role === "admin" || (Array.isArray(user?.role_all) && user.role_all.includes("admin"));
+  const mayUndo = (
     isAdmin ||
-    (Array.isArray(user?.actions_set) && (user.actions_set.includes('*') || user.actions_set.includes(UNDO_PERMISSION_ID)))
+    (Array.isArray(user?.actions_set) && (user.actions_set.includes("*") || user.actions_set.includes(UNDO_PERMISSION_ID)))
   );
-  const hasFilters = category !== 'All' || Boolean(search) || Boolean(from) || Boolean(to);
+  const hasFilters = category !== "All" || search !== "" || from !== "" || to !== "";
 
-  const filters = useMemo(() => ({
-    category,
-    search: search.trim() || undefined,
-    from: from ? new Date(from).toISOString() : undefined,
-    to: to ? new Date(`${to}T23:59:59`).toISOString() : undefined,
-  }), [category, search, from, to]);
+  const filters: AuditFilters = useMemo(() => ({ category, search, from, to }), [category, search, from, to]);
+  const key = `audit:${rid}:${timezone}:${category}:${search}:${from}:${to}`;
 
-  const rid = user?.restaurantUsername;
+  const first = useCachedFetch<FirstPage>(
+    key,
+    useCallback(
+      async () => ({ ...(await fetchAuditPage(rid, filters, timezone, 0)), key }),
+      [rid, filters, timezone, key],
+    ),
+    { enabled: rid.length > 0 },
+  );
+  // A payload built for other filters never stands under these ones.
+  const payload = first.data?.key === key ? first.data : null;
 
-  // First page. Debounced, and re-run from offset 0 whenever a filter changes —
-  // which also discards everything already scrolled in, so a filtered view can
-  // never show rows that no longer match.
-  const [reloadToken, setReloadToken] = useState(0);
-  useEffect(() => {
-    if (!rid || !isAdmin) {return;}
-    let active = true;
-    setLoading(true);
-    const t = setTimeout(() => {
-      void getAuditLogPage(rid, { ...filters, limit: PAGE_SIZE, offset: 0 })
-        .then((page) => {
-          if (!active) {return;}
-          if (!page) {
-            setLoadError("Couldn't load audit logs. Check your connection and try again.");
-            setLogs([]); setTotal(0); setHasMore(false);
-            return;
-          }
-          setLoadError(null);
-          setLogs(page.logs);
-          setTotal(page.total);
-          setHasMore(page.has_more);
-        })
-        .finally(() => { if (active) {setLoading(false);} });
-    }, 300);
-    return () => { active = false; clearTimeout(t); };
-  }, [rid, isAdmin, filters, reloadToken]);
+  const [win, setWin] = useState<TrailWindow | null>(null);
+  const view: TrailWindow | null = payload
+    ? win?.base === payload
+      ? win
+      : { base: payload, rows: payload.logs, total: payload.total, hasMore: payload.hasMore, appendError: "" }
+    : null;
+  const viewRef = useRef(view);
+  viewRef.current = view;
 
-  // Next page. Offset = rows already held, and the server orders by
-  // (created_at desc, id desc) — a total order — so pages cannot overlap or skip.
-  // The id de-dupe is belt-and-braces for an entry written mid-scroll.
+  const [loadingMore, setLoadingMore] = useState(false);
+  const loadingMoreRef = useRef(false);
+  const [reloading, setReloading] = useState(false);
+
+  // Next page: offset = rows already held; id de-dupe against mid-scroll inserts.
   const loadMore = useCallback(async () => {
-    if (!rid || loadingMoreRef.current) {return;}
+    const cur = viewRef.current;
+    if (!rid || !cur || !cur.hasMore || loadingMoreRef.current) { return; }
     loadingMoreRef.current = true;
     setLoadingMore(true);
     try {
-      const page = await getAuditLogPage(rid, { ...filters, limit: PAGE_SIZE, offset: logsRef.current.length });
-      if (!page) {
-        setLoadError("Couldn't load more entries.");
-        setHasMore(false);
-        return;
-      }
-      const seen = new Set(logsRef.current.map((l) => l.id));
+      const page = await fetchAuditPage(rid, filters, timezone, cur.rows.length);
+      const seen = new Set(cur.rows.map((l) => l.id));
       const fresh = page.logs.filter((l) => !seen.has(l.id));
-      setTotal(page.total);
-      // No new rows means the offset can never advance — stop rather than spin.
-      if (fresh.length === 0) { setHasMore(false); return; }
-      setLogs((prev) => [...prev, ...fresh]);
-      setHasMore(page.has_more);
+      setWin({
+        base: cur.base,
+        rows: fresh.length ? [...cur.rows, ...fresh] : cur.rows,
+        total: page.total,
+        // No new rows means the offset can never advance — stop rather than spin.
+        hasMore: fresh.length > 0 && page.hasMore,
+        appendError: "",
+      });
+    } catch (e) {
+      setWin({ ...cur, hasMore: false, appendError: errText(e) });
     } finally {
       loadingMoreRef.current = false;
       setLoadingMore(false);
     }
-  }, [rid, filters]);
+  }, [rid, filters, timezone]);
 
-  // Infinite scroll. Re-created after every append so that, if the sentinel is
-  // still on screen (short list / tall window), the next batch fires immediately.
+  // Infinite scroll.
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const rowCount = view?.rows.length ?? 0;
+  const canAppend = view?.hasMore === true;
   useEffect(() => {
     const node = sentinelRef.current;
-    if (!node || !hasMore || loading) {return;}
+    if (!node || !canAppend) { return; }
     const observer = new IntersectionObserver(
       (entries) => { if (entries.some((e) => e.isIntersecting)) { void loadMore(); } },
-      { rootMargin: '200px' },
+      { rootMargin: "400px" },
     );
     observer.observe(node);
     return () => { observer.disconnect(); };
-  }, [loadMore, hasMore, loading, logs.length]);
+  }, [loadMore, canAppend, rowCount]);
 
-  useEffect(() => {
-    if (!user || isAdmin || hasShownAccessToastRef.current) {return;}
-    toast({
-      title: 'Access denied',
-      description: 'You do not have the required role for this page. Required role: admin.',
-      variant: 'destructive',
-    });
-    hasShownAccessToastRef.current = true;
-  }, [user, isAdmin, toast]);
+  /* ── Filters: instant for chips/presets; the search box debounces itself ── */
 
-  if (!isAdmin) {
-    return (
-      <div className="p-4">
-        <p>You do not have permission to view this page. Required role: admin.</p>
-      </div>
-    );
-  }
-
-  const resetFilters = () => { setCategory('All'); setSearch(''); setFrom(''); setTo(''); };
-
-  // After an undo, re-read exactly the window the user has scrolled in (one
-  // request) so the "Undone" badge and the new undo entry appear without
-  // throwing them back to the top. Falls back to a full reload past the
-  // server's 500-row page cap.
-  const refreshLoaded = async () => {
-    const held = logsRef.current.length;
-    if (!rid || held === 0 || held > 500) { setReloadToken((t) => t + 1); return; }
-    const page = await getAuditLogPage(rid, { ...filters, limit: held, offset: 0 });
-    if (!page) { setReloadToken((t) => t + 1); return; }
-    setLogs(page.logs);
-    setTotal(page.total);
-    setHasMore(page.has_more);
+  const applyPreset = (i: number): void => {
+    if (i === DAY_PRESET) { setPicker("day"); return; }
+    if (i === RANGE_PRESET) { setPicker("range"); return; }
+    const today = todayInZone(timezone);
+    setPreset(i);
+    if (i === 0) { setFrom(""); setTo(""); }
+    if (i === 1) { setFrom(today); setTo(today); }
+    if (i === 2) { setFrom(dayKeyBack(6, timezone)); setTo(today); }
+    if (i === 3) { setFrom(dayKeyBack(29, timezone)); setTo(today); }
+    if (i === 4) { setFrom(dayKeyMonthsBack(3, timezone)); setTo(today); }
   };
 
-  const performUndo = async () => {
-    if (!user || !confirmLog) {return;}
-    setUndoing(true);
+  const clearFilters = (): void => {
+    setCategory("All"); setSearch(""); setFrom(""); setTo(""); setPreset(0);
+    setSearchKey((k) => k + 1);
+  };
+
+  // After an undo, re-read exactly the window scrolled in (one request) so the
+  // "Undone" chip and the new "Undid:" entry appear in place.
+  const refreshLoaded = async (): Promise<void> => {
+    const cur = viewRef.current;
+    const held = cur?.rows.length ?? 0;
+    if (!cur || held === 0 || held > AUDIT_MAX_WINDOW) { first.refresh(); return; }
+    setReloading(true);
     try {
-      const result = await undoAuditLog(user.restaurantUsername, confirmLog.id);
-      if (result.ok) {
-        toast({ title: 'Action undone', description: `Reversed: ${confirmLog.action}.` });
-        setConfirmLog(null);
-        await refreshLoaded();
-      } else {
-        // The backend's message is already human-readable — show it verbatim.
-        toast({ title: "Couldn't undo", description: result.error, variant: 'destructive' });
-      }
-    } catch (e: any) {
-      toast({ title: "Couldn't undo", description: String(e?.message ?? e), variant: 'destructive' });
+      const page = await fetchAuditPage(rid, filters, timezone, 0, held);
+      setWin({ base: cur.base, rows: page.logs, total: page.total, hasMore: page.hasMore, appendError: "" });
+    } catch {
+      first.refresh();
     } finally {
-      setUndoing(false);
+      setReloading(false);
     }
   };
 
+  // Flutter closes the dialog on confirm, then reports by snackbar.
+  const performUndo = async (log: AuditLog): Promise<void> => {
+    setConfirmLog(null);
+    try {
+      const result = await undoAuditLog(rid, log.id);
+      if (result.ok) {
+        toast({ title: `Undone: ${log.action}.` });
+        await refreshLoaded();
+      } else {
+        toast({ title: result.error, variant: "destructive" });
+      }
+    } catch (e) {
+      toast({ title: errText(e), variant: "destructive" });
+    }
+  };
+
+  const today = todayInZone(timezone);
+  const total = view?.total ?? 0;
+  const loaded = view?.rows.length ?? 0;
+  const busyAgain = reloading || (first.fromCache && !first.offline && view != null);
+
+  /* ── Body ─────────────────────────────────────────────────────────────── */
+
+  let body: React.ReactNode;
+  if (first.loading && !view) {
+    body = (
+      <div aria-busy="true" className="space-y-2">
+        {Array.from({ length: 6 }, (_, i) => <SkeletonBox key={i} height={54} className="rounded-lg" />)}
+      </div>
+    );
+  } else if (!view) {
+    body = (
+      <LoadErrorState
+        whatFailed="Couldn't load the audit trail"
+        error={first.error ?? new Error("Couldn't load the audit trail.")}
+        onRetry={first.retry}
+      />
+    );
+  } else if (view.rows.length === 0) {
+    body = (
+      <EmptyState
+        icon={<Inbox />}
+        title="Nothing to show"
+        caption={hasFilters
+          ? "No entries match these filters — try a wider date range or another category."
+          : "No audit entries yet."}
+      />
+    );
+  } else {
+    body = (
+      <>
+        <div className="space-y-2">
+          {view.rows.map((log) => (
+            <AuditEntryCard key={log.id} log={log} timeZone={timezone} mayUndo={mayUndo} onUndo={setConfirmLog} />
+          ))}
+        </div>
+        <div ref={view.hasMore ? sentinelRef : undefined} className="flex justify-center py-4 text-xs">
+          {loadingMore ? (
+            <span className="flex items-center gap-2 text-muted-foreground">
+              <Loader2 className="h-[13px] w-[13px] animate-spin" /> Loading the next {AUDIT_PAGE_SIZE}…
+            </span>
+          ) : view.appendError ? (
+            <span className="text-destructive">{view.appendError}</span>
+          ) : view.hasMore ? (
+            <Button variant="outline" size="sm" onClick={() => { void loadMore(); }}>
+              <ChevronDown /> Load more ({loaded} of {total})
+            </Button>
+          ) : (
+            <span className="text-muted-foreground">All {total} shown</span>
+          )}
+        </div>
+      </>
+    );
+  }
+
   return (
-    <div className="grid gap-4 md:gap-8">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-semibold md:text-2xl">Audit Logs</h1>
-          <p className="text-xs text-muted-foreground">
-            All times in restaurant time · {timezoneCaption(timezone)}
-          </p>
+    <div className="relative space-y-3 p-1">
+      <SectionHeader
+        title="Audit trail"
+        count={view ? total : undefined}
+        trailing={loaded > 0 && loaded < total ? <TickTag label={`${loaded} loaded`} /> : undefined}
+        className="mb-2"
+      />
+
+      <AppSearchField
+        key={searchKey}
+        placeholder="Filter by action, employee, or detail…"
+        debounceMs={300}
+        onQuery={setSearch}
+      />
+
+      <div className="space-y-2">
+        <div className="-mx-1 overflow-x-auto px-1">
+          <Tabs value={String(preset)} onValueChange={(v) => { applyPreset(Number(v)); }}>
+            <TabsList>
+              {PRESETS.map((label, i) => (
+                <TabsTrigger
+                  key={label}
+                  value={String(i)}
+                  // The pickers open on every press — a selected "A day…" can
+                  // be re-picked — and a cancel leaves the old pill selected.
+                  onMouseDown={i >= DAY_PRESET ? (e) => { e.preventDefault(); applyPreset(i); } : undefined}
+                >
+                  {label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <InfoChip icon={<CalendarDays />} label={rangeLabel(from, to)} />
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button type="button" title="Filter by category" className="rounded-[7px] outline-none focus-visible:ring-1 focus-visible:ring-accent-hi">
+                <InfoChip icon={<Filter />} label={category === "All" ? "All categories" : category} />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start">
+              {CATEGORIES.map((c) => (
+                <DropdownMenuCheckboxItem
+                  key={c}
+                  checked={category === c}
+                  onCheckedChange={() => { setCategory(c); }}
+                >
+                  {c === "All" ? "All categories" : c}
+                </DropdownMenuCheckboxItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+          {hasFilters && (
+            <Button variant="ghost" size="sm" onClick={clearFilters}>
+              <X /> Clear filters
+            </Button>
+          )}
+          {busyAgain && <span className="text-xs text-muted-foreground">Reloading…</span>}
         </div>
       </div>
-      <Card>
-        <CardHeader>
-          <CardTitle>Activity History</CardTitle>
-          <CardDescription>
-            A log of all actions performed by employees. Filter by category, date, or search across employee, action, and details.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {/* Filters */}
-          <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">Category</label>
-              <select
-                value={category}
-                onChange={(e) => { setCategory(e.target.value); }}
-                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:border-ring"
-              >
-                {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">Search</label>
-              <Input value={search} onChange={(e) => { setSearch(e.target.value); }} placeholder="Employee, action, or details…" />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">From</label>
-              <Input type="date" value={from} onChange={(e) => { setFrom(e.target.value); }} />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">To</label>
-              <Input type="date" value={to} onChange={(e) => { setTo(e.target.value); }} />
-            </div>
-          </div>
-          <div className="mb-3 flex flex-wrap items-center gap-3">
-            {hasFilters ? <Button variant="ghost" size="sm" onClick={resetFilters}>Clear filters</Button> : null}
-            <span className="text-xs text-muted-foreground">
-              {loading
-                ? (hasFilters ? "Searching…" : "Loading…")
-                : `Showing ${logs.length} of ${total} entr${total === 1 ? "y" : "ies"}`}
-            </span>
-          </div>
 
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Timestamp</TableHead>
-                  <TableHead>Employee</TableHead>
-                  <TableHead>Category</TableHead>
-                  <TableHead>Action</TableHead>
-                  <TableHead>Details</TableHead>
-                  <TableHead className="text-right">Undo</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {logs.map((log) => (
-                  <TableRow key={log.id}>
-                    <TableCell className="whitespace-nowrap tabular-nums" title={formatFullDateTime(log.timestamp, timezone)}>{formatDateTime(log.timestamp, timezone)}</TableCell>
-                    <TableCell className="font-medium">{log.employee}</TableCell>
-                    <TableCell><Badge variant="outline">{log.category}</Badge></TableCell>
-                    <TableCell>
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <Badge variant="secondary">{log.action}</Badge>
-                        {log.undone ? <Badge variant="outline" className="text-muted-foreground">Undone</Badge> : null}
-                        {log.undo_of ? <Badge variant="outline" className="text-muted-foreground">Undo</Badge> : null}
-                      </div>
-                    </TableCell>
-                    <TableCell>{log.details}</TableCell>
-                    <TableCell className="text-right">
-                      {log.undone || log.undo_of ? (
-                        <span className="text-xs text-muted-foreground">—</span>
-                      ) : log.undoable && canUndo ? (
-                        <Button variant="outline" size="sm" onClick={() => { setConfirmLog(log); }}>Undo</Button>
-                      ) : !log.undoable && log.undo_block_reason ? (
-                        <span className="text-xs text-muted-foreground" title={log.undo_block_reason}>
-                          {log.undo_block_reason}
-                        </span>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">—</span>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
-                {logs.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={6} className="py-8 text-center text-sm text-muted-foreground">
-                      {loading ? "Loading…" : loadError ?? "No matching activity."}
-                    </TableCell>
-                  </TableRow>
-                ) : null}
-              </TableBody>
-            </Table>
-          </div>
+      <div className="pt-1">{body}</div>
 
-          {/* Infinite-scroll foot: the sentinel the observer watches, the loading
-              row while a batch is in flight, and the end-of-list marker. */}
-          {logs.length > 0 && !loading ? (
-            hasMore ? (
-              <div ref={sentinelRef} className="mt-4 flex flex-col items-center gap-2 py-4">
-                <span className="text-sm text-muted-foreground">
-                  {loadingMore ? "Loading more…" : `Loading the next ${PAGE_SIZE}…`}
-                </span>
-                {/* Fallback for anything the observer misses (or a user who'd rather click). */}
-                <Button variant="outline" size="sm" disabled={loadingMore} onClick={() => { void loadMore(); }}>
-                  {loadingMore ? "Loading…" : "Load more"}
-                </Button>
-              </div>
-            ) : (
-              <p className="mt-4 py-4 text-center text-sm text-muted-foreground">
-                {loadError ?? `End of list — all ${logs.length} matching entr${logs.length === 1 ? "y" : "ies"} loaded.`}
-              </p>
-            )
-          ) : null}
-        </CardContent>
-      </Card>
+      <AuditRangePicker
+        mode={picker}
+        first={dayKeyMonthsBack(36, timezone)}
+        last={today}
+        seedFrom={from || (picker === "range" ? dayKeyBack(6, timezone) : today)}
+        seedTo={to || today}
+        onCancel={() => { setPicker(null); }}
+        onPick={(f, t) => {
+          setPreset(picker === "range" ? RANGE_PRESET : DAY_PRESET);
+          setFrom(f); setTo(t); setPicker(null);
+        }}
+      />
 
-      <AlertDialog open={confirmLog !== null} onOpenChange={(open) => { if (!open && !undoing) {setConfirmLog(null);} }}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Undo this action?</AlertDialogTitle>
-            <AlertDialogDescription asChild>
-              <div className="space-y-2">
-                <p>This reverses the action below. The original entry is kept, and a new audit entry recording the undo is added.</p>
-                {confirmLog ? (
-                  <div className="rounded-md border p-3 text-sm">
-                    <div><span className="text-muted-foreground">Action: </span><span className="font-medium">{confirmLog.action}</span></div>
-                    <div><span className="text-muted-foreground">By: </span><span className="font-medium">{confirmLog.employee}</span></div>
-                    <div><span className="text-muted-foreground">When: </span><span className="font-medium">{formatFullDateTime(confirmLog.timestamp, timezone)}</span></div>
-                    {confirmLog.details ? <div className="mt-1 text-muted-foreground">{confirmLog.details}</div> : null}
-                  </div>
-                ) : null}
-              </div>
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={undoing}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={undoing}
-              onClick={(e) => { e.preventDefault(); void performUndo(); }}
-            >
-              {undoing ? 'Undoing…' : 'Undo action'}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <UndoConfirmDialog
+        log={confirmLog}
+        timeZone={timezone}
+        onCancel={() => { setConfirmLog(null); }}
+        onConfirm={(log) => { void performUndo(log); }}
+      />
+
+      <CacheStalePill offline={first.offline} fromCache={first.fromCache} updatedAt={first.updatedAt} />
     </div>
   );
 }

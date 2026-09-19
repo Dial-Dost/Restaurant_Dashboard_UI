@@ -11,4 +11,6 @@ module.exports = {
   moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'json', 'node'],
   testMatch: ['**/__tests__/**/*.(test|spec).ts?(x)'],
   roots: ['<rootDir>/src/lib'],
+  // The app imports through the tsconfig '@/' alias; source under test does too.
+  moduleNameMapper: { '^@/(.*)$': '<rootDir>/src/$1' },
 };

@@ -13,6 +13,7 @@
 // `visible_here` and show the resolver's `message` otherwise.
 
 import type { NotificationTarget } from '@/lib/db';
+import { FOCUS_PARAM } from '@/components/focus-banner';
 
 /** Owner-app module label -> web dashboard route. */
 export const MODULE_ROUTES: Record<string, string> = {
@@ -24,6 +25,13 @@ export const MODULE_ROUTES: Record<string, string> = {
     Inventory: '/dashboard/inventory',
     Employees: '/dashboard/employees',
     Analytics: '/dashboard/analytics',
+    // The resolver (and the explain flow) also answer with these — a missing
+    // row here rendered as "Can't open this one" for a perfectly good target.
+    Reports: '/dashboard/reports',
+    Accounting: '/dashboard/accounting',
+    History: '/dashboard/history',
+    Tables: '/dashboard/tables',
+    Kitchen: '/dashboard/kitchen',
 };
 
 /**
@@ -42,19 +50,86 @@ export const ENTITY_HIGHLIGHT_PARAM: Record<string, string> = {
 };
 
 /**
+ * What the destination module needs to focus the record: the notification's own
+ * meta, plus the resolver's entity so even an old row (meta with just
+ * `order_id`) resolves to a concrete id. Mirrors the Flutter bell's
+ * `_focusTarget`.
+ */
+export const notificationFocusTarget = (
+    meta: Record<string, unknown> | null | undefined,
+    resolved?: Pick<NotificationTarget, 'entity'> | null,
+): Record<string, unknown> => {
+    const merged: Record<string, unknown> = { ...(meta ?? {}) };
+    const entity = resolved?.entity;
+    if (entity) {
+        if (entity.id) {merged.entity_id = entity.id;}
+        if (entity.type) {merged.entity_type = entity.type;}
+    }
+    return merged;
+};
+
+/**
  * The href to open for a resolved target, or null when there is nothing to open
  * (a KPI/exception alert with `module: null`).
  *
- * The highlight param is only appended when the destination can actually show
- * the row — linking to `?highlightOrder=<id>` for a record that is filtered out
- * would just re-create the original bug in URL form.
+ * The focus payload (`?focus=<json>` — see useFocusRequest) and the legacy
+ * highlight param are only appended when the destination can actually show the
+ * row — linking a record that is filtered out would just re-create the original
+ * bug in URL form. The legacy param stays until every module reads the focus
+ * banner instead of useHighlightRow.
  */
 export const notificationHref = (target: NotificationTarget): string | null => {
     const base = target.module ? MODULE_ROUTES[target.module] : null;
     if (!base) {return null;}
-    const param = target.entity ? ENTITY_HIGHLIGHT_PARAM[target.entity.type] : undefined;
-    if (!param || !target.entity || !target.visible_here) {return base;}
-    return `${base}?${param}=${encodeURIComponent(target.entity.id)}`;
+    if (!target.entity || !target.visible_here) {return base;}
+    let href = `${base}?${FOCUS_PARAM}=${encodeURIComponent(JSON.stringify(notificationFocusTarget(target.meta, target)))}`;
+    const param = ENTITY_HIGHLIGHT_PARAM[target.entity.type];
+    if (param) {href += `&${param}=${encodeURIComponent(target.entity.id)}`;}
+    return href;
+};
+
+/**
+ * The type -> module fallback for when the resolver cannot be reached (offline
+ * or an older backend) — `_moduleForType` in notifications_bell.dart, verbatim.
+ * `warning` is overloaded, so it is disambiguated by which id its meta carries.
+ */
+export const fallbackModuleForType = (
+    type: string,
+    meta: Record<string, unknown> | null | undefined,
+): string | null => {
+    const m = meta ?? {};
+    switch (type) {
+        case 'order':
+        case 'payment':
+            return 'Orders';
+        case 'reservation':
+            return 'Bookings';
+        case 'waitlist':
+            return 'Waitlist';
+        case 'valet':
+            return 'Valet';
+        case 'warning':
+            if ('request_id' in m) {return 'Orders';} // discount approval
+            if ('feedback_id' in m) {return 'Feedback';} // low rating
+            return 'Analytics'; // KPI alert (alert_key) and everything else
+        case 'report':
+            return m.module === 'Accounting' ? 'Accounting' : 'Reports';
+        default:
+            return null;
+    }
+};
+
+/** The best-effort href for the resolver-unreachable path. */
+export const fallbackNotificationHref = (
+    type: string,
+    meta: Record<string, unknown> | null | undefined,
+): string | null => {
+    const moduleLabel = fallbackModuleForType(type, meta);
+    const base = moduleLabel ? MODULE_ROUTES[moduleLabel] : null;
+    if (!base) {return null;}
+    const target = notificationFocusTarget(meta);
+    if (Object.keys(target).length === 0) {return base;}
+    return `${base}?${FOCUS_PARAM}=${encodeURIComponent(JSON.stringify(target))}`;
 };
 
 /**

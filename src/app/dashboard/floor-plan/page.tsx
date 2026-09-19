@@ -7,44 +7,57 @@
   rearrange, group tables and modify layout. In the Tables Section users may NOT
   move, change layout, format, or delete tables."
 
-  The web had FUSED the two: one card grid where the same card carried a drag
-  grip, a Delete, an Edit seating, a covers box, Occupy, Release and Take Orders.
-  Mid-service, on a laptop, with a party waiting. This page is everything on the
-  left of that sentence; /dashboard/tables is everything on the right, and it no
-  longer draws a single control that changes the layout.
+  2.1 — the plan tile is a piece of FURNITURE: name, seats, zone. No occupancy
+  wash, no bill, no waiter, no OTP — that is the Tables screen's language. A tap
+  opens the layout-only PlanTableSheet; the whole card is also the drag.
 
-  WHY A SEPARATE PAGE AND NOT A MODE SWITCH. A mode is a thing you can be in by
-  accident. The two jobs have different audiences (the owner sets the floor up
-  once; the floor works it all night), different permissions on the server, and
-  different consequences for a mis-click — which is the whole reason the client
-  asked for them apart.
+  The floor itself loads through the same read the Tables screen uses (one
+  code path, so the zone order can never disagree between the two), the section
+  ORDER is the SERVER's — owner positions, then creation order, then the
+  alphabet, "Unassigned" always last — and the Arrange dialog writes the whole
+  list back with PUT /table-sections/order. Nothing here persists layout to
+  localStorage any more, and next-party seats ("12 #2") are not furniture, so
+  the editor never shows them.
 
   C7 + H8 — 'DELETE TABLE' LIVES IN EXACTLY ONE PLACE: THE HEADER OF THIS PAGE.
-  It used to sit in the overflow menu of every table card on the web, three
-  pixels from "Edit seating", on the screen staff use all night. It is now one
-  header control, it names the table it is about to destroy, and it spells out
-  what survives and what does not — see DeleteTableDialog.
+  The picker offers only tables the server would accept (not seated), says how
+  many busy ones are not listed, and the confirmation spells out what survives.
 
   THE SERVER IS THE CONTROL, THIS PAGE IS THE COURTESY. Every act here is gated
   server-side on the permission quoted beside it in src/lib/session-scope.ts:
   add/move/re-seat on "Table Added", delete on "Table Deleted", zones on "Manage
-  Table Sections". Hiding a control this session cannot use stops it 403-ing in
-  front of a guest; it is not what stops the write. A deep link to this page by
-  someone who holds none of them lands on a refusal, not on a working floor
-  editor.
+  Table Sections". A deep link by someone who holds none of them lands on a
+  refusal, not on a working floor editor.
 */
 
-import { useCallback, useMemo, useState } from "react";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import * as React from "react";
 import {
-    Dialog,
-    DialogContent,
-    DialogDescription,
-    DialogFooter,
-    DialogHeader,
-    DialogTitle,
-} from "@/components/ui/dialog";
+    ArrowUpDown,
+    Armchair,
+    GripVertical,
+    HelpCircle,
+    LayoutGrid,
+    Pencil,
+    Plus,
+    PlusCircle,
+    ShieldAlert,
+    Trash2,
+    Ungroup,
+} from "lucide-react";
+import type { DragEndEvent, DragStartEvent } from "@dnd-kit/core";
+import {
+    DndContext,
+    DragOverlay,
+    PointerSensor,
+    pointerWithin,
+    useDraggable,
+    useDroppable,
+    useSensor,
+    useSensors,
+} from "@dnd-kit/core";
+
+import { Button } from "@/components/ui/button";
+import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
     AlertDialog,
     AlertDialogAction,
@@ -54,379 +67,426 @@ import {
     AlertDialogFooter,
     AlertDialogHeader,
     AlertDialogTitle,
-    AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import {
-    DropdownMenu,
-    DropdownMenuContent,
-    DropdownMenuItem,
-    DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { cn } from "@/lib/utils";
-import { Users, PlusCircle, MoreVertical, Trash2, GripVertical, Pencil, LayoutGrid, ShieldAlert } from "lucide-react";
-import { type Table } from "../tables/data";
+import { EmptyState } from "@/components/ui/empty-state";
+import { LoadErrorState } from "@/components/ui/load-error-state";
+import { SectionHeader } from "@/components/ui/section-header";
+import { SkeletonBox } from "@/components/ui/fork-skeleton";
+import { CacheStalePill } from "@/components/ui/stale-pill";
+import { InfoChip, StatusChip } from "@/components/ui/status-chip";
+import { PlanTableSheet } from "@/components/tables/plan-table-sheet";
+import { NewSectionDialog, ArrangeSectionsDialog } from "@/components/tables/section-dialogs";
 import {
-    SECTION_NAME_MAX,
-    UNASSIGNED_SECTION_NAME,
-    addSection,
-    applyServerSections,
-    isUnassignedSection,
-    moveTable,
-    normalizeSectionName,
-    removeSection,
-    renameSection,
-    type TableLayout,
-} from "../tables/sections";
-import { requestBackend, updateTableSeating } from "@/lib/db";
+    TableSeatingDialog,
+    TableRunReportSheet,
+    type TableRunOutcome,
+    type TableSeatingResult,
+} from "@/components/tables/table-seating-dialog";
+import { useFloor } from "@/components/tables/use-floor";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/hooks/use-toast";
-import { useFloorTables, type TableOccupancy } from "@/hooks/use-floor-tables";
+import { cn } from "@/lib/utils";
+import { updateTableSeating } from "@/lib/db";
 import { can } from "@/lib/session-scope";
-import type { CollisionDetection, DragEndEvent, DragStartEvent } from "@dnd-kit/core";
-import { DndContext, closestCenter, pointerWithin, useSensor, useSensors, PointerSensor, DragOverlay, useDroppable } from "@dnd-kit/core";
-import { SortableContext, useSortable } from "@dnd-kit/sortable";
+import {
+    addFloorTable,
+    allocateTableNames,
+    composeFloorSections,
+    createTableSection,
+    deleteTableSection,
+    floorScopeOf,
+    isNextPartyRow,
+    removeFloorTable,
+    renameTableSection,
+    saveSectionOrder,
+    seatsLabel,
+    setTableSection,
+    type FloorRow,
+    type FloorSectionGroup,
+} from "@/lib/api/tables-floor";
 
-// Droppable ids are namespaced so a drag ending on empty space inside a section
-// is distinguishable from one ending on another table card.
-const SECTION_DROP_PREFIX = "section:";
-const sectionDropId = (sectionId: string) => `${SECTION_DROP_PREFIX}${sectionId}`;
-
-/*
-  A section's droppable wraps its cards, so the pointer is always inside BOTH.
-  Prefer the card (precise position), fall back to the section (drop into empty
-  space / append), and only then to geometry when the pointer left every zone.
-  Plain `closestCenter` would let a big section rect beat the card under the
-  cursor and turn every reorder into an append.
-*/
-const collisionDetection: CollisionDetection = (args) => {
-    const withinPointer = pointerWithin(args);
-    const cards = withinPointer.filter((collision) => !String(collision.id).startsWith(SECTION_DROP_PREFIX));
-    if (cards.length > 0) { return cards; }
-    if (withinPointer.length > 0) { return withinPointer; }
-    return closestCenter(args);
-};
+// Droppable ids are namespaced; '' (Unassigned) becomes "zone:".
+const ZONE_DROP_PREFIX = "zone:";
+const zoneDropId = (key: string): string => `${ZONE_DROP_PREFIX}${key}`;
 
 /*
-  ONE TABLE, AS A PIECE OF FURNITURE.
-
-  Deliberately NOT a service card: no covers box, no Occupy, no Release, no Take
-  Orders, and — C7/H8 — no Delete. It shows what a floor plan needs to show, which
-  is where the table is and how many it seats.
-
-  2.1 — "MAKE SURE WHAT IS SEEN IN TABLES IS NOT SHOWN IN THE FLOOR PLAN." This
-  card used to carry the live floor as well: the In use / Reserved / Free badge,
-  the red and blue occupancy tints the Tables screen paints (2.2), the clubbed-
-  booking badge with the guest's name and time, and a "party is seated" note.
-  That is the Tables screen, drawn a second time on the layout editor. It is all
-  gone: the props are not taken, so it cannot creep back through a caller. The
-  one place this page still asks who is sitting where is the Delete dialog, which
-  refuses an occupied table before the server has to — a guard on the act, not
-  a view of the floor.
+  ONE TABLE, AS A PIECE OF FURNITURE (2.1). The WHOLE card is both the tap
+  (opens the layout sheet) and the drag (the pointer sensor's 6px distance
+  keeps a plain click a click). The grip stays as the visible affordance.
 */
-function PlanTable({
-    table,
-    canDrag,
-    canEditSeating,
-    onEdit,
-}: {
-    table: Table;
-    canDrag: boolean;
+function PlanTileCard({ row, canEditSeating, canDrag, dragging = false }: {
+    row: FloorRow;
     canEditSeating: boolean;
-    onEdit: (table: Table) => void;
-}) {
-    const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-        id: table.id,
-        disabled: !canDrag,
-    });
-
-    const style = {
-        transform: transform ? `translate3d(${String(transform.x)}px, ${String(transform.y)}px, 0)` : undefined,
-        transition,
-    };
-
+    canDrag: boolean;
+    dragging?: boolean;
+}): React.JSX.Element {
+    const seats = seatsLabel(row.raw);
     return (
-        <Card
-            ref={setNodeRef}
-            style={style}
+        <span
             className={cn(
-                "transition-all touch-none min-w-0",
-                // One neutral surface for every table: occupancy colour is the
-                // Tables screen's language (2.2), not the layout editor's.
-                "bg-slate-800/50 border-slate-700",
-                isDragging ? "opacity-50 shadow-2xl z-10" : "hover:shadow-lg hover:border-slate-600",
+                "flex min-h-[96px] min-w-0 flex-col items-start rounded-lg border border-border p-3.5 text-left",
+                "bg-card bg-gradient-to-b from-card-top to-card-bottom shadow-card",
+                "transition-all duration-fast ease-out gaia:rounded-[2px]",
+                dragging ? "shadow-card-hover" : "hover:-translate-y-0.5 hover:border-input",
             )}
         >
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2 p-3">
-                <CardTitle className="text-xs font-medium sm:text-sm flex items-center gap-2 min-w-0">
-                    <button
-                        {...listeners}
-                        {...attributes}
-                        disabled={!canDrag}
-                        title={canDrag ? "Drag to another section" : "Moving a table needs the “Table Added” permission"}
-                        className={cn("p-1 shrink-0", canDrag ? "cursor-grab" : "cursor-not-allowed opacity-40")}
-                    >
-                        <GripVertical className="h-4 w-4 text-muted-foreground" />
-                    </button>
-                    <span className="truncate" title={table.name}>{table.name}</span>
-                </CardTitle>
-                {/* The only per-card act left is re-seating, and it rides on the same
-                    "Table Added" permission as a move. Without it the menu would open
-                    empty, so the trigger goes rather than the item. */}
-                {canEditSeating ? (
-                    <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="icon" className="h-6 w-6 shrink-0">
-                                <MoreVertical className="h-4 w-4" />
-                                <span className="sr-only">Table layout actions</span>
-                            </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                            <DropdownMenuItem onSelect={() => { onEdit(table); }}>
-                                <Pencil className="mr-2 h-4 w-4" />
-                                Edit seating
-                            </DropdownMenuItem>
-                        </DropdownMenuContent>
-                    </DropdownMenu>
+            <span className="flex w-full items-center gap-1.5">
+                {canDrag ? (
+                    <GripVertical aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
                 ) : null}
-            </CardHeader>
-            <CardContent className="p-3 pt-0">
-                <div className="flex items-center text-muted-foreground text-xs">
-                    <Users className="h-3 w-3 mr-1" />
-                    <span>
-                        Seats: {table.capacity}
-                        {table.max_capacity > table.capacity ? ` · max ${String(table.max_capacity)}` : ""}
-                    </span>
-                </div>
-            </CardContent>
-        </Card>
+                <span className="min-w-0 flex-1 truncate text-[15px] font-semibold tracking-[-0.01em] text-foreground gaia:font-serif">
+                    {row.name}
+                </span>
+            </span>
+            {seats !== "" ? (
+                <span className="mt-2">
+                    <InfoChip icon={<Armchair />} label={seats} />
+                </span>
+            ) : null}
+            <span className="mt-auto pt-2.5 text-[11px] text-tertiary">
+                {canEditSeating ? "Tap to edit seating" : "Layout"}
+            </span>
+        </span>
+    );
+}
+
+function PlanTile({ row, sectionKey, canEditSeating, canDrag, onOpen }: {
+    row: FloorRow;
+    sectionKey: string;
+    canEditSeating: boolean;
+    canDrag: boolean;
+    onOpen: (row: FloorRow) => void;
+}): React.JSX.Element {
+    const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+        id: row.name,
+        data: { sectionKey },
+        disabled: !canDrag,
+    });
+    // A finished drag still fires a click on the tile it started from; that
+    // click must not open the sheet the drop just left behind.
+    const draggedRef = React.useRef(false);
+    React.useEffect(() => {
+        if (isDragging) { draggedRef.current = true; }
+    }, [isDragging]);
+    return (
+        <button
+            ref={setNodeRef}
+            type="button"
+            {...attributes}
+            {...listeners}
+            data-testid={`plan-table-${row.name}`}
+            onClick={() => {
+                if (draggedRef.current) { draggedRef.current = false; return; }
+                onOpen(row);
+            }}
+            title={canDrag ? "Drag onto another section to move it" : undefined}
+            className={cn(
+                "min-w-0 touch-none text-left outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-lg",
+                isDragging && "opacity-40",
+            )}
+        >
+            <PlanTileCard row={row} canEditSeating={canEditSeating} canDrag={canDrag} />
+        </button>
     );
 }
 
 /*
-  One floor section. The whole body is a drop target so a table can be dropped
-  into an EMPTY section (dropping onto another card is handled by the sortable
-  items themselves).
+  One zone: an inset group container whose WHOLE body is the drop target. The
+  drop-hover paints it copper with "DROP TO MOVE HERE", and the inline rename /
+  remove icon actions hide while a drag hovers.
 */
-function SectionDropZone({
-    sectionId,
-    isEmpty,
-    children,
-}: {
-    sectionId: string;
-    isEmpty: boolean;
-    children: React.ReactNode;
-}) {
-    const { setNodeRef, isOver } = useDroppable({ id: sectionDropId(sectionId) });
-
+function PlanZone({ group, canManage, canMove, canEditSeating, draggingFromKey, onOpenTile, onRename, onRemove }: {
+    group: FloorSectionGroup;
+    canManage: boolean;
+    canMove: boolean;
+    canEditSeating: boolean;
+    /** The section key the active drag started from; null = no drag. */
+    draggingFromKey: string | null;
+    onOpenTile: (row: FloorRow) => void;
+    onRename: (group: FloorSectionGroup) => void;
+    onRemove: (group: FloorSectionGroup) => void;
+}): React.JSX.Element {
+    const { setNodeRef, isOver } = useDroppable({ id: zoneDropId(group.key) });
+    const hot = isOver && draggingFromKey !== null && draggingFromKey !== group.key && canMove;
+    const seats = group.rows.reduce((n, r) => n + r.capacity, 0);
     return (
         <div
             ref={setNodeRef}
             className={cn(
-                "rounded-lg transition-colors",
-                isEmpty ? "border-2 border-dashed p-6" : "p-1",
-                isOver ? "border-primary bg-primary/5" : isEmpty ? "border-slate-700" : "border-transparent",
+                "rounded-lg border p-3 pb-3.5 transition-colors duration-fast gaia:rounded-[2px]",
+                hot
+                    ? "border-2 border-[hsl(var(--primary))] bg-[hsl(var(--primary)/0.10)]"
+                    : "border-border bg-inset",
             )}
         >
-            {isEmpty ? (
-                <p className="text-center text-xs text-muted-foreground">
-                    Empty section — drag a table here.
-                </p>
-            ) : (
-                children
-            )}
+            <div className="flex flex-wrap items-center gap-2">
+                {group.key === ""
+                    ? <HelpCircle aria-hidden className={cn("h-[15px] w-[15px] shrink-0", hot ? "text-accent-foreground" : "text-muted-foreground")} />
+                    : <LayoutGrid aria-hidden className={cn("h-[15px] w-[15px] shrink-0", hot ? "text-accent-foreground" : "text-muted-foreground")} />}
+                <span className={cn(
+                    "text-[11px] font-bold uppercase tracking-[0.8px]",
+                    hot ? "text-accent-foreground" : "text-muted-foreground",
+                )}>
+                    {group.name}
+                </span>
+                {/* An empty zone is a real, saved zone — say so. */}
+                {group.rows.length === 0 && group.key !== "" ? (
+                    <StatusChip status="neutral" label="Empty" dense />
+                ) : (
+                    <>
+                        <InfoChip label={`${String(group.rows.length)} ${group.rows.length === 1 ? "table" : "tables"}`} />
+                        <InfoChip label={`${String(seats)} seats`} />
+                    </>
+                )}
+                {hot ? (
+                    <span className="micro-label !text-accent-foreground">Drop to move here</span>
+                ) : null}
+                <span className="min-w-0 flex-1" />
+                {!hot && canManage && group.key !== "" ? (
+                    <span className="flex items-center gap-0.5">
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7"
+                            title="Rename section"
+                            onClick={() => { onRename(group); }}
+                        >
+                            <Pencil className="h-3.5 w-3.5" />
+                            <span className="sr-only">Rename section</span>
+                        </Button>
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7"
+                            title="Remove section (tables stay)"
+                            onClick={() => { onRemove(group); }}
+                        >
+                            <Ungroup className="h-3.5 w-3.5" />
+                            <span className="sr-only">Remove section (tables stay)</span>
+                        </Button>
+                    </span>
+                ) : null}
+            </div>
+            <div className="mt-3">
+                {group.rows.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">Nothing here yet.</p>
+                ) : (
+                    <div className="grid grid-cols-[repeat(auto-fill,minmax(168px,1fr))] gap-3">
+                        {group.rows.map((row) => (
+                            <PlanTile
+                                key={row.name}
+                                row={row}
+                                sectionKey={group.key}
+                                canEditSeating={canEditSeating}
+                                canDrag={canMove}
+                                onOpen={onOpenTile}
+                            />
+                        ))}
+                    </div>
+                )}
+            </div>
         </div>
     );
 }
 
-/*
-  C7 + H8 — DELETING A TABLE, SAID OUT LOUD.
-
-  H8: "remove from ubiquitous views; only in the 'Floor' header of the dashboard,
-  and the UI must be explicit about what the action does."
-
-  The old confirmation said "This will permanently delete the table. This action
-  cannot be undone." Two words of that were true and the rest was not:
-    * the backend SOFT-deletes any table that carries orders or bills, precisely
-      so those records survive — so "permanently" was wrong on the common case;
-    * it refuses outright while a party is seated or a bill is open, so "cannot
-      be undone" was being shown for an action that was about to be declined;
-    * and it never said the thing that actually bites, which is that the table's
-      QR code dies with it and a guest scanning the sticker on that table gets
-      nothing.
-
-  So this dialog names the table, says what goes, says what stays, and refuses to
-  arm the button while the server would refuse anyway. Picking the table from a
-  list rather than deleting "the one you were just looking at" is the other half
-  of C7: the act is now something you go and do on purpose.
-*/
-function DeleteTableDialog({
-    open,
-    onOpenChange,
-    tables,
-    occupancyByName,
-    onConfirm,
-}: {
-    open: boolean;
-    onOpenChange: (open: boolean) => void;
-    tables: Table[];
-    occupancyByName: Record<string, TableOccupancy>;
-    onConfirm: (table: Table) => Promise<void>;
-}) {
-    const [selectedName, setSelectedName] = useState("");
-    const [busy, setBusy] = useState(false);
-
-    const selected = tables.find((table) => table.name === selectedName) ?? null;
-    const occupancy = selected ? occupancyByName[selected.name.toLowerCase()] ?? null : null;
-    const isOccupied = Boolean(occupancy?.is_occupied);
-
-    const confirm = async () => {
-        if (!selected || isOccupied) { return; }
-        setBusy(true);
-        try {
-            await onConfirm(selected);
-            setSelectedName("");
-        } finally {
-            setBusy(false);
-        }
-    };
-
+/** Skeleton floor: a header line and two zones of grey tiles. */
+function PlanSkeleton(): React.JSX.Element {
     return (
-        <Dialog open={open} onOpenChange={(next) => { if (!busy) { onOpenChange(next); } }}>
-            <DialogContent className="sm:max-w-[480px]">
-                <DialogHeader>
-                    <DialogTitle>Delete a table</DialogTitle>
-                    <DialogDescription>
-                        This takes a table off the floor for good. It is the only place in the dashboard that can.
-                    </DialogDescription>
-                </DialogHeader>
-
-                <div className="grid gap-2">
-                    <Label htmlFor="delete-table-pick">Which table?</Label>
-                    <select
-                        id="delete-table-pick"
-                        value={selectedName}
-                        onChange={(e) => { setSelectedName(e.target.value); }}
-                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                    >
-                        <option value="">Choose a table…</option>
-                        {[...tables]
-                            .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
-                            .map((table) => (
-                                <option key={table.id} value={table.name}>
-                                    {table.name} · {table.capacity} seats{table.section ? ` · ${table.section}` : ""}
-                                </option>
-                            ))}
-                    </select>
-                </div>
-
-                {selected ? (
-                    <div className="space-y-3">
-                        <div className="rounded-md border border-destructive/50 bg-destructive/[0.06] p-3 text-sm">
-                            <p className="font-semibold">Deleting {selected.name} will:</p>
-                            <ul className="mt-1.5 list-disc space-y-1 pl-5 text-muted-foreground">
-                                <li>take it off the floor plan and out of the Tables screen for everyone;</li>
-                                <li>
-                                    kill its QR code — a guest scanning the sticker on {selected.name} will not be
-                                    able to order, and a new sticker is needed if you ever add it back;
-                                </li>
-                                <li>free it from {selected.section ? `the “${selected.section}” section` : "the Unassigned section"} and from any waiter assigned to it;</li>
-                                <li>remove it from future reservations and from the seating suggestions.</li>
-                            </ul>
-                        </div>
-                        <div className="rounded-md border p-3 text-sm">
-                            <p className="font-semibold">What it will NOT do:</p>
-                            <ul className="mt-1.5 list-disc space-y-1 pl-5 text-muted-foreground">
-                                {/* Accurate to RemoveTable: a table carrying orders or bills is
-                                    soft-deleted precisely so those records survive, and only a
-                                    table with no history at all is actually removed. Telling an
-                                    owner their sales history is about to go is how they never
-                                    press the button that tidies their floor. */}
-                                <li>Past orders, bills and reports for {selected.name} stay exactly as they are.</li>
-                                <li>No money moves, and nothing in accounting changes.</li>
-                            </ul>
-                        </div>
-                        {isOccupied ? (
-                            <div className="rounded-md border border-amber-500/60 bg-amber-500/[0.07] p-3 text-sm">
-                                <p className="font-semibold">{selected.name} has a party seated on it right now.</p>
-                                <p className="mt-1 text-muted-foreground">
-                                    Settle or release it from the Tables screen first. The server refuses to delete an
-                                    occupied table or one with an open bill, so this would fail anyway — and taking the
-                                    table away underneath a live bill is exactly what that rule exists to prevent.
-                                </p>
-                            </div>
-                        ) : null}
+        <div className="space-y-4" data-testid="plan-skeleton">
+            <SkeletonBox width={220} height={22} />
+            {[0, 1].map((zone) => (
+                <div key={zone} className="rounded-lg border border-border bg-inset p-3">
+                    <SkeletonBox width={160} height={14} />
+                    <div className="mt-3 grid grid-cols-[repeat(auto-fill,minmax(168px,1fr))] gap-3">
+                        {Array.from({ length: 4 }).map((_, i) => (
+                            <SkeletonBox key={i} height={96} />
+                        ))}
                     </div>
-                ) : null}
-
-                <DialogFooter>
-                    <Button variant="outline" onClick={() => { onOpenChange(false); }} disabled={busy}>Cancel</Button>
-                    <Button
-                        variant="destructive"
-                        onClick={() => { void confirm(); }}
-                        disabled={busy || !selected || isOccupied}
-                    >
-                        <Trash2 className="mr-2 h-4 w-4" />
-                        {selected ? `Delete ${selected.name}` : "Delete table"}
-                    </Button>
-                </DialogFooter>
-            </DialogContent>
-        </Dialog>
+                </div>
+            ))}
+        </div>
     );
 }
 
-export default function FloorPlanPage() {
+type Snapshot = Record<string, { had: boolean; value: string | null }>;
+
+export default function FloorPlanPage(): React.JSX.Element {
     const { user } = useAuth();
     const { toast } = useToast();
 
     /*
-      THE THREE LAYOUT PERMISSIONS, ASKED OF THE SERVER'S OWN ANSWER.
-
-      Not of the role name. A manager, a floor supervisor on a custom role and an
-      owner whose stored primary role got mangled into "employee" are all people
-      the backend will happily serve here; a role-name test refuses two of the
-      three. `actions_set` is the resolved list the routes themselves check.
+      THE THREE LAYOUT PERMISSIONS, ASKED OF THE SERVER'S OWN ANSWER — not of
+      the role name. `actions_set` is the resolved list the routes themselves
+      check, and floorScopeOf ANDs it with the surface (D5).
     */
-    const canManageSections = can(user, "manage_table_sections");
-    const canEditLayout = can(user, "edit_table");
-    const canDeleteTables = can(user, "delete_table");
+    const scope = React.useMemo(() => floorScopeOf(user ?? undefined, "plan"), [user]);
+    const canManageSections = scope.arrangeFloor && can(user, "manage_table_sections");
+    const canEditLayout = scope.arrangeFloor && can(user, "edit_table");
+    const canDeleteTables = scope.deleteTable;
 
-    const floor = useFloorTables(user);
-    const {
-        tables: tablesData,
-        occupancyByName,
-        serverZones,
-        layout,
-        commitLayout,
-        commitZones,
-        layoutRef,
-        serverZonesRef,
-        setTables,
-        reload: loadTables,
-        reloadZones: loadSectionRoster,
-    } = floor;
+    const floor = useFloor(user, "plan");
+    const { rows, zones, zoneError, zoneOrder, zoneBorn, refresh } = floor;
 
-    const [isAddTableOpen, setIsAddTableOpen] = useState(false);
-    const [newTableName, setNewTableName] = useState("");
-    const [newTableCapacity, setNewTableCapacity] = useState("");
-    const [newTableMaxCapacity, setNewTableMaxCapacity] = useState("");
-    const [newTableSection, setNewTableSection] = useState("");
-    const [activeId, setActiveId] = useState<number | null>(null);
-    const [editingTable, setEditingTable] = useState<Table | null>(null);
-    const [editCapacity, setEditCapacity] = useState("");
-    const [editMaxCapacity, setEditMaxCapacity] = useState("");
-    const [savingSeating, setSavingSeating] = useState(false);
-    const [sectionDialog, setSectionDialog] = useState<{ mode: "add" | "rename"; id?: string } | null>(null);
-    const [sectionName, setSectionName] = useState("");
-    const [savingSection, setSavingSection] = useState(false);
-    const [isDeleteTableOpen, setIsDeleteTableOpen] = useState(false);
+    // CLIENT ITEM 6 — the room has no "12 #2" in it. A next-party seat is a
+    // second name for a table the plan already draws; it is not furniture.
+    const planRows = React.useMemo(() => rows.filter((r) => !isNextPartyRow(r.raw)), [rows]);
 
-    const sensors = useSensors(useSensor(PointerSensor));
+    /* ── Optimistic overlays (the app's _pending / _zonePending / order) ── */
+    const [pendingSections, setPendingSections] = React.useState<Record<string, string | null>>({});
+    const [zoneOverlay, setZoneOverlay] = React.useState<Record<string, string | null>>({});
+    const [orderPending, setOrderPending] = React.useState<string[] | null>(null);
+    const pendingRef = React.useRef(pendingSections);
+    pendingRef.current = pendingSections;
+    const overlayRef = React.useRef(zoneOverlay);
+    overlayRef.current = zoneOverlay;
+
+    // Drop every optimistic value the server has now confirmed, so a
+    // successful write never flickers back while the refresh is in flight.
+    React.useEffect(() => {
+        const data = floor.data;
+        if (!data) { return; }
+        setPendingSections((prev) => {
+            const keys = Object.keys(prev);
+            if (keys.length === 0) { return prev; }
+            const live = new Map<string, string | null>();
+            for (const r of data.rows) { live.set(r.name.toLowerCase(), r.section); }
+            const next: Record<string, string | null> = {};
+            let changed = false;
+            for (const key of keys) {
+                if (live.has(key) && live.get(key) === prev[key]) { changed = true; continue; }
+                next[key] = prev[key];
+            }
+            return changed ? next : prev;
+        });
+        setZoneOverlay((prev) => {
+            const keys = Object.keys(prev);
+            if (keys.length === 0) { return prev; }
+            const live = new Set<string>();
+            for (const r of data.rows) {
+                if (r.section !== null && r.section.trim() !== "") { live.add(r.section.trim().toLowerCase()); }
+            }
+            for (const z of data.zones) {
+                if (z.trim() !== "") { live.add(z.trim().toLowerCase()); }
+            }
+            const next: Record<string, string | null> = {};
+            let changed = false;
+            for (const key of keys) {
+                const value = prev[key];
+                const settled = value === null ? !live.has(key) : live.has(value.toLowerCase());
+                if (settled) { changed = true; continue; }
+                next[key] = value;
+            }
+            return changed ? next : prev;
+        });
+        setOrderPending((prev) => {
+            if (prev === null) { return prev; }
+            const live = data.zoneOrder;
+            let settled = prev.every((key) => key in live);
+            if (settled) {
+                const ranked = [...prev].sort((a, b) => live[a] - live[b]);
+                settled = ranked.every((key, i) => key === prev[i]);
+            }
+            return settled ? null : prev;
+        });
+    }, [floor.data]);
+
+    const restoreInto = (
+        current: Record<string, string | null>,
+        snap: Snapshot,
+    ): Record<string, string | null> => {
+        const next: Record<string, string | null> = {};
+        for (const [key, value] of Object.entries(current)) {
+            const s = snap[key] as Snapshot[string] | undefined;
+            if (s === undefined) { next[key] = value; } else if (s.had) { next[key] = s.value; }
+        }
+        for (const [key, s] of Object.entries(snap)) {
+            if (s.had && !(key in next)) { next[key] = s.value; }
+        }
+        return next;
+    };
+    const restorePending = (snap: Snapshot): void => {
+        setPendingSections((current) => restoreInto(current, snap));
+    };
+    const restoreOverlay = (snap: Snapshot): void => {
+        setZoneOverlay((current) => restoreInto(current, snap));
+    };
+    const snapPending = (keys: string[]): Snapshot => {
+        const snap: Snapshot = {};
+        for (const key of keys) {
+            snap[key] = {
+                had: Object.prototype.hasOwnProperty.call(pendingRef.current, key),
+                value: pendingRef.current[key] ?? null,
+            };
+        }
+        return snap;
+    };
+    const snapOverlay = (key: string): Snapshot => ({
+        [key]: {
+            had: Object.prototype.hasOwnProperty.call(overlayRef.current, key),
+            value: overlayRef.current[key] ?? null,
+        },
+    });
+
+    /** What this table's section reads as RIGHT NOW (optimistic included). */
+    const sectionOfRow = React.useCallback((row: FloorRow): string | null => {
+        const key = row.name.toLowerCase();
+        if (Object.prototype.hasOwnProperty.call(pendingSections, key)) { return pendingSections[key]; }
+        return row.section;
+    }, [pendingSections]);
+
+    const sections = React.useMemo(
+        () => composeFloorSections(planRows, zones, zoneOrder, zoneBorn, {
+            pendingSections,
+            zoneOverlay,
+            orderPending,
+            includeEmptyZones: true,
+        }),
+        [planRows, zones, zoneOrder, zoneBorn, pendingSections, zoneOverlay, orderPending],
+    );
+    const named = React.useMemo(() => sections.filter((s) => s.key !== ""), [sections]);
+
+    /* ── Dialog state ─────────────────────────────────────────────── */
+    const [busy, setBusy] = React.useState(false);
+    const [sheetName, setSheetName] = React.useState<string | null>(null);
+    const [addOpen, setAddOpen] = React.useState(false);
+    const [editingName, setEditingName] = React.useState<string | null>(null);
+    const [runOutcome, setRunOutcome] = React.useState<TableRunOutcome | null>(null);
+    const [newSectionOpen, setNewSectionOpen] = React.useState(false);
+    const [arrangeOpen, setArrangeOpen] = React.useState(false);
+    const [renameFrom, setRenameFrom] = React.useState<FloorSectionGroup | null>(null);
+    const [renameText, setRenameText] = React.useState("");
+    const [removeGroup, setRemoveGroup] = React.useState<FloorSectionGroup | null>(null);
+    const [deletePickerOpen, setDeletePickerOpen] = React.useState(false);
+    const [deleteName, setDeleteName] = React.useState<string | null>(null);
+    const [activeDrag, setActiveDrag] = React.useState<{ name: string; fromKey: string } | null>(null);
+
+    const byName = floor.byName;
+    const sheetRow = sheetName !== null ? byName.get(sheetName.toLowerCase()) ?? null : null;
+    const editingRow = editingName !== null ? byName.get(editingName.toLowerCase()) ?? null : null;
+
+    const rid = user?.restaurantUsername ?? "";
+
+    const failToast = (title: string, error: unknown): void => {
+        toast({
+            title,
+            description: error instanceof Error ? error.message : String(error),
+            variant: "destructive",
+        });
+    };
 
     // The toast has to name the permission the owner ticks; "required role:
     // admin" sends them looking for a grant that does not exist.
-    const ensurePermission = (granted: boolean, permissionName: string) => {
+    const ensurePermission = (granted: boolean, permissionName: string): boolean => {
         if (granted) { return true; }
         toast({
             title: "Access denied",
@@ -436,489 +496,373 @@ export default function FloorPlanPage() {
         return false;
     };
 
-    /*
-        Every section write is optimistic: the layout moves first so the floor
-        never stalls under the cursor, then the write goes out, and a rejection
-        puts the previous layout AND the previous roster straight back and
-        reloads the truth. Both, because the roster is what decides a zone
-        exists — rolling back one without the other leaves a zone that is drawn
-        but not real, or real but not drawn.
-    */
-    const revertLayout = useCallback((previous: TableLayout, previousZones: string[] | null, title: string, error: unknown) => {
-        commitLayout(previous);
-        commitZones(previousZones);
-        toast({
-            title,
-            description: error instanceof Error ? error.message : "The change was rolled back.",
-            variant: "destructive",
-        });
-        loadTables().catch((err: unknown) => { console.error("reload after failed section write", err); });
-    }, [commitLayout, commitZones, toast, loadTables]);
-
-    // The section routes answer with {"error":"…"}; the raw body would put JSON
-    // in front of the owner.
-    const backendMessage = (response: { data: unknown; text: string }, fallback: string): string => {
-        const message = (response.data as { error?: unknown } | null)?.error;
-        return typeof message === "string" && message.trim() ? message : (response.text || fallback);
-    };
-
-    const handleAddTable = async () => {
-        if (!ensurePermission(canEditLayout, "Table Added")) { return; }
-        if (!newTableName || !newTableCapacity || !user?.restaurantUsername) { return; }
-
-        const trimmedName = newTableName.trim();
-        const existingTable = tablesData.find((table) => table.name.toLowerCase() === trimmedName.toLowerCase());
-        if (existingTable) {
-            toast({
-                title: "Duplicate Table",
-                description: `A table with the name "${trimmedName}" already exists.`,
-                variant: "destructive",
-            });
-            return;
+    /* ── Zones the add dialog may place a table into ───────────────── */
+    const existingZoneNames = React.useMemo(() => {
+        const byKey = new Map<string, string>();
+        for (const r of planRows) {
+            const v = (r.section ?? "").trim();
+            if (v !== "" && !byKey.has(v.toLowerCase())) { byKey.set(v.toLowerCase(), v); }
         }
-
-        const capacityValue = newTableCapacity ? parseInt(newTableCapacity, 10) : undefined;
-        // Optional MAX (extra chairs). Same rule the backend enforces: a whole
-        // number >= 1, and never below the normal seat count (the backend
-        // silently clamps it up, so refuse it here instead of surprising them).
-        const maxValue = newTableMaxCapacity.trim() ? Number(newTableMaxCapacity) : undefined;
-        if (maxValue !== undefined && (!Number.isInteger(maxValue) || maxValue < 1)) {
-            toast({
-                title: "Invalid maximum",
-                description: "Max with extra chairs must be a whole number of 1 or more.",
-                variant: "destructive",
-            });
-            return;
+        for (const z of zones) {
+            const v = z.trim();
+            if (v !== "" && !byKey.has(v.toLowerCase())) { byKey.set(v.toLowerCase(), v); }
         }
-        if (maxValue !== undefined && capacityValue !== undefined && maxValue < capacityValue) {
-            toast({
-                title: "Maximum too small",
-                description: `Max with extra chairs cannot be below the ${String(capacityValue)} normal seats.`,
-                variant: "destructive",
-            });
-            return;
-        }
+        return [...byKey.values()].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+    }, [planRows, zones]);
 
-        const chosenSection = newTableSection.trim();
-        const response = await requestBackend({
-            path: "/add-table",
-            method: "POST",
-            restaurantId: user.restaurantUsername,
-            body: {
-                table: {
-                    name: trimmedName,
-                    capacity: capacityValue,
-                    max_capacity: maxValue,
-                    // Omitted entirely when Unassigned, so the backend leaves it null.
-                    ...(chosenSection ? { section: chosenSection } : {}),
-                },
-            },
-        });
+    const existingNames = React.useMemo(() => planRows.map((r) => r.name), [planRows]);
 
-        if (!response.ok) {
-            toast({
-                title: "Unable to add the table",
-                description: backendMessage(response, "Failed to create table"),
-                variant: "destructive",
-            });
-            return;
-        }
+    /* ── Moves (drag one table between zones) ──────────────────────── */
+    const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
-        await loadTables();
-        setNewTableName("");
-        setNewTableCapacity("");
-        setNewTableMaxCapacity("");
-        setNewTableSection("");
-        setIsAddTableOpen(false);
-        toast({ title: "Table added", description: `${trimmedName} is on the floor.` });
-    };
-
-    const openEditTable = (table: Table) => {
-        if (!ensurePermission(canEditLayout, "Table Added")) { return; }
-        setEditingTable(table);
-        setEditCapacity(String(table.capacity || 1));
-        setEditMaxCapacity(String(table.max_capacity || table.capacity || 1));
-    };
-
-    const handleSaveSeating = async () => {
-        if (!editingTable || !user?.restaurantUsername) { return; }
-        if (!ensurePermission(canEditLayout, "Table Added")) { return; }
-
-        const capacityValue = Number(editCapacity);
-        const maxValue = Number(editMaxCapacity);
-        if (!Number.isInteger(capacityValue) || capacityValue < 1 || !Number.isInteger(maxValue) || maxValue < 1) {
-            toast({
-                title: "Invalid seating",
-                description: "Seats and max with extra chairs must both be whole numbers of 1 or more.",
-                variant: "destructive",
-            });
-            return;
-        }
-        if (maxValue < capacityValue) {
-            toast({
-                title: "Maximum too small",
-                description: `Max with extra chairs cannot be below the ${String(capacityValue)} normal seats.`,
-                variant: "destructive",
-            });
-            return;
-        }
-
-        setSavingSeating(true);
+    const moveTableToZone = async (row: FloorRow, targetKey: string, targetName: string): Promise<void> => {
+        const key = row.name.toLowerCase();
+        const snap = snapPending([key]);
+        const section = targetKey === "" ? null : targetName;
+        setPendingSections((prev) => ({ ...prev, [key]: section }));
         try {
-            const updated = await updateTableSeating(user.restaurantUsername, editingTable.name, {
-                capacity: capacityValue,
-                max_capacity: maxValue,
+            await setTableSection(rid, row.name, section);
+            refresh();
+        } catch (error: unknown) {
+            restorePending(snap);
+            toast({
+                title: `Could not move ${row.name}`,
+                description: error instanceof Error ? error.message : String(error),
+                variant: "destructive",
+            });
+        }
+    };
+
+    const onDragStart = (event: DragStartEvent): void => {
+        const fromKey = (event.active.data.current as { sectionKey?: string } | undefined)?.sectionKey ?? "";
+        setActiveDrag({ name: String(event.active.id), fromKey });
+    };
+
+    const onDragEnd = (event: DragEndEvent): void => {
+        const drag = activeDrag;
+        setActiveDrag(null);
+        if (!drag || !event.over) { return; }
+        const overId = String(event.over.id);
+        if (!overId.startsWith(ZONE_DROP_PREFIX)) { return; }
+        const targetKey = overId.slice(ZONE_DROP_PREFIX.length);
+        if (targetKey === drag.fromKey) { return; }
+        if (!ensurePermission(canEditLayout, "Table Added")) { return; }
+        const row = byName.get(drag.name.toLowerCase());
+        if (!row) { return; }
+        const target = sections.find((s) => s.key === targetKey);
+        void moveTableToZone(row, targetKey, target?.name ?? targetKey);
+    };
+
+    /* ── Section writes (roster-first, optimistic, rolled back) ────── */
+
+    const applySectionToTables = async (
+        tables: FloorRow[],
+        section: string | null,
+    ): Promise<{ failed: string[]; error: string }> => {
+        if (tables.length === 0) { return { failed: [], error: "" }; }
+        const keys = tables.map((t) => t.name.toLowerCase());
+        const snap = snapPending(keys);
+        setPendingSections((prev) => {
+            const next = { ...prev };
+            for (const key of keys) { next[key] = section; }
+            return next;
+        });
+        const failed: string[] = [];
+        let error = "";
+        for (const t of tables) {
+            try {
+                await setTableSection(rid, t.name, section);
+            } catch (e: unknown) {
+                failed.push(t.name);
+                if (error === "") { error = e instanceof Error ? e.message : String(e); }
+            }
+        }
+        if (failed.length > 0) {
+            const failedKeys = new Set(failed.map((n) => n.toLowerCase()));
+            const failedSnap: Snapshot = {};
+            for (const [key, s] of Object.entries(snap)) {
+                if (failedKeys.has(key)) { failedSnap[key] = s; }
+            }
+            restorePending(failedSnap);
+        }
+        return { failed, error };
+    };
+
+    const handleCreateSection = async (picked: { name: string; tables: string[] }): Promise<void> => {
+        const key = picked.name.toLowerCase();
+        const snap = snapOverlay(key);
+        setZoneOverlay((prev) => ({ ...prev, [key]: picked.name }));
+        setNewSectionOpen(false);
+        setBusy(true);
+        try {
+            await createTableSection(rid, picked.name);
+        } catch (error: unknown) {
+            restoreOverlay(snap);
+            toast({
+                title: `Could not create "${picked.name}"`,
+                description: error instanceof Error ? error.message : String(error),
+                variant: "destructive",
+            });
+            setBusy(false);
+            return;
+        }
+        const chosen = planRows.filter((r) => picked.tables.includes(r.name));
+        const res = await applySectionToTables(chosen, picked.name);
+        setBusy(false);
+        refresh();
+        if (res.failed.length > 0) {
+            toast({
+                title: picked.name,
+                description: `${res.failed.join(", ")} could not be moved — ${res.error}`,
+                variant: "destructive",
+            });
+        }
+    };
+
+    const handleRenameSection = async (): Promise<void> => {
+        const group = renameFrom;
+        if (group === null) { return; }
+        const from = group.name;
+        const to = renameText.trim().replace(/\s+/g, " ");
+        setRenameFrom(null);
+        if (to === "" || to === from) { return; }
+        // Both halves move together: the members' labels AND the roster entry,
+        // so an EMPTY zone still renames on screen.
+        const key = from.toLowerCase();
+        const memberKeys = group.rows.map((r) => r.name.toLowerCase());
+        const overlaySnap = snapOverlay(key);
+        const pendingSnap = snapPending(memberKeys);
+        setZoneOverlay((prev) => ({ ...prev, [key]: to }));
+        setPendingSections((prev) => {
+            const next = { ...prev };
+            for (const k of memberKeys) { next[k] = to; }
+            return next;
+        });
+        setBusy(true);
+        try {
+            await renameTableSection(rid, from, to);
+            refresh();
+        } catch (error: unknown) {
+            restoreOverlay(overlaySnap);
+            restorePending(pendingSnap);
+            toast({
+                title: `Could not rename "${from}"`,
+                description: error instanceof Error ? error.message : String(error),
+                variant: "destructive",
+            });
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const handleRemoveSection = async (): Promise<void> => {
+        const group = removeGroup;
+        if (group === null) { return; }
+        setRemoveGroup(null);
+        const key = group.name.toLowerCase();
+        const memberKeys = group.rows.map((r) => r.name.toLowerCase());
+        const overlaySnap = snapOverlay(key);
+        const pendingSnap = snapPending(memberKeys);
+        setZoneOverlay((prev) => ({ ...prev, [key]: null }));
+        setPendingSections((prev) => {
+            const next = { ...prev };
+            for (const k of memberKeys) { next[k] = null; }
+            return next;
+        });
+        setBusy(true);
+        try {
+            await deleteTableSection(rid, group.name);
+            refresh();
+        } catch (error: unknown) {
+            restoreOverlay(overlaySnap);
+            restorePending(pendingSnap);
+            toast({
+                title: `Could not remove "${group.name}"`,
+                description: error instanceof Error ? error.message : String(error),
+                variant: "destructive",
+            });
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const handleSaveOrder = async (names: string[]): Promise<void> => {
+        const prev = orderPending;
+        setOrderPending(names.map((n) => n.trim().toLowerCase()));
+        setArrangeOpen(false);
+        setBusy(true);
+        try {
+            await saveSectionOrder(rid, names);
+            refresh();
+        } catch (error: unknown) {
+            setOrderPending(prev);
+            toast({
+                title: "Could not save the section order",
+                description: error instanceof Error ? error.message : String(error),
+                variant: "destructive",
+            });
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    /* ── Add a table, or a numbered run of them ────────────────────── */
+
+    const handleAddTables = async (result: TableSeatingResult): Promise<void> => {
+        if (!ensurePermission(canEditLayout, "Table Added")) { return; }
+        setAddOpen(false);
+        // A single table keeps the old path exactly — the name typed is the
+        // name created, so "Patio" stays "Patio" instead of becoming "Patio1".
+        const run = result.count <= 1
+            ? { names: [result.name], skipped: [] as string[], problem: "" }
+            : allocateTableNames(result.name, result.count, existingNames);
+        setBusy(true);
+        const created: string[] = [];
+        let failedName = "";
+        let error = "";
+        for (const name of run.names) {
+            try {
+                await addFloorTable(rid, {
+                    name,
+                    capacity: result.capacity,
+                    max_capacity: result.maxCapacity,
+                    section: result.section,
+                });
+                created.push(name);
+            } catch (e: unknown) {
+                // Stop at the first rejection rather than firing the rest at a
+                // server that just refused: a partial batch is reported, not
+                // continued.
+                failedName = name;
+                error = e instanceof Error ? e.message : String(e);
+                break;
+            }
+        }
+        setBusy(false);
+        if (created.length > 0) { refresh(); }
+        // One table, nothing skipped and nothing to explain: silent on
+        // success, a toast on failure. Anything else gets the run report —
+        // a run that allocated no names at all included.
+        if (run.names.length <= 1 && run.skipped.length === 0 && run.problem === "") {
+            if (error !== "") { failToast("Unable to add the table", error); }
+            return;
+        }
+        setRunOutcome({
+            names: run.names,
+            skipped: run.skipped,
+            problem: run.problem,
+            created,
+            failedName,
+            error,
+            section: result.section,
+            capacity: result.capacity,
+            maxCapacity: result.maxCapacity,
+        });
+    };
+
+    /* ── Edit seating ──────────────────────────────────────────────── */
+
+    const handleSaveSeating = async (result: TableSeatingResult): Promise<void> => {
+        const row = editingRow;
+        if (row === null) { return; }
+        if (!ensurePermission(canEditLayout, "Table Added")) { return; }
+        setBusy(true);
+        try {
+            const updated = await updateTableSeating(rid, row.name, {
+                capacity: result.capacity,
+                max_capacity: result.maxCapacity,
             });
             toast({
                 title: "Seating updated",
                 description: `${updated.table_name} now seats ${String(updated.capacity)} (max ${String(updated.max_capacity)}).`,
             });
-            setEditingTable(null);
-            await loadTables();
+            setEditingName(null);
+            refresh();
         } catch (error: unknown) {
-            toast({
-                title: "Unable to update seating",
-                description: error instanceof Error ? error.message : "Failed to save the seating numbers.",
-                variant: "destructive",
-            });
+            failToast("Unable to update seating", error);
         } finally {
-            setSavingSeating(false);
+            setBusy(false);
         }
     };
 
-    // --- Sections -----------------------------------------------------------
+    /* ── Deleting a table (C7 + H8) ────────────────────────────────── */
 
-    const openAddSection = () => {
-        if (!ensurePermission(canManageSections, "Manage Table Sections")) { return; }
-        setSectionName("");
-        setSectionDialog({ mode: "add" });
-    };
-
-    const openRenameSection = (sectionId: string, currentName: string) => {
-        if (!ensurePermission(canManageSections, "Manage Table Sections")) { return; }
-        setSectionName(currentName);
-        setSectionDialog({ mode: "rename", id: sectionId });
-    };
-
-    const handleSaveSection = async () => {
-        if (!sectionDialog || !user?.restaurantUsername) { return; }
-        const trimmed = normalizeSectionName(sectionName);
-        if (!trimmed) {
-            toast({ title: "Name required", description: "Give the section a name.", variant: "destructive" });
-            return;
-        }
-
-        const clashes = layoutRef.current.sections.some(
-            (section) => section.id !== sectionDialog.id && section.name.toLowerCase() === trimmed.toLowerCase(),
-        );
-        if (clashes) {
-            toast({
-                title: "Duplicate section",
-                description: `A section called "${trimmed}" already exists.`,
-                variant: "destructive",
-            });
-            return;
-        }
-
-        const previous = layoutRef.current;
-        const previousZones = serverZonesRef.current;
-        const current = previous.sections.find((section) => section.id === sectionDialog.id);
-
-        if (sectionDialog.mode === "add") {
-            /*
-                Optimistic on BOTH the layout and the roster. The roster is what
-                decides a zone exists, so a zone added to the layout alone would be
-                reconciled straight back off the floor on the very next render.
-                Then POST /table-sections makes it real — and audited, and visible
-                to the owner app and every other browser, which writing it to
-                localStorage never was.
-            */
-            commitLayout(addSection(previous, trimmed));
-            commitZones(previousZones ? [...previousZones, trimmed] : previousZones);
-            setSectionDialog(null);
-            setSavingSection(true);
-            try {
-                const response = await requestBackend<{ section?: string }>({
-                    path: "/table-sections",
-                    method: "POST",
-                    restaurantId: user.restaurantUsername,
-                    body: { name: trimmed },
-                });
-                if (!response.ok) {
-                    throw new Error(backendMessage(response, "Failed to create the section"));
-                }
-                toast({ title: "Section created", description: `Drag tables into "${trimmed}".` });
-                await loadSectionRoster();
-            } catch (error) {
-                revertLayout(previous, previousZones, "Unable to create the section", error);
-            } finally {
-                setSavingSection(false);
-            }
-            return;
-        }
-
-        if (!current) {
-            // Reconciled away under the open dialog, or deleted on another device.
-            setSectionDialog(null);
-            toast({
-                title: "Section not found",
-                description: "That section is no longer on the floor.",
-                variant: "destructive",
-            });
-            return;
-        }
-
-        commitLayout(renameSection(previous, sectionDialog.id ?? "", trimmed));
-        // The roster is keyed by name, so it has to follow the rename or the next
-        // reconcile drops the section it can no longer find under its new heading.
-        commitZones(previousZones
-            ? previousZones.map((zone) => (zone.toLowerCase() === current.name.toLowerCase() ? trimmed : zone))
-            : previousZones);
-        setSectionDialog(null);
-
-        setSavingSection(true);
-        try {
-            // An empty section now has a roster row of its own, so it is renamed on
-            // the server exactly like a full one — no local-only shortcut.
-            const response = await requestBackend<{ section?: string; updated?: number }>({
-                path: `/table-sections/${encodeURIComponent(current.name)}`,
-                method: "PATCH",
-                restaurantId: user.restaurantUsername,
-                body: { name: trimmed },
-            });
-            if (!response.ok) {
-                throw new Error(backendMessage(response, "Failed to rename the section"));
-            }
-            // Re-label the rows in memory before the refetch lands, otherwise the
-            // reconcile briefly reads the OLD name off the stale snapshot and
-            // resurrects the section under its previous heading.
-            const moved = new Set(current.tables);
-            setTables((tables) => tables.map((table) =>
-                moved.has(table.name.toLowerCase()) ? { ...table, section: trimmed } : table,
-            ));
-            const updated = response.data?.updated ?? current.tables.length;
-            toast({
-                title: "Section renamed",
-                description: updated > 0
-                    ? `${String(updated)} table${updated === 1 ? "" : "s"} now in "${trimmed}".`
-                    : `The empty section is now called "${trimmed}".`,
-            });
-            await loadTables();
-        } catch (error) {
-            revertLayout(previous, previousZones, "Unable to rename the section", error);
-        } finally {
-            setSavingSection(false);
-        }
-    };
-
-    const handleRemoveSection = async (sectionId: string, name: string) => {
-        if (!ensurePermission(canManageSections, "Manage Table Sections") || !user?.restaurantUsername) { return; }
-        const previous = layoutRef.current;
-        const previousZones = serverZonesRef.current;
-        const doomed = previous.sections.find((section) => section.id === sectionId);
-        if (!doomed) { return; }
-        commitLayout(removeSection(previous, sectionId));
-        commitZones(previousZones
-            ? previousZones.filter((zone) => zone.toLowerCase() !== doomed.name.toLowerCase())
-            : previousZones);
-
-        try {
-            // Un-labels the tables and drops the roster row; the DELETE route never
-            // deletes a table. An empty section has a roster row of its own now, so
-            // it needs this call every bit as much as a full one does.
-            const response = await requestBackend({
-                path: `/table-sections/${encodeURIComponent(doomed.name)}`,
-                method: "DELETE",
-                restaurantId: user.restaurantUsername,
-            });
-            if (!response.ok) {
-                throw new Error(backendMessage(response, "Failed to remove the section"));
-            }
-            // Same reason as the rename: un-label the rows in memory first.
-            const freed = new Set(doomed.tables);
-            setTables((tables) => tables.map((table) =>
-                freed.has(table.name.toLowerCase()) ? { ...table, section: null } : table,
-            ));
-            toast({
-                title: "Section deleted",
-                description: doomed.tables.length === 0
-                    ? `"${name}" was empty, so nothing moved.`
-                    : `Tables from "${name}" moved back to Unassigned.`,
-            });
-            await loadTables();
-        } catch (error) {
-            revertLayout(previous, previousZones, "Unable to remove the section", error);
-        }
-    };
-
-    // --- Deleting a table (C7 + H8) -----------------------------------------
-
-    const handleDeleteTable = async (table: Table) => {
-        if (!ensurePermission(canDeleteTables, "Table Deleted") || !user?.restaurantUsername) { return; }
-
-        const response = await requestBackend({
-            path: `/table/${encodeURIComponent(table.name)}`,
-            method: "DELETE",
-            restaurantId: user.restaurantUsername,
-        });
-
-        if (!response.ok && response.status !== 204) {
-            // The backend refuses an occupied table or one with an open bill, with
-            // a sentence written for a human ("Settle or release the table before
-            // deleting it."). Show ITS words: the screen cannot know which of the
-            // two it was, and guessing would send someone to the wrong place.
-            toast({
-                title: `Could not delete ${table.name}`,
-                description: backendMessage(response, "Failed to delete the table."),
-                variant: "destructive",
-            });
-            return;
-        }
-
-        setIsDeleteTableOpen(false);
-        await loadTables();
-        toast({
-            title: "Table deleted",
-            description: `${table.name} is off the floor. Its past orders and bills are untouched.`,
-        });
-    };
-
-    // --- Drag and drop ------------------------------------------------------
-
-    const handleDragStart = (event: DragStartEvent) => {
-        setActiveId(Number(event.active.id));
-    };
-
-    const handleDragEnd = async (event: DragEndEvent) => {
-        setActiveId(null);
-        // A drop writes PATCH /table/:name, which needs "Table Added". The grip is
-        // already disabled without it; this is the same check at the write.
-        if (!ensurePermission(canEditLayout, "Table Added")) { return; }
-
-        const { active, over } = event;
-        if (!over || active.id === over.id) { return; }
-
-        const dragged = tablesData.find((table) => table.id === Number(active.id));
-        if (!dragged) { return; }
-
-        const previous = layoutRef.current;
-        const previousZones = serverZonesRef.current;
-        // Reconciled with the roster so an EMPTY zone is a valid drop target.
-        const current = applyServerSections(previous, tablesData, previousZones);
-        const draggedKey = dragged.name.toLowerCase();
-        const fromSection = current.sections.find((section) => section.tables.includes(draggedKey));
-
-        const overId = String(over.id);
-        let targetSectionId: string;
-        let beforeName: string | null = null;
-
-        if (overId.startsWith(SECTION_DROP_PREFIX)) {
-            // Dropped on the section's empty space — append to the end.
-            targetSectionId = overId.slice(SECTION_DROP_PREFIX.length);
-        } else {
-            const overTable = tablesData.find((table) => table.id === Number(over.id));
-            if (!overTable) { return; }
-            const overKey = overTable.name.toLowerCase();
-            const targetSection = current.sections.find((section) => section.tables.includes(overKey));
-            if (!targetSection) { return; }
-            targetSectionId = targetSection.id;
-
-            // Reordering INSIDE one section: dragging downwards has to land after
-            // the card it was dropped on, otherwise the card never passes it.
-            const overIndex = targetSection.tables.indexOf(overKey);
-            const fromIndex = fromSection?.id === targetSection.id ? targetSection.tables.indexOf(draggedKey) : -1;
-            beforeName = fromIndex >= 0 && fromIndex < overIndex
-                ? (targetSection.tables[overIndex + 1] ?? null)
-                : overKey;
-        }
-
-        if (fromSection?.id === targetSectionId && beforeName === null && overId.startsWith(SECTION_DROP_PREFIX)) {
-            return;
-        }
-
-        const next = moveTable(current, dragged.name, targetSectionId, beforeName);
-        commitLayout(next);
-
-        // Reordering inside one section is arrangement only — there is no
-        // position column, so nothing is written. CHANGING section is one
-        // single-row PATCH; the card has already moved, so a failure has to put
-        // it back exactly where it was.
-        if (!fromSection || fromSection.id === targetSectionId) { return; }
-
-        const target = next.sections.find((section) => section.id === targetSectionId);
-        const targetName = target?.name ?? UNASSIGNED_SECTION_NAME;
-        if (!user?.restaurantUsername) { return; }
-
-        try {
-            const response = await requestBackend<{ section?: string | null }>({
-                path: `/table/${encodeURIComponent(dragged.name)}`,
-                method: "PATCH",
-                restaurantId: user.restaurantUsername,
-                // null un-labels the row — dropping a table back into Unassigned.
-                body: { section: isUnassignedSection(targetSectionId) ? null : targetName },
-            });
-            if (!response.ok) {
-                throw new Error(response.text || "Failed to move the table");
-            }
-            // Keep the in-memory row in step so a re-render (or a drag straight
-            // afterwards) does not read a stale zone off the old snapshot.
-            setTables((tables) => tables.map((table) =>
-                table.name === dragged.name
-                    ? { ...table, section: isUnassignedSection(targetSectionId) ? null : targetName }
-                    : table,
-            ));
-            toast({ title: "Table moved", description: `${dragged.name} is now in ${targetName}.` });
-        } catch (error) {
-            // A move never touches the roster, so it is handed back unchanged.
-            revertLayout(previous, previousZones, `Could not move ${dragged.name}`, error);
-        }
-    };
-
-    const activeTable = activeId ? tablesData.find((t) => t.id === activeId) : null;
-
-    const tablesByKey = useMemo(
-        () => new Map(tablesData.map((table) => [table.name.toLowerCase(), table])),
-        [tablesData],
+    // Deliberately only the ones the server would accept. Offering a busy
+    // table and collecting a 400 teaches staff that this screen guesses.
+    const deletable = React.useMemo(
+        () => planRows.filter((r) => !r.seated && r.name !== ""),
+        [planRows],
     );
+    const busyCount = planRows.length - deletable.length;
 
-    // Render straight off a reconciled copy so a table is never invisible for the
-    // frame between the tables loading and the persist effect running.
-    const renderSections = useMemo(() => {
-        const reconciled = applyServerSections(layout, tablesData, serverZones);
-        return reconciled.sections.map((section) => ({
-            id: section.id,
-            name: section.name,
-            tables: section.tables
-                .map((name) => tablesByKey.get(name))
-                .filter((table): table is Table => Boolean(table)),
-        }));
-    }, [layout, tablesData, tablesByKey, serverZones]);
+    const openDeletePicker = (): void => {
+        if (!ensurePermission(canDeleteTables, "Table Deleted")) { return; }
+        if (deletable.length === 0) {
+            toast({
+                title: busyCount === 0
+                    ? "There are no tables to delete."
+                    : "Every table is in use. A table can only be deleted once it has been settled or released.",
+            });
+            return;
+        }
+        setDeletePickerOpen(true);
+    };
 
-    const hasCustomSections = renderSections.some((section) => !isUnassignedSection(section.id));
-    const totalTables = tablesData.length;
-    const totalSeats = tablesData.reduce((sum, table) => sum + (table.capacity || 0), 0);
+    const handleDeleteTable = async (): Promise<void> => {
+        const name = deleteName;
+        if (name === null) { return; }
+        setBusy(true);
+        try {
+            await removeFloorTable(rid, name);
+            setDeleteName(null);
+            toast({ title: `${name} removed from the floor plan.` });
+            refresh();
+        } catch (error: unknown) {
+            // The backend refuses an occupied table or one with an open bill,
+            // with a sentence written for a human. Show ITS words.
+            failToast(`Could not delete ${name}`, error);
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    /* ── Render ────────────────────────────────────────────────────── */
+
+    const header = (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+                <h1 className="text-lg font-semibold md:text-2xl">Floor Plan</h1>
+                <p className="text-sm text-muted-foreground">
+                    The shape of the room: zones, which table sits where, and how many each seats.
+                    Seating guests and taking orders happen under Tables.
+                </p>
+            </div>
+            {scope.addTable ? (
+                <Button onClick={() => { setAddOpen(true); }}>
+                    <PlusCircle /> Add table
+                </Button>
+            ) : null}
+        </div>
+    );
 
     /*
       A DEEP LINK BY SOMEBODY WHO HOLDS NONE OF THE THREE LAYOUT PERMISSIONS.
-
-      The nav does not offer this page to them and the shell bounces a scoped
-      waiter out of it, but a bookmark, a back-navigation or a shared URL reaches
-      it anyway — and a page of controls that every 403 is worse than a sentence.
-      The controls below are individually gated too; this is the front door.
+      The nav does not offer this page to them, but a bookmark reaches it
+      anyway — and a page of controls that every 403 is worse than a sentence.
     */
-    if (!canEditLayout && !canDeleteTables && !canManageSections) {
+    if (user && !can(user, "edit_table") && !can(user, "delete_table") && !can(user, "manage_table_sections")) {
         return (
             <div className="grid gap-4 md:gap-8">
                 <h1 className="text-lg font-semibold md:text-2xl">Floor Plan</h1>
                 <Card>
                     <CardHeader>
                         <CardTitle className="flex items-center gap-2 text-base">
-                            <ShieldAlert className="h-4 w-4 text-amber-600" />
+                            <ShieldAlert className="h-4 w-4 text-warning" />
                             You cannot change the floor plan
                         </CardTitle>
                         <CardDescription>
-                            Editing the floor needs one of the “Table Added”, “Table Deleted” or “Manage Table
-                            Sections” permissions. Ask your admin to grant one from Employees → Role Access
+                            Editing the floor needs one of the &ldquo;Table Added&rdquo;, &ldquo;Table Deleted&rdquo; or &ldquo;Manage Table
+                            Sections&rdquo; permissions. Ask your admin to grant one from Employees → Role Access
                             Control. Seating guests, covers and orders all live under Tables, which you can still use.
                         </CardDescription>
                     </CardHeader>
@@ -927,324 +871,323 @@ export default function FloorPlanPage() {
         );
     }
 
-    return (
-        <DndContext sensors={sensors} collisionDetection={collisionDetection} onDragStart={handleDragStart} onDragEnd={(event) => { void handleDragEnd(event); }}>
-            <div className="grid gap-4 md:gap-8">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                        <h1 className="text-lg font-semibold md:text-2xl">Floor Plan</h1>
-                        <p className="text-sm text-muted-foreground">
-                            The shape of the room: zones, which table sits where, and how many each seats.
-                            Seating guests and taking orders happen under Tables.
-                        </p>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                        {canManageSections ? (
-                            <Button variant="outline" onClick={openAddSection}>
-                                <LayoutGrid className="mr-2 h-4 w-4" />
-                                Add Section
-                            </Button>
-                        ) : null}
-                        {/* C7 + H8 — THE ONE AND ONLY DELETE TABLE CONTROL IN THE PRODUCT.
-                            In the Floor header, named for what it does, and nowhere near
-                            the cards staff touch all night. */}
-                        {canDeleteTables ? (
-                            <Button variant="outline" className="border-destructive/50 text-destructive hover:bg-destructive/10" onClick={() => { setIsDeleteTableOpen(true); }}>
-                                <Trash2 className="mr-2 h-4 w-4" />
-                                Delete table…
-                            </Button>
-                        ) : null}
-                        {canEditLayout ? (
-                            <Button onClick={() => { setIsAddTableOpen(true); }}>
-                                <PlusCircle className="mr-2 h-4 w-4" />
-                                Add Table
-                            </Button>
-                        ) : null}
-                    </div>
-                </div>
+    if (!user || floor.loading) {
+        return <div className="grid gap-4 md:gap-8">{header}<PlanSkeleton /></div>;
+    }
 
-                <Card>
-                    <CardHeader>
-                        <CardTitle>Layout</CardTitle>
-                        <CardDescription className="text-sm text-muted-foreground">
-                            {totalTables > 0
-                                ? <>{totalTables} table{totalTables === 1 ? "" : "s"} · {totalSeats} seats. {canEditLayout
-                                    ? "Drag a table by its grip to reorder it or move it into another section — a move is saved on the server as you drop."
-                                    : "Rearranging the floor needs the “Table Added” permission."}</>
-                                : "No tables have been added yet."}
-                        </CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                        {totalTables > 0 ? (
-                            <div className="space-y-8">
-                                {renderSections.map((section) => {
-                                    const reserved = isUnassignedSection(section.id);
-                                    // The reserved bucket only earns a header once real
-                                    // sections exist — otherwise it is just "the floor".
-                                    const showHeader = !reserved || hasCustomSections;
-                                    if (reserved && !hasCustomSections && section.tables.length === 0) {
-                                        return null;
-                                    }
-                                    const seats = section.tables.reduce((sum, table) => sum + (table.capacity || 0), 0);
-                                    return (
-                                        <div key={section.id}>
-                                            {showHeader ? (
-                                                <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-                                                    <h3 className="text-lg font-semibold flex items-center md:text-xl">
-                                                        <LayoutGrid className="mr-2 h-5 w-5" /> {section.name}
-                                                        <span className="ml-3 text-xs font-normal text-muted-foreground">
-                                                            {section.tables.length} table{section.tables.length === 1 ? "" : "s"} · {seats} seats
-                                                        </span>
-                                                    </h3>
-                                                    {/* Every entry in this menu needs the sections permission, so the
-                                                        trigger is hidden rather than opening an empty menu. */}
-                                                    {reserved || !canManageSections ? null : (
-                                                        <DropdownMenu>
-                                                            <DropdownMenuTrigger asChild>
-                                                                <Button variant="ghost" size="icon" className="h-7 w-7">
-                                                                    <MoreVertical className="h-4 w-4" />
-                                                                    <span className="sr-only">Section actions</span>
-                                                                </Button>
-                                                            </DropdownMenuTrigger>
-                                                            <DropdownMenuContent align="end">
-                                                                <DropdownMenuItem onSelect={() => { openRenameSection(section.id, section.name); }}>
-                                                                    <Pencil className="mr-2 h-4 w-4" />
-                                                                    Rename section
-                                                                </DropdownMenuItem>
-                                                                <AlertDialog>
-                                                                    <AlertDialogTrigger asChild>
-                                                                        <DropdownMenuItem onSelect={(e) => { e.preventDefault(); }} className="text-destructive">
-                                                                            <Trash2 className="mr-2 h-4 w-4" />
-                                                                            Delete section
-                                                                        </DropdownMenuItem>
-                                                                    </AlertDialogTrigger>
-                                                                    <AlertDialogContent>
-                                                                        <AlertDialogHeader>
-                                                                            <AlertDialogTitle>Delete the section &ldquo;{section.name}&rdquo;?</AlertDialogTitle>
-                                                                            <AlertDialogDescription>
-                                                                                {section.tables.length === 0
-                                                                                    ? "The section is empty, so nothing moves."
-                                                                                    : `The ${String(section.tables.length)} table${section.tables.length === 1 ? "" : "s"} in it move back to Unassigned.`}
-                                                                                {" "}This removes the ZONE only. No table is deleted, and no orders or bills are touched.
-                                                                            </AlertDialogDescription>
-                                                                        </AlertDialogHeader>
-                                                                        <AlertDialogFooter>
-                                                                            <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                                                            <AlertDialogAction
-                                                                                onClick={() => { void handleRemoveSection(section.id, section.name); }}
-                                                                                className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
-                                                                            >
-                                                                                Delete section
-                                                                            </AlertDialogAction>
-                                                                        </AlertDialogFooter>
-                                                                    </AlertDialogContent>
-                                                                </AlertDialog>
-                                                            </DropdownMenuContent>
-                                                        </DropdownMenu>
-                                                    )}
-                                                </div>
-                                            ) : null}
-                                            <SectionDropZone sectionId={section.id} isEmpty={section.tables.length === 0}>
-                                                <SortableContext items={section.tables.map((table) => table.id)}>
-                                                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-8 gap-4">
-                                                        {section.tables.map((table) => (
-                                                            <PlanTable
-                                                                key={table.id}
-                                                                table={table}
-                                                                canDrag={canEditLayout}
-                                                                canEditSeating={canEditLayout}
-                                                                onEdit={openEditTable}
-                                                            />
-                                                        ))}
-                                                    </div>
-                                                </SortableContext>
-                                            </SectionDropZone>
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                        ) : (
-                            <div className="text-center text-muted-foreground py-12">
-                                <p className="mb-4">You have no tables configured for your restaurant.</p>
-                                {canEditLayout ? (
-                                    <Button onClick={() => { setIsAddTableOpen(true); }}>Add Your First Table</Button>
-                                ) : null}
+    if (floor.error != null) {
+        return (
+            <div className="grid gap-4 md:gap-8">
+                {header}
+                <LoadErrorState
+                    whatFailed="Couldn't load the floor plan."
+                    error={floor.error}
+                    onRetry={floor.retry}
+                />
+            </div>
+        );
+    }
+
+    // 2.1 — the plan header reads the ROOM, not the service: tables and seats.
+    const legendChips = (
+        <>
+            <StatusChip
+                status="neutral"
+                label={`${String(planRows.length)} table${planRows.length === 1 ? "" : "s"}`}
+                dense
+            />
+            <StatusChip
+                status="neutral"
+                label={`${String(planRows.reduce((n, r) => n + r.capacity, 0))} seats`}
+                dense
+            />
+            {canDeleteTables && planRows.length > 0 ? (
+                <Button variant="ghost" size="sm" className="h-7 px-2 text-destructive" onClick={openDeletePicker}>
+                    <Trash2 /> Delete a table
+                </Button>
+            ) : null}
+        </>
+    );
+
+    const sectionActions = canManageSections ? (
+        <>
+            {/* Nothing to arrange with fewer than two zones. */}
+            {named.length > 1 ? (
+                <Button variant="outline" size="sm" onClick={() => { setArrangeOpen(true); }}>
+                    <ArrowUpDown /> Arrange
+                </Button>
+            ) : null}
+            <Button variant="outline" size="sm" onClick={() => { setNewSectionOpen(true); }}>
+                <Plus /> New section
+            </Button>
+        </>
+    ) : null;
+
+    return (
+        <div className="relative grid gap-4 md:gap-8">
+            {header}
+
+            {planRows.length === 0 && zones.length === 0 ? (
+                <EmptyState
+                    icon={<LayoutGrid />}
+                    title={scope.addTable
+                        ? "No tables yet — add one with the button below."
+                        : "No tables on the floor yet."}
+                    caption="Tables added here appear on the Tables screen for service."
+                    action={scope.addTable ? (
+                        <Button onClick={() => { setAddOpen(true); }}>
+                            <PlusCircle /> Add table
+                        </Button>
+                    ) : undefined}
+                />
+            ) : (
+                <div className="space-y-3">
+                    <SectionHeader
+                        title="Floor plan"
+                        count={planRows.length}
+                        trailing={(
+                            <div className="hidden flex-wrap items-center gap-1.5 min-[620px]:flex">
+                                {legendChips}
                             </div>
                         )}
-                    </CardContent>
-                </Card>
-
-                <DeleteTableDialog
-                    open={isDeleteTableOpen}
-                    onOpenChange={setIsDeleteTableOpen}
-                    tables={tablesData}
-                    occupancyByName={occupancyByName}
-                    onConfirm={handleDeleteTable}
-                />
-
-                <Dialog open={isAddTableOpen} onOpenChange={setIsAddTableOpen}>
-                    <DialogContent className="sm:max-w-[425px]">
-                        <DialogHeader>
-                            <DialogTitle>Add New Table</DialogTitle>
-                            <DialogDescription>
-                                Enter the details for the new table. Click save when you&apos;re done.
-                            </DialogDescription>
-                        </DialogHeader>
-                        <div className="grid gap-4 py-4">
-                            <div className="grid grid-cols-4 items-center gap-4">
-                                <Label htmlFor="name" className="text-right">Table Name</Label>
-                                <Input
-                                    id="name"
-                                    value={newTableName}
-                                    onChange={(e) => { setNewTableName(e.target.value); }}
-                                    className="col-span-3"
-                                    placeholder="e.g., T11"
-                                />
-                            </div>
-                            <div className="grid grid-cols-4 items-center gap-4">
-                                <Label htmlFor="capacity" className="text-right">Seats</Label>
-                                <Input
-                                    id="capacity"
-                                    type="number"
-                                    min={1}
-                                    value={newTableCapacity}
-                                    onChange={(e) => { setNewTableCapacity(e.target.value); }}
-                                    className="col-span-3"
-                                    placeholder="e.g., 4"
-                                />
-                            </div>
-                            <div className="grid grid-cols-4 items-center gap-4">
-                                <Label htmlFor="table-section" className="text-right">Section</Label>
-                                <div className="col-span-3">
-                                    <select
-                                        id="table-section"
-                                        value={newTableSection}
-                                        onChange={(e) => { setNewTableSection(e.target.value); }}
-                                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                                    >
-                                        <option value="">Unassigned</option>
-                                        {layout.sections
-                                            .filter((sec) => sec.name && sec.name.toLowerCase() !== UNASSIGNED_SECTION_NAME.toLowerCase())
-                                            .map((sec) => (
-                                                <option key={sec.id} value={sec.name}>{sec.name}</option>
-                                            ))}
-                                    </select>
-                                    <p className="mt-1 text-[11px] text-muted-foreground">
-                                        Put the table straight into a zone, or leave it Unassigned and drag it later.
-                                    </p>
-                                </div>
-                            </div>
-                            <div className="grid grid-cols-4 items-start gap-4">
-                                <Label htmlFor="max-capacity" className="pt-2 text-right">Max with extra chairs</Label>
-                                <div className="col-span-3">
-                                    <Input
-                                        id="max-capacity"
-                                        type="number"
-                                        min={1}
-                                        value={newTableMaxCapacity}
-                                        onChange={(e) => { setNewTableMaxCapacity(e.target.value); }}
-                                        placeholder={newTableCapacity ? `defaults to ${newTableCapacity}` : "same as seats"}
-                                    />
-                                    <p className="mt-1 text-xs text-muted-foreground">
-                                        The most this table can take when you squeeze in extra chairs. Leave blank to use the seat count.
-                                    </p>
-                                </div>
-                            </div>
-                        </div>
-                        <DialogFooter>
-                            <Button onClick={() => { void handleAddTable(); }}>Save changes</Button>
-                        </DialogFooter>
-                    </DialogContent>
-                </Dialog>
-
-                <Dialog open={sectionDialog !== null} onOpenChange={(open) => { if (!open) { setSectionDialog(null); } }}>
-                    <DialogContent className="sm:max-w-[425px]">
-                        <DialogHeader>
-                            <DialogTitle>{sectionDialog?.mode === "rename" ? "Rename section" : "New section"}</DialogTitle>
-                            <DialogDescription>
-                                Sections group the floor — Main Hall, Patio, Rooftop, Private Dining. Drag any table
-                                into a section to move it; the move is saved on the server, so everyone sees it.
-                            </DialogDescription>
-                        </DialogHeader>
-                        <div className="grid gap-2 py-2">
-                            <Label htmlFor="section-name">Section name</Label>
-                            <Input
-                                id="section-name"
-                                value={sectionName}
-                                maxLength={SECTION_NAME_MAX}
-                                onChange={(e) => { setSectionName(e.target.value); }}
-                                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void handleSaveSection(); } }}
-                                placeholder="e.g., Patio"
-                            />
-                            {sectionDialog?.mode === "add" ? (
-                                <p className="text-xs text-muted-foreground">
-                                    The section is saved on the server straight away, so every device sees it —
-                                    it just holds no tables until you drag one in.
-                                </p>
-                            ) : null}
-                        </div>
-                        <DialogFooter>
-                            <Button variant="outline" onClick={() => { setSectionDialog(null); }}>Cancel</Button>
-                            <Button onClick={() => { void handleSaveSection(); }} disabled={savingSection}>
-                                {savingSection ? "Saving…" : sectionDialog?.mode === "rename" ? "Save name" : "Create section"}
-                            </Button>
-                        </DialogFooter>
-                    </DialogContent>
-                </Dialog>
-
-                <Dialog open={editingTable !== null} onOpenChange={(open) => { if (!open) { setEditingTable(null); } }}>
-                    <DialogContent className="sm:max-w-[425px]">
-                        <DialogHeader>
-                            <DialogTitle>Edit seating — {editingTable?.name}</DialogTitle>
-                            <DialogDescription>
-                                &ldquo;Seats&rdquo; is the normal cover count. &ldquo;Max with extra chairs&rdquo; is the largest party the
-                                table can take; reservations use it to decide when two tables have to be clubbed together.
-                            </DialogDescription>
-                        </DialogHeader>
-                        <div className="grid gap-4 py-2">
-                            <div className="grid grid-cols-4 items-center gap-4">
-                                <Label htmlFor="edit-capacity" className="text-right">Seats</Label>
-                                <Input
-                                    id="edit-capacity"
-                                    type="number"
-                                    min={1}
-                                    value={editCapacity}
-                                    onChange={(e) => { setEditCapacity(e.target.value); }}
-                                    className="col-span-3"
-                                />
-                            </div>
-                            <div className="grid grid-cols-4 items-center gap-4">
-                                <Label htmlFor="edit-max-capacity" className="text-right">Max with extra chairs</Label>
-                                <Input
-                                    id="edit-max-capacity"
-                                    type="number"
-                                    min={1}
-                                    value={editMaxCapacity}
-                                    onChange={(e) => { setEditMaxCapacity(e.target.value); }}
-                                    className="col-span-3"
-                                />
-                            </div>
-                        </div>
-                        <DialogFooter>
-                            <Button variant="outline" onClick={() => { setEditingTable(null); }}>Cancel</Button>
-                            <Button onClick={() => { void handleSaveSeating(); }} disabled={savingSeating}>
-                                {savingSeating ? "Saving…" : "Save seating"}
-                            </Button>
-                        </DialogFooter>
-                    </DialogContent>
-                </Dialog>
-            </div>
-            <DragOverlay>
-                {activeTable ? (
-                    <PlanTable
-                        table={activeTable}
-                        canDrag={false}
-                        canEditSeating={false}
-                        onEdit={() => { /* the drag ghost is not interactive */ }}
                     />
-                ) : null}
-            </DragOverlay>
-        </DndContext>
+                    <div className="flex flex-wrap items-center gap-1.5 min-[620px]:hidden">
+                        {legendChips}
+                    </div>
+
+                    <SectionHeader
+                        title="Sections"
+                        count={named.length}
+                        trailing={sectionActions !== null ? (
+                            <div className="hidden flex-wrap items-center gap-1.5 min-[620px]:flex">
+                                {sectionActions}
+                            </div>
+                        ) : undefined}
+                    />
+                    {sectionActions !== null ? (
+                        <div className="flex flex-wrap items-center gap-1.5 min-[620px]:hidden">
+                            {sectionActions}
+                        </div>
+                    ) : null}
+
+                    <p className="text-sm text-muted-foreground">Tables are grouped by their floor section.</p>
+
+                    {/* The roster is half the picture — if it didn't load, say so
+                        instead of quietly showing only the zones that happen to
+                        have a table in them. */}
+                    {zoneError !== "" ? (
+                        <div className="flex items-center gap-2.5 rounded-md border border-warning/28 bg-warning/12 px-3.5 py-2.5">
+                            <p className="min-w-0 flex-1 text-xs text-warning">
+                                Section list unavailable — sections with no tables in them are missing from this floor plan. {zoneError}
+                            </p>
+                            <Button variant="outline" size="sm" onClick={() => { refresh(); }}>Retry</Button>
+                        </div>
+                    ) : null}
+
+                    <DndContext
+                        sensors={sensors}
+                        collisionDetection={pointerWithin}
+                        onDragStart={onDragStart}
+                        onDragEnd={onDragEnd}
+                        onDragCancel={() => { setActiveDrag(null); }}
+                    >
+                        <div className="space-y-3">
+                            {sections.map((group) => (
+                                <PlanZone
+                                    key={group.key === "" ? "::unassigned" : group.key}
+                                    group={group}
+                                    canManage={canManageSections}
+                                    canMove={canEditLayout}
+                                    canEditSeating={scope.editSeating}
+                                    draggingFromKey={activeDrag?.fromKey ?? null}
+                                    onOpenTile={(row) => { setSheetName(row.name); }}
+                                    onRename={(g) => { setRenameText(g.name); setRenameFrom(g); }}
+                                    onRemove={(g) => { setRemoveGroup(g); }}
+                                />
+                            ))}
+                        </div>
+                        <DragOverlay>
+                            {activeDrag !== null ? (() => {
+                                const row = byName.get(activeDrag.name.toLowerCase());
+                                return row ? (
+                                    <PlanTileCard row={row} canEditSeating={scope.editSeating} canDrag dragging />
+                                ) : null;
+                            })() : null}
+                        </DragOverlay>
+                    </DndContext>
+                </div>
+            )}
+
+            <CacheStalePill offline={floor.offline} fromCache={floor.fromCache} updatedAt={floor.updatedAt} />
+
+            {/* ── The layout-only per-table sheet (2.1) ─────────────── */}
+            <PlanTableSheet
+                row={sheetRow !== null ? { ...sheetRow, section: sectionOfRow(sheetRow) } : null}
+                onOpenChange={(open) => { if (!open) { setSheetName(null); } }}
+                canEditSeating={scope.editSeating}
+                onEditSeating={(row) => { setSheetName(null); setEditingName(row.name); }}
+            />
+
+            {/* ── Add table / bulk run ──────────────────────────────── */}
+            <TableSeatingDialog
+                open={addOpen}
+                onOpenChange={setAddOpen}
+                existing={null}
+                sections={existingZoneNames}
+                existingNames={existingNames}
+                busy={busy}
+                onSubmit={(result) => { void handleAddTables(result); }}
+            />
+            <TableRunReportSheet
+                outcome={runOutcome}
+                onOpenChange={(open) => { if (!open) { setRunOutcome(null); } }}
+            />
+
+            {/* ── Edit seating ──────────────────────────────────────── */}
+            <TableSeatingDialog
+                open={editingRow !== null}
+                onOpenChange={(open) => { if (!open) { setEditingName(null); } }}
+                existing={editingRow !== null
+                    ? { name: editingRow.name, capacity: editingRow.capacity, max_capacity: editingRow.max_capacity }
+                    : null}
+                busy={busy}
+                onSubmit={(result) => { void handleSaveSeating(result); }}
+            />
+
+            {/* ── Section dialogs ───────────────────────────────────── */}
+            <NewSectionDialog
+                open={newSectionOpen}
+                onOpenChange={setNewSectionOpen}
+                tables={planRows}
+                existing={named.map((s) => s.name)}
+                sectionOf={sectionOfRow}
+                busy={busy}
+                onCreate={(picked) => { void handleCreateSection(picked); }}
+            />
+            <ArrangeSectionsDialog
+                open={arrangeOpen}
+                onOpenChange={setArrangeOpen}
+                items={named.map((s) => ({ key: s.key, name: s.name, tables: s.rows.length }))}
+                busy={busy}
+                onSave={(names) => { void handleSaveOrder(names); }}
+            />
+
+            <Dialog open={renameFrom !== null} onOpenChange={(open) => { if (!open) { setRenameFrom(null); } }}>
+                <DialogContent className="sm:max-w-[360px]">
+                    <DialogHeader>
+                        <DialogTitle>Rename &ldquo;{renameFrom?.name}&rdquo;</DialogTitle>
+                        <DialogDescription className="sr-only">The zone&apos;s new name</DialogDescription>
+                    </DialogHeader>
+                    <div className="grid gap-1.5">
+                        <Label htmlFor="rename-section">Section name</Label>
+                        <Input
+                            id="rename-section"
+                            autoFocus
+                            value={renameText}
+                            onChange={(e) => { setRenameText(e.target.value); }}
+                            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void handleRenameSection(); } }}
+                        />
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => { setRenameFrom(null); }}>Cancel</Button>
+                        <Button disabled={busy} onClick={() => { void handleRenameSection(); }}>Save</Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            <AlertDialog open={removeGroup !== null} onOpenChange={(open) => { if (!open) { setRemoveGroup(null); } }}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Remove section &ldquo;{removeGroup?.name}&rdquo;?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            {removeGroup !== null && removeGroup.rows.length === 0
+                                ? "Nothing is in it — removing it just takes the name off the floor plan."
+                                : `The ${String(removeGroup?.rows.length ?? 0)} table${(removeGroup?.rows.length ?? 0) === 1 ? "" : "s"} in it stay on the floor — they just stop carrying a section.`}
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction disabled={busy} onClick={() => { void handleRemoveSection(); }}>
+                            Remove section
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+
+            {/* ── Delete a table: pick, then the explicit confirm ───── */}
+            <Dialog open={deletePickerOpen} onOpenChange={setDeletePickerOpen}>
+                <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-[400px]">
+                    <DialogHeader>
+                        <DialogTitle>Delete which table?</DialogTitle>
+                        <DialogDescription>
+                            {busyCount === 0
+                                ? "Pick the table to remove from the floor plan."
+                                : `Pick the table to remove from the floor plan. ${String(busyCount)} in use ${busyCount === 1 ? "is" : "are"} not listed — a table can only be deleted once it has been settled or released.`}
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="max-h-72 space-y-1 overflow-y-auto">
+                        {deletable.map((row) => {
+                            const seats = seatsLabel(row.raw);
+                            const zone = (sectionOfRow(row) ?? "").trim();
+                            const subtitle = [
+                                ...(seats !== "" ? [seats] : []),
+                                ...(zone !== "" ? [`in ${zone}`] : []),
+                            ].join(" · ");
+                            return (
+                                <button
+                                    key={row.name}
+                                    type="button"
+                                    data-testid={`delete-pick-${row.name}`}
+                                    onClick={() => { setDeletePickerOpen(false); setDeleteName(row.name); }}
+                                    className="flex w-full flex-col rounded-md border border-border px-3 py-2 text-left hover:bg-foreground/5"
+                                >
+                                    <span className="text-sm font-semibold text-foreground">{row.name}</span>
+                                    {subtitle !== "" ? (
+                                        <span className="text-xs text-muted-foreground">{subtitle}</span>
+                                    ) : null}
+                                </button>
+                            );
+                        })}
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => { setDeletePickerOpen(false); }}>Cancel</Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            <AlertDialog open={deleteName !== null} onOpenChange={(open) => { if (!open && !busy) { setDeleteName(null); } }}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Delete table {deleteName} permanently?</AlertDialogTitle>
+                        <AlertDialogDescription className="space-y-3">
+                            <span className="block">
+                                {deleteName} disappears from the floor plan on every device, for everyone.
+                                Any waiter assigned to it is unassigned, and the ordering QR code printed
+                                for {deleteName} stops working.
+                            </span>
+                            <span className="block">
+                                Its past orders and bills are NOT deleted — they stay in your history, your
+                                reports and the takings for the day, exactly as they are.
+                            </span>
+                            <span className="block">
+                                This cannot be undone from this screen. Creating a table called {deleteName} again
+                                does not bring the old one back.
+                            </span>
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel disabled={busy}>Keep it</AlertDialogCancel>
+                        <AlertDialogAction
+                            disabled={busy}
+                            data-testid="floor-delete-confirm"
+                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                            onClick={() => { void handleDeleteTable(); }}
+                        >
+                            Delete {deleteName}
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+        </div>
     );
 }
-

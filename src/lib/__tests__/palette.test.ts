@@ -15,11 +15,10 @@ import {
   PALETTES, DEFAULT_PALETTE, STORAGE_KEY,
   isPaletteId, readPalette, applyPalette, paletteFromStorage,
 } from "../palette";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 function readSource(relative: string): string {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const fs = require("node:fs") as typeof import("node:fs");
-  const path = require("node:path") as typeof import("node:path");
   for (const base of [process.cwd(), path.join(__dirname, "..", "..", "..")]) {
     const full = path.join(base, relative);
     if (fs.existsSync(full)) { return fs.readFileSync(full, "utf8"); }
@@ -98,7 +97,7 @@ describe("applying it", () => {
 });
 
 describe("the inline boot script cannot import, so its copy is pinned here", () => {
-  const layout = () => readSource("src/app/layout.tsx");
+  const layout = (): string => readSource("src/app/layout.tsx");
 
   it("names every palette this module ships", () => {
     // If a third palette is added to PALETTES and not to the script, a browser
@@ -132,17 +131,18 @@ describe("the inline boot script cannot import, so its copy is pinned here", () 
 });
 
 describe("every palette has a stylesheet behind it", () => {
-  const css = () => readSource("src/app/palette.css");
+  const css = (): string => readSource("src/app/palette.css");
 
-  it("defines a dark AND a light block for each", () => {
-    // A palette with no light block loses its accent the moment somebody
-    // switches to light — and the light toggle is a thing the user asked to
-    // keep working.
+  it("defines the blocks each palette's rules promise", () => {
+    // Rustic has a dark block and a light block (the light toggle keeps
+    // working). GAIA IS DARK-ONLY, exactly as the Flutter app forbids light
+    // Gaia: one block that applies with or without `.dark`, and no light
+    // variant for a tone to reveal.
     const src = css();
-    for (const p of PALETTES) {
-      expect(src).toContain(`[data-palette="${p.id}"].dark`);
-      expect(src).toContain(`[data-palette="${p.id}"]:not(.dark)`);
-    }
+    expect(src).toContain(`[data-palette="rustic"].dark`);
+    expect(src).toContain(`[data-palette="rustic"]:not(.dark)`);
+    expect(src).toContain(`html[data-palette="gaia"]`);
+    expect(src).not.toContain(`[data-palette="gaia"]:not(.dark)`);
   });
 
   it("and the stylesheet is actually imported", () => {
@@ -160,6 +160,10 @@ describe("every palette has a stylesheet behind it", () => {
     for (const d of decls) {
       const value = d.split(":")[1].replace(";", "").trim();
       if (value.endsWith("rem")) { continue; } // --radius
+      // Non-colour tokens carry what they are: --shadow-card is a whole
+      // box-shadow (or `none` under Gaia), and the sidebar accents alias the
+      // live accent via var() so a scheme/accent flip carries through.
+      if (value.startsWith("var(") || value === "none" || /\dpx/.test(value)) { continue; }
       expect(value).toMatch(/^[\d.]+ [\d.]+% [\d.]+%$/);
     }
   });

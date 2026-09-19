@@ -122,10 +122,10 @@ export function Sparkline({
           const x = ((e.clientX - r.left) / r.width) * w;
           let best = 0;
           for (let i = 1; i < pts.length; i++)
-            if (Math.abs(pts[i].x - x) < Math.abs(pts[best].x - x)) best = i;
+            {if (Math.abs(pts[i].x - x) < Math.abs(pts[best].x - x)) {best = i;}}
           setTip(best);
         }}
-        onPointerLeave={() => setTip(null)}
+        onPointerLeave={() => { setTip(null); }}
       >
         <defs>
           <linearGradient id={`g${id}`} x1="0" y1="0" x2="0" y2="1">
@@ -229,8 +229,8 @@ export function Bars({
               fill={isHi ? color : `color-mix(in oklab, ${color} 38%, #1B1716)`}
               className="exp-chart-bar"
               style={{ transformOrigin: `${x + bw / 2}px ${chartH}px` }}
-              onPointerEnter={() => setHov(i)}
-              onPointerLeave={() => setHov(null)}
+              onPointerEnter={() => { setHov(i); }}
+              onPointerLeave={() => { setHov(null); }}
             />
           );
         })}
@@ -349,8 +349,8 @@ export function Heat({
               <div
                 key={ci}
                 className="aspect-square min-h-0 rounded-[4px] transition-transform duration-200"
-                onPointerEnter={() => setHov(`${v}`)}
-                onPointerLeave={() => setHov(null)}
+                onPointerEnter={() => { setHov(`${v}`); }}
+                onPointerLeave={() => { setHov(null); }}
                 style={{
                   background: `color-mix(in oklab, var(${accentVar}) ${Math.round((v / max) * 88)}%, #221C1A)`,
                 }}

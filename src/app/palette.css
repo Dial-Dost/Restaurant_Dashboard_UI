@@ -18,24 +18,47 @@
    (`0x12FFFFFF` — 7% white). A CSS variable that only ever appears inside
    `hsl()` cannot carry alpha, so the border tokens are the same 7% white
    COMPOSITED over that palette's own ground. Identical on the surface it was
-   designed against, which is the one it is used on.
+   designed against, which is the one it is used on. `--divider` (5% white,
+   DividerThemeData) is flattened the same way.
+
+   THE FULL LADDER. Beyond the shadcn set, each block carries the app's whole
+   token ladder (app_colors.dart AppShellScheme / AppAccent):
+     --background-deep         bgDeep — drawer/darken-pass/recessed extremes
+     --card-top/--card-bottom  the vertical card gradient (Gaia: both = card)
+     --inset                   recessed panel / input fill (darker than card)
+     --text-tertiary           the third ink weight (micro labels, axes)
+     --divider                 5%-white hairline, quieter than --border
+     --success/--warning/--info/--neutral   status inks (danger = --destructive)
+     --status-lift             what a chip label lifts its colour toward
+                               (white on dark, the primary ink on light —
+                               AppColors.lift)
+     --accent-hi/-base/-mid/-deep/-shadow/-on   the 5-stop accent ramp + its ink
+     --glow-bright/-mid/-deep  the saturated backdrop trio
+     --shadow-card/-hover      the ForkCard ambient shadow recipe
+   The accent/scheme AXES (8 accents, 5 dark shells) live in appearance.css;
+   the blocks here are the defaults those axes override.
    =========================================================================== */
 
 /* ---------------------------------------------------------------------------
    RUSTIC FORK — the shipped look.
-   Source: lib/ui/theme/app_colors.dart
-     bg #0C0A09 (:112)  surface #151211 (:114)  card #1B1716 (:115)
-     cardRaised #231E1E (:118)  inset #110E0D (:119)
-     text #ECEAE6 / #9A978F / #615E57 (:120-122)
-     border 7% white (:144)  borderStrong 12% (:145)
-     copper hi #E3B89B, base #C9997A, on #221510 (:168-173)
-     success #8FB27C, warning #D9A962, danger #C97B6E, info #8FA3B8 (:257-260)
+   Source: lib/ui/theme/app_colors.dart (rusticShell :188, rusticCopper :262)
+     bg #0C0A09  bgDeep #080605  surface #151211  card #1B1716
+     cardTop #201B1A  cardBottom #181412  cardRaised #231E1E  inset #110E0D
+     text #ECEAE6 / #9A978F / #615E57
+     border 7% white  borderStrong 12%  divider 5%
+     copper hi #E3B89B, base #C9997A, mid #A9795C, deep #7D5B47,
+     shadow #4E3928, on #221510; glow #C2410C / #9A3412 / #7C2D12
+     success #8FB27C, warning #D9A962, danger #C97B6E, info #8FA3B8,
+     neutral #9A978F
    --------------------------------------------------------------------------- */
 [data-palette="rustic"].dark {
   --background: 20 14.3% 4.1%;        /* #0C0A09 */
+  --background-deep: 20 23.1% 2.5%;   /* #080605 */
   --foreground: 40 13.6% 91.4%;       /* #ECEAE6 */
   --card: 12 10.2% 9.6%;              /* #1B1716 */
   --card-foreground: 40 13.6% 91.4%;
+  --card-top: 10 10.3% 11.4%;         /* #201B1A — top stop of the card sheen */
+  --card-bottom: 20 14.3% 8.2%;       /* #181412 */
   --popover: 0 7.7% 12.7%;            /* #231E1E — raised, so it lifts off a card */
   --popover-foreground: 40 13.6% 91.4%;
 
@@ -49,60 +72,133 @@
   --secondary-foreground: 40 13.6% 91.4%;
   --muted: 15 10.5% 7.5%;
   --muted-foreground: 44 5.2% 58.2%;  /* #9A978F */
+  --text-tertiary: 42 5.4% 36.1%;     /* #615E57 — micro labels, axis labels */
   --accent: 0 7.7% 12.7%;             /* #231E1E */
   --accent-foreground: 24 56.3% 74.9%;/* #E3B89B — the hi stop, for hover text */
+  --inset: 15 13.3% 5.9%;             /* #110E0D — input / recessed panel fill */
 
   --destructive: 9 45.7% 61%;         /* #C97B6E */
   --destructive-foreground: 17 36% 9.8%;
+  --success: 98.9 26% 59.2%;          /* #8FB27C */
+  --warning: 35.8 61% 61.8%;          /* #D9A962 */
+  --info: 210.7 22.4% 64.1%;          /* #8FA3B8 */
+  --neutral: 43.6 5.2% 58.2%;         /* #9A978F */
+  --status-lift: 0 0% 100%;           /* chips lift labels toward white (dark) */
 
   --border: 20 5.5% 10.8%;            /* 7% white over #0C0A09 */
   --input: 15 7% 14%;                 /* 12% white over the ground — inputs read deeper */
+  --divider: 20 6.7% 8.8%;            /* 5% white over #0C0A09 — row hairlines */
   --ring: 24 42.2% 63.3%;             /* the copper, so focus is visibly the accent */
+
+  /* The 5-stop accent ramp + on-accent ink (AppColors.copperRamp). Charts,
+     bar gradients, tab ticks and button shadows are all drawn from it. */
+  --accent-hi: 24 56.3% 74.9%;        /* #E3B89B */
+  --accent-base: 24 42.2% 63.3%;      /* #C9997A */
+  --accent-mid: 22.6 30.9% 51.2%;     /* #A9795C */
+  --accent-deep: 22.2 27.6% 38.4%;    /* #7D5B47 */
+  --accent-shadow: 26.8 32.2% 23.1%;  /* #4E3928 */
+  --accent-on: 17 36% 9.8%;           /* #221510 */
+
+  /* The saturated glow trio the gradient backdrop and shell chrome dim down.
+     NOT the ramp: the ramp is desaturated ink-and-metal; these keep the brand
+     orange's saturation so a whole-screen wash does not read as mud. */
+  --glow-bright: 17.5 88.3% 40.4%;    /* #C2410C */
+  --glow-mid: 15 79.1% 33.7%;         /* #9A3412 */
+  --glow-deep: 15.3 74.6% 27.8%;      /* #7C2D12 */
+
+  /* ForkCard's ambient shadow: resting / hovered (fork_card.dart:79-89). */
+  --shadow-card: 0 10px 18px rgb(0 0 0 / 0.30);
+  --shadow-card-hover: 0 10px 26px rgb(0 0 0 / 0.45);
 
   /* 14px radii, from AppTheme. Stock shadcn is 8px, which reads noticeably
      tighter beside the app. */
   --radius: 0.875rem;
 
-  --chart-1: 24 42.2% 63.3%;          /* copper */
-  --chart-2: 99 26% 59.2%;            /* success  #8FB27C */
-  --chart-3: 36 61% 61.8%;            /* warning  #D9A962 */
-  --chart-4: 211 22.4% 64.1%;         /* info     #8FA3B8 */
-  --chart-5: 9 45.7% 61%;             /* danger   #C97B6E */
+  /* Single-hue sequential — the chart rule (charts.dart header): taller =
+     lighter copper; identity is position + labels, never extra hues. Status
+     hues stay reachable through --success/--warning/--info/--destructive for
+     genuinely status-coloured marks. */
+  --chart-1: 24 56.3% 74.9%;          /* hi */
+  --chart-2: 24 42.2% 63.3%;          /* base */
+  --chart-3: 22.6 30.9% 51.2%;        /* mid */
+  --chart-4: 22.2 27.6% 38.4%;        /* deep */
+  --chart-5: 26.8 32.2% 23.1%;        /* shadow */
+
+  /* Nav chrome follows the palette's ground rather than shadcn's slate. */
+  --sidebar-background: 20 14.3% 4.1%;
+  --sidebar-foreground: 40 13.6% 91.4%;
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: 0 7.7% 12.7%;
+  --sidebar-accent-foreground: 40 13.6% 91.4%;
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
 }
 
-/* The LIGHT half, which the Flutter app does not have.
-   The user asked for the light toggle to keep working, so this is NOT a
-   guessed light version of a dark palette — it is the existing light theme
-   with the palette's ACCENT, so a copper product stays a copper product in a
-   bright room instead of turning into stock shadcn blue-black. */
+/* The LIGHT half, which the Flutter app now mirrors (AppLightPalettes,
+   appearance.dart:218): the GROUND comes from the light tone (globals.css),
+   and the ACCENT is DERIVED from the palette's ramp — same hue, lightness
+   walked until every stop clears its contrast target (accentFor). The values
+   here are the white-tone derivation for copper, the fallback when the
+   data-accent / data-light-tone axes are absent; appearance.css carries the
+   full 8-accent x 3-tone matrix. The ramp flips direction in light mode: hi is
+   the darkest stop, and a filled control's ink is white. */
 [data-palette="rustic"]:not(.dark) {
-  --primary: 24 38% 42%;              /* a copper dark enough to carry white text */
-  --primary-foreground: 40 30% 97%;
-  --accent-foreground: 24 38% 32%;
-  --ring: 24 38% 42%;
+  --primary: 23.4 48.2% 38.6%;        /* #925833 — derived base, 5.2:1 on #F3F4F6 */
+  --primary-foreground: 0 0% 100%;
+  --accent-foreground: 23.1 48.8% 31.4%; /* derived hi */
+  --ring: 23.4 48.2% 38.6%;
   --radius: 0.875rem;
-  --chart-1: 24 38% 42%;
-  --chart-2: 99 26% 45%;
-  --chart-3: 36 61% 48%;
-  --chart-4: 211 22.4% 48%;
-  --chart-5: 9 45.7% 48%;
+  --status-lift: var(--foreground);   /* light chips lift toward the primary ink */
+
+  --accent-hi: 23.1 48.8% 31.4%;      /* #774729 */
+  --accent-base: 23.4 48.2% 38.6%;    /* #925833 */
+  --accent-mid: 23.3 48.4% 41.8%;     /* #9E5F37 */
+  --accent-deep: 23.7 48.3% 53.7%;    /* #C27D50 */
+  --accent-shadow: 22.8 48.3% 76.5%;  /* #E0BCA6 */
+  --accent-on: 0 0% 100%;
+
+  /* Pale tints of the hue — the backdrop reads as a warm wash on paper. */
+  --glow-bright: 23.2 80.3% 74.1%;    /* #F2B188 */
+  --glow-mid: 23.4 69.6% 82%;         /* #F1CAB1 */
+  --glow-deep: 22.7 60.7% 88%;        /* #F3DCCE */
+
+  /* Paper-weight ambient shadow (fork_card.dart:84 — .05/.10 on light). */
+  --shadow-card: 0 10px 18px rgb(0 0 0 / 0.05);
+  --shadow-card-hover: 0 10px 26px rgb(0 0 0 / 0.10);
+
+  --chart-1: 23.1 48.8% 31.4%;
+  --chart-2: 23.4 48.2% 38.6%;
+  --chart-3: 23.3 48.4% 41.8%;
+  --chart-4: 23.7 48.3% 53.7%;
+  --chart-5: 22.8 48.3% 76.5%;
 }
 
 /* ---------------------------------------------------------------------------
-   GAIA — forest ground, champagne accent.
+   GAIA — forest ground, champagne accent. DARK ONLY, exactly as the app:
+   "Gaia has no light variant — picking a light tone under Gaia is remembered
+   but not applied" (appearance.dart lightActive). So this block matches with
+   or without `.dark`; the light-tone blocks in globals.css exclude
+   [data-palette="gaia"], and the boot script keeps the `dark` class on while
+   Gaia is worn so `dark:` utilities agree with the tokens.
    Source: lib/ui/gaia/gaia_colors.dart
-     bg #0C1513 (:114)  surface #132320 (:115)  raised #182B27 (:116)
-     line #243430 (:117)  line2 #31443D (:118)
-     champagne #D3B88B (:87)  champagne2 #E2CFA6 (:88)  ink #1A1410 (:92)
-     text #EDE6D6 / #B3AC99 (:100-101), text3AA #95907C (:108 — the AA-safe
-     tertiary, used here rather than #7D7866 because web text is smaller)
-     coral #D9705F, sage #9BC4A0, amber #D9B06A (:95-97)
+     bg #0C1513  bgDeep #050807  surface #132320  raised #182B27
+     inset #0E1A17  line #243430  line2 #31443D
+     champagne #D3B88B  champagne2 #E2CFA6  champagneDim #A08C67
+     ramp tail #7A6A4D / #4C4231  ink #1A1410
+     text #EDE6D6 / #B3AC99, text3AA #95907C (the AA-safe tertiary, used here
+     rather than #7D7866 because web text is smaller)
+     coral #D9705F, sage #9BC4A0, amber #D9B06A, info #8FB0D0 (bridge),
+     glow = the bokeh forest greens #3D6A55 / #2E5A48 / #1E3A2D
    --------------------------------------------------------------------------- */
-[data-palette="gaia"].dark {
+html[data-palette="gaia"] {
   --background: 167 27.3% 6.5%;       /* #0C1513 */
+  --background-deep: 160 23.1% 2.5%;  /* #050807 */
   --foreground: 42 39% 88.4%;         /* #EDE6D6 */
   --card: 169 29.6% 10.6%;            /* #132320 */
   --card-foreground: 42 39% 88.4%;
+  --card-top: 169 29.6% 10.6%;        /* = card: a Gaia card is FLAT (shellBridge) */
+  --card-bottom: 169 29.6% 10.6%;
   --popover: 167 28.4% 13.1%;         /* #182B27 */
   --popover-foreground: 42 39% 88.4%;
 
@@ -113,35 +209,57 @@
   --secondary-foreground: 42 39% 88.4%;
   --muted: 167 28.4% 13.1%;
   --muted-foreground: 44 14.6% 65.1%; /* #B3AC99 */
+  --text-tertiary: 48 10.5% 53.5%;    /* #95907C — text3AA */
   --accent: 165 18.2% 17.3%;          /* #243430 */
   --accent-foreground: 41 50.8% 76.9%;/* #E2CFA6 */
+  --inset: 165 30% 7.8%;              /* #0E1A17 — one step BELOW surface */
 
   --destructive: 8 61.6% 61.2%;       /* #D9705F */
   --destructive-foreground: 24 23.8% 8.2%;
+  --success: 127.3 25.8% 68.8%;       /* #9BC4A0 sage */
+  --warning: 37.8 59.4% 63.3%;        /* #D9B06A amber */
+  --info: 209.5 40.9% 68.8%;          /* #8FB0D0 */
+  --neutral: 43.8 14.6% 65.1%;        /* #B3AC99 = text2 */
+  --status-lift: 0 0% 100%;
 
   --border: 165 18.2% 17.3%;          /* #243430 — Gaia draws real hairlines */
   --input: 158 16.2% 22.9%;           /* #31443D */
+  --divider: 166.7 15.8% 11.2%;       /* #18211F — 5% white over #0C1513 */
   --ring: 38 45% 68.6%;
 
   /* Gaia is a 2px-edge system, not a rounded one. */
   --radius: 0.125rem;
 
-  --chart-1: 38 45% 68.6%;            /* champagne */
-  --chart-2: 127 25.8% 68.8%;         /* sage  #9BC4A0 */
-  --chart-3: 38 59.4% 63.3%;          /* amber #D9B06A */
-  --chart-4: 158 16.2% 45%;
-  --chart-5: 8 61.6% 61.2%;           /* coral #D9705F */
-}
+  /* Champagne ramp (GaiaColors.ramp / accentBridge). */
+  --accent-hi: 41 50.8% 76.9%;        /* #E2CFA6 */
+  --accent-base: 38 45% 68.6%;        /* #D3B88B */
+  --accent-mid: 38.9 23.1% 51.6%;     /* #A08C67 */
+  --accent-deep: 38.7 22.6% 39%;      /* #7A6A4D */
+  --accent-shadow: 37.8 21.6% 24.5%;  /* #4C4231 */
+  --accent-on: 24 23.8% 8.2%;         /* #1A1410 */
 
-[data-palette="gaia"]:not(.dark) {
-  --primary: 38 42% 34%;              /* champagne, darkened to carry white text */
-  --primary-foreground: 42 39% 97%;
-  --accent-foreground: 38 42% 26%;
-  --ring: 38 42% 34%;
-  --radius: 0.125rem;
-  --chart-1: 38 42% 34%;
-  --chart-2: 127 25.8% 40%;
-  --chart-3: 38 59.4% 45%;
-  --chart-4: 158 16.2% 35%;
-  --chart-5: 8 61.6% 48%;
+  /* NOT champagne: washing a screen in gold reads as brass plate. These are
+     the bokeh forest greens, so un-ported chrome stays in the wood. */
+  --glow-bright: 152 26.9% 32.7%;     /* #3D6A55 */
+  --glow-mid: 155.5 32.4% 26.7%;      /* #2E5A48 */
+  --glow-deep: 152.1 31.8% 17.3%;     /* #1E3A2D */
+
+  /* No shadows inside the frame — depth is the ground ladder + hairlines. */
+  --shadow-card: none;
+  --shadow-card-hover: none;
+
+  --chart-1: 41 50.8% 76.9%;          /* champagne2 */
+  --chart-2: 38 45% 68.6%;            /* champagne */
+  --chart-3: 38.9 23.1% 51.6%;        /* champagneDim */
+  --chart-4: 38.7 22.6% 39%;
+  --chart-5: 37.8 21.6% 24.5%;
+
+  --sidebar-background: 167 27.3% 6.5%;
+  --sidebar-foreground: 42 39% 88.4%;
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: 167 28.4% 13.1%;
+  --sidebar-accent-foreground: 42 39% 88.4%;
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
 }

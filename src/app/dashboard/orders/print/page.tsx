@@ -12,6 +12,12 @@ import { DEFAULT_TIMEZONE, formatDateTime } from '@/lib/tz';
 import { useTimezone } from '@/lib/use-timezone';
 import { billReceiptIsReprint, REPRINT_MARKER, type BillPrintState } from '@/lib/bill-print-state';
 import { billCustomerLines } from '@/lib/bill-customer';
+import { billAddressLines } from '@/components/history/settled-bill-lib';
+import { fetchBillPaperNarrow } from '@/lib/api/bill-print';
+import { ncLabel, paperNcValue, replacesBillLine } from '@/components/bill-print/bill-paper';
+import { paperStaleOf, printedClockOf, printedInstantOf } from '@/lib/api/tables-floor';
+import { useToast } from '@/hooks/use-toast';
+import { isWaiterOnly } from '@/lib/session-scope';
 import { roundOffOf } from '@/lib/bill-round-off';
 import {
     BILL_SERVICE_CHARGE_NOTE,
@@ -169,7 +175,7 @@ function billHeaderLines(profile: RestaurantProfile | null, billPrint: BillPrint
 // one can tell is wrong.
 
 /** One line as this page prints it, whichever source supplied it. */
-interface PrintedLine { id: string; name: string; quantity: number; price: number }
+interface PrintedLine { id: string; name: string; quantity: number; price: number; /** A comped line: "(NC)" at 0.00. */ nc: boolean }
 
 /** One printed bill, normalised — the ONLY thing either renderer below reads. */
 interface PrintedBill {
@@ -205,6 +211,8 @@ interface PrintedBill {
      */
     customer: string | null | undefined;
     customerGstin: string | null | undefined;
+    /** Client item 7 — the guest address off the same document ('' / undefined = none). */
+    customerAddress: string | null | undefined;
 }
 
 /** A field off a server document: the value when the key is there, `undefined` when it is not. */
@@ -221,7 +229,10 @@ const docField = (doc: Record<string, unknown> | null | undefined, key: string):
  * the header and why a walk-in's slot is left blank.
  */
 function receiptCustomerLines(printed: PrintedBill, order: { customer?: unknown }): string[] {
-    return billCustomerLines(printed.customer === undefined ? order.customer : printed.customer, printed.customerGstin);
+    return [
+        ...billCustomerLines(printed.customer === undefined ? order.customer : printed.customer, printed.customerGstin),
+        ...billAddressLines(printed.customerAddress),
+    ];
 }
 
 /**
@@ -362,9 +373,9 @@ function resolvePrintedBill(order: Order, settled: any | null, openBill: any | n
     // the order's OWN bill id, so the document it returns is this order's bill
     // by construction. That is why it needs no ownership test and the open read
     // below does.
-    if (settled && settled.closed_at && Number.isFinite(settledGrand) && Array.isArray(settled.items)) {
+    if (settled?.closed_at && Number.isFinite(settledGrand) && Array.isArray(settled.items)) {
         const items: PrintedLine[] = settled.items.map((it: any, i: number) => ({
-            id: `s${i}`, name: lineLabel(it?.name, it?.variation), quantity: Number(it?.quantity) || 1, price: Number(it?.price) || 0,
+            id: `s${i}`, name: lineLabel(it?.name, it?.variation), quantity: Number(it?.quantity) || 1, price: Number(it?.price) || 0, nc: it?.nc === true,
         }));
         const discountAmt = Number(settled.discount_amount) || 0;
         const printed: PrintedBill = {
@@ -390,6 +401,7 @@ function resolvePrintedBill(order: Order, settled: any | null, openBill: any | n
             source: 'settled',
             customer: docField(settled as Record<string, unknown>, 'customer'),
             customerGstin: docField(settled as Record<string, unknown>, 'customer_gstin'),
+            customerAddress: docField(settled as Record<string, unknown>, 'customer_address'),
         };
         return { ok: true, printed };
     }
@@ -414,7 +426,7 @@ function resolvePrintedBill(order: Order, settled: any | null, openBill: any | n
             };
         }
         const items: PrintedLine[] = openBill.items.map((it: any, i: number) => ({
-            id: `o${i}`, name: lineLabel(it?.name, it?.variation), quantity: Number(it?.quantity) || 1, price: Number(it?.price) || 0,
+            id: `o${i}`, name: lineLabel(it?.name, it?.variation), quantity: Number(it?.quantity) || 1, price: Number(it?.price) || 0, nc: it?.nc === true,
         }));
         const discountAmt = Number(openBill.discount) || 0;
         // A live waiver (migration 036) has already been taken out of
@@ -444,6 +456,7 @@ function resolvePrintedBill(order: Order, settled: any | null, openBill: any | n
             source: 'open',
             customer: docField(openBill as Record<string, unknown>, 'customer'),
             customerGstin: docField(openBill as Record<string, unknown>, 'customer_gstin'),
+            customerAddress: docField(openBill as Record<string, unknown>, 'customer_address'),
         };
         return { ok: true, printed };
     }
@@ -515,6 +528,21 @@ const RECEIPT_COLUMN_SHARES: readonly number[] = (() => {
 const RECEIPT_AMOUNT_SHARE = `${(RECEIPT_COLUMN_SHARES[3] ?? 0).toFixed(2)}%`;
 
 /**
+ * Finding 5 — the 58mm roll (`bill_paper_width`): 32 columns, no margins, the
+ * narrow item table (Item 11 / Qty 4 / Price 8 / Amount 9). 80mm is the
+ * constants above.
+ */
+function receiptGeometry(narrow: boolean): { textCols: number; shares: readonly number[]; amountShare: string; areaScale: number } {
+    if (!narrow) {
+        return { textCols: RECEIPT_TEXT_COLUMNS, shares: RECEIPT_COLUMN_SHARES, amountShare: RECEIPT_AMOUNT_SHARE, areaScale: 1 };
+    }
+    const text = billTextColumns(32);
+    const { COL_ITEM, COL_QTY, COL_PRICE, COL_TOTAL } = billColumns(text);
+    const shares = [COL_ITEM, COL_QTY, COL_PRICE, COL_TOTAL].map((cols) => (cols / text) * 100);
+    return { textCols: text, shares, amountShare: `${(shares[3] ?? 0).toFixed(2)}%`, areaScale: BILL_PRINT_AREA_DOTS / (text * DOTS_PER_COL) };
+}
+
+/**
  * A SOLID RULE, as on the paper: a black stroke with a little white above and
  * below. Thin between blocks; thick around the item table, where the client's
  * bill (and billRule's 4-row stroke) thickens it. Black whatever the dashboard
@@ -582,6 +610,9 @@ function PrintPageContents() {
     const [previewText, setPreviewText] = useState<string | null>(null);
     const [order, setOrder] = useState<Order | null>(null);
     const [loadError, setLoadError] = useState<string | null>(null);
+    // Finding 5 — `bill_paper_width`: true draws (and encodes) the 58mm roll.
+    const [narrow, setNarrow] = useState(false);
+    const { toast } = useToast();
 
     useEffect(() => {
         const resolveOrder = () => {
@@ -623,6 +654,7 @@ function PrintPageContents() {
                         // what every bill carried before these fields existed.
                         const printSettings = await getBillPrintSettings(restaurantId).catch(() => null);
                         setBillPrint(printSettings ?? null);
+                        setNarrow(await fetchBillPaperNarrow(restaurantId));
                         const billResp = await getBillByOrder(restaurantId, parsed.id).catch(() => null);
                         setBill(billResp ?? null);
 
@@ -817,6 +849,25 @@ function PrintPageContents() {
     // prints ("Sub Total", "SGST 2.5%", "-500.00"), so the two slips cannot word
     // the same money differently. See billTotals.
     const totals = billTotals(printed);
+    // Finding 8 — an unknown (0) percentage prints the bare label, not "0%".
+    const rungs = totals.rungs.map((r) => {
+        if (r.key === 'service-charge') {
+            return (printed.serviceCharge?.percent ?? 0) > 0 ? r : { ...r, label: 'Service Charge' };
+        }
+        const tax = printed.taxes.find((t) => r.key === `tax-${t.id}`);
+        return tax && tax.percentage <= 0 ? { ...r, label: tax.name } : r;
+    });
+    const geo = receiptGeometry(narrow);
+    const ladderGrid = { gridTemplateColumns: `minmax(0, 1fr) minmax(${geo.amountShare}, max-content)` };
+    const subTotalOneRung = `Total Qty: ${String(totals.totalQty)}   Sub Total`.length
+        <= geo.textCols - Math.max(billColumns(geo.textCols).COL_TOTAL, totals.subtotal.length + 1);
+    // Finding 6 — what the comped lines were worth, disclosed under the total.
+    const ncValue = paperNcValue(printed.items.map((it) => ({ key: it.id, name: it.name, quantity: it.quantity, price: it.price, nc: it.nc })));
+    // Finding 4 — UPDATED BILL when this reprint replaces paper the open bill has outgrown.
+    const updatedBill = isReprint && printed.source === 'open' && paperStaleOf(openBill) === true;
+    const replacesLine = updatedBill ? replacesBillLine(printedClockOf(printedInstantOf(openBill), timezone)) : '';
+    const restaurantName = clean(profile?.outlet_name) || clean(user?.restaurantName) || 'Receipt';
+    const waiterOnly = isWaiterOnly(user);
     const chargesForService = billChargesForService(printed);
     const qrNote = billQrNote(billPrint);
     const showQr = billShowsQr(billPrint);
@@ -830,7 +881,7 @@ function PrintPageContents() {
     const onLogoLoad = (e: SyntheticEvent<HTMLImageElement>) => {
         setLogoFit(billLogoFit(e.currentTarget.naturalWidth, e.currentTarget.naturalHeight));
     };
-    const logoWidth = logoFit ? `${((logoFit.width / BILL_PRINT_AREA_DOTS) * 100).toFixed(2)}%` : undefined;
+    const logoWidth = logoFit ? `${((logoFit.width / BILL_PRINT_AREA_DOTS) * 100 * geo.areaScale).toFixed(2)}%` : undefined;
 
     return (
         <div className="p-4 bg-white text-black">
@@ -857,7 +908,23 @@ function PrintPageContents() {
                 a near-black card with near-white ink — and a browser prints no
                 background, so the name came out white-on-white and the address and
                 GSTIN in pale grey. The receipt is forced to black ink on white. */}
-            <Card className="mx-auto w-[420px] max-w-full shadow-none border-black receipt-card bg-white text-black">
+            {/* Finding 3 (item 19) — a waiter-only session never sees the priced
+                receipt on screen; the paper is unchanged and still prints. */}
+            {waiterOnly ? (
+                <Card className="no-print mx-auto mb-3 w-[420px] max-w-full">
+                    <CardHeader>
+                        <CardTitle className="text-lg">Bill for {order.table || 'this table'}</CardTitle>
+                        <CardDescription>
+                            {`${String(printed.items.length)} item(s) on this table. ${updatedBill ? 'The updated bill goes to the guest and replaces the one they have.' : 'The printed bill goes to the guest.'}`}
+                        </CardDescription>
+                    </CardHeader>
+                    <CardContent className="flex justify-end gap-2">
+                        <button onClick={() => { window.close(); }} className="px-3 py-1 border rounded text-sm">Cancel</button>
+                        <button onClick={() => { window.print(); }} className="px-3 py-1 border rounded text-sm">Print</button>
+                    </CardContent>
+                </Card>
+            ) : null}
+            <Card className={`mx-auto w-[420px] max-w-full shadow-none border-black receipt-card bg-white text-black${waiterOnly ? ' hidden print:block' : ''}`}>
                 <div className="mb-1 px-3 pt-3 no-print">
                     <p className="mb-2 text-left text-xs text-gray-500">Bill preview — review the receipt below, then click Print when you&apos;re ready. Nothing prints automatically.</p>
                     <div className="flex gap-2 justify-end">
@@ -872,14 +939,14 @@ function PrintPageContents() {
                         <button
                                 onClick={async () => {
                                     // Passed logoBase64 to the encoder
-                                    const esc = await generateEscPos(user, profile, cashierName, bill, order, logoBase64, timezone, billPrint, printed, isReprint);
+                                    const esc = await generateEscPos(user, profile, cashierName, bill, order, logoBase64, timezone, billPrint, printed, isReprint, narrow ? 32 : 48);
                                     // Never silent: an encoder that returned null
                                     // printed nothing, and an operator who thinks
                                     // he has sent a bill to the thermal printer
                                     // will hand the guest a blank hand instead of
                                     // reprinting.
                                     if (!esc) {
-                                        alert('Could not build the bill for the thermal printer. Nothing was sent.');
+                                        toast({ title: 'Could not build the bill for the thermal printer. Nothing was sent.', variant: 'destructive' });
                                         return;
                                     }
 
@@ -918,14 +985,14 @@ function PrintPageContents() {
                                         });
 
                                         if (!resp.ok) {
-                                            alert('Failed to publish bill: ' + resp.text);
+                                            toast({ title: 'Failed to publish bill', description: resp.text, variant: 'destructive' });
                                             return;
                                         }
 
-                                        alert('Bill published to backend for printing');
+                                        toast({ title: 'Bill published to backend for printing' });
                                     } catch (err) {
                                         console.error(err);
-                                        alert('Unable to send bill to backend');
+                                        toast({ title: 'Unable to send bill to backend', variant: 'destructive' });
                                     }
                                 }}
                             className="px-3 py-1 border rounded text-sm"
@@ -940,7 +1007,7 @@ function PrintPageContents() {
                     the size of the address, figures in tabular numerals so the
                     money columns line up the way monospaced print lines them up.
                 */}
-                <div data-testid="receipt-paper" className="bg-white px-[4.1667%] pb-8 pt-3 font-sans text-[13px] leading-snug text-black tabular-nums">
+                <div data-testid="receipt-paper" className="bg-white px-[4.1667%] pb-8 pt-3 font-sans text-[13px] leading-snug text-black tabular-nums" style={narrow ? { paddingLeft: 8, paddingRight: 8 } : undefined}>
                 {/*
                     THE FIRST THING ON A REPRINTED SLIP IS THAT IT IS A REPRINT.
 
@@ -953,8 +1020,13 @@ function PrintPageContents() {
                     two spellings would mean a guest comparing two slips has no
                     way to tell they are the same document.
                 */}
-                {isReprint ? (
-                    <div className="py-2 text-center text-2xl font-extrabold tracking-widest">
+                {updatedBill ? (
+                    <div className="mb-2">
+                        <div className="border-2 border-black py-1 text-center text-[22px] font-black tracking-[3px]">UPDATED BILL</div>
+                        <p className="mt-1 text-center">{replacesLine}</p>
+                    </div>
+                ) : isReprint ? (
+                    <div className="mb-2 border-2 border-black py-2 text-center text-2xl font-extrabold tracking-widest">
                         {REPRINT_MARKER}
                     </div>
                 ) : null}
@@ -974,7 +1046,7 @@ function PrintPageContents() {
                     {/* BOLD, AT BODY SIZE — the client's bill, and escpos.ts's. At
                         double size "Gaia - Global Vegetarian" broke in two and
                         shouted over the logo that already names the restaurant. */}
-                    <p className="font-bold">{profile?.outlet_name ?? 'Not found'}</p>
+                    <p className="font-bold">{restaurantName}</p>
                     {/* Legal entity, address lines, Ph, GSTIN — each rendered only
                         when the tenant has one, so a restaurant without them
                         gets a clean receipt instead of empty labels. Black ink,
@@ -1021,7 +1093,7 @@ function PrintPageContents() {
                     rule under it and another after the last line. */}
                 <table data-testid="receipt-items" className="w-full table-fixed border-collapse">
                     <colgroup>
-                        {RECEIPT_COLUMN_SHARES.map((share, i) => (
+                        {geo.shares.map((share, i) => (
                             <col key={i} style={{ width: `${share.toFixed(2)}%` }} />
                         ))}
                     </colgroup>
@@ -1046,26 +1118,29 @@ function PrintPageContents() {
                             // its neighbour, so, as on the thermal bill, the dish
                             // takes the whole width and "qty x price  amount"
                             // goes on its own right-aligned line under it.
-                            const row = billItemRow(item.quantity, item.price, RECEIPT_TEXT_COLUMNS);
+                            const row = billItemRow(item.quantity, item.price, geo.textCols);
+                            // A comped line reads "<dish> (NC)" at 0.00 (finding 6).
+                            const amountText = item.nc ? '0.00' : row.amountText;
+                            const itemName = ncLabel(item.name, item.nc);
                             const top = i === 0 ? 'pt-1.5' : 'pt-0.5';
                             if (!row.fits) {
                                 return (
                                     <Fragment key={item.id}>
                                         <tr className="align-top">
-                                            <td colSpan={4} className={`break-words ${top}`}>{item.name}</td>
+                                            <td colSpan={4} className={`break-words ${top}`}>{itemName}</td>
                                         </tr>
                                         <tr data-testid="receipt-item-figures">
-                                            <td colSpan={4} className="whitespace-pre-wrap text-right">{`${row.qtyText} x ${row.priceText}  ${row.amountText}`}</td>
+                                            <td colSpan={4} className="whitespace-pre-wrap text-right">{`${row.qtyText} x ${row.priceText}  ${amountText}`}</td>
                                         </tr>
                                     </Fragment>
                                 );
                             }
                             return (
                                 <tr key={item.id} className="align-top">
-                                    <td className={`break-words pr-2 ${top}`}>{item.name}</td>
+                                    <td className={`break-words pr-2 ${top}`}>{itemName}</td>
                                     <td className={`text-right ${top}`}>{row.qtyText}</td>
                                     <td className={`text-right ${top}`}>{row.priceText}</td>
-                                    <td className={`text-right ${top}`}>{row.amountText}</td>
+                                    <td className={`text-right ${top}`}>{amountText}</td>
                                 </tr>
                             );
                         })}
@@ -1077,12 +1152,20 @@ function PrintPageContents() {
                     taxes; a rule; the round-off when one is disclosed; the Grand
                     Total larger and bold; a rule. Labels right-aligned against
                     ONE shared amount column, so every label ends on one edge. */}
-                <div data-testid="receipt-totals" className="grid" style={RECEIPT_LADDER_GRID}>
-                    <ReceiptLadderRow
-                        label={<>Total Qty: {totals.totalQty}<span aria-hidden className="inline-block w-6" />Sub Total</>}
-                        value={totals.subtotal}
-                    />
-                    {totals.rungs.map((r) => (
+                <div data-testid="receipt-totals" className="grid" style={narrow ? ladderGrid : RECEIPT_LADDER_GRID}>
+                    {subTotalOneRung ? (
+                        <ReceiptLadderRow
+                            label={<>Total Qty: {totals.totalQty}<span aria-hidden className="inline-block w-6" />Sub Total</>}
+                            value={totals.subtotal}
+                        />
+                    ) : (
+                        <>
+                            <ReceiptLadderRow label={`Total Qty: ${String(totals.totalQty)}`} value="" />
+                            <ReceiptLadderRow label="Sub Total" value={totals.subtotal} />
+                        </>
+                    )}
+                    {/* totals.rungs.map( — relabelled for unknown percentages */}
+                    {rungs.map((r) => (
                         <ReceiptLadderRow key={r.key} label={r.label} value={r.value} />
                     ))}
                     <ReceiptRule />
@@ -1098,6 +1181,12 @@ function PrintPageContents() {
                         value={`${currencySymbol}${printed.grandTotal.toFixed(2)}`}
                     />
                     <ReceiptRule />
+                    {ncValue !== null ? (
+                        <>
+                            <ReceiptLadderRow label="NC value (not charged)" value={ncValue.toFixed(2)} />
+                            <ReceiptRule />
+                        </>
+                    ) : null}
                 </div>
 
                 {/* G2's mandatory sentence, on the browser-printed bill as
@@ -1220,7 +1309,7 @@ async function billLogoRasterFromBase64(logoBase64: string): Promise<Uint8Array 
  * gathers what that needs from the page: the same header, customer slot, ladder
  * and QR sentence the on-screen bill draws, the logo raster and the feedback URL.
  */
-export async function generateEscPos(user: any, profile: any, cashierName: string, bill: any, orderArg?: any, logoBase64?: string | null, timeZone: string = DEFAULT_TIMEZONE, billPrint: BillPrintSettings | null = null, printedArg: PrintedBill | null = null, reprint = false): Promise<Uint8Array | null> {
+export async function generateEscPos(user: any, profile: any, cashierName: string, bill: any, orderArg?: any, logoBase64?: string | null, timeZone: string = DEFAULT_TIMEZONE, billPrint: BillPrintSettings | null = null, printedArg: PrintedBill | null = null, reprint = false, paperWidth = 48): Promise<Uint8Array | null> {
     try {
         // NO SERVER-RESOLVED BILL, NO PAPER — checked before anything is encoded
         // or fetched. This is root cause 4's other half: the fallback that used
@@ -1290,7 +1379,7 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
         return buildBillEscPos({
             // The dashboard prints for the 80mm roll: 48 columns, 44 of them
             // between the bill's margins.
-            width: 48,
+            width: paperWidth,
             // ** REPRINT **, FIRST AND BIGGEST, above the logo — the backend's
             // own constant, in the backend's own place (see buildBillEscPos).
             reprint,
@@ -1312,7 +1401,8 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
             currency: String(order.currencySymbol || '₹'),
             // The document's lines, which are the lines the totals below are
             // built from. Never `order.items` independently of them.
-            items: doc.items,
+            // A comped line prints "(NC)" at 0.00 so the Amount column adds up.
+            items: doc.items.map((it) => (it.nc ? { ...it, name: ncLabel(it.name, true), price: 0 } : it)),
             subtotal: doc.subtotal,
             discount: doc.discount,
             serviceCharge: doc.serviceCharge,
@@ -1330,6 +1420,8 @@ export async function generateEscPos(user: any, profile: any, cashierName: strin
             // otherwise the built-in valet line; '' (the settings fetch failed
             // AND no note of their own) prints no sentence rather than a blank.
             qrNote: billQrNote(billPrint),
+            // The comped lines' worth, under the Grand Total — as the screen shows it.
+            ncValue: paperNcValue(doc.items.map((it) => ({ key: it.id, name: it.name, quantity: it.quantity, price: it.price, nc: it.nc }))),
         });
 
     } catch (err) {

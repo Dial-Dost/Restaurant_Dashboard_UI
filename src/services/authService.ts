@@ -74,13 +74,17 @@ export const getOutlets = async (restaurant: string): Promise<{ id: string; name
         if (!response.ok) {
             return [];
         }
-        const payload = await response.json();
+        const payload = (await response.json()) as { outlets?: unknown } | null;
         if (!Array.isArray(payload?.outlets)) {
             return [];
         }
-        return payload.outlets
-            .filter((o: any) => o && typeof o.id === 'string' && typeof o.name === 'string')
-            .map((o: any) => ({ id: o.id as string, name: o.name as string }));
+        return (payload.outlets as unknown[]).flatMap((raw) => {
+            const o = raw as { id?: unknown; name?: unknown } | null;
+            if (!o || typeof o.id !== 'string') { return []; }
+            // An unnamed outlet falls back to its id (Flutter parity) instead of vanishing.
+            const name = typeof o.name === 'string' && o.name.trim() ? o.name : o.id;
+            return [{ id: o.id, name }];
+        });
     } catch {
         return [];
     }
@@ -114,7 +118,7 @@ export const signInEmployee = async (restaurantName: string, employeeUsername: s
     } catch {
         // The backend itself was unreachable — a transport failure, not a
         // credential one; say so rather than blaming the password.
-        return { ok: false, error: 'Could not reach the server. Please try again in a moment.' };
+        return { ok: false, error: 'Could not reach the server. Please check your connection and try again.' };
     }
 
     if (!response.ok) {

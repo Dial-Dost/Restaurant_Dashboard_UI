@@ -1,22 +1,53 @@
 "use client";
 
-import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+/*
+  ORDERS — rebuilt to the Flutter owner app's Orders module (the source of
+  truth: restaurant_owner_app/lib/screens/modules.dart `ordersModule`, audited
+  in docs/parity/orders.md).
+
+  WHAT THIS PAGE IS NOW. Three titled sections — Upcoming (Pending guest-QR /
+  queue tickets awaiting approval), Current (everything mid-flight) and Paid
+  (settled, closed and cancelled) — of clickable ForkCard tiles in a 4/3/2/1
+  column grid, sorted focused → pending → newest. The whole tile opens the
+  detail sheet (the ONLY place the stage is advanced — mis-tap safety); the
+  time-critical acts stay ON the tile: Bark → kitchen for an unbarked ticket,
+  Approve / Decline for a Pending one. Settled tickets older than 24h leave the
+  page (hidden, not deleted — the note under the grid counts them and History
+  keeps them); an unpaid ticket never ages out and wears "Over 24h · unsettled"
+  instead. A floating "Takeaway / Delivery" action starts a no-table order.
+
+  WHAT LEFT. The embedded kitchen display moved to the Kitchen module
+  (/dashboard/kitchen owns that surface; the old kiosk URL redirects there).
+  The reason-less hard Delete is gone — every cancel routes through the
+  reasoned void/cancel dialogs (parity finding 17). The row table, the
+  row-click split-editor dialog and the analytics cards are superseded by the
+  card grid, the Flutter detail sheet and the per-order APC row in it.
+
+  WHAT STAYED (web-extras the audit says to keep, re-homed to the sheet): the
+  C3 print-claim flow, the 6.5 Bill menu, the Update Order / Edit Bill
+  editors, waiter payment confirmation + split tender, approve/close/re-open,
+  the CFD launcher, the discount-approvals queue and the Add Order form the
+  Tables page deep-links into.
+*/
+
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import Image from "next/image";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+  CalendarDays,
+  History,
+  Layers,
+  Loader2,
+  MonitorSmartphone,
+  MoreHorizontal,
+  Printer,
+  ShoppingBag,
+  SlidersHorizontal,
+  Table2,
+  Trash2,
+  X,
+} from "lucide-react";
+
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -26,62 +57,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { MoreHorizontal, PlusCircle, Clock, Printer, Trash2, X, ChevronUp, ChevronDown, Flame, ChefHat, CheckCircle2, MonitorSmartphone, Megaphone, Store, ReceiptText } from "lucide-react";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuTrigger,
-  DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubTrigger,
-  DropdownMenuSubContent
-} from "@/components/ui/dropdown-menu";
-import { Switch } from "@/components/ui/switch";
-import { Combobox } from "@/components/ui/combobox";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import Image from 'next/image';
-import {
-  getMenuItems,
-  getOrders,
-  requestBackend,
-  addOrder,
-  deleteOrder,
-  occupyTable,
-  getMonthlyApcInsight,
-  createBill,
-  getTables,
-  getOutletDefaultTax,
-  setOutletDefaultTax,
-  replaceBill,
-  confirmBillPaymentByWaiter,
-  approveBillPaymentByAdmin,
-  closeBillByOrder,
-  getDiscountRequests,
-  decideDiscountRequest,
-  reopenBill,
-  getBillForTable,
-  fireOrderItems,
-  barkOrder,
-  getKdsExpo,
-  getKitchenSections,
-  getMenuVariations,
-  getOrdersScope,
-  claimBillPrint,
-  // addAuditLogEntry,
-  type MonthlyApcInsight,
-  type PaymentMethod,
-  type PaymentSplit,
-  type DiscountRequest,
-  type ExpoTable,
-  type OrdersScope,
-} from "@/lib/db";
-// Removed DnD kit - using simple arrow controls instead
 import {
   AlertDialog,
   AlertDialogAction,
@@ -92,385 +68,163 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { cn } from "@/lib/utils";
-import { useAuth } from "@/context/AuthContext";
-import { usePaymentMethods } from "@/hooks/use-payment-methods";
 import {
-  MAX_SPLIT_PARTS,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { Combobox } from "@/components/ui/combobox";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { SectionHeader } from "@/components/ui/section-header";
+import { StatusChip } from "@/components/ui/status-chip";
+import { SkeletonRows } from "@/components/ui/fork-skeleton";
+import { LoadErrorState } from "@/components/ui/load-error-state";
+import { CacheStalePill } from "@/components/ui/stale-pill";
+
+import {
+  addOrder,
+  approveBillPaymentByAdmin,
+  closeBillByOrder,
+  createBill,
+  decideDiscountRequest,
+  getBillForTable,
+  getDiscountRequests,
+  getMenuItems,
+  getMenuVariations,
+  getMonthlyApcInsight,
+  getOutletDefaultTax,
+  getTables,
+  reopenBill,
+  replaceBill,
+  requestBackend,
+  setOutletDefaultTax,
+  type DiscountRequest,
+  type MonthlyApcInsight,
+} from "@/lib/db";
+import type { Table as FloorTable } from "@/app/dashboard/tables/data";
+import {
+  advanceOrderStatus,
+  barkOrderDetailed,
+  barkOutcomeMessage,
+  cancelNeedsSeniorSentence,
+  fetchOrdersBundle,
+  isCancelledStatus,
+  isOrderBarked,
+  isOrderCancelled,
+  orderAgedOut,
+  orderIsPending,
+  orderSection,
+  ORDER_PAID_CAPTION,
+  ORDER_SECTION_TITLES,
+  ORDERS_LIVE_WINDOW_HOURS,
+  SETTLED_LOCKED_NOTE,
+  sortLiveOrders,
+  type Order,
+  type OrderItem,
+  type OrdersBundle,
+  type OrderTax as Tax,
+} from "@/lib/api/orders";
+import { OrderCard } from "@/components/orders/order-card";
+import { OrderDetailSheet } from "@/components/orders/order-detail-sheet";
+import { PaymentSheet } from "@/components/payment/payment-sheet";
+import { CompSheet } from "@/components/payment/comp-sheet";
+import { ChangeStageDialog } from "@/components/orders/change-stage-dialog";
+import { CancelOrderDialog, type CancelRoute } from "@/components/orders/cancel-order-dialog";
+import { ChannelSheet } from "@/components/orders/channel-sheet";
+import { OrderPad, type OrderPadRequest } from "@/components/order-pad/order-pad";
+import { DiscountApprovals } from "@/components/orders/discount-approvals";
+import { OrdersEmptyState, OutletScopeBar } from "@/components/orders/outlet-scope";
+import { FocusBanner, useFocusRequest } from "@/components/focus-banner";
+import { useCachedFetch } from "@/hooks/use-cached-fetch";
+import { useAuth } from "@/context/AuthContext";
+import { useCurrency } from "@/hooks/use-currency";
+import { useToast } from "@/hooks/use-toast";
+import { useHighlightRow } from "@/hooks/use-highlight-row";
+import { usePaymentMethods } from "@/hooks/use-payment-methods";
+import { useVisibleNav } from "@/hooks/use-nav";
+import { useTimezone } from "@/lib/use-timezone";
+import { formatDateTime } from "@/lib/tz";
+import {
   methodNeedsScreenshot,
-  nextSplitMethod,
-  paymentMethodLabel,
-  splitDefaultRows,
-  splitScreenshotLabels,
-  tillPaymentOptions,
 } from "@/lib/payment-methods";
 import {
   can,
   hasPermission,
   isWaiterOnly as sessionIsWaiterOnly,
-  PERM_ORDER_DELETE,
+  PERM_ORDER_ADD,
+  showsMoney,
 } from "@/lib/session-scope";
 import {
   billPrintScope,
-  billPrintStateFields,
   serverSaysBillPrinted,
   type BillPrintState,
 } from "@/lib/bill-print-state";
-import { visibleAmount, visibleLineAmount, visibleMoneyText, visibleSubtotal } from "@/lib/order-prices";
-import { canBarkFromBoard, cancelKotRoute, ordersGridColumns, showsTableApcSummary } from "@/lib/orders-grid";
-/*
-  THE PREP TIMERS STAY LOCAL; THE SERVICE CLOCK DOES NOT.
-
-  `timerElapsedMs` reads `Orders.timing` — the kitchen's per-item prep timers,
-  which the backend does not summarise and which the pass needs to tick between
-  polls. That arithmetic belongs here.
-
-  D1 and D2 do NOT. They used to be `sincePlacedMs` / `orderToSettlement` from
-  the same module — `Date.now() - created_at` in the browser — and the owner app
-  computed its own, which is one rule implemented twice and drifting. The server
-  now answers both on every order (`service`), so this screen reads the answer;
-  `formatDuration` and `waitTone` come through `service-clock.ts` so the figure
-  and its colouring are still the kitchen board's own.
-*/
-import {
-  timerElapsedMs,
-  type OrderTiming,
-} from "@/lib/order-clock";
-import {
-  elapsedSincePlaced,
-  elapsedToSettlement,
-  formatDuration,
-  latestAsOfMs,
-  monotonicNow,
-  readServiceClock,
-  waitTone,
-  type ServiceClock,
-} from "@/lib/service-clock";
-import { useCurrency } from "@/hooks/use-currency";
-import { useToast } from "@/hooks/use-toast";
-import { useHighlightRow } from "@/hooks/use-highlight-row";
-import { dayKeyInZone, formatDate, formatDateTime, formatFullDateTime, formatTime, timezoneAbbreviation, todayInZone } from "@/lib/tz";
-import { useTimezone } from "@/lib/use-timezone";
+import { visibleAmount, visibleMoneyText } from "@/lib/order-prices";
+import { printTableBill } from "@/lib/api/tables-floor";
+import { BillPreviewDialog } from "@/components/bill-print/bill-preview-dialog";
+import { canBarkFromBoard, cancelKotRoute } from "@/lib/orders-grid";
+import { ALL_OUTLETS, applySelectedOutlet } from "@/lib/outlet";
 import type { MenuItem } from "../menu/data";
 import { type MenuVariationRecord } from "@/lib/mis-capture";
 import { BillActions } from "./bill-actions";
-import { CancelKotButton, CaptureActions } from "./capture-actions";
 import { TableKotPreview } from "./table-kot-preview";
-import { OrdersScopeNotice } from "./orders-scope-notice";
-
-
-interface OrderItem {
-    id: string;
-    name: string;
-    quantity: number;
-    price: number;
-    orderedAt: string;
-  note?: string | null;
-  // KOT station routing (enriched from the menu by the backend).
-  station?: string | null;
-  // Course hold-and-fire: held items wait (no prep ageing) until fired.
-  course_hold?: boolean;
-  fired_at?: string | null;
-  // Migration 034 — SERVER-OWNED. True when this line has been comped: it stays
-  // on the ticket and leaves the chargeable subtotal. Written by exactly one
-  // path (POST .../non-chargeable, which also writes the ledger row naming the
-  // authoriser) and stripped off anything a client posts, so these are read-only
-  // here — the screen shows them, it can never set them.
-  nc?: boolean;
-  nc_id?: string | null;
-  nc_kind?: string | null;
-  // Migration 039 — the price point this line named, stamped server-side.
-  menu_id?: string | null;
-  variation_id?: string | null;
-  variation_name?: string | null;
-}
 
 /*
-  The prep-timer shapes stored in `Orders.timing` now have ONE declaration, in
-  `src/lib/order-clock.ts`, beside the arithmetic that reads them — the tables
-  screen needs the same shapes and a second copy here is how the two screens
-  start disagreeing about what a paused timer means.
+  THE ORDER SHAPE LIVES IN THE MODULE'S OWN DATA LAYER NOW
+  (src/lib/api/orders.ts — a full `mapOrder` equivalent that also lifts the
+  four fields db.ts drops: moved_from, moved_items, note and the
+  takeaway/delivery contact pair, and admits the "Pending" stage). Re-exported
+  from here because db.ts's own mapper types itself against this page's Order.
 */
+export type { Order, OrderItem, OrderStatus } from "@/lib/api/orders";
 
-export type OrderStatus =
-  | "Preparing"
-  | "Served"
-  | "Bill Verification"
-  | "Payment Pending Approval"
-  | "Paid"
-  | "Closed"
-  | "Cancelled";
-
-interface Tax {
-  id: string;
-  name: string;
-  percentage: number;
-}
-
-export interface Order {
-  id: string;
-  table: string;
-  customer: string;
-  /*
-    C3 / REPRINT FORMATTING — the SERVER's print ledger for this table's seating
-    as it stood BEFORE this print was claimed, stamped on by `triggerPrint` and
-    read by the print page to decide whether the paper carries "** REPRINT **".
-
-    Present only on a print payload; it is never sent to the backend and is not
-    part of what /orders returns. It carries the server's own three field names
-    rather than a boolean, because a boolean computed here would be the
-    device-remembered answer bill-print-state.ts exists to keep out.
-  */
-  bill_print_state?: BillPrintState | null;
-  /** The server's PRICED bill from the print claim. Preferred by the print page
-   *  over its own /bill-for-table read, which C4 redacts for a waiter. */
-  printable_bill?: Record<string, unknown> | null;
-  // Order channel: dine_in (default) / takeaway / delivery / swiggy / zomato.
-  order_type?: string | null;
-  taken_by_employee_id?: string | null;
-  taken_by_employee_name?: string | null;
-  taken_by_employee_role?: string | null;
-  items: OrderItem[];
-  // flattened items for backward compatibility and printing
-  items_flattened?: OrderItem[];
-  // split items as tuples, e.g. [['Served', [...]], ['Preparing', [...]]]
-  items_split?: [string, OrderItem[]][];
-  subtotal: number;
-  serviceChargePercentage?: number;
-  taxes?: Tax[];
-  applyServiceCharge: boolean;
-  total: number;
-  status: OrderStatus;
-  payment_method?: PaymentMethod | null;
-  payment_proof_screenshot_url?: string | null;
-  payment_waiter_confirmed_at?: string | null;
-  payment_waiter_confirmed_by?: string | null;
-  payment_admin_approved_at?: string | null;
-  payment_admin_approved_by?: string | null;
-  bill_closed_at?: string | null;
-  bill_closed_by?: string | null;
-  bill_id?: string | null;
-  timing?: OrderTiming | null;
-  // "Barked" step: when the expo announced the order to the kitchen. Null =
-  // awaiting bark (greyed, no running timers); missing (old backend) = barked.
-  barked_at?: string | null;
-  // When the ticket was placed — the instant the Orders tab shows on each row.
-  // Null on rows that predate the column; the UI renders those as "—" rather
-  // than inventing a time from `updated_at`.
-  created_at?: string | null;
-  // Last change to the ticket (status walk, item split/move/void). Stamped by a
-  // BEFORE UPDATE trigger backend-side, so it is never stale.
-  updated_at?: string | null;
-  // The KOT number(s) the KITCHEN knows this order by — the distinct `kot_no`
-  // of the order's print jobs, in allocation order. OPTIONAL on purpose:
-  // ABSENT means "this backend cannot tell us" (a tenant whose migration has
-  // not applied, or an older server), NOT "no KOT was printed". Every surface
-  // must therefore render a row without it exactly as it rendered before the
-  // field existed — no empty chip, no dash, no reserved column.
-  kot_nos?: number[] | null;
-  /*
-    D1 + D2 — THE SERVER'S SERVICE CLOCK FOR THIS TICKET.
-
-    The backend's `service_clock.ts` measures "placed -> settled" against the
-    SERVER's clock and ships the duration as a number of milliseconds plus the
-    instant it was measured at. It was wired into this feed specifically so this
-    screen and the owner app could not report two different durations for the
-    same table — and so that a till whose own clock runs fast stops inventing
-    waits that are not happening.
-
-    OPTIONAL: absent on a backend older than the clock, and the row then draws
-    no duration at all. `src/lib/service-clock.ts` is the only thing that reads
-    it; nothing on this screen subtracts a timestamp any more.
-  */
-  service?: ServiceClock | null;
-}
-
-// Un-barked orders sit greyed with idle timers until the expo barks them.
-const isOrderBarked = (o: Order): boolean => (o.barked_at === undefined ? true : o.barked_at !== null);
-
-// Cancelled is a TERMINAL state: no control on any surface may modify the order
-// (status, bark, fire, serve, hold, delete). The one sanctioned reversal is an
-// undo from the Audit Log — the server refuses everything else anyway.
-const isOrderCancelled = (o: Order): boolean => o.status === "Cancelled";
-
-// "KOT 214" / "KOTs 214, 218, 236" — the handle staff quote when they reprint,
-// cancel or move a ticket. Returns "" when the backend sent nothing, which is
-// every call site's signal to draw NOTHING rather than a placeholder.
-//
-// Duplicates are collapsed: a single docket fanned out to several stations
-// enqueues several print jobs under ONE allocated number, and a card reading
-// "KOTs 214, 214" would have the kitchen hunting for a second ticket that was
-// never fired. Non-positive/unparseable values are dropped for the same reason
-// — KOT numbers are 1-based and gapless, so "KOT 0" can only be corruption.
-const kotLabel = (o: Order): string => {
-  // Read as `unknown` on purpose. The declared type says number[], but this
-  // comes off the wire as JSON from a server we may be running ahead of, and a
-  // board that renders "KOT NaN" because one tenant sent strings is worse than
-  // one that renders nothing.
-  const raw: unknown = o.kot_nos;
-  if (!Array.isArray(raw)) {return "";}
-  const seen = new Set<number>();
-  const nos: string[] = [];
-  for (const entry of raw as unknown[]) {
-    const parsed = Number(entry);
-    if (!Number.isFinite(parsed) || parsed <= 0) {continue;}
-    const v = Math.round(parsed);
-    if (seen.has(v)) {continue;}
-    seen.add(v);
-    nos.push(String(v));
-  }
-  if (nos.length === 0) {return "";}
-  return `${nos.length === 1 ? "KOT" : "KOTs"} ${nos.join(", ")}`;
-};
 const CANCELLED_LOCK_REASON = "Cancelled orders are final — reverse from the Audit Log";
 
 // The payment modes offered here — and which of them need a screenshot — are
-// the restaurant's own (usePaymentMethods, src/lib/payment-methods.ts). The list
-// that used to live here offered "Swiggy" and "Online Transfer", which the server
-// always refused, and asked for a screenshot on the wrong modes.
-const MAX_PROOF_UPLOAD_BYTES = 400 * 1024;
+// the restaurant's own (usePaymentMethods, src/lib/payment-methods.ts). The
+// settle itself (tenders, tips, proof, till, NC) is the payment sheet's
+// (src/components/payment/payment-sheet.tsx).
 
 const normalizeProofPreviewUrl = (value?: string | null): string | null => {
-  const raw = String(value ?? "").trim();
-  if (!raw) {return null;}
-  if (/^https?:\/\//i.test(raw)) {return raw;}
-  if (/^data:image\//i.test(raw)) {return raw;}
+  const raw = (value ?? "").trim();
+  if (!raw) { return null; }
+  if (/^https?:\/\//i.test(raw)) { return raw; }
+  if (/^data:image\//i.test(raw)) { return raw; }
   return null;
 };
 
-const getDataUrlSizeBytes = (dataUrl: string) => {
-  const base64 = dataUrl.split(",")[1] ?? "";
-  return Math.ceil((base64.length * 3) / 4);
-};
-
-const compressProofImage = async (file: File): Promise<string | null> => {
-  if (!file.type.startsWith("image/")) {
-    return null;
-  }
-
-  const objectUrl = URL.createObjectURL(file);
-  try {
-    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const img = document.createElement('img');
-      img.onload = () => { resolve(img); };
-      img.onerror = () => { reject(new Error("Unable to load image")); };
-      img.src = objectUrl;
-    });
-
-    const canvas = document.createElement("canvas");
-    const context = canvas.getContext("2d");
-    if (!context) {
-      return null;
-    }
-
-    let width = image.naturalWidth;
-    let height = image.naturalHeight;
-    const maxDimension = 1600;
-    if (width > maxDimension || height > maxDimension) {
-      const scale = Math.min(maxDimension / width, maxDimension / height);
-      width = Math.max(1, Math.round(width * scale));
-      height = Math.max(1, Math.round(height * scale));
-    }
-
-    canvas.width = width;
-    canvas.height = height;
-    context.drawImage(image, 0, 0, width, height);
-
-    const qualities = [0.82, 0.72, 0.62, 0.52, 0.45, 0.38];
-    for (const quality of qualities) {
-      const dataUrl = canvas.toDataURL("image/jpeg", quality);
-      if (getDataUrlSizeBytes(dataUrl) <= MAX_PROOF_UPLOAD_BYTES) {
-        return dataUrl;
-      }
-    }
-
-    return canvas.toDataURL("image/jpeg", 0.35);
-  } catch {
-    return null;
-  } finally {
-    URL.revokeObjectURL(objectUrl);
-  }
-};
-
-const pickPaymentProofScreenshot = async (): Promise<string | null> => {
-  return new Promise((resolve) => {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "image/*";
-
-    input.onchange = () => {
-      const file = input.files?.[0];
-      if (!file) {
-        resolve(null);
-        return;
-      }
-
-      void compressProofImage(file)
-        .then((dataUrl) => { resolve(dataUrl); })
-        .catch(() => { resolve(null); });
-    };
-
-    input.click();
-  });
-};
-
-const calculateServiceCharge = (subtotal: number, percentage?: number, apply?: boolean) => {
-  if (!apply || !percentage) {return 0;}
+const calculateServiceCharge = (subtotal: number, percentage?: number, apply?: boolean): number => {
+  if (!apply || !percentage) { return 0; }
   return subtotal * (percentage / 100);
-}
-
-const calculateTaxes = (subtotal: number, taxes?: Tax[]) => {
-  if (!taxes) {return [];}
-  return taxes.map(tax => ({
-    ...tax,
-    amount: subtotal * (tax.percentage / 100)
-  }));
-}
-
-const calculateTotal = (order: Omit<Order, 'total'>) => {
-    const serviceCharge = calculateServiceCharge(order.subtotal, order.serviceChargePercentage, order.applyServiceCharge);
-    const totalTaxAmount = calculateTaxes(order.subtotal, order.taxes).reduce((acc, tax) => acc + tax.amount, 0);
-    return order.subtotal + serviceCharge + totalTaxAmount;
-}
-
-const deriveDefaultsForCharges = (defaultTax: Record<string, number> | null): {
-  serviceChargePercentage?: number;
-  applyServiceCharge: boolean;
-  taxes: Tax[];
-} => {
-  if (!defaultTax || typeof defaultTax !== "object") {
-    return { applyServiceCharge: false, taxes: [] };
-  }
-
-  const taxes: Tax[] = [];
-  let serviceChargePercentage: number | undefined;
-  let applyServiceCharge = false;
-
-  for (const [name, rawValue] of Object.entries(defaultTax)) {
-    const value = Number(rawValue);
-    if (!Number.isFinite(value) || value <= 0) {continue;}
-
-    if (/service ?charge/i.test(name) || /service ?charges/i.test(name)) {
-      serviceChargePercentage = value;
-      applyServiceCharge = true;
-      continue;
-    }
-
-    taxes.push({ id: `d-${name}`, name, percentage: value });
-  }
-
-  return { serviceChargePercentage, applyServiceCharge, taxes };
 };
 
-// Same `dd/mm/yy hh:mm` shape as before, but rendered in the RESTAURANT's zone
-// instead of the viewer's browser zone — a manager checking the pass from home,
-// or an owner abroad, must read the same clock the kitchen did.
-const formatOrderedAt = (isoOrString: string | null | undefined, timeZone: string) => {
-  if (!isoOrString) {return "";}
-  return formatDateTime(isoOrString, timeZone, String(isoOrString));
-}
+const calculateTaxes = (subtotal: number, taxes?: Tax[]): (Tax & { amount: number })[] => {
+  if (!taxes) { return []; }
+  return taxes.map((tax) => ({
+    ...tax,
+    amount: subtotal * (tax.percentage / 100),
+  }));
+};
 
-const dedupeOrdersById = (items: Order[]) => {
+// Same `dd/mm/yy hh:mm` shape as before, rendered in the RESTAURANT's zone.
+const formatOrderedAt = (isoOrString: string | null | undefined, timeZone: string): string => {
+  if (!isoOrString) { return ""; }
+  return formatDateTime(isoOrString, timeZone, isoOrString);
+};
+
+const dedupeOrdersById = (items: Order[]): Order[] => {
   const seen = new Map<string, Order>();
   for (const item of items) {
     seen.set(item.id, item);
@@ -480,93 +234,131 @@ const dedupeOrdersById = (items: Order[]) => {
 
 const PRINT_BILL_STORAGE_PREFIX = "restaurant-dashboard:print-order:";
 
-const createPrintBillStorageKey = () => `${PRINT_BILL_STORAGE_PREFIX}${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
+const createPrintBillStorageKey = (): string => `${PRINT_BILL_STORAGE_PREFIX}${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
 
-const storePrintBillPayload = (order: Order) => {
+const storePrintBillPayload = (order: Record<string, unknown>): string => {
   const storageKey = createPrintBillStorageKey();
   localStorage.setItem(storageKey, JSON.stringify(order));
   return storageKey;
 };
 
-// Entry point: a locked, full-screen kitchen display when the URL asks for one
-// (?station=<Section>&kiosk=1), otherwise the normal Orders dashboard. Keeping
-// this as a thin wrapper means the full dashboard tree only ever mounts in the
-// non-kiosk case, so the existing page stays byte-for-byte unchanged.
-export default function OrdersPage() {
+/** A held course waiting to be fired (shared with the Update Order editor). */
+const isItemHeld = (item: OrderItem): boolean => item.course_hold === true && !item.fired_at;
+
+const StationBadge = ({ station }: { station?: string | null }): React.JSX.Element | null =>
+  station ? (
+    <Badge variant="outline" className="px-1.5 py-0 text-[10px] uppercase tracking-wide">
+      {station}
+    </Badge>
+  ) : null;
+
+/** Everything the support fetch decorates the page with; each part degrades alone. */
+interface OrdersSupportData {
+  menuItems: MenuItem[];
+  variations: MenuVariationRecord[];
+  tables: FloorTable[];
+  defaultTax: Record<string, number> | null;
+  apc: MonthlyApcInsight | null;
+}
+
+/** A styled confirmation — the app's dialog pattern where window.confirm() sat. */
+interface ConfirmActionRequest {
+  title: string;
+  description: React.ReactNode;
+  confirmLabel: string;
+  destructive?: boolean;
+  /** Runs on confirm. It must catch its own errors (each handler toasts). */
+  run: () => Promise<void>;
+}
+
+// Entry point. The old kiosk URL (?station=X&kiosk=1) belongs to the Kitchen
+// module now — a wall screen bookmarked on this page is sent there rather than
+// broken.
+export default function OrdersPage(): React.JSX.Element {
   const searchParams = useSearchParams();
+  const router = useRouter();
   const station = searchParams.get("station")?.trim() ?? "";
   const kiosk = (searchParams.get("kiosk")?.trim() ?? "").toLowerCase();
   const kioskMode = station.length > 0 && (kiosk === "1" || kiosk === "true" || kiosk === "yes");
+  useEffect(() => {
+    if (kioskMode) {
+      router.replace(`/dashboard/kitchen?station=${encodeURIComponent(station)}`);
+    }
+  }, [kioskMode, station, router]);
   if (kioskMode) {
-    return <KitchenKioskDisplay station={station} />;
+    return (
+      <div className="p-6 text-sm text-muted-foreground">
+        The kitchen board lives in the Kitchen module now — taking you there…
+      </div>
+    );
   }
   return <OrdersDashboard />;
 }
 
-function OrdersDashboard() {
+function OrdersDashboard(): React.JSX.Element {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { currencySymbol } = useCurrency();
   const { user } = useAuth();
-  // The modes a bill may be settled with at this till: the owner's config, on
-  // and not the online gateway. Defaults until (and if) the read answers.
+  const rid = user?.restaurantUsername ?? "";
+  // The modes a bill may be settled with at this till: the owner's config.
   const { methods: paymentMethods } = usePaymentMethods(user?.restaurantUsername);
-  const tillOptions = useMemo(() => tillPaymentOptions(paymentMethods), [paymentMethods]);
   const { toast } = useToast();
-  // Every instant on this screen renders in the restaurant's zone, not the browser's.
+  // Every instant on this screen renders in the restaurant's zone.
   const { timezone } = useTimezone();
-  // The restaurant's current calendar day, used to decide whether a row's
-  // "Placed" cell needs a date next to the clock.
-  const todayKey = todayInZone(timezone);
-  const hasRole = (role: "admin" | "employee" | "valet" | "waiter" | "cashier" | "captain" | "manager") => {
-    if (!user) {return false;}
-    if (user.role === role) {return true;}
+  const nav = useVisibleNav();
+
+  const hasRole = (role: "admin" | "employee" | "valet" | "waiter" | "cashier" | "captain" | "manager"): boolean => {
+    if (!user) { return false; }
+    if (user.role === role) { return true; }
     return Array.isArray(user.role_all) ? user.role_all.includes(role) : false;
   };
   const isAdmin = hasRole("admin");
-  /*
-    THE SERVER DECIDES WHO IS A SCOPED WAITER. See src/lib/session-scope.ts.
-
-    This read `hasRole("waiter") && !isAdmin`, a test on the SPELLING of a role:
-    a waiter granted any custom role carries that role's UUID in `role_all`, the
-    test flipped, and this screen handed them every control on it.
-  */
+  // THE SERVER DECIDES WHO IS A SCOPED WAITER (src/lib/session-scope.ts).
   const isWaiterOnly = sessionIsWaiterOnly(user);
-  /*
-    C2 — SETTLING A BILL IS A PERMISSION, NOT THE WORD "admin".
-
-    Both settle steps are gated server-side: POST /bills/order/:id/close on
-    "Close Bill" and .../admin-approve-payment on "Approve Payment". Asking
-    `hasRole('admin')` here was wrong in BOTH directions — it refused a manager
-    or cashier the tenant had deliberately granted the permission (C2 asks for
-    exactly those people to be able to settle), and it offered the control to an
-    admin-by-name whose action set the server would still have checked. Ask the
-    resolved action list, which is the same list the route checks.
-  */
+  // C2 — settling a bill is a PERMISSION, not the word "admin".
   const canSettleBill = can(user, "settle_bill");
   const canVoidOrder = can(user, "void_order");
-  /*
-    MAY THIS SESSION PERFORM ANY OF THE THREE RECORDED CONTROL ACTS?
-
-    Three answers from the server's own `scope` block, ORed — not a role test.
-    It decides whether a scoped waiter is offered the Controls menu at all:
-    holding none of them, the menu has nothing in it they may do and C1 asks for
-    it to be gone rather than greyed; holding one, the server has said yes and
-    this screen has no business saying otherwise. Everyone else keeps the menu
-    unconditionally, because it also carries the two tender/till acts, which ride
-    on a different permission the component asks about itself.
-  */
+  // May this session perform ANY of the three recorded control acts?
   const canAnyControlAct = canVoidOrder || can(user, "comp_item") || can(user, "waive_service_charge");
-  // No capability flag for the hard delete yet, so this still reads the SERVER's
-  // resolved action list for the uuid DELETE /orders/:id is gated on. Same list,
-  // one hop less direct; it should move into the `scope` block when the backend
-  // publishes an answer for it.
-  const canDeleteOrder = hasPermission(user?.actions_set, PERM_ORDER_DELETE);
-  // Same gate as the header's OutletSwitcher: only these roles may target another
-  // outlet, so only they are offered the "switch outlet" actions.
+  // Same gate as the header's OutletSwitcher.
   const canSwitchOutlet = isAdmin || hasRole("manager");
+  // "Add Orders" — the permission the everyday order writes ride on. It gates
+  // the Update Order editor and the takeaway pad the way Flutter's server does,
+  // instead of the old hard `isAdmin` test (parity finding 16).
+  const mayAddOrder = hasPermission(user?.actions_set, PERM_ORDER_ADD);
+  const canBark = canBarkFromBoard(user);
+  const moneyShows = showsMoney(user);
 
-  const showRoleRequiredToast = (requiredRole: string) => {
+  // "₹840.00" for sessions that see money, "" for a scoped waiter (C4: the
+  // figure is GONE, not blanked).
+  const money = useCallback(
+    (v: unknown): string => visibleMoneyText(currencySymbol, visibleAmount(user, v)) ?? "",
+    [currencySymbol, user],
+  );
+
+  // "Jun 26, 14:05" in the restaurant's zone — Flutter's RestaurantTime.short.
+  const placedShort = useCallback((iso: string | null | undefined): string => {
+    const raw = (iso ?? "").trim();
+    if (!raw) { return ""; }
+    const d = new Date(raw);
+    if (Number.isNaN(d.getTime())) { return ""; }
+    try {
+      const day = new Intl.DateTimeFormat("en-US", { timeZone: timezone, month: "short", day: "numeric" }).format(d);
+      const clock = new Intl.DateTimeFormat("en-GB", { timeZone: timezone, hour: "2-digit", minute: "2-digit", hour12: false }).format(d);
+      return `${day}, ${clock}`;
+    } catch {
+      return "";
+    }
+  }, [timezone]);
+
+  const actorName =
+    user?.employeeUsername
+    || `${user?.emp_Fname ?? ""} ${user?.emp_Lname ?? ""}`.trim()
+    || user?.employeeId
+    || "";
+
+  const showRoleRequiredToast = (requiredRole: string): void => {
     toast({
       title: "Access denied",
       description: `You do not have the required role for this action. Required role: ${requiredRole}.`,
@@ -574,12 +366,8 @@ function OrdersDashboard() {
     });
   };
 
-  /*
-    The refusal an owner can ACT on. A toast naming a role sends them looking for
-    a switch that does not exist; naming the permission names the checkbox in
-    Employees -> Role Access Control that turns it on.
-  */
-  const showPermissionRequiredToast = (permissionName: string) => {
+  // The refusal an owner can ACT on: name the permission, not a role.
+  const showPermissionRequiredToast = (permissionName: string): void => {
     toast({
       title: "Access denied",
       description: `This action needs the “${permissionName}” permission. An admin can grant it from Role Access Control.`,
@@ -587,132 +375,107 @@ function OrdersDashboard() {
     });
   };
 
-  const runAdminAction = (action: () => void) => {
-    if (!isAdmin) {
-      showRoleRequiredToast("admin");
-      return;
-    }
-    action();
-  };
+  /* ── Data: the grid (orders + scope) rides useCachedFetch ─────────────── */
 
-  const [orders, setOrders] = useState<Order[]>([]);
-  // A2 — the order the Delete confirmation is currently about. Null = closed.
-  const [deleteTarget, setDeleteTarget] = useState<Order | null>(null);
-  /*
-    D1 + D2 — THE SERVER OWNS THE DURATION; THIS PAGE OWNS ONLY THE TICK.
+  const bundle = useCachedFetch<OrdersBundle>(
+    `orders:${rid}`,
+    () => fetchOrdersBundle(rid),
+    { pollMs: 30_000, enabled: rid !== "" },
+  );
+  const refreshOrders = bundle.refresh;
 
-    WHAT THIS USED TO BE. `Date.now() - created_at`, once per second, in the
-    browser. The owner app did its own version of the same subtraction. That is
-    one rule implemented twice, and the backend built `service_clock.ts` and
-    wired it into three reads precisely so the two could not drift apart in front
-    of the same manager — a field this screen then ignored.
+  // Decoration for a working grid: the menu (order forms), sizes, tables (the
+  // selector, CFD tokens and the C3 print ledger), default tax and the APC
+  // insight. Each part degrades alone; none may fail the page.
+  const fetchSupport = useCallback(async (): Promise<OrdersSupportData> => {
+    const [menuR, varR, tableR, taxR, apcR] = await Promise.allSettled([
+      getMenuItems(rid),
+      getMenuVariations(rid),
+      getTables(rid),
+      getOutletDefaultTax(rid),
+      getMonthlyApcInsight(rid),
+    ]);
+    return {
+      menuItems: menuR.status === "fulfilled" && Array.isArray(menuR.value) ? menuR.value : [],
+      variations: varR.status === "fulfilled" ? varR.value : [],
+      tables: tableR.status === "fulfilled" && Array.isArray(tableR.value) ? tableR.value : [],
+      defaultTax: taxR.status === "fulfilled" ? taxR.value : null,
+      apc: apcR.status === "fulfilled" ? apcR.value : null,
+    };
+  }, [rid]);
+  const support = useCachedFetch<OrdersSupportData>(`orders-support:${rid}`, fetchSupport, { enabled: rid !== "" });
+  const refreshSupport = support.refresh;
 
-    AND IT WAS WRONG ON ITS OWN TERMS, because A TILL'S WALL CLOCK IS NOT
-    EVIDENCE. A Windows laptop ten minutes fast rendered every ticket as ten
-    minutes late the instant it landed; one ten minutes slow hid a table that
-    really was. The server now measures the duration against its OWN clock and
-    ships it with `as_of`, the instant it measured at.
+  // Pending staff discounts (admin approval queue) — kept per finding 35.
+  const discounts = useCachedFetch<DiscountRequest[]>(
+    `orders-discounts:${rid}`,
+    () => getDiscountRequests(rid),
+    { pollMs: 60_000, enabled: rid !== "" && isAdmin },
+  );
+  const refreshDiscounts = discounts.refresh;
 
-    SO THE ONLY THING MEASURED HERE IS HOW LONG THIS DEVICE HAS HELD THE
-    RESPONSE — `clockTickMs`, a difference between two readings of one local
-    timer, which is unaffected by that timer being wrong. Add it to the server's
-    figure and the clock ticks smoothly between polls without importing a single
-    bit of this machine's opinion about what time it is.
+  const menuItems = useMemo(() => support.data?.menuItems ?? [], [support.data]);
+  const tables = useMemo(() => support.data?.tables ?? [], [support.data]);
+  const monthlyApcInsight = support.data?.apc ?? null;
+  const ordersScope = bundle.data?.scope ?? null;
 
-    RESET ON `as_of`, NOT ON THE ARRAY. The local delta is zeroed when the SERVER
-    re-measured, which is exactly `as_of` advancing. Zeroing it whenever `orders`
-    changes identity would rewind every visible duration by however long it had
-    been ticking each time an optimistic edit replaced the array — on the one row
-    the user had just touched.
+  // The owner can retune the default tax without waiting for a refetch.
+  const [defaultTaxOverride, setDefaultTaxOverride] = useState<Record<string, number> | null | undefined>(undefined);
+  const defaultTax = defaultTaxOverride === undefined ? (support.data?.defaultTax ?? null) : defaultTaxOverride;
 
-    One interval rather than one per row: a busy service is fifty rows, and fifty
-    independent timers is fifty React re-render cascades a second on the laptop
-    that is also driving the floor.
-  */
-  const [clockTickMs, setClockTickMs] = useState(0);
-  const clockOriginRef = useRef<{ asOf: number; at: number }>({ asOf: 0, at: monotonicNow() });
-  const ordersAsOfMs = useMemo(() => latestAsOfMs(orders), [orders]);
+  /* ── Realtime: the socket nudges the same silent refresh the poll uses ── */
+
   useEffect(() => {
-    if (ordersAsOfMs > clockOriginRef.current.asOf) {
-      clockOriginRef.current = { asOf: ordersAsOfMs, at: monotonicNow() };
-      setClockTickMs(0);
-    }
-  }, [ordersAsOfMs]);
+    const handler = (e: Event): void => {
+      const detail = (e as CustomEvent<{ event?: string } | undefined>).detail;
+      const name = detail?.event ?? "";
+      if (name === "order:updated" || name === "bill:updated") {
+        refreshOrders();
+        if (isAdmin) { refreshDiscounts(); }
+      }
+      if (name === "table:added" || name === "table:deleted" || name === "table:updated") {
+        refreshSupport();
+      }
+    };
+    window.addEventListener("realtime:event", handler);
+    return () => { window.removeEventListener("realtime:event", handler); };
+  }, [refreshOrders, refreshSupport, refreshDiscounts, isAdmin]);
+
+  /* ── Deep-link focus (the notification banner, findings 25 & 10) ──────── */
+
+  const focus = useFocusRequest();
+  // The legacy ?highlightOrder= param is still appended by older links; it is
+  // folded into the same banner mechanism rather than kept as a fading ring.
+  const legacyHighlightId = searchParams.get("highlightOrder")?.trim() ?? "";
+  const focusId = focus?.idOf(["order_id"]) ?? (legacyHighlightId === "" ? null : legacyHighlightId);
+  const focusTable = focus?.tableName ?? null;
+  const focusRequested = focusId !== null || focusTable !== null;
+
+  // The param arriving is the refetch signal — the record may just have landed.
+  const focusSerial = focus?.serial ?? legacyHighlightId;
   useEffect(() => {
-    const id = setInterval(() => {
-      setClockTickMs(Math.max(0, monotonicNow() - clockOriginRef.current.at));
-    }, 1000);
-    return () => { clearInterval(id); };
-  }, []);
-  // Which outlet this grid is scoped to + how many live orders sit on the others.
-  // Drives OrdersScopeNotice so an empty grid always explains itself.
-  const [ordersScope, setOrdersScope] = useState<OrdersScope | null>(null);
-  const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
-  // Migration 039 — the ACTIVE sizes of every dish, keyed by menu id, so the
-  // order form can offer them. A tenant that has configured none gets an empty
-  // map, no picker anywhere, and an order payload byte-identical to before.
-  const [variations, setVariations] = useState<MenuVariationRecord[]>([]);
-  /*
-    C3 — `bill_print` RIDES ALONG, AND IT IS WHY THIS LIST IS READ AT ALL HERE.
+    if (focusSerial !== "") { refreshOrders(); }
+  }, [focusSerial, refreshOrders]);
 
-    The /get-tables row carries `print_count` / `bill_printed_at` / `printed_at`
-    for the CURRENT seating (the backend's `bill_print_state.ts` puts them on the
-    table list as well as on /bill-for-table precisely so a client needs no
-    second read and no per-device memory). `mapTable` lifts them through
-    verbatim, so this list — which this page already loaded for the table
-    selector — is also the answer to "has this table's bill been printed", for
-    every table on the floor, off one poll.
-  */
-  const [tables, setTables] = useState<{ id: number; name: string; capacity: number; qr_token?: string | null; bill_print?: BillPrintState | null }[]>([]);
-  const [monthlyApcInsight, setMonthlyApcInsight] = useState<MonthlyApcInsight | null>(null);
-  const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
-  const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
-  const [isDetailsOpen, setIsDetailsOpen] = useState(false);
-  const [isViewOpen, setIsViewOpen] = useState(false);
-  const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
-  const [highlightedOrderId, setHighlightedOrderId] = useState<string | null>(null);
-  const [defaultTax, setDefaultTax] = useState<Record<string, number> | null>(null);
-  const [isDefaultTaxDialogOpen, setIsDefaultTaxDialogOpen] = useState(false);
-  const [isProofPreviewOpen, setIsProofPreviewOpen] = useState(false);
-  const [proofPreviewUrl, setProofPreviewUrl] = useState<string | null>(null);
-  // Pending staff discount requests (admin approval queue).
-  const [discountRequests, setDiscountRequests] = useState<DiscountRequest[]>([]);
-  // Split-tender dialog: the order being settled + its bill total + the rows.
-  const [splitPayOrder, setSplitPayOrder] = useState<Order | null>(null);
-  const [splitPayTotal, setSplitPayTotal] = useState<number | null>(null);
-  const [splitRows, setSplitRows] = useState<{ method: string; amount: string }[]>([]);
-  const [splitBusy, setSplitBusy] = useState(false);
-  const selectedTableName = searchParams.get("table")?.trim() ?? "";
-  // Deep-link a kitchen display to one section (?station=Tandoor) so a physical
-  // kitchen screen can be locked to its own section.
-  const stationParam = searchParams.get("station")?.trim() ?? "";
-  // Managed kitchen sections (from settings) — drive the KDS filter chips even
-  // before any ticket carries the station.
-  const [kitchenSections, setKitchenSections] = useState<string[]>([]);
-  useEffect(() => {
-    if (!user) {return;}
-    let cancelled = false;
-    void getKitchenSections(user.restaurantUsername).then((s) => {
-      if (!cancelled) {setKitchenSections(s);}
-    });
-    return () => { cancelled = true; };
-  }, [user]);
-  const selectedTable = useMemo(() => {
-    if (!selectedTableName) {return null;}
-    return tables.find((table) => table.name.toLowerCase() === selectedTableName.toLowerCase()) ?? null;
-  }, [selectedTableName, tables]);
+  const isFocused = useCallback((o: Order): boolean => {
+    if (focusId !== null) { return o.id === focusId; }
+    if (focusTable !== null) { return o.table === focusTable; }
+    return false;
+  }, [focusId, focusTable]);
 
-  const displayOrders = useMemo(() => dedupeOrdersById(orders), [orders]);
+  const dismissFocus = useCallback((): void => {
+    if (focus) { focus.dismiss(); return; }
+    const next = new URLSearchParams(searchParams.toString());
+    next.delete("highlightOrder");
+    const qs = next.toString();
+    router.replace(qs ? `/dashboard/orders?${qs}` : "/dashboard/orders", { scroll: false });
+  }, [focus, searchParams, router]);
 
-  /*
-    C3 — THE SERVER'S PRINT LEDGER, KEYED THE WAY EVERY TABLE IS LOOKED UP.
+  /* ── The list the grid draws ──────────────────────────────────────────── */
 
-    One map off the table list, so no row rendering has to go hunting through an
-    array of forty tables. `null` in here is a table whose row carried NONE of
-    the print-state keys — a backend older than the fields — which is NOT the
-    same as "not printed"; `serverSaysBillPrinted` is what resolves that to the
-    safe answer, in one place, rather than every call site picking a default.
-  */
+  const rawOrders = useMemo(() => dedupeOrdersById(bundle.data?.orders ?? []), [bundle.data]);
+
+  // C3 — the server's print ledger, keyed the way every table is looked up.
   const billPrintByTable = useMemo(() => {
     const map = new Map<string, BillPrintState | null>();
     for (const table of tables) {
@@ -721,374 +484,276 @@ function OrdersDashboard() {
     return map;
   }, [tables]);
 
-  /*
-    WHAT THIS SESSION MAY DO ABOUT ONE ORDER'S BILL. One object per row, asked by
-    the button AND by the "clear from their view" filter below, so the control
-    and the list cannot end up answering two slightly different questions — the
-    reason the Flutter app has a single `BillPrintScope` rather than two role
-    tests at two call sites.
-
-    For every identity that is not waiter-only this is `{ print: true,
-    reprintNeedsSenior: false, retiresTable: false }` whatever the ledger says:
-    C3 narrows a waiter's reprint, it does not put a new ceiling on the people
-    who run the floor.
-  */
+  // What this session may do about one table's bill (print / reprint / retire).
   const printScopeForTable = useCallback(
     (tableName: string) =>
       billPrintScope(user, serverSaysBillPrinted(billPrintByTable.get((tableName || "").toLowerCase()) ?? null)),
     [user, billPrintByTable],
   );
 
-  /*
-    C3's SECOND HALF — "the table should clear/reset from their view".
-
-    READ AS EXACTLY WHAT IT SAYS: THEIR VIEW. Nothing is written. The table stays
-    occupied, the bill stays owing, and it is still on every manager's screen and
-    on the floor plan; what changes is that this waiter's orders list no longer
-    carries it, because for them the job at that table is finished and a manager
-    settles it. It CANNOT mean more than that: C2 forbids this same waiter from
-    settling, so "clear the table" would be asking the requirement to contradict
-    itself.
-
-    THE KITCHEN DISPLAY IS DELIBERATELY NOT FILTERED (it still renders
-    `displayOrders`). The pass is not anybody's view of the floor — food still
-    has to be cooked and called for a table whose bill has been printed, and
-    dropping a live ticket off the kitchen screen to enforce a rule about a
-    waiter's reprint would be the most expensive possible reading of C3.
-  */
-  const visibleOrders = useMemo(
-    () => displayOrders.filter((order) => !printScopeForTable(order.table).retiresTable),
-    [displayOrders, printScopeForTable],
+  // C3's second half — a printed table clears from a WAITER's list (their job
+  // there is done; a manager settles it). Nothing is written; managers keep it.
+  const sessionOrders = useMemo(
+    () => rawOrders.filter((order) => !printScopeForTable(order.table).retiresTable),
+    [rawOrders, printScopeForTable],
   );
-  // ACTIVE sizes only, grouped by dish. A retired size must never be offerable
-  // again — it stays resolvable on every order line that already named it, which
-  // is a different question from whether it can be sold today.
-  const variationsByMenuId = useMemo(() => {
-    const map = new Map<string, MenuVariationRecord[]>();
-    for (const v of variations) {
-      if (!v.active) {continue;}
-      const list = map.get(v.menu_id);
-      if (list) {list.push(v);} else {map.set(v.menu_id, [v]);}
-    }
-    for (const list of map.values()) {list.sort((a, b) => a.sort_order - b.sort_order || a.price - b.price);}
-    return map;
-  }, [variations]);
 
-  // A discount-approval notification resolves to entity type `discount_request`,
-  // which lands on this page too — so it gets the same focus treatment as an order.
-  const requestHighlight = useHighlightRow("highlightRequest", discountRequests.length);
+  // The 24h live window: settled tickets age off (hidden, never deleted — the
+  // note below the grid counts them); unpaid and focused tickets never do.
+  const liveOrders = useMemo(
+    () => sessionOrders.filter((o) => !orderAgedOut(o, isFocused(o))),
+    [sessionOrders, isFocused],
+  );
+  const hiddenCount = sessionOrders.length - liveOrders.length;
+
+  // Focused first, then Pending (awaiting approval), then strictly newest.
+  const sorted = useMemo(() => sortLiveOrders(liveOrders, isFocused), [liveOrders, isFocused]);
+
+  // Grouped in the order the owner works them; an empty section collapses away.
+  const grouped = useMemo(() => {
+    const g: [Order[], Order[], Order[]] = [[], [], []];
+    for (const o of sorted) { g[orderSection(o.status)].push(o); }
+    return g;
+  }, [sorted]);
+
+  const focusFound = focusRequested && sessionOrders.some(isFocused);
+  const focusedOrder = focusFound ? sorted.find(isFocused) ?? null : null;
+  const focusedTableName = focusedOrder?.table ?? "";
+  const canOpenTables = nav.labels.includes("Tables");
+  const historyModule = nav.modules.find((m) => m.label === "History") ?? null;
+  const canOpenHistory = historyModule !== null;
+  const openHistory = useCallback((): void => {
+    if (historyModule) { router.push(historyModule.href); }
+  }, [historyModule, router]);
+
+  // Land the eye on the focused card once it is on screen.
+  useEffect(() => {
+    if (!focusFound || focusId === null) { return; }
+    const el = document.getElementById(`order-card-${focusId}`);
+    if (el) {
+      try { el.scrollIntoView({ behavior: "smooth", block: "center" }); } catch { /* ignore */ }
+    }
+  }, [focusFound, focusId]);
+
+  // A discount-approval notification lands here too (entity `discount_request`).
+  const requestHighlight = useHighlightRow("highlightRequest", discounts.data?.length ?? 0);
 
   const orderApcByOrderId = useMemo(() => {
     const map = new Map<string, MonthlyApcInsight["orders"][number]>();
     for (const item of monthlyApcInsight?.orders ?? []) {
-      map.set(String(item.order_id), item);
+      map.set(item.order_id, item);
     }
     return map;
   }, [monthlyApcInsight]);
 
-  const tableApcSummaries = useMemo(() => {
-    const summaryByTable = new Map<string, { table: string; revenue: number; covers: number; orders: number }>();
+  /* ── Sheet / dialog state ─────────────────────────────────────────────── */
 
-    for (const item of monthlyApcInsight?.orders ?? []) {
-      const tableName = item.table_name?.trim() || "Unassigned";
-      const current = summaryByTable.get(tableName) ?? {
-        table: tableName,
-        revenue: 0,
-        covers: 0,
-        orders: 0,
-      };
+  const [openOrderId, setOpenOrderId] = useState<string | null>(null);
+  // Read fresh off the refreshed list so the open sheet tracks every write.
+  const openOrder = useMemo(
+    () => (openOrderId === null ? null : sessionOrders.find((o) => o.id === openOrderId) ?? null),
+    [openOrderId, sessionOrders],
+  );
+  const [stageOrderId, setStageOrderId] = useState<string | null>(null);
+  const stageOrder = useMemo(
+    () => (stageOrderId === null ? null : sessionOrders.find((o) => o.id === stageOrderId) ?? null),
+    [stageOrderId, sessionOrders],
+  );
+  const [cancelReq, setCancelReq] = useState<{ orderId: string; pending: boolean; route: CancelRoute } | null>(null);
+  const cancelOrderRow = useMemo(
+    () => (cancelReq === null ? null : sessionOrders.find((o) => o.id === cancelReq.orderId) ?? null),
+    [cancelReq, sessionOrders],
+  );
+  const [busyOrderId, setBusyOrderId] = useState<string | null>(null);
+  const [channelOpen, setChannelOpen] = useState(false);
+  const [padRequest, setPadRequest] = useState<OrderPadRequest | null>(null);
+  const [confirmAction, setConfirmAction] = useState<ConfirmActionRequest | null>(null);
+  const [proofPreviewUrl, setProofPreviewUrl] = useState<string | null>(null);
+  const [updateOrderTarget, setUpdateOrderTarget] = useState<Order | null>(null);
+  const [editBillTarget, setEditBillTarget] = useState<Order | null>(null);
+  const [isDefaultTaxDialogOpen, setIsDefaultTaxDialogOpen] = useState(false);
+  // The payment sheet (settle) and the comp sheet, per order.
+  const [settleTarget, setSettleTarget] = useState<Order | null>(null);
+  const [compTarget, setCompTarget] = useState<Order | null>(null);
 
-      const covers = Number(item.people_count ?? 1);
-      current.revenue += Number(item.total ?? 0);
-      current.covers += Number.isFinite(covers) && covers > 0 ? covers : 1;
-      current.orders += 1;
-      summaryByTable.set(tableName, current);
+  const selectedTableName = searchParams.get("table")?.trim() ?? "";
+  const selectedTable = useMemo(() => {
+    if (!selectedTableName) { return null; }
+    return tables.find((table) => table.name.toLowerCase() === selectedTableName.toLowerCase()) ?? null;
+  }, [selectedTableName, tables]);
+
+  // The ?table= deep link opens the order pad for that table — never when the
+  // Tables page opened it to PREVIEW (`preview=1`) or a focus/highlight rides.
+  // `addToPrinted=1` is the table sheet's confirmed "Add to printed bill"; a
+  // table that is not occupied yet is seated BY the send (covers asked then).
+  const deepLinkPad = useMemo<OrderPadRequest | null>(() => {
+    const highlightParam = searchParams.get("highlightOrder")?.trim() ?? "";
+    const focusParam = searchParams.get("focus")?.trim() ?? "";
+    const previewParam = searchParams.get("preview")?.trim() ?? "";
+    if (!selectedTableName || highlightParam || focusParam || previewParam) { return null; }
+    return {
+      kind: "dine",
+      table: selectedTable?.name ?? selectedTableName,
+      occupyOnSend: selectedTable !== null && selectedTable.status !== "Occupied",
+      addToPrintedBill: searchParams.get("addToPrinted") === "1",
+    };
+  }, [selectedTableName, selectedTable, searchParams]);
+  const deepLinkKey = deepLinkPad === null ? "" : `${deepLinkPad.kind}:${searchParams.toString()}`;
+  const [dismissedDeepLink, setDismissedDeepLink] = useState("");
+  const supportReady = support.data !== null;
+  useEffect(() => {
+    if (deepLinkPad !== null && deepLinkKey !== dismissedDeepLink && supportReady) {
+      setPadRequest(deepLinkPad);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- open once per deep link, after tables load
+  }, [deepLinkKey, supportReady]);
+  const closePad = (): void => {
+    setPadRequest(null);
+    if (deepLinkKey !== "") {
+      setDismissedDeepLink(deepLinkKey);
+      router.replace("/dashboard/orders");
+    }
+  };
 
-    return Array.from(summaryByTable.values())
-      .map((item) => ({
-        ...item,
-        apc: item.covers > 0 ? item.revenue / item.covers : 0,
-      }))
-      .sort((left, right) => right.revenue - left.revenue);
-  }, [monthlyApcInsight]);
+  /* ── Write handlers ───────────────────────────────────────────────────── */
 
-  useEffect(() => {
-    // Only open the Add Order dialog when a table param is present and
-    // no highlightOrder parameter is provided (View Order should not open add dialog).
-    // 1.8 — nor when the Tables page opened the table to PREVIEW it (`preview=1`):
-    // the preview card carries its own Add Order, and a dialog over it would hide
-    // the very KOT list the table was opened to look at.
-    const highlightParam = searchParams.get('highlightOrder')?.trim() ?? '';
-    const previewParam = searchParams.get('preview')?.trim() ?? '';
-    setIsAddDialogOpen(Boolean(selectedTableName) && !highlightParam && !previewParam);
-  }, [selectedTableName, searchParams]);
+  const serverWords = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
-  useEffect(() => {
-    if (!user?.restaurantUsername) {
+  // Bark: the toast reads the SERVER's own KOT print report (finding 28) — a
+  // dead printer is said out loud, never a silent tick.
+  const handleBark = async (order: Order): Promise<void> => {
+    if (rid === "") { return; }
+    setBusyOrderId(order.id);
+    try {
+      const resp = await barkOrderDetailed(rid, order.id);
+      toast({ title: barkOutcomeMessage(resp) ?? "Sent to the kitchen." });
+      refreshOrders();
+    } catch (err) {
+      toast({ title: "Unable to bark order", description: serverWords(err), variant: "destructive" });
+    } finally {
+      setBusyOrderId(null);
+    }
+  };
+
+  // Approve a Pending (guest QR / queue) ticket: PATCH → Preparing.
+  const handleApprovePending = async (order: Order): Promise<void> => {
+    if (rid === "") { return; }
+    setBusyOrderId(order.id);
+    try {
+      await advanceOrderStatus(rid, order.id, "Preparing");
+      refreshOrders();
+    } catch (err) {
+      toast({ title: "Unable to approve order", description: serverWords(err), variant: "destructive" });
+    } finally {
+      setBusyOrderId(null);
+    }
+  };
+
+  // Every cancel is prompted for a reason; the ROUTE depends on what this
+  // session holds (`cancelKotRoute` — Flutter's `_mayCancelKot` two-route
+  // rule). A Pending decline is everybody's; a ticketed cancel without the
+  // permission gets the server's senior sentence and nothing is sent.
+  const requestCancel = (order: Order, pending: boolean): void => {
+    const route: CancelRoute | null = pending
+      ? (canVoidOrder ? "void" : "status")
+      : cancelKotRoute(user, order.status);
+    if (route === null) {
+      toast({ title: "Cancel needs a senior", description: cancelNeedsSeniorSentence(order.kot_nos ?? []) });
+      return;
+    }
+    setCancelReq({ orderId: order.id, pending, route });
+  };
+
+  // The unified stage picker (finding 15) — the only stage walk on this page.
+  const openChangeStage = (order: Order): void => {
+    const cur = order.status.toLowerCase();
+    if (cur === "paid" || cur === "closed") {
+      // A settled bill is view-once: its order status is locked.
+      toast({ title: SETTLED_LOCKED_NOTE });
+      return;
+    }
+    setStageOrderId(order.id);
+  };
+
+  const handleStagePick = async (stage: string): Promise<void> => {
+    const order = stageOrder;
+    if (!order || rid === "") { return; }
+    setStageOrderId(null);
+    if (stage === order.status) { return; }
+    if (stage === "Cancelled") {
+      requestCancel(order, orderIsPending(order.status));
+      return;
+    }
+    setBusyOrderId(order.id);
+    try {
+      if (stage === "Barked") {
+        const resp = await barkOrderDetailed(rid, order.id);
+        toast({ title: barkOutcomeMessage(resp) ?? "Sent to the kitchen." });
+      } else {
+        await advanceOrderStatus(rid, order.id, stage);
+      }
+      refreshOrders();
+    } catch (err) {
+      toast({ title: "Unable to update that order", description: serverWords(err), variant: "destructive" });
+    } finally {
+      setBusyOrderId(null);
+    }
+  };
+
+  // "Table bill · APC" — the shared table-bill surface, exactly where Flutter's
+  // sheet action lands. The preview opens at the top of this same page.
+  const openTableBill = (order: Order): void => {
+    setOpenOrderId(null);
+    router.push(`/dashboard/orders?table=${encodeURIComponent(order.table)}&preview=1`);
+  };
+
+  /*
+    PRINT BILL PREVIEWS FIRST AND CLAIMS ONLY ON PRINT (bill-preview.md 1-3).
+    The preview is the in-place BillPreviewDialog the Tables sheet uses: it
+    only READS the bill, and POST /print/bill (the thermal print and its
+    ledger) runs when Print is pressed, so Cancel costs a waiter nothing. A
+    waiter-only session skips the priced preview (item 19) and confirms
+    without money. The server refuses a waiter's second print itself.
+  */
+  const [printPreviewTable, setPrintPreviewTable] = useState<string | null>(null);
+
+  const printTableBillNow = async (tableName: string): Promise<boolean> => {
+    if (!rid) { return false; }
+    try {
+      const { nextParty } = await printTableBill(rid, tableName);
+      toast({ title: nextParty.message !== null ? `Printing bill… ${nextParty.message}` : "Printing bill…" });
+      return true;
+    } catch (err: unknown) {
+      toast({ title: "Bill not printed", description: serverWords(err), variant: "destructive" });
+      return false;
+    } finally {
+      // Re-read the floor either way, so the button and the row follow the SERVER's ledger.
+      refreshSupport();
+      refreshOrders();
+    }
+  };
+
+  const triggerPrint = (order: Order): void => {
+    const tableName = (order.table || "").trim();
+    if (tableName !== "") {
+      if (isWaiterOnly) {
+        setConfirmAction({
+          title: `Print the bill for Table ${tableName}?`,
+          description: "The printed bill goes to the guest.",
+          confirmLabel: "Print",
+          run: async () => { await printTableBillNow(tableName); },
+        });
+      } else {
+        setPrintPreviewTable(tableName);
+      }
       return;
     }
 
-    let isActive = true;
-
-    const loadData = async () => {
-      try {
-        const [ordersData, menuData, apcInsight] = await Promise.all([
-          getOrders(user.restaurantUsername),
-          getMenuItems(user.restaurantUsername),
-          getMonthlyApcInsight(user.restaurantUsername),
-        ]);
-
-        if (!isActive) {
-          return;
-        }
-
-        setOrders(Array.isArray(ordersData) ? dedupeOrdersById(ordersData) : []);
-        setMenuItems(Array.isArray(menuData) ? menuData : []);
-        setMonthlyApcInsight(apcInsight ?? null);
-        // Sizes are decoration on a working order form and never a reason to fail
-        // the page: a tenant with none, or a backend without migration 039, both
-        // land on an empty list and the form behaves as it always has.
-        try {
-          const vs = await getMenuVariations(user.restaurantUsername);
-          if (isActive) {setVariations(vs);}
-        } catch {
-          if (isActive) {setVariations([]);}
-        }
-        // Scope context is decoration for a working grid but the whole
-        // explanation for an empty one — never let it fail the page load.
-        try {
-          const scope = await getOrdersScope(user.restaurantUsername);
-          if (isActive) {setOrdersScope(scope);}
-        } catch {
-          if (isActive) {setOrdersScope(null);}
-        }
-        try {
-          const dt = await getOutletDefaultTax(user.restaurantUsername);
-          setDefaultTax(dt ?? null);
-        } catch (e) {
-          console.warn('failed to load default tax', e);
-          setDefaultTax(null);
-        }
-        // load tables into cache for selector
-        try {
-          const t = await getTables(user.restaurantUsername);
-          setTables(Array.isArray(t) ? t : []);
-        } catch (e) {
-          console.warn('failed to load tables', e);
-          setTables([]);
-        }
-        // pending discount approvals (admin-only endpoint; harmless empty otherwise)
-        if (isAdmin) {
-          try {
-            const reqs = await getDiscountRequests(user.restaurantUsername);
-            if (isActive) {setDiscountRequests(reqs);}
-          } catch {
-            if (isActive) {setDiscountRequests([]);}
-          }
-        }
-      } catch (error) {
-        console.error("Failed to load orders", error);
-        if (!isActive) {
-          return;
-        }
-        setOrders([]);
-        setMenuItems([]);
-        setVariations([]);
-        setMonthlyApcInsight(null);
-      }
-    };
-
-    loadData();
-
-    return () => {
-      isActive = false;
-    };
-  }, [user]);
-
-    // Remembers which highlight ids we have already explained, so a realtime
-    // refresh (which changes displayOrders' identity) cannot re-toast the same
-    // "that order isn't here" message over and over.
-    const explainedMissingRef = React.useRef<Set<string>>(new Set());
-
-    // Highlight order if requested via query param
-    useEffect(() => {
-      const param = searchParams.get('highlightOrder')?.trim() ?? '';
-      if (!param) {return;}
-      setHighlightedOrderId(param);
-      // wait for DOM to render table rows
-      const timer = setTimeout(() => {
-        const el = document.getElementById(`order-row-${param}`);
-        if (el) {
-          try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
-          try { el.focus(); } catch {}
-          // remove highlight after a short delay
-          setTimeout(() => { setHighlightedOrderId(null); }, 3500);
-          return;
-        }
-        // The link named an order this grid cannot show (another outlet, or
-        // settled long enough ago that it has left the live window). Say so —
-        // silently landing on a list without the order is the original bug.
-        // Only complain once the first fetch has actually returned, and only once.
-        if (ordersScope && !explainedMissingRef.current.has(param)) {
-          explainedMissingRef.current.add(param);
-          const days = ordersScope.live_window_days;
-          toast({
-            title: "That order isn't in this list",
-            description: ordersScope.other_outlet_orders > 0
-              ? `It isn't in ${ordersScope.outlet.name || 'this outlet'}. Switch outlet (or view all outlets) to open it — settled orders older than ${days} days live in History.`
-              : `Settled orders older than ${days} days leave the live list — look for it in History or Reports.`,
-          });
-          setHighlightedOrderId(null);
-        }
-      }, 400);
-      return () => { clearTimeout(timer); };
-    }, [searchParams, displayOrders, ordersScope, toast]);
-
-  // Refresh tables when realtime table events occur
-  useEffect(() => {
-    const handler = (e: any) => {
-      try {
-        const detail = e?.detail as { event: string } | undefined;
-        if (!detail) {return;}
-        if (detail.event === 'table:added' || detail.event === 'table:deleted' || detail.event === 'table:updated') {
-          if (user?.restaurantUsername) {getTables(user.restaurantUsername).then(t => { setTables(Array.isArray(t) ? t : []); }).catch(() => {});}
-        }
-        // Keep the KDS/orders list live when items are fired or bills change.
-        if (detail.event === 'order:updated' || detail.event === 'bill:updated') {
-          if (user?.restaurantUsername) {getOrders(user.restaurantUsername).then(o => { setOrders(Array.isArray(o) ? dedupeOrdersById(o) : []); }).catch(() => {});}
-        }
-      } catch (err) {
-        // ignore
-      }
-    };
-    window.addEventListener('realtime:event', handler as EventListener);
-    return () => { window.removeEventListener('realtime:event', handler as EventListener); };
-  }, [user]);
-
-  /*
-    C3 — PRINT BILL NOW TELLS THE SERVER BEFORE IT OPENS ANY PAPER.
-
-    WHAT THIS REPLACES, AND WHY IT WAS THE WHOLE BUG. This handler used to stash
-    a payload in localStorage and open /dashboard/orders/print, which calls
-    window.print(). It never told the backend anything. So C3 — "a waiter may
-    execute Print Bill once" — was enforced on the thermal path (POST /print/bill
-    403s a waiter's second print, pinned by the backend's
-    print_once_authority.test.ts) and completely unenforced here: the same
-    waiter, at the same table, printed unlimited copies off the laptop. A
-    restriction with a hole that size is worse than none, because it is visible
-    and is therefore trusted.
-
-    THE CLAIM IS THE CONTROL AND IT GOES FIRST. Nothing is rendered until the
-    server has recorded the print, so a refusal cannot arrive after the guest is
-    holding paper. `claimBillPrint` refuses ONLY on an explicit 403 — a backend
-    that does not have the route yet (the web can ship a release ahead of the
-    API) answers `unavailable`, and the print proceeds, which is the direction
-    bill_print_state.ts itself chooses: a guest waiting with no way to get a bill
-    is a worse outage than a second copy of one.
-
-    AND THE SENTENCE IS THE SERVER'S, VERBATIM. The 403 body's `details` already
-    names who may reprint instead, built from `ROLES_OUTRANKING_WAITER` — a
-    server-side list a tenant's configuration can outlive. Writing our own
-    wording here would send the refused waiter to fetch the wrong person the
-    first time that list changes.
-  */
-  const triggerPrint = async (order: Order): Promise<void> => {
-    const restaurantId = user?.restaurantUsername;
-    const tableName = (order.table || "").trim();
-
-    /*
-      THE TAB IS CLAIMED SYNCHRONOUSLY, BEFORE THE AWAIT. THIS IS NOT A STYLE
-      CHOICE.
-
-      Every browser blocks a `window.open()` that is not in the same task as the
-      click that caused it, and the claim below is an `await`. Moving the open
-      after it would mean Print Bill silently did NOTHING on a default Chrome
-      during service — the worst possible way for this change to fail, because
-      the waiter would press it again, and again, burning a server-recorded
-      attempt every time.
-
-      So the tab is taken while the gesture is still live and left EMPTY. Nothing
-      is rendered in it until the claim has come back, which is the property that
-      actually matters: on a refusal it is closed and the server's sentence goes
-      in front of the person who pressed the button, and no bill is ever drawn.
-      A popup blocker that refused even this leaves `printWindow` null, and the
-      fallback open at the end is the old behaviour — worth having, because a
-      blocked print is still a table that cannot be billed.
-    */
-    const printWindow = typeof window !== "undefined" ? window.open("", "_blank") : null;
-    if (printWindow) {
-      // A word in the empty tab, so it does not read as a browser that hung.
-      // Wrapped because a hardened browser refusing to let us touch about:blank
-      // is not worth failing the print over.
-      try {
-        printWindow.document.title = "Preparing the bill…";
-        const note = printWindow.document.createElement("p");
-        note.textContent = "Preparing the bill…";
-        printWindow.document.body.appendChild(note);
-      } catch { /* the tab stays blank until it navigates, which is harmless */ }
-    }
-
-    /*
-      THE STAMP THAT ANSWERS "IS THIS A REPRINT", TAKEN BEFORE THE CLAIM.
-
-      The claim INCREMENTS the durable ledger, so a print page that re-read the
-      count after its own claim would see 1 on a FIRST print and stamp REPRINT
-      across an original bill. What the reprint marker is asking about is the
-      state the bill was in when the operator pressed the button, so that is the
-      figure that travels — the server's own `print_count` / `bill_printed_at`,
-      read fresh off GET /bill-for-table and falling back to the polled table
-      row when that read is unavailable. Never a client-side "have I printed
-      this before" flag; see bill-print-state.ts's header for what that costs.
-    */
-    // The server's PRICED bill, captured from the claim. See db.ts claimBillPrint:
-    // a waiter's own /bill-for-table read is redacted, so the print page needs
-    // this or it has no amounts to put on the guest's receipt.
-    let printableBill: Record<string, unknown> | null = null;
-    let priorPrintState: BillPrintState | null =
-      billPrintByTable.get(tableName.toLowerCase()) ?? null;
-    if (restaurantId && tableName) {
-      const fresh: unknown = await getBillForTable(restaurantId, tableName).catch(() => null);
-      priorPrintState = billPrintStateFields(fresh) ?? priorPrintState;
-
-      const claim = await claimBillPrint(restaurantId, tableName, order.id);
-      if (claim.outcome === "refused") {
-        // Nothing was ever drawn in it. Closing an empty tab is the whole of
-        // "only render the print page if the claim succeeded".
-        printWindow?.close();
-        toast({
-          // The TITLE is ours because a toast needs one; the SENTENCE is the
-          // server's, unaltered.
-          title: "Bill not printed",
-          description: claim.message,
-          variant: "destructive",
-        });
-        // Re-read the floor rather than remembering the refusal here: the
-        // refusal means the server's ledger says printed, so the button and the
-        // row should both go — and they go because the SERVER said so on the
-        // next read, not because this component wrote itself a note.
-        try {
-          const refreshed = await getTables(restaurantId);
-          setTables(Array.isArray(refreshed) ? refreshed : []);
-        } catch { /* the poll will catch up */ }
-        return;
-      }
-      if (claim.outcome === "claimed") {
-        printableBill = claim.printableBill;
-        // The ledger moved, so the floor this page is painting is now stale for
-        // every waiter looking at it — including this one, whose Print Bill
-        // button must disappear now and not in twenty seconds' time.
-        try {
-          const refreshed = await getTables(restaurantId);
-          setTables(Array.isArray(refreshed) ? refreshed : []);
-        } catch { /* the poll will catch up */ }
-      }
-    }
-
-    const flattenedItems = (order as any).items_flattened?.length ? (order as any).items_flattened : order.items;
+    // A counter order with no table has no print ledger: the browser receipt, as before.
+    const flattenedItems = order.items_flattened?.length ? order.items_flattened : order.items;
     let calculatedTaxes = calculateTaxes(order.subtotal, order.taxes);
-    if ((!calculatedTaxes || calculatedTaxes.length === 0) && defaultTax) {
-      calculatedTaxes = Object.keys(defaultTax).map((name, i) => ({ id: `d${i}`, name, percentage: Number(defaultTax[name]), amount: order.subtotal * (Number(defaultTax[name]) / 100) }));
+    if (calculatedTaxes.length === 0 && defaultTax) {
+      calculatedTaxes = Object.keys(defaultTax).map((name, i) => ({ id: `d${i}`, name, percentage: defaultTax[name], amount: order.subtotal * (defaultTax[name] / 100) }));
     }
     const orderWithCalculatedCharges = {
       ...order,
@@ -1098,411 +763,130 @@ function OrdersDashboard() {
       calculatedTaxes,
       currencySymbol,
     };
-      const storageKey = storePrintBillPayload({
-        ...orderWithCalculatedCharges,
-        // The server's own fields, carried across verbatim under the same three
-        // spellings they arrived in, so the print page reads the SERVER's answer
-        // rather than deciding for itself whether this is a reprint.
-        bill_print_state: priorPrintState,
-        // Carried across verbatim, like the print state above. The print page
-        // prefers it over its own /bill-for-table read, which for a waiter comes
-        // back with every amount removed.
-        printable_bill: printableBill,
-      });
-      const url = `/dashboard/orders/print?orderKey=${encodeURIComponent(storageKey)}`;
-      if (printWindow) { printWindow.location.href = url; } else { window.open(url, '_blank'); }
-  }
-  
-  const handleAddOrder = async (newOrderData: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null; course_hold?: boolean; variation_id?: string }[]; covers?: number }) => {
-    if (!user?.restaurantUsername) {return;}
-    const items = newOrderData.items.map(it => ({
-      id: it.id ?? `i${Date.now()}${Math.random().toString(36).slice(2,5)}`,
-      name: it.name,
-      quantity: Math.max(1, Number(it.quantity ?? 1)),
-      price: Number(it.price ?? 0),
-      orderedAt: new Date().toISOString(),
-      note: typeof it.note === "string" && it.note.trim().length > 0 ? it.note.trim() : null,
-      ...(it.course_hold ? { course_hold: true } : {}),
-      // MIGRATION 039 — the guest's PICK travels, and only the id. The price, the
-      // label and the dish it belongs to are all re-resolved server-side against
-      // the live menu (applyMenuPriceFloor), which is what makes this line
-      // reportable under that size AND makes it impossible to under-ring by
-      // sending a cheap price with an expensive size's name.
-      ...(it.variation_id ? { variation_id: it.variation_id } : {}),
-    }));
-    const subtotal = items.reduce((acc, it) => acc + it.price * it.quantity, 0);
-    const defaults = deriveDefaultsForCharges(defaultTax);
-    const baseOrder: Omit<Order, "total"> = {
-      id: (orders.length + 1).toString(),
-      table: String(tables.find(t => t.id === newOrderData.tableId)?.name ?? ''),
-      customer: "Guest",
-      taken_by_employee_id: user.employeeId ?? null,
-      taken_by_employee_name:
-        user.employeeUsername
-        || `${user.emp_Fname ?? ''} ${user.emp_Lname ?? ''}`.trim()
-        || user.employeeId
-        || null,
-      taken_by_employee_role: hasRole("waiter") ? "waiter" : user.role,
-      status: "Preparing",
-      items,
-      subtotal,
-      serviceChargePercentage: defaults.serviceChargePercentage,
-      taxes: defaults.taxes,
-      applyServiceCharge: defaults.applyServiceCharge,
-    };
-    // The backend treats an order's `total` as the PRE-TAX base and applies
-    // service charge + taxes itself (computeBillCharges). Sending the
-    // tax-inclusive figure here made the guest pay them twice, so send the
-    // subtotal; calculateTotal stays for on-screen display only.
-    const newOrder: Order = { ...baseOrder, total: baseOrder.subtotal };
-    try {
-      // Ensure table is occupied first (backend requires table to be occupied before adding order)
-      const tableName = String(tables.find(t => t.id === newOrderData.tableId)?.name ?? '');
-      if (tableName) {
-        try {
-          await occupyTable(user.restaurantUsername, tableName, newOrderData.covers ?? null);
-        } catch (e) {
-          // ignore occupancy errors — addOrder will fail if necessary
-        }
-      }
+    const storageKey = storePrintBillPayload({
+      ...orderWithCalculatedCharges,
+      // No table, so no print ledger: nothing was claimed and nothing is.
+      bill_print_state: null,
+      printable_bill: null,
+    });
+    const url = `/dashboard/orders/print?orderKey=${encodeURIComponent(storageKey)}`;
+    window.open(url, "_blank");
+  };
 
-      const resp: any = await addOrder(user.restaurantUsername, newOrder);
-      const createdId = resp?.id ?? resp?._id ?? null;
-
-      // Link the table to the created order id for quick access
-      if (createdId && tableName) {
-        try {
-          const occ = await occupyTable(user.restaurantUsername, tableName, null, createdId);
-          // sanity check: backend should return linked_order_id
-          if (!occ || (occ as any).linked_order_id == null) {
-            console.warn('occupyTable did not persist linked_order_id', { tableName, createdId, resp: occ });
-          }
-        } catch (e) {
-          console.error('occupyTable failed to link order', e);
-        }
-      }
-
-      const [updatedOrders, updatedApcInsight] = await Promise.all([
-        getOrders(user.restaurantUsername),
-        getMonthlyApcInsight(user.restaurantUsername),
-      ]);
-      setOrders(Array.isArray(updatedOrders) ? dedupeOrdersById(updatedOrders) : []);
-      setMonthlyApcInsight(updatedApcInsight ?? null);
-      setIsAddDialogOpen(false);
-    } catch (error) {
-      console.error("Failed to add order", error);
+  // Generate the bill (Bill Verification) — a styled confirmation carrying the
+  // exact charges the bill will be created with (was a bare window.confirm).
+  const requestBillVerification = (order: Order): void => {
+    if (!user?.restaurantUsername) { return; }
+    const restaurantId = user.restaurantUsername;
+    let taxesToApply: Tax[] | undefined = order.taxes?.length ? order.taxes : undefined;
+    if ((!taxesToApply || taxesToApply.length === 0) && defaultTax) {
+      taxesToApply = Object.keys(defaultTax).map((name, i) => ({ id: `d${i}`, name, percentage: defaultTax[name] }));
     }
-  }
-
-  const handleEditOrder = (editedOrderData: Omit<Order, 'total'>) => {
-    const total = calculateTotal(editedOrderData);
-    const updatedOrder: Order = { ...editedOrderData, total };
-    setOrders(orders.map(o => o.id === updatedOrder.id ? updatedOrder : o));
-    setIsEditDialogOpen(false);
-    setSelectedOrder(null);
-  }
-
-  const handleAddItemToOrder = (orderId: string, itemName: string, itemPrice: number) => {
-    setOrders((prev) => {
-      const updated = prev.map(order => {
-        if(order.id === orderId) {
-          // add to Preparing section and flattened list
-          const newItem: OrderItem = {
-            id: `i${Date.now()}`,
-            name: itemName,
-            quantity: 1,
-            price: itemPrice,
-            orderedAt: new Date().toISOString(),
-          };
-
-          // merged flattened list
-          const flattened: OrderItem[] = Array.isArray((order as any).items_flattened) ? [...(order as any).items_flattened as OrderItem[]] : [...order.items];
-          // if same item name exists in flattened, increment quantity, else push
-          const existingFlat = flattened.find(it => it.name.toLowerCase() === itemName.toLowerCase());
-          if (existingFlat) {
-            existingFlat.quantity = existingFlat.quantity + 1;
-          } else {
-            flattened.push(newItem);
-          }
-
-          // update split: push into Preparing tuple
-          const split = Array.isArray((order as any).items_split)
-            ? (JSON.parse(JSON.stringify((order as any).items_split)) as unknown as [string, OrderItem[]][])
-            : ([['Served', []], ['Preparing', []]] as [string, OrderItem[]][]);
-          const preparingTuple = split.find(s => s[0] === 'Preparing');
-          if (preparingTuple) {
-            preparingTuple[1].push(newItem);
-          } else {
-            split.push(['Preparing', [newItem]] as [string, OrderItem[]]);
-          }
-
-          const newSubtotal = flattened.reduce((acc: number, it: OrderItem) => acc + it.price * it.quantity, 0);
-          const newTotal = calculateTotal({ ...order, items: flattened, subtotal: newSubtotal });
-          return { ...order, items: flattened, items_flattened: flattened, items_split: split, subtotal: newSubtotal, total: newTotal, status: 'Preparing' as OrderStatus };
+    const serviceChargeAmt = calculateServiceCharge(order.subtotal, order.serviceChargePercentage, order.applyServiceCharge);
+    const taxRows = (taxesToApply ?? []).map((t) => ({ ...t, amount: order.subtotal * (t.percentage / 100) }));
+    const taxAmount = taxRows.reduce((acc, t) => acc + t.amount, 0);
+    const totalAmt = Math.max(0, order.subtotal + serviceChargeAmt + taxAmount);
+    setConfirmAction({
+      title: `Generate the bill for Table ${order.table}?`,
+      confirmLabel: "Generate bill",
+      description: (
+        <>
+          <p>
+            Moves this order to Bill Verification and creates the bill. This cannot be undone —
+            it will not go back to Preparing or Served.
+          </p>
+          <div className="rounded-md border border-divider p-2.5">
+            <div className="flex justify-between"><span>Subtotal</span><span className="tabular-nums">{currencySymbol}{order.subtotal.toFixed(2)}</span></div>
+            {order.applyServiceCharge && (order.serviceChargePercentage ?? 0) > 0 && (
+              <div className="flex justify-between"><span>Service Charge ({order.serviceChargePercentage}%)</span><span className="tabular-nums">{currencySymbol}{serviceChargeAmt.toFixed(2)}</span></div>
+            )}
+            {taxRows.map((t) => (
+              <div key={t.id} className="flex justify-between"><span>{t.name} ({t.percentage}%)</span><span className="tabular-nums">{currencySymbol}{t.amount.toFixed(2)}</span></div>
+            ))}
+            <div className="mt-1 flex justify-between border-t border-divider pt-1 font-semibold"><span>Total</span><span className="tabular-nums">{currencySymbol}{totalAmt.toFixed(2)}</span></div>
+          </div>
+        </>
+      ),
+      run: async () => {
+        try {
+          const tax_breakdown = taxRows.map((t) => ({ name: t.name, percentage: t.percentage, amount: Number(t.amount.toFixed(2)) }));
+          await createBill(restaurantId, {
+            order_id: order.id,
+            total_amt: totalAmt,
+            emp_id: user.employeeId,
+            status: 1,
+            tax_breakdown,
+          });
+          const updatedOrder: Order = { ...order, status: "Bill Verification" };
+          await addOrder(restaurantId, updatedOrder);
+          refreshOrders();
+        } catch (err) {
+          toast({ title: "Unable to create bill", description: serverWords(err), variant: "destructive" });
         }
-        return order;
-      });
-
-      const newSelected = selectedOrder ? updated.find(o => o.id === selectedOrder.id) ?? null : null;
-      if (selectedOrder && newSelected) {setSelectedOrder(newSelected);}
-      return updated;
+      },
     });
-  }
+  };
 
-  const handleRemoveItemFromOrder = (orderId: string, itemId: string) => {
-    setOrders((prev) => {
-      const updated = prev.map(order => {
-        if(order.id === orderId) {
-          // remove from flattened and from split tuples
-          const flattened: OrderItem[] = Array.isArray((order as any).items_flattened) ? ((order as any).items_flattened as OrderItem[]).filter((it) => it.id !== itemId) : order.items.filter(item => item.id !== itemId);
-
-          const split = Array.isArray((order as any).items_split)
-            ? (JSON.parse(JSON.stringify((order as any).items_split)) as unknown as [string, OrderItem[]][])
-            : ([['Served', []], ['Preparing', []]] as [string, OrderItem[]][]);
-          for (const tup of split) {
-            tup[1] = tup[1].filter((it) => it.id !== itemId);
-          }
-
-          const newSubtotal = flattened.reduce((acc: number, item: OrderItem) => acc + item.price * item.quantity, 0);
-          const newTotal = calculateTotal({ ...order, items: flattened, subtotal: newSubtotal });
-          const hasPreparing = (split.find(s => s[0] === 'Preparing')?.[1]?.length ?? 0) > 0;
-          const newStatus: OrderStatus = hasPreparing ? 'Preparing' : (flattened.length > 0 ? 'Served' : order.status);
-          return { ...order, items: flattened, items_flattened: flattened, items_split: split, subtotal: newSubtotal, total: newTotal, status: newStatus };
-        }
-        return order;
-      });
-
-      const newSelected = selectedOrder ? updated.find(o => o.id === selectedOrder.id) ?? null : null;
-      if (selectedOrder && newSelected) {setSelectedOrder(newSelected);}
-      return updated;
-    });
-  }
-
-  const handleDeleteOrder = async (orderId: string) => {
-    if (!user?.restaurantUsername) {return;}
-    /*
-      The same check the menu item makes, made again at the write. The item is
-      hidden without the permission, but "hidden" is not a control — a stale tab
-      whose session was demoted between render and click still reaches this
-      function, and DELETE /orders/:id is the most destructive route in the
-      product. The server refuses it too; this is the layer that refuses it
-      without a round trip and with a sentence the user can act on.
-    */
-    if (!canDeleteOrder) {
-      showPermissionRequiredToast('Delete Orders');
+  const handleReplaceBill = (order: Order, replacement: { items: OrderItem[]; taxes: { id?: string; name: string; percentage: number }[]; serviceChargePercentage?: number | undefined; applyServiceCharge?: boolean; reason: string }): void => {
+    if (!user?.restaurantUsername) { return; }
+    const restaurantId = user.restaurantUsername;
+    if (!replacement.reason.trim()) {
+      toast({ title: "Reason is required", description: "Say why the bill is being replaced.", variant: "destructive" });
       return;
     }
-    try {
-      await deleteOrder(user.restaurantUsername, orderId);
-        const [updatedOrders, updatedApcInsight] = await Promise.all([
-          getOrders(user.restaurantUsername),
-          getMonthlyApcInsight(user.restaurantUsername),
-        ]);
-        setOrders(Array.isArray(updatedOrders) ? updatedOrders : []);
-        setMonthlyApcInsight(updatedApcInsight ?? null);
-      toast({ title: "Order deleted", description: "The order has been successfully deleted." });
-    } catch (error) {
-      console.error("Failed to delete order", error);
-      // Surface the server's refusal verbatim (e.g. the cancelled-order guard).
-      toast({ title: "Unable to delete order", description: String((error as Error)?.message ?? error), variant: "destructive" });
-    }
-  }
 
-  const getStatusVariant = (status: string) => {
-    switch (status) {
-      case "Preparing":
-        return "secondary";
-      case "Served":
-        return "default";
-      case "Bill Verification":
-        return "default";
-      case "Payment Pending Approval":
-        return "secondary";
-      case "Paid":
-        return "outline";
-      case "Closed":
-        return "outline";
-      case "Cancelled":
-        return "destructive";
-      default:
-        return "outline";
-    }
-  };
-  
-  const handleRowClick = (order: Order) => {
-    setSelectedOrder(order);
-    // open view-only dialog when clicking the row
-    setIsViewOpen(true);
-  }
-
-  const updateOrderStatus = async (orderId: string, status: OrderStatus) => {
-    // optimistic UI update
-    setOrders(orders.map(order => order.id === orderId ? { ...order, status } : order));
-
-    if (!user?.restaurantUsername) {return;}
-
-    const current = orders.find(o => o.id === orderId);
-    if (!current) {return;}
-
-    const updatedOrder: Order = { ...current, status };
-
-    try {
-      // persist via AddOrder upsert endpoint
-      await addOrder(user.restaurantUsername, updatedOrder);
-      const refreshed = await getOrders(user.restaurantUsername);
-      setOrders(Array.isArray(refreshed) ? refreshed : []);
-    } catch (err) {
-      console.error('failed to persist order status', err);
-      // Surface the server's refusal verbatim (e.g. "A cancelled order cannot be modified").
-      toast({ title: "Unable to update status", description: String((err as Error)?.message ?? err), variant: "destructive" });
-      // on error, revert optimistic update by reloading
+    const run = async (): Promise<void> => {
       try {
-        const refreshed = await getOrders(user.restaurantUsername);
-        setOrders(Array.isArray(refreshed) ? refreshed : []);
-      } catch (e) {
-        // ignore
-      }
-    }
-  };
+        const subtotal = replacement.items.reduce((s, it) => s + (it.price || 0) * (it.quantity || 0), 0);
+        const serviceChargeAmount = replacement.applyServiceCharge && replacement.serviceChargePercentage ? subtotal * (replacement.serviceChargePercentage / 100) : 0;
+        const tax_breakdown = replacement.taxes.map((t) => ({ name: t.name, percentage: t.percentage, amount: Number((subtotal * (t.percentage / 100)).toFixed(2)) }));
+        const totalAmt = Math.max(0, subtotal + serviceChargeAmount + tax_breakdown.reduce((acc, t) => acc + (t.amount || 0), 0));
 
-  // Bark the order to the kitchen: advances the visible stage and starts the
-  // order/dish prep timers (they stay idle until the bark).
-  const handleBarkOrder = async (order: Order) => {
-    if (!user?.restaurantUsername) {return;}
-    try {
-      await barkOrder(user.restaurantUsername, order.id);
-      toast({ title: "Order barked", description: `Table ${order.table || "—"} announced to the kitchen — timers started.` });
-      await refreshOrders();
-    } catch (err) {
-      toast({ title: "Unable to bark order", description: String((err as Error)?.message ?? err), variant: "destructive" });
-    }
-  };
-
-  const handleSetBillVerification = async (order: Order) => {
-    if (!user?.restaurantUsername) {return;}
-    const confirmed = window.confirm(
-      'Confirm move to Bill Verification? This action cannot be undone and you will not be able to revert to Preparing or Served.',
-    );
-    if (!confirmed) {return;}
-
-    try {
-      // decide which taxes to apply: prefer order.taxes if present, otherwise use defaultTax
-      let taxesToApply: Tax[] | undefined = order.taxes?.length ? order.taxes : undefined;
-      if ((!taxesToApply || taxesToApply.length === 0) && defaultTax) {
-        taxesToApply = Object.keys(defaultTax).map((name, i) => ({ id: `d${i}` , name, percentage: Number(defaultTax[name]) }));
-      }
-
-      const serviceCharge = calculateServiceCharge(order.subtotal, order.serviceChargePercentage, order.applyServiceCharge);
-      const taxAmount = (taxesToApply ?? []).reduce((acc, t) => acc + order.subtotal * (t.percentage / 100), 0);
-      const totalAmt = Math.max(0, order.subtotal + serviceCharge + taxAmount);
-
-      const tax_breakdown = (taxesToApply ?? []).map(t => ({ name: t.name, percentage: t.percentage, amount: Number((order.subtotal * (t.percentage/100)).toFixed(2)) }));
-
-      // create bill in backend with status 1 and total including default taxes when applicable
-      const billResp = await createBill(user.restaurantUsername, {
-        order_id: order.id,
-        total_amt: totalAmt,
-        emp_id: user.employeeId ?? undefined,
-        status: 1,
-        tax_breakdown,
-      });
-      // update order status via upsert
-      const updatedOrder: Order = { ...order, status: 'Bill Verification' };
-      await addOrder(user.restaurantUsername, updatedOrder);
-      const updatedOrders = await getOrders(user.restaurantUsername);
-      setOrders(Array.isArray(updatedOrders) ? dedupeOrdersById(updatedOrders) : []);
-    } catch (err) {
-      console.error('failed to set bill verification', err);
-      // Surface the server's refusal verbatim (e.g. the cancelled-order guard).
-      toast({ title: "Unable to create bill", description: String((err as Error)?.message ?? err), variant: "destructive" });
-    }
-  };
-
-  const handleReplaceBill = async (order: Order, replacement: { items: OrderItem[]; taxes: { id?: string; name: string; percentage: number }[]; serviceChargePercentage?: number | undefined; applyServiceCharge?: boolean; reason: string; }) => {
-    if (!user?.restaurantUsername) {return;}
-    if (!replacement.reason?.trim()) {
-      alert('Reason is required');
-      return;
-    }
-    const confirmed = window.confirm('This will update the existing bill and order in-place. Continue?');
-    if (!confirmed) {return;}
-
-    try {
-      const subtotal = replacement.items.reduce((s, it) => s + (Number(it.price) || 0) * (Number(it.quantity) || 0), 0);
-      const serviceChargeAmount = replacement.applyServiceCharge && replacement.serviceChargePercentage ? subtotal * (replacement.serviceChargePercentage / 100) : 0;
-      const tax_breakdown = (replacement.taxes || []).map((t) => ({ name: t.name, percentage: t.percentage, amount: Number(((subtotal) * (t.percentage/100)).toFixed(2)) }));
-      const totalAmt = Math.max(0, subtotal + serviceChargeAmount + tax_breakdown.reduce((acc, t) => acc + (Number(t.amount) || 0), 0));
-
-      // minimal payload: backend will keep existing emp_id/status if not provided
-      const payload = {
-        old_order_id: order.id,
-        reason: replacement.reason,
-        new_order: {
-          items: replacement.items,
-          subtotal,
-          serviceChargePercentage: replacement.serviceChargePercentage ?? order.serviceChargePercentage,
-          applyServiceCharge: replacement.applyServiceCharge ?? order.applyServiceCharge,
-          taxes: replacement.taxes,
-          table: order.table,
-          customer: order.customer,
-          taken_by_employee_id: order.taken_by_employee_id ?? null,
-          taken_by_employee_name: order.taken_by_employee_name ?? null,
-          taken_by_employee_role: order.taken_by_employee_role ?? null,
-        },
-        new_bill: {
-          total_amt: totalAmt,
-          tax_breakdown,
-        },
-      } as const;
-
-      const result = await replaceBill(user.restaurantUsername, payload);
-      if (!result) {throw new Error('Replace failed');}
-
-      // update the existing order in local state instead of creating a new one
-      setOrders((prev) => {
-        return prev.map(o => {
-          if (o.id !== order.id) {return o;}
-          const updated: Order = {
-            ...o,
-            items: replacement.items.map(it => ({ ...it })),
+        const payload = {
+          old_order_id: order.id,
+          reason: replacement.reason,
+          new_order: {
+            items: replacement.items,
             subtotal,
-            serviceChargePercentage: payload.new_order.serviceChargePercentage,
-            taxes: payload.new_order.taxes as any,
-            applyServiceCharge: payload.new_order.applyServiceCharge ?? false,
-            total: Number((subtotal + serviceChargeAmount + tax_breakdown.reduce((acc, t) => acc + (Number(t.amount) || 0), 0)).toFixed(2)),
-            status: 'Bill Verification',
-          };
-          return updated;
-        });
-      });
+            serviceChargePercentage: replacement.serviceChargePercentage ?? order.serviceChargePercentage,
+            applyServiceCharge: replacement.applyServiceCharge ?? order.applyServiceCharge,
+            taxes: replacement.taxes,
+            table: order.table,
+            customer: order.customer,
+            taken_by_employee_id: order.taken_by_employee_id ?? null,
+            taken_by_employee_name: order.taken_by_employee_name ?? null,
+            taken_by_employee_role: order.taken_by_employee_role ?? null,
+          },
+          new_bill: {
+            total_amt: totalAmt,
+            tax_breakdown,
+          },
+        } as const;
 
-      // update APC insight if present
-      setMonthlyApcInsight((prev) => {
-        if (!prev) {return prev;}
-        const ordersCopy = (prev.orders || []).map(a => {
-          if (a.order_id !== order.id) {return a;}
-          return { ...a, total: Number(totalAmt) };
-        });
-        return { ...prev, orders: ordersCopy };
-      });
+        const result: unknown = await replaceBill(restaurantId, payload);
+        if (!result) { throw new Error("Replace failed"); }
+        refreshOrders();
+        refreshSupport();
+        setEditBillTarget(null);
+      } catch (err) {
+        toast({ title: "Failed to replace bill", description: serverWords(err), variant: "destructive" });
+      }
+    };
 
-      setIsEditDialogOpen(false);
-      setSelectedOrder(null);
-    } catch (err: any) {
-      console.error('replace bill failed', err);
-      alert('Failed to replace bill: ' + String(err?.message ?? err));
-    }
+    setConfirmAction({
+      title: "Replace this bill?",
+      confirmLabel: "Replace bill",
+      description: <p>This will update the existing bill and order in-place. The reason is recorded on the Bill Edit report.</p>,
+      run,
+    });
   };
 
-  // What the guest actually pays for this table: the bill's grand_total
-  // (discount + service charge + taxes), NOT total_amt — that field is the
-  // PRE-TAX running sum while the bill is open. Display only; the settle
-  // requests carry no amount. Returns null when the bill can't be read, in
-  // which case the caller simply omits the figure.
+  // What the guest actually pays for this table (the bill's grand_total).
+  // Display only; the settle requests carry no amount.
   const fetchTablePayable = async (tableName: string): Promise<number | null> => {
-    if (!user?.restaurantUsername) {return null;}
+    if (!user?.restaurantUsername) { return null; }
     try {
-      const bill = await getBillForTable(user.restaurantUsername, tableName);
+      const bill = await getBillForTable(user.restaurantUsername, tableName) as { grand_total?: unknown; total_amt?: unknown } | null;
       const amount = Number(bill?.grand_total ?? bill?.total_amt);
       return Number.isFinite(amount) && amount > 0 ? Math.round(amount * 100) / 100 : null;
     } catch {
@@ -1510,278 +894,171 @@ function OrdersDashboard() {
     }
   };
 
-  const payableLine = (payable: number | null) =>
-    payable != null ? `Amount payable: ${currencySymbol}${payable.toFixed(2)} (incl. taxes & charges)\n\n` : "";
-
-  const handleWaiterConfirmPayment = async (order: Order, paymentMethod: PaymentMethod) => {
-    if (!user?.restaurantUsername || !user.employeeId) {return;}
-    if (!(hasRole("waiter") || hasRole("admin"))) {
-      showRoleRequiredToast("waiter or admin");
-      return;
-    }
-
-    // Shown by the owner's label, sent by the mode's id; the screenshot rule is
-    // the config's, the same one the server enforces on this settle.
-    const methodName = paymentMethodLabel(paymentMethod, paymentMethods);
-    let proofScreenshotUrl: string | null = null;
-    if (methodNeedsScreenshot(paymentMethod, paymentMethods)) {
-      alert(`Please upload the payment screenshot for ${methodName}.`);
-      proofScreenshotUrl = await pickPaymentProofScreenshot();
-      if (!proofScreenshotUrl) {
-        alert(`Payment screenshot is required for ${methodName}.`);
-        return;
-      }
-    }
-
-    const payable = await fetchTablePayable(order.table);
-    const confirmed = window.confirm(
-      `${payableLine(payable)}Confirm payment by ${methodName}? This sends the bill for admin approval.`,
+  const payableRow = (payable: number | null): React.ReactNode =>
+    payable == null ? null : (
+      <p className="font-medium text-foreground">
+        Amount payable: {currencySymbol}{payable.toFixed(2)} <span className="font-normal text-muted-foreground">(incl. taxes &amp; charges)</span>
+      </p>
     );
-    if (!confirmed) {return;}
 
-    try {
-      await confirmBillPaymentByWaiter(
-        user.restaurantUsername,
-        user.employeeId,
-        order.id,
-        paymentMethod,
-        proofScreenshotUrl,
-      );
-      const actorName = user.employeeUsername
-        || `${user.emp_Fname ?? ''} ${user.emp_Lname ?? ''}`.trim()
-        || user.employeeId
-        || 'System';
-      // await addAuditLogEntry(user.restaurantUsername, {
-      //   employee: actorName,
-      //   employeeId: user.employeeId,
-      //   action: 'Bill Payment Confirmed',
-      //   details: `Waiter confirmed payment for order ${order.id} via ${paymentMethod}`,
-      // });
-      const updatedOrders = await getOrders(user.restaurantUsername);
-      setOrders(Array.isArray(updatedOrders) ? dedupeOrdersById(updatedOrders) : []);
-      alert('Payment confirmation submitted. Awaiting admin approval.');
-    } catch (err: any) {
-      console.error('failed to confirm payment', err);
-      alert(String(err?.message ?? 'Unable to confirm payment.'));
-    }
-  };
-
-  const handleAdminApprovePayment = async (order: Order) => {
-    if (!user?.restaurantUsername || !user.employeeId) {return;}
-    // C2. The route is gated on "Approve Payment"; asking for the admin ROLE
-    // here refused every manager and cashier the tenant had granted it.
+  const handleAdminApprovePayment = async (order: Order): Promise<void> => {
+    if (!user?.restaurantUsername || !user.employeeId) { return; }
+    const restaurantId = user.restaurantUsername;
+    const employeeId = user.employeeId;
+    // C2 — the same permission POST .../admin-approve-payment checks.
     if (!canSettleBill) {
-      showPermissionRequiredToast('Close Bill');
+      showPermissionRequiredToast("Close Bill");
       return;
     }
 
     if (methodNeedsScreenshot(order.payment_method ?? "Cash", paymentMethods)) {
       const proofUrl = normalizeProofPreviewUrl(order.payment_proof_screenshot_url);
       if (!proofUrl) {
-        alert("Payment screenshot is missing for this order.");
+        toast({ title: "Payment screenshot is missing for this order.", variant: "destructive" });
         return;
       }
     }
 
     const payable = await fetchTablePayable(order.table);
-    const confirmed = window.confirm(`${payableLine(payable)}Approve this waiter-confirmed payment?`);
-    if (!confirmed) {return;}
-
-    try {
-      await approveBillPaymentByAdmin(user.restaurantUsername, user.employeeId, order.id);
-      const actorName = user.employeeUsername
-        || `${user.emp_Fname ?? ''} ${user.emp_Lname ?? ''}`.trim()
-        || user.employeeId
-        || 'System';
-      // await addAuditLogEntry(user.restaurantUsername, {
-      //   employee: actorName,
-      //   employeeId: user.employeeId,
-      //   action: 'Bill Payment Approved',
-      //   details: `Admin approved payment for order ${order.id}`,
-      // });
-      const updatedOrders = await getOrders(user.restaurantUsername);
-      setOrders(Array.isArray(updatedOrders) ? dedupeOrdersById(updatedOrders) : []);
-    } catch (err: any) {
-      console.error('failed to approve payment', err);
-      alert(String(err?.message ?? 'Unable to approve payment.'));
-    }
+    setConfirmAction({
+      title: "Approve this payment?",
+      confirmLabel: "Approve payment",
+      description: (
+        <>
+          {payableRow(payable)}
+          <p>Approves the waiter-confirmed payment for Table {order.table}.</p>
+        </>
+      ),
+      run: async () => {
+        try {
+          await approveBillPaymentByAdmin(restaurantId, employeeId, order.id);
+          refreshOrders();
+        } catch (err) {
+          toast({ title: "Unable to approve payment", description: serverWords(err), variant: "destructive" });
+        }
+      },
+    });
   };
 
-  const handleCloseBill = async (order: Order) => {
-    if (!user?.restaurantUsername || !user.employeeId) {return;}
-    // C2 — the settle gate, the same capability POST /bills/order/:id/close
-    // checks. Only a session holding "Close Bill" ever gets this far.
+  // The sheet's one combined act — Flutter's table-bill "Approve payment &
+  // close" — approve, then close, behind one styled confirmation.
+  const handleApprovePaymentAndClose = async (order: Order): Promise<void> => {
+    if (!user?.restaurantUsername || !user.employeeId) { return; }
+    const restaurantId = user.restaurantUsername;
+    const employeeId = user.employeeId;
     if (!canSettleBill) {
-      showPermissionRequiredToast('Close Bill');
+      showPermissionRequiredToast("Close Bill");
       return;
     }
-    const confirmed = window.confirm('Close this bill? This finalizes the order.');
-    if (!confirmed) {return;}
-
-    try {
-      await closeBillByOrder(user.restaurantUsername, user.employeeId, order.id);
-      const actorName = user.employeeUsername
-        || `${user.emp_Fname ?? ''} ${user.emp_Lname ?? ''}`.trim()
-        || user.employeeId
-        || 'System';
-      // await addAuditLogEntry(user.restaurantUsername, {
-      //   employee: actorName,
-      //   employeeId: user.employeeId,
-      //   action: 'Bill Closed',
-      //   details: `Admin closed bill for order ${order.id}`,
-      // });
-      const updatedOrders = await getOrders(user.restaurantUsername);
-      setOrders(Array.isArray(updatedOrders) ? dedupeOrdersById(updatedOrders) : []);
-    } catch (err: any) {
-      console.error('failed to close bill', err);
-      alert(String(err?.message ?? 'Unable to close bill.'));
+    if (methodNeedsScreenshot(order.payment_method ?? "Cash", paymentMethods)) {
+      const proofUrl = normalizeProofPreviewUrl(order.payment_proof_screenshot_url);
+      if (!proofUrl) {
+        toast({ title: "Payment screenshot is missing for this order.", variant: "destructive" });
+        return;
+      }
     }
+    const payable = await fetchTablePayable(order.table);
+    setConfirmAction({
+      title: "Approve payment & close?",
+      confirmLabel: "Approve & close",
+      description: (
+        <>
+          {payableRow(payable)}
+          <p>Approves the waiter-confirmed payment and closes the bill — this settles Table {order.table}.</p>
+        </>
+      ),
+      run: async () => {
+        try {
+          await approveBillPaymentByAdmin(restaurantId, employeeId, order.id);
+          await closeBillByOrder(restaurantId, employeeId, order.id);
+          refreshOrders();
+          toast({ title: "Bill settled" });
+        } catch (err) {
+          toast({ title: "Unable to settle the bill", description: serverWords(err), variant: "destructive" });
+          refreshOrders();
+        }
+      },
+    });
   };
 
-  const refreshDiscountRequests = async () => {
-    if (!user?.restaurantUsername || !isAdmin) {return;}
-    try { setDiscountRequests(await getDiscountRequests(user.restaurantUsername)); } catch { /* keep current */ }
+  const handleCloseBill = (order: Order): void => {
+    if (!user?.restaurantUsername || !user.employeeId) { return; }
+    const restaurantId = user.restaurantUsername;
+    const employeeId = user.employeeId;
+    if (!canSettleBill) {
+      showPermissionRequiredToast("Close Bill");
+      return;
+    }
+    setConfirmAction({
+      title: "Close this bill?",
+      confirmLabel: "Close bill",
+      description: <p>This finalizes the order on Table {order.table}.</p>,
+      run: async () => {
+        try {
+          await closeBillByOrder(restaurantId, employeeId, order.id);
+          refreshOrders();
+        } catch (err) {
+          toast({ title: "Unable to close bill", description: serverWords(err), variant: "destructive" });
+        }
+      },
+    });
   };
 
-  const handleDecideDiscount = async (request: DiscountRequest, approve: boolean) => {
-    if (!user?.restaurantUsername) {return;}
+  const handleReopenBill = (order: Order): void => {
+    if (!user?.restaurantUsername) { return; }
+    const restaurantId = user.restaurantUsername;
+    if (!isAdmin) {
+      showRoleRequiredToast("admin");
+      return;
+    }
+    const billId = order.bill_id;
+    if (!billId) {
+      toast({ title: "No bill found for this order", variant: "destructive" });
+      return;
+    }
+    setConfirmAction({
+      title: "Re-open this closed bill?",
+      confirmLabel: "Re-open bill",
+      description: <p>The table goes back in service and the payment must be approved again.</p>,
+      run: async () => {
+        try {
+          const r = await reopenBill(restaurantId, billId);
+          toast({ title: "Bill re-opened", description: `${r.restored_orders ?? 0} order(s) restored — approve the payment again to settle.` });
+          refreshOrders();
+        } catch (err) {
+          toast({ title: "Unable to re-open bill", description: serverWords(err), variant: "destructive" });
+        }
+      },
+    });
+  };
+
+  const handleDecideDiscount = async (request: DiscountRequest, approve: boolean): Promise<void> => {
+    if (!user?.restaurantUsername) { return; }
     try {
       await decideDiscountRequest(user.restaurantUsername, request.id, approve);
       toast({
         title: approve ? "Discount approved" : "Discount rejected",
         description: `Table ${request.table_name ?? "?"} · ${request.discount_value}${request.discount_type === "percent" ? "%" : ""} (≈${currencySymbol}${request.amount.toFixed(2)})`,
       });
-      await Promise.all([refreshDiscountRequests(), refreshOrders()]);
-    } catch (err: unknown) {
-      toast({ title: "Failed", description: String((err as Error)?.message ?? err), variant: "destructive" });
-      await refreshDiscountRequests();
-    }
-  };
-
-  const handleReopenBill = async (order: Order) => {
-    if (!user?.restaurantUsername) {return;}
-    if (!hasRole('admin')) {
-      showRoleRequiredToast('admin');
-      return;
-    }
-    if (!order.bill_id) {
-      toast({ title: "No bill found for this order", variant: "destructive" });
-      return;
-    }
-    const confirmed = window.confirm('Re-open this closed bill? The table goes back in service and the payment must be approved again.');
-    if (!confirmed) {return;}
-    try {
-      const r = await reopenBill(user.restaurantUsername, order.bill_id);
-      toast({ title: "Bill re-opened", description: `${r.restored_orders ?? 0} order(s) restored — approve the payment again to settle.` });
-      await refreshOrders();
-    } catch (err: unknown) {
-      toast({ title: "Unable to re-open bill", description: String((err as Error)?.message ?? err), variant: "destructive" });
-    }
-  };
-
-  // --- Split tender (multiple payment modes on one bill) --------------------
-  const openSplitPayment = async (order: Order) => {
-    if (!user?.restaurantUsername) {return;}
-    if (!(hasRole("waiter") || hasRole("admin"))) {
-      showRoleRequiredToast("waiter or admin");
-      return;
-    }
-    // The bill total is the TABLE's consolidated grand total (discount + service
-    // charge + taxes), not the single order's total — fetch it for prefill.
-    let total: number | null = null;
-    try {
-      const bill = await getBillForTable(user.restaurantUsername, order.table);
-      const g = Number(bill?.grand_total);
-      if (Number.isFinite(g) && g > 0) {total = Math.round(g * 100) / 100;}
-    } catch { /* leave null — user fills amounts manually */ }
-    setSplitPayTotal(total);
-    setSplitRows(splitDefaultRows(tillOptions, total));
-    setSplitPayOrder(order);
-  };
-
-  const updateSplitRow = (idx: number, patch: Partial<{ method: string; amount: string }>) => {
-    setSplitRows((rows) => {
-      const next = rows.map((r, i) => (i === idx ? { ...r, ...patch } : { ...r }));
-      // Auto-balance: the LAST row absorbs the remainder of the bill total.
-      if (splitPayTotal != null && patch.amount !== undefined && idx < next.length - 1) {
-        const sumOthers = next.slice(0, -1).reduce((s, r) => s + (Number(r.amount) || 0), 0);
-        const rest = Math.round((splitPayTotal - sumOthers) * 100) / 100;
-        next[next.length - 1] = { ...next[next.length - 1], amount: rest > 0 ? rest.toFixed(2) : "0.00" };
-      }
-      return next;
-    });
-  };
-
-  const submitSplitPayment = async () => {
-    if (!user?.restaurantUsername || !user.employeeId || !splitPayOrder) {return;}
-    const splits: PaymentSplit[] = splitRows
-      .map((r) => ({ method: r.method, amount: Math.round((Number(r.amount) || 0) * 100) / 100 }))
-      .filter((r) => r.amount > 0);
-    if (splits.length < 2) {
-      toast({ title: "A split payment needs at least two parts", variant: "destructive" });
-      return;
-    }
-    // A part in a mode that needs a screenshot needs it here too — the same rule
-    // as a single-mode settle, and the one the server enforces on the split.
-    const needShot = splitScreenshotLabels(splits, paymentMethods);
-    let splitProofUrl: string | null = null;
-    if (needShot.length > 0) {
-      alert(`Please upload the payment screenshot for ${needShot.join(", ")}.`);
-      splitProofUrl = await pickPaymentProofScreenshot();
-      if (!splitProofUrl) {
-        toast({ title: "Payment screenshot required", description: `A screenshot is required for ${needShot.join(", ")}.`, variant: "destructive" });
-        return;
-      }
-    }
-    setSplitBusy(true);
-    try {
-      await confirmBillPaymentByWaiter(user.restaurantUsername, user.employeeId, splitPayOrder.id, "Split", splitProofUrl, splits);
-      toast({ title: "Split payment recorded", description: "Awaiting admin approval." });
-      setSplitPayOrder(null);
-      await refreshOrders();
-    } catch (err: unknown) {
-      toast({ title: "Unable to record split payment", description: String((err as Error)?.message ?? err), variant: "destructive" });
-    } finally {
-      setSplitBusy(false);
-    }
-  };
-
-  const refreshOrders = async () => {
-    if (!user?.restaurantUsername) {return;}
-    try {
-      const updatedOrders = await getOrders(user.restaurantUsername);
-      setOrders(Array.isArray(updatedOrders) ? dedupeOrdersById(updatedOrders) : []);
-      if (selectedOrder) {
-        const updatedSelected = Array.isArray(updatedOrders) ? updatedOrders.find(o => o.id === selectedOrder.id) ?? null : null;
-        if (updatedSelected) {setSelectedOrder(updatedSelected);}
-      }
-      if (isAdmin) {
-        try { setDiscountRequests(await getDiscountRequests(user.restaurantUsername)); } catch { /* keep current */ }
-      }
+      refreshDiscounts();
+      refreshOrders();
     } catch (err) {
-      console.error('refreshOrders failed', err);
+      toast({ title: "Failed", description: serverWords(err), variant: "destructive" });
+      refreshDiscounts();
     }
   };
 
-  /*
-    6.7 — PRINT BILL IN THE TABLE PREVIEW, full size beside Add Order.
+  /* ── 6.7 — the table preview's Print control (C3 claim + scope) ───────── */
 
-    It is the SAME `triggerPrint` the row uses, so the C3 claim still goes to the
-    server before any paper, and the same `printScopeForTable` decides whether a
-    waiter who has already printed gets the button or the sentence. The print
-    page resolves the TABLE's running bill from whichever of its orders it is
-    handed, so the anchor is simply the newest live ticket on the table; with
-    none there is no bill to print, and the button says so by being disabled.
-  */
   const previewPrintAnchor: Order | null = selectedTableName
-    ? visibleOrders
+    ? sessionOrders
         .filter((order) => (order.table || "").toLowerCase() === selectedTableName.toLowerCase() && !isOrderCancelled(order) && order.status !== "Closed")
         .reduce<Order | null>((newest, order) => (
           newest === null || Date.parse(order.created_at ?? "") > Date.parse(newest.created_at ?? "") ? order : newest
         ), null)
     : null;
   const previewPrintControl = !selectedTableName ? null : !printScopeForTable(selectedTableName).print ? (
-    <div className="flex min-h-14 items-center rounded-md border px-3 text-sm text-muted-foreground">
+    <div className="flex min-h-14 items-center rounded-md border border-border px-3 text-sm text-muted-foreground">
       Bill printed — a reprint has to be made by a senior.
     </div>
   ) : (
@@ -1791,1027 +1068,509 @@ function OrdersDashboard() {
       className="h-14 w-full text-base [&_svg]:size-5"
       disabled={previewPrintAnchor === null}
       title={previewPrintAnchor === null ? "Nothing has been ordered on this table yet" : "Print this table's bill"}
-      onClick={() => { if (previewPrintAnchor) { void triggerPrint(previewPrintAnchor); } }}
+      onClick={() => { if (previewPrintAnchor) { triggerPrint(previewPrintAnchor); } }}
     >
       <Printer /> Print Bill
     </Button>
   );
 
-  // The waiter-view money cuts — see src/lib/orders-grid.ts for all three.
-  const gridColumns = ordersGridColumns(user);
-  const showsTotalColumn = gridColumns.includes("total");
-  const showsApcZoneColumn = gridColumns.includes("apc_zone");
+  /* ── The detail sheet's web-extra actions ─────────────────────────────── */
 
-  const getApcBadgeClass = (zone?: "red" | "yellow" | "green") => {
-    if (zone === "green") {return "bg-green-100 text-green-800 border-green-200";}
-    if (zone === "yellow") {return "bg-yellow-100 text-yellow-900 border-yellow-200";}
-    if (zone === "red") {return "bg-red-100 text-red-800 border-red-200";}
-    return "";
+  const cfdUrlFor = (order: Order): string | null => {
+    const tbl = tables.find((t) => t.name.toLowerCase() === order.table.toLowerCase());
+    if (!tbl?.qr_token || !user?.restaurantUsername) { return null; }
+    return `/cfd/${encodeURIComponent(user.restaurantUsername)}?t=${encodeURIComponent(tbl.qr_token)}`;
   };
 
+  const sheetExtras = (order: Order): React.ReactNode => {
+    const cancelled = isOrderCancelled(order);
+    const printScope = printScopeForTable(order.table);
+    const billStage =
+      order.status === "Bill Verification"
+      || order.status === "Payment Pending Approval"
+      || order.status === "Paid"
+      || order.status === "Closed";
+    const cfdUrl = cfdUrlFor(order);
+    return (
+      <>
+        {/* C3 — a waiter gets Print Bill and keeps it, once; the ledger's
+            refusal is a sentence, not a blank space. */}
+        {isWaiterOnly ? (
+          printScope.print ? (
+            <Button variant="outline" size="sm" disabled={cancelled} title="Print this table's bill" onClick={() => { triggerPrint(order); }}>
+              <Printer /> Print Bill
+            </Button>
+          ) : (
+            <span className="text-[11px] leading-tight text-muted-foreground">
+              Bill printed — a reprint has to be made by a senior.
+            </span>
+          )
+        ) : (
+          <Button variant="outline" size="sm" disabled={!billStage} title="Print this table's bill" onClick={() => { triggerPrint(order); }}>
+            <Printer /> Print Bill
+          </Button>
+        )}
+        {/* 6.5 — the bill operations menu (discount / loyalty / split / merge
+            / refund / name-GSTIN), hidden from a scoped waiter. */}
+        {!isWaiterOnly && order.table && !cancelled ? (
+          <BillActions
+            restaurantId={rid}
+            tableName={order.table}
+            isAdmin={isAdmin}
+            onChanged={() => { refreshOrders(); }}
+          />
+        ) : null}
+        {/* Customer-facing display for this table (public page; the signed
+            table token is the auth). */}
+        {cfdUrl !== null ? (
+          <Button variant="ghost" size="icon" title="Open customer display" onClick={() => { window.open(cfdUrl, "_blank"); }}>
+            <MonitorSmartphone className="h-4 w-4" />
+            <span className="sr-only">Open customer display</span>
+          </Button>
+        ) : null}
+        {!isWaiterOnly ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" title="More actions">
+                <MoreHorizontal className="h-4 w-4" />
+                <span className="sr-only">More actions</span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuLabel>Actions</DropdownMenuLabel>
+              {cancelled ? (
+                <div className="max-w-[15rem] px-2 pb-1.5 text-xs text-muted-foreground">{CANCELLED_LOCK_REASON}</div>
+              ) : null}
+              {mayAddOrder ? (
+                <DropdownMenuItem
+                  disabled={billStage || cancelled}
+                  onClick={() => { setUpdateOrderTarget(order); }}
+                >
+                  Update Order
+                </DropdownMenuItem>
+              ) : null}
+              {canSettleBill ? (
+                <DropdownMenuItem
+                  disabled={order.status !== "Bill Verification"}
+                  onClick={() => { setEditBillTarget(order); }}
+                >
+                  Edit Bill
+                </DropdownMenuItem>
+              ) : null}
+              {canSettleBill ? (
+                <DropdownMenuItem
+                  disabled={order.status !== "Served"}
+                  onClick={() => { requestBillVerification(order); }}
+                >
+                  Bill Verification
+                </DropdownMenuItem>
+              ) : null}
+              {/* The one settle door — the unified payment sheet (tenders,
+                  splits, tips, proof, till, Settle as NC), Flutter's settle. */}
+              {canSettleBill ? (
+                <DropdownMenuItem
+                  disabled={cancelled || order.status === "Payment Pending Approval" || order.status === "Paid" || !!order.bill_closed_at}
+                  onClick={() => { setSettleTarget(order); }}
+                >
+                  Settle bill…
+                </DropdownMenuItem>
+              ) : null}
+              {/* C2 — only someone who may settle sees a settle control. */}
+              {canSettleBill ? (
+                <>
+                  <DropdownMenuItem
+                    onClick={() => { void handleAdminApprovePayment(order); }}
+                    disabled={order.status !== "Payment Pending Approval"}
+                  >
+                    Approve Payment
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => { handleCloseBill(order); }}
+                    disabled={order.status !== "Paid"}
+                  >
+                    Close Bill
+                  </DropdownMenuItem>
+                </>
+              ) : null}
+              {isAdmin ? (
+                <DropdownMenuItem
+                  onClick={() => { handleReopenBill(order); }}
+                  disabled={!order.bill_closed_at || !order.bill_id || cancelled}
+                >
+                  Re-open Bill (Admin)
+                </DropdownMenuItem>
+              ) : null}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null}
+      </>
+    );
+  };
+
+  /* ── Render ───────────────────────────────────────────────────────────── */
+
+  const openOrderProofUrl = openOrder ? normalizeProofPreviewUrl(openOrder.payment_proof_screenshot_url) : null;
+  const openOrderApc = openOrder ? orderApcByOrderId.get(openOrder.id) ?? null : null;
+
+  const hiddenNote = hiddenCount > 0 ? (
+    <HiddenOrdersNote hidden={hiddenCount} canOpenHistory={canOpenHistory} onOpenHistory={openHistory} />
+  ) : null;
 
   return (
-    <div className="grid gap-4 md:gap-8">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h1 className="text-lg font-semibold md:text-2xl">Orders</h1>
-          <p className="text-sm text-muted-foreground">
-            Reporting only. Start table-side ordering from the Tables view.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button variant="outline" onClick={() => { router.push("/dashboard/tables"); }}>Open Tables</Button>
+    <div className="relative grid gap-5 pb-24">
+      {/* The quiet outlet strip (only for multi-outlet tenants) + the one
+          header action kept from the web page (tax defaults, admin-only). */}
+      {(ordersScope && ordersScope.outlets.length >= 2) || isAdmin ? (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="min-w-0 flex-1">
+            <OutletScopeBar scope={ordersScope} canSwitchOutlet={canSwitchOutlet} />
+          </div>
           {isAdmin ? (
-            <Button variant="outline" onClick={() => { setIsDefaultTaxDialogOpen(true); }}>Modify Default Tax</Button>
+            <Button variant="ghost" size="sm" className="shrink-0" onClick={() => { setIsDefaultTaxDialogOpen(true); }}>
+              <SlidersHorizontal /> Modify Default Tax
+            </Button>
           ) : null}
         </div>
-      </div>
-      {/* Names the outlet this grid is scoped to, and when it is empty explains
-          whether the orders are on another outlet or have aged into History —
-          instead of leaving a bare table that reads as data loss. */}
-      {/* Counted off the list actually on screen, so the notice can never say
-          "showing 12" over a table of 11 — C3 retires a printed table from a
-          waiter's list, and a count taken before that filter would disagree
-          with the rows underneath it. */}
-      <OrdersScopeNotice scope={ordersScope} visibleCount={visibleOrders.length} canSwitchOutlet={canSwitchOutlet} />
-      {/* 1.8 / 1.3 / 6.7 — the selected table's preview, first thing under the
-          header whenever the Tables page (or a link) has named a table. */}
+      ) : null}
+
+      {/* The notification banner — persistent until dismissed, copper when the
+          order is right here, warning when it is not (finding 25). */}
+      {focusRequested ? (
+        <FocusBanner
+          found={focusFound}
+          message={focusFound
+            ? "Showing the order from your notification."
+            : "That order isn't in this list — it may be settled and past the live window, or on another outlet."}
+          actions={focusFound ? (
+            focusedTableName && focusedTableName !== "—" && canOpenTables ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => { router.push(`/dashboard/tables?focus=${encodeURIComponent(JSON.stringify({ table: focusedTableName }))}`); }}
+              >
+                <Table2 /> Open {focusedTableName}
+              </Button>
+            ) : null
+          ) : (
+            <>
+              {canOpenHistory ? (
+                <Button size="sm" variant="outline" onClick={openHistory}>
+                  <CalendarDays /> History
+                </Button>
+              ) : null}
+              {canSwitchOutlet && (ordersScope?.outlets.length ?? 0) > 1 ? (
+                <Button size="sm" variant="outline" onClick={() => { void applySelectedOutlet(ALL_OUTLETS); }}>
+                  <Layers /> All outlets
+                </Button>
+              ) : null}
+            </>
+          )}
+          onDismiss={dismissFocus}
+          showAllLabel="Show all orders"
+        />
+      ) : null}
+
+      {/* 1.8 / 1.3 / 6.7 — the selected table's preview, first thing on the
+          page whenever the Tables page (or "Table bill · APC") named a table. */}
       {selectedTableName ? (
         <TableKotPreview
-          restaurantId={user?.restaurantUsername ?? ""}
+          restaurantId={rid}
           tableName={selectedTable?.name ?? selectedTableName}
-          // displayOrders, not visibleOrders: C3 retires a printed table from a
-          // waiter's LIST, but the preview names that table explicitly, and
-          // reading the filtered list made a table with live KOTs say "No live
-          // orders on this table yet". Cancel is locked instead (see prop).
-          orders={displayOrders}
+          // rawOrders, not sessionOrders: C3 retires a printed table from a
+          // waiter's LIST, but the preview names the table explicitly.
+          orders={rawOrders}
           cancelLocked={printScopeForTable(selectedTable?.name ?? selectedTableName).retiresTable}
-          // R2 item 1 — the same gate as the grid's 6.5 Bill menu: every session
-          // except a scoped waiter, whose bill operations are hidden there too.
           canEditCustomer={!isWaiterOnly}
-          onAddOrder={() => { setIsAddDialogOpen(true); }}
+          onAddOrder={() => {
+            const padTable = selectedTable?.name ?? selectedTableName;
+            setPadRequest({
+              kind: "dine",
+              table: padTable,
+              occupyOnSend: selectedTable !== null && selectedTable.status !== "Occupied",
+              // order-entry.md 27: a printed bill's Add Order is the table
+              // sheet's "Add to printed bill" — the pad's orange strip and flag.
+              addToPrintedBill: serverSaysBillPrinted(billPrintByTable.get(padTable.toLowerCase()) ?? null),
+            });
+          }}
           printControl={previewPrintControl}
-          onChanged={() => { void refreshOrders(); }}
+          onChanged={() => { refreshOrders(); }}
           onClose={() => { router.push("/dashboard/orders"); }}
         />
       ) : null}
-      {isAdmin && discountRequests.length > 0 ? (
-        <Card className="border-amber-300">
-          <CardHeader>
-            <CardTitle>Discount approvals</CardTitle>
-            <CardDescription>
-              Staff discounts above your approval threshold wait here until a manager decides.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {discountRequests.map((request) => (
-              <div
-                key={request.id}
-                id={requestHighlight.rowProps(request.id).id}
-                className={`flex flex-wrap items-center justify-between gap-2 rounded-md border p-3 ${requestHighlight.rowProps(request.id).className}`}
-              >
-                <div className="text-sm">
-                  <div className="font-medium">
-                    Table {request.table_name ?? "?"} · {request.discount_value}{request.discount_type === "percent" ? "%" : ""} off
-                    {" "}(≈{currencySymbol}{request.amount.toFixed(2)})
-                  </div>
-                  <div className="text-xs text-muted-foreground">
-                    Requested by {request.requested_by ?? "unknown"} · {formatOrderedAt(request.created_at, timezone)}
-                    {request.reason ? ` · “${request.reason}”` : ""}
-                  </div>
-                </div>
-                <div className="flex gap-2">
-                  <Button size="sm" variant="outline" onClick={() => { void handleDecideDiscount(request, false); }}>Reject</Button>
-                  <Button size="sm" onClick={() => { void handleDecideDiscount(request, true); }}>Approve</Button>
-                </div>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
+
+      {/* Admin approval queue for staff discounts (web-extra, kept). */}
+      {isAdmin ? (
+        <DiscountApprovals
+          requests={discounts.data ?? []}
+          highlight={requestHighlight}
+          currencySymbol={currencySymbol}
+          formatWhen={(iso) => formatOrderedAt(iso, timezone)}
+          onDecide={(request, approve) => { void handleDecideDiscount(request, approve); }}
+        />
       ) : null}
-      <KitchenDisplay
-        orders={displayOrders}
-        restaurantId={user?.restaurantUsername ?? ""}
-        onRefresh={refreshOrders}
-        managedSections={kitchenSections}
-        initialStation={stationParam || undefined}
-      />
-      <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
-        {/* 6.8 — the dialog scrolls inside the viewport, so the Send order bar
-            pinned to the top of the form stays on screen however long the
-            order grows. */}
-        <DialogContent className="sm:max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Add New Order</DialogTitle>
-            <DialogDescription>
-              {selectedTable ? `Taking orders for ${selectedTable.name}. Add items directly below.` : "Choose a table, then add items below."}
-            </DialogDescription>
-          </DialogHeader>
-          <OrderForm
-            onSubmit={handleAddOrder}
-            menuItems={menuItems}
-            variationsByMenuId={variationsByMenuId}
-            tables={tables}
-            selectedTableName={selectedTable?.name ?? selectedTableName}
-            onClearSelectedTable={() => { router.push("/dashboard/orders"); }}
+
+      {/* The grid: three sections of clickable tiles at 4/3/2/1 columns. */}
+      {bundle.loading ? (
+        <SkeletonRows rows={6} />
+      ) : bundle.error != null ? (
+        <LoadErrorState whatFailed="Couldn't load orders." error={bundle.error} onRetry={bundle.retry} />
+      ) : sorted.length === 0 ? (
+        <div className="grid gap-4">
+          <OrdersEmptyState
+            scope={ordersScope}
+            canSwitchOutlet={canSwitchOutlet}
+            canOpenHistory={canOpenHistory}
+            onOpenHistory={openHistory}
           />
-        </DialogContent>
-      </Dialog>
-      {/* Money analytics — hidden from a waiter-only session exactly as the
-          Monthly APC / Revenue / Covers cards below already are. */}
-      {showsTableApcSummary(user) ? (
-      <Card>
-        <CardHeader>
-          <CardTitle>Table APC Summary</CardTitle>
-          <CardDescription>
-            Final bill performance by table for the current month.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {tableApcSummaries.length > 0 ? (
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              {tableApcSummaries.map((summary) => (
-                <Card key={summary.table} className="border-dashed">
-                  <CardHeader className="pb-2">
-                    <CardDescription>{summary.table}</CardDescription>
-                    <CardTitle className="text-xl">{currencySymbol}{summary.apc.toFixed(2)}</CardTitle>
-                  </CardHeader>
-                  <CardContent className="pt-0 text-sm text-muted-foreground">
-                    <div>{summary.orders} bill{summary.orders === 1 ? "" : "s"}</div>
-                    <div>{summary.covers} covers</div>
-                    <div>{currencySymbol}{summary.revenue.toFixed(2)} revenue</div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">No table APC data available yet.</p>
-          )}
-        </CardContent>
-      </Card>
-      ) : null}
-      <Card>
-        <CardHeader>
-          <CardTitle>Current Orders</CardTitle>
-          <CardDescription>
-            A list of all active orders in the restaurant. Click a row to see details.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {!isWaiterOnly ? (
-          <div className="mb-4 grid gap-3 md:grid-cols-3">
-            <Card className="border-dashed">
-              <CardHeader className="pb-2">
-                <CardDescription>Monthly APC</CardDescription>
-                <CardTitle className="text-xl">
-                  {monthlyApcInsight ? `${currencySymbol}${monthlyApcInsight.monthly_apc.toFixed(2)}` : "N/A"}
-                </CardTitle>
-              </CardHeader>
-            </Card>
-            <Card className="border-dashed">
-              <CardHeader className="pb-2">
-                <CardDescription>Total Revenue</CardDescription>
-                <CardTitle className="text-xl">
-                  {monthlyApcInsight ? `${currencySymbol}${monthlyApcInsight.total_revenue.toFixed(2)}` : "N/A"}
-                </CardTitle>
-              </CardHeader>
-            </Card>
-            <Card className="border-dashed">
-              <CardHeader className="pb-2">
-                <CardDescription>Total Covers</CardDescription>
-                <CardTitle className="text-xl">
-                  {monthlyApcInsight ? monthlyApcInsight.total_covers : "N/A"}
-                </CardTitle>
-              </CardHeader>
-            </Card>
-          </div>
-          ) : null}
-
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Table</TableHead>
-                {/* D1 + D2 ride in this column rather than two new ones: they are
-                    facts ABOUT the placed instant, and a live board that has to
-                    scroll sideways to show how late a table is has answered
-                    nothing. */}
-                <TableHead className="whitespace-nowrap">Placed</TableHead>
-                <TableHead>Order Details</TableHead>
-                {/* C4 — a waiter-only session's payload has no prices, and this
-                    column used to read ₹0.00 on every row. The column goes. */}
-                {showsTotalColumn ? <TableHead className="hidden md:table-cell text-right">Total</TableHead> : null}
-                {showsApcZoneColumn ? <TableHead className="hidden md:table-cell">APC Zone</TableHead> : null}
-                <TableHead>Status</TableHead>
-                <TableHead>
-                  <span className="sr-only">Actions</span>
-                </TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {visibleOrders.map((order) => {
-                const apcInsight = orderApcByOrderId.get(String(order.id));
-                // The handle staff quote when they reprint, cancel or move this
-                // ticket. "" on a backend that does not send `kot_nos`.
-                const kot = kotLabel(order);
-                /*
-                  D1 — time since the ticket was placed, which is what a waiter
-                  reads to answer "is this table waiting". D2 — order to bill
-                  settlement, counting live and freezing at the real figure once
-                  the bill closes.
-
-                  BOTH ARE THE SERVER'S, read off this order's `service` block
-                  and ticked forward only by how long this device has held the
-                  response. Nothing here subtracts a timestamp against the
-                  browser's clock, which is what makes this row and the same
-                  table on the owner app report one duration instead of two.
-
-                  Both are null when the backend sent no clock — an order the
-                  server could not date, or a backend older than the field — and
-                  the cell then draws the dash it always drew. ABSENT IS NOT
-                  ZERO: a clock reading "0s" on a ticket that went in twenty
-                  minutes ago is worse than no clock.
-
-                  A CANCELLED ticket gets neither: it is not something anybody is
-                  waiting for, and a red "48m" beside a cancelled order is a
-                  fabricated alarm.
-                */
-                const cancelled = isOrderCancelled(order);
-                const serviceClock = cancelled ? null : readServiceClock(order);
-                const elapsedMs = serviceClock === null ? null : elapsedSincePlaced(serviceClock, clockTickMs);
-                const span = serviceClock === null ? null : elapsedToSettlement(serviceClock, clockTickMs);
-                const elapsedTone = waitTone(elapsedMs);
-                /*
-                  THE FIVE RECORDED CONTROL ACTS — comp, void-with-reason,
-                  service-charge waiver, split tender + tip, and the till. Each
-                  writes a control ledger naming a reason and a second person,
-                  and each is what the matching MIS report reads.
-
-                  Built once per row and placed by the block below, because a
-                  scoped waiter and everybody else reach it under DIFFERENT
-                  conditions and a second copy of this JSX is how the two start
-                  disagreeing about which lines the comp route can address.
-
-                  Its per-item permission gating lives INSIDE the component and
-                  reads the server's capability flags (`comp_item`, `void_order`,
-                  `waive_service_charge`), so an identity that holds some of the
-                  five sees the menu and is told which grant the others need
-                  rather than tapping into a 403.
-                */
-                const captureActions = order.table && order.status !== 'Cancelled' ? (
-                  <CaptureActions
-                    restaurantId={user?.restaurantUsername ?? ''}
-                    order={{
-                      id: order.id,
-                      table: order.table,
-                      status: order.status,
-                      // The flattened lines are the ones the comp route addresses by
-                      // id, and they carry the server's own `nc` flags — which is how
-                      // an already-comped line is told apart from a chargeable one
-                      // without matching names against a ledger.
-                      items: (order.items_flattened ?? order.items).map((i) => ({
-                        id: i.id,
-                        name: i.name,
-                        quantity: i.quantity,
-                        price: i.price,
-                        nc: i.nc === true,
-                        nc_id: i.nc_id ?? null,
-                        nc_kind: i.nc_kind ?? null,
-                      })),
-                    }}
-                    onChanged={() => { void refreshOrders(); }}
-                  />
-                ) : null;
-                return (
-                <TableRow
-                  key={order.id}
-                  id={`order-row-${order.id}`}
-                  tabIndex={0}
-                  onClick={() => { handleRowClick(order); }}
-                  className={`cursor-pointer ${highlightedOrderId === String(order.id) ? 'ring-2 ring-primary/60' : ''}`}
-                >
-                  <TableCell className="font-medium">
-                    <div>{order.table}</div>
-                    {/* Sits with the table name because those two together are
-                        how a ticket is named out loud ("KOT 218 on table 7") —
-                        and because an absent number then simply costs the row
-                        nothing, leaving it byte-for-byte what it was. */}
-                    {kot ? (
-                      <div className="mt-0.5 flex items-center gap-1 text-xs font-normal text-muted-foreground">
-                        <ReceiptText className="h-3 w-3 shrink-0" />
-                        <span className="tabular-nums">{kot}</span>
-                      </div>
-                    ) : null}
-                  </TableCell>
-                  {/* When the ticket was placed. The clock alone for today's
-                      orders (the common case — the grid is a live board), with
-                      the date appended once a row is older, so a stale ticket
-                      can't be misread as a fresh one. Hover gives the full
-                      instant with the zone spelled out. */}
-                  <TableCell
-                    className="whitespace-nowrap"
-                    title={order.created_at ? formatFullDateTime(order.created_at, timezone) : "Placed time not recorded for this order"}
-                  >
-                    {order.created_at ? (
-                      <div className="flex items-center gap-1.5">
-                        <Clock className="h-3 w-3 shrink-0 text-muted-foreground" />
-                        <span className="tabular-nums">{formatTime(order.created_at, timezone)}</span>
-                        {dayKeyInZone(order.created_at, timezone) !== todayKey ? (
-                          <span className="text-xs text-muted-foreground">
-                            {formatDate(order.created_at, timezone)}
-                          </span>
-                        ) : null}
-                      </div>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">—</span>
-                    )}
-                    {elapsedMs !== null ? (
-                      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
-                        <span
-                          className={cn(
-                            "tabular-nums",
-                            elapsedTone === "late" ? "font-semibold text-red-500"
-                              : elapsedTone === "watch" ? "font-medium text-amber-500"
-                                : "text-muted-foreground",
-                          )}
-                          title="Time since this order was placed."
-                        >
-                          {formatDuration(elapsedMs)} ago
-                        </span>
-                        {span ? (
-                          <span
-                            className="tabular-nums text-muted-foreground"
-                            title={span.settled
-                              ? "Order to settlement — the final figure for this ticket."
-                              : "Order to settlement — still running. It stops when the bill is settled."}
-                          >
-                            · {span.settled ? `settled in ${formatDuration(span.ms)}` : `open ${formatDuration(span.ms)}`}
-                          </span>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </TableCell>
-                  <TableCell>
-                    <div className="font-medium">{(order as any).items_flattened?.length ? (order as any).items_flattened.map((i: any) => `${i.quantity}x ${i.name}${i.note ? ` (${i.note})` : ""}`).join(', ') : order.items.map(i => `${i.quantity}x ${i.name}${i.note ? ` (${i.note})` : ""}`).join(', ')}</div>
-                    {order.payment_method ? (
-                      <div className="text-xs text-muted-foreground">
-                        Payment Method: {order.payment_method}
-                      </div>
-                    ) : null}
-                    {order.payment_proof_screenshot_url ? (
-                      <button
-                        type="button"
-                        className="text-xs text-primary underline"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          const proofUrl = normalizeProofPreviewUrl(order.payment_proof_screenshot_url);
-                          if (!proofUrl) {
-                            alert("Payment screenshot URL is invalid.");
-                            return;
-                          }
-                          setProofPreviewUrl(proofUrl);
-                          setIsProofPreviewOpen(true);
-                        }}
-                      >
-                        View payment screenshot
-                      </button>
-                    ) : null}
-                  </TableCell>
-                  {showsTotalColumn ? (
-                  <TableCell className="hidden md:table-cell text-right">{currencySymbol}{order.total.toFixed(2)}</TableCell>
-                  ) : null}
-                  {showsApcZoneColumn ? (
-                  <TableCell className="hidden md:table-cell">
-                    {apcInsight ? (
-                      <Badge variant="outline" className={getApcBadgeClass(apcInsight.zone)}>
-                        {apcInsight.zone.toUpperCase()} ({currencySymbol}{apcInsight.target_total.toFixed(2)} target)
-                      </Badge>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">No APC data</span>
-                    )}
-                  </TableCell>
-                  ) : null}
-                  <TableCell>
-                    {order.status === "Preparing" && !isOrderBarked(order) ? (
-                      <Badge variant="outline" className="border-dashed text-muted-foreground">Not barked</Badge>
-                    ) : (
-                      <Badge variant={getStatusVariant(order.status)}>
-                        {order.status}
-                      </Badge>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    {/*
-                      C1 — A WAITER GETS ADD ORDER AND PRINT BILL, AND KEEPS THEM.
-
-                      This cell used to render NOTHING AT ALL for a waiter
-                      (`isWaiterOnly ? null : …`), which took Print Bill away from
-                      the one person C1 says must have it — the requirement asks
-                      for the money controls to be hidden, not for the waiter's
-                      own two buttons to be. So the row now draws for everyone and
-                      each control is gated individually:
-
-                        * Print Bill — kept. It renders the order this session can
-                          already read; there is no server act behind it.
-                        * The five recorded control acts (comp, void, waiver,
-                          tenders, till) — offered to a scoped waiter EXACTLY WHEN
-                          THE SERVER'S CAPABILITY FLAGS SAY SO, and to nobody else
-                          on that role. The stock waiter holds none of the three,
-                          so for them the menu does not render at all: C1 is
-                          explicit that "Waive Service Charge" and "Comp an Item"
-                          must be COMPLETELY HIDDEN, not merely disabled, and
-                          CaptureActions' honest-degrade (show it, say it needs a
-                          manager) is the wrong answer for that role. A waiter the
-                          TENANT has granted one gets it, because that grant is
-                          the server's answer and this screen does not overrule it.
-                        * Bill operations (discount / split / merge / refund) —
-                          hidden from a scoped waiter; each is also refused by its
-                          own route.
-                        * Bark, status walk, payment approval, close, delete —
-                          hidden too, each also refused by its own route. The
-                          waiter's own confirm-payment step rides on "Confirm
-                          Payment Method", which the core waiter role does not
-                          hold, so hiding it here matches the server rather than
-                          contradicting it.
-                    */}
-                    <div className="flex items-center justify-end gap-1" onClick={(e) => { e.stopPropagation(); }}>
-                    {isWaiterOnly ? (
-                      <>
-                      {/*
-                        C3 — THE ONE PRINT, AND WHAT IT COSTS THE WAITER.
-
-                        "Waiters can only execute the 'Print Bill' action once.
-                        After clicking it, the button must disappear."
-
-                        THE BUTTON IS DRAWN FROM THE SERVER'S LEDGER AND FROM
-                        NOTHING ELSE. `print_count` / `bill_printed_at` ride on
-                        the /get-tables row for this table, so the answer is the
-                        same on this laptop, on the tablet by the pass and on a
-                        browser that has never seen this table before. The
-                        Flutter app got this wrong first — it remembered the
-                        press in the DEVICE, which survives a back-navigation and
-                        an app restart and survives neither a reinstall nor a
-                        second tablet — and bill_print_state.ts's header is the
-                        write-up of that defect. This is not a place to have it
-                        again.
-
-                        AND THE SPACE IS NOT LEFT BLANK. A waiter handed nothing
-                        where a control was presses it again on the next device
-                        they find; a waiter told the bill is printed and with a
-                        senior walks to the pass. The row itself also leaves this
-                        waiter's list (see `visibleOrders`) — their job at that
-                        table is done — but the sentence has to be here for the
-                        moment between the press and the reload, and for a row
-                        still on screen from the last poll.
-                      */}
-                      {printScopeForTable(order.table).print ? (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 px-2 text-xs"
-                        title="Print this table's bill"
-                        onClick={() => { void triggerPrint(order); }}
-                        disabled={cancelled}
-                      >
-                        <Printer className="mr-1 h-3.5 w-3.5" /> Print Bill
-                      </Button>
-                      ) : (
-                        <span className="px-2 text-[11px] leading-tight text-muted-foreground">
-                          Bill printed — a reprint has to be made by a senior.
-                        </span>
-                      )}
-                      {/*
-                        THE SERVER'S GRANT OUTRANKS THE ROLE.
-
-                        This branch used to end here, which meant a scoped waiter
-                        got the Controls menu taken away EVEN WHEN THE SERVER HAD
-                        SAID THEY MAY USE IT. `scope.waiter_only` and
-                        `scope.comp_item` are two answers from the same block;
-                        letting the first veto the second is exactly the
-                        client-side re-derivation the block exists to end, and it
-                        is what makes a tenant's deliberate grant — "our senior
-                        waiter may void a KOT" — silently do nothing on the web
-                        while working on the phone.
-
-                        C1 IS STILL SATISFIED, AND BY THE SERVER RATHER THAN BY A
-                        ROLE NAME. C1 asks for "Waive Service Charge" and "Comp an
-                        Item" to be COMPLETELY HIDDEN from a waiter, and the stock
-                        waiter role holds none of the three control acts, so this
-                        condition is false for them and the menu does not render
-                        at all — no greyed row, no honest-degrade. It renders only
-                        for a waiter the tenant has positively granted one, which
-                        is the same sentence read the other way round.
-
-                        Hiding is the courtesy either way: every item behind it is
-                        gated on the route as well.
-                      */}
-                      {canAnyControlAct ? captureActions : null}
-                      </>
-                    ) : (
-                    <>
-                    {order.status === "Preparing" && !isOrderBarked(order) && !isOrderCancelled(order) ? (
-                      <Button
-                        size="sm"
-                        className="h-7 px-2 text-xs"
-                        title="Bark this order to the kitchen — starts the prep timers"
-                        onClick={() => { void handleBarkOrder(order); }}
-                      >
-                        <Megaphone className="mr-1 h-3.5 w-3.5" /> Bark
-                      </Button>
-                    ) : null}
-                    {order.table && order.status !== 'Cancelled' && (
-                      <BillActions
-                        restaurantId={user?.restaurantUsername ?? ''}
-                        tableName={order.table}
-                        isAdmin={isAdmin}
-                        onChanged={() => { void refreshOrders(); }}
-                      />
-                    )}
-                    {captureActions}
-                    {(() => {
-                      // Customer-facing display: full-screen live bill for this table
-                      // (public page — the signed table token is the auth).
-                      const tbl = tables.find((t) => t.name.toLowerCase() === order.table?.toLowerCase());
-                      if (!tbl?.qr_token || !user?.restaurantUsername) {return null;}
-                      const cfdUrl = `/cfd/${encodeURIComponent(user.restaurantUsername)}?t=${encodeURIComponent(tbl.qr_token)}`;
-                      return (
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          title="Open customer display"
-                          onClick={() => window.open(cfdUrl, '_blank')}
-                        >
-                          <MonitorSmartphone className="h-4 w-4" />
-                          <span className="sr-only">Open customer display</span>
-                        </Button>
-                      );
-                    })()}
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button aria-haspopup="true" size="icon" variant="ghost" onClick={(e) => { e.stopPropagation(); }}>
-                          <MoreHorizontal className="h-4 w-4" />
-                          <span className="sr-only">Toggle menu</span>
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" onClick={(e) => { e.stopPropagation(); }}>
-                        <DropdownMenuLabel>Actions</DropdownMenuLabel>
-                        {isOrderCancelled(order) ? (
-                          <div className="px-2 pb-1.5 text-xs text-muted-foreground max-w-[15rem]">{CANCELLED_LOCK_REASON}</div>
-                        ) : null}
-                        <DropdownMenuItem
-                          disabled={
-                            order.status === 'Bill Verification'
-                            || order.status === 'Payment Pending Approval'
-                            || order.status === 'Paid'
-                            || order.status === 'Closed'
-                            || order.status === 'Cancelled'
-                          }
-                          onClick={() => {
-                            runAdminAction(() => {
-                              setSelectedOrder(order);
-                              setIsDetailsOpen(true);
-                            });
-                          }}
-                        >
-                          Update Order
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          disabled={order.status !== 'Bill Verification'}
-                          onClick={() => {
-                            runAdminAction(() => {
-                              setSelectedOrder(order);
-                              setIsEditDialogOpen(true);
-                            });
-                          }}
-                        >
-                          Edit Bill
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                                  onClick={() => {
-                                    runAdminAction(() => { void handleSetBillVerification(order); });
-                                  }}
-                                  disabled={
-                                    order.status === 'Preparing'||
-                                    order.status === 'Bill Verification'
-                                    || order.status === 'Payment Pending Approval'
-                                    || order.status === 'Paid'
-                                    || order.status === 'Closed'
-                                    || order.status === 'Cancelled'
-                                  }
-                                >
-                                  Bill Verification
-                                </DropdownMenuItem>
-                        {/* <DropdownMenuSub>
-                          <DropdownMenuSubTrigger>Update Status</DropdownMenuSubTrigger>
-                            <DropdownMenuSubContent>
-                                <DropdownMenuItem
-                                  onClick={() => {
-                                    runAdminAction(() => { void updateOrderStatus(order.id, 'Preparing'); });
-                                  }}
-                                  disabled={
-                                    order.status === 'Bill Verification'
-                                    || order.status === 'Payment Pending Approval'
-                                    || order.status === 'Paid'
-                                    || order.status === 'Closed'
-                                    || order.status === 'Cancelled'
-                                  }
-                                >
-                                  Preparing
-                                </DropdownMenuItem>
-                                <DropdownMenuItem
-                                  onClick={() => {
-                                    runAdminAction(() => { void updateOrderStatus(order.id, 'Served'); });
-                                  }}
-                                  disabled={
-                                    order.status === 'Bill Verification'
-                                    || order.status === 'Payment Pending Approval'
-                                    || order.status === 'Paid'
-                                    || order.status === 'Closed'
-                                    || order.status === 'Cancelled'
-                                  }
-                                >
-                                  Served
-                                </DropdownMenuItem>
-                                <DropdownMenuItem
-                                  onClick={() => {
-                                    runAdminAction(() => { void handleSetBillVerification(order); });
-                                  }}
-                                  disabled={
-                                    order.status === 'Preparing'||
-                                    order.status === 'Bill Verification'
-                                    || order.status === 'Payment Pending Approval'
-                                    || order.status === 'Paid'
-                                    || order.status === 'Closed'
-                                    || order.status === 'Cancelled'
-                                  }
-                                >
-                                  Bill Verification
-                                </DropdownMenuItem>
-                            </DropdownMenuSubContent>
-                        </DropdownMenuSub> */}
-                        <DropdownMenuSub>
-                          <DropdownMenuSubTrigger
-                            disabled={order.status !== "Bill Verification"}
-                            className="data-[disabled]:opacity-50 data-[disabled]:cursor-not-allowed"
-                          >
-                            Confirm Payment (Waiter)
-                          </DropdownMenuSubTrigger>
-                          <DropdownMenuSubContent>
-                            {tillOptions.map((option) => (
-                              <DropdownMenuItem
-                                key={option.value}
-                                onClick={() => {
-                                  void handleWaiterConfirmPayment(order, option.value);
-                                }}
-                                disabled={order.status !== "Bill Verification"}
-                                className="data-[disabled]:opacity-50 data-[disabled]:cursor-not-allowed"
-                              >
-                                {option.label}
-                              </DropdownMenuItem>
-                            ))}
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem
-                              onClick={() => { void openSplitPayment(order); }}
-                              disabled={order.status !== "Bill Verification"}
-                              className="data-[disabled]:opacity-50 data-[disabled]:cursor-not-allowed"
-                            >
-                              Split payment…
-                            </DropdownMenuItem>
-                          </DropdownMenuSubContent>
-                        </DropdownMenuSub>
-                        {/* C2 — ONLY SOMEONE WHO MAY SETTLE SEES A SETTLE CONTROL.
-                            Hidden rather than disabled: a greyed "Close Bill" on
-                            every waiter's screen is an invitation to go and find
-                            someone's password. The routes behind both items carry
-                            the same two permissions, so this is the courtesy and
-                            not the control. Labelled by the PERMISSION, because
-                            "(Admin)" was never true — a cashier holds these in the
-                            stock role set and a manager holds them wherever the
-                            tenant has granted them. */}
-                        {canSettleBill ? (
-                          <>
-                            <DropdownMenuItem
-                              onClick={() => { void handleAdminApprovePayment(order); }}
-                              disabled={order.status !== 'Payment Pending Approval'}
-                            >
-                              Approve Payment
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onClick={() => { void handleCloseBill(order); }}
-                              disabled={order.status !== 'Paid'}
-                            >
-                              Close Bill
-                            </DropdownMenuItem>
-                          </>
-                        ) : null}
-                        {isAdmin && (
-                          <DropdownMenuItem
-                            onClick={() => { void handleReopenBill(order); }}
-                            disabled={!order.bill_closed_at || !order.bill_id || order.status === 'Cancelled'}
-                          >
-                            Re-open Bill (Admin)
-                          </DropdownMenuItem>
-                        )}
-                        <DropdownMenuSeparator />
-                        {/*
-                          A2 — A CANCELLATION CARRIES A REASON, OR IT IS NOT A
-                          CANCELLATION.
-
-                          "Cancellation Reason Prompt: mandatory confirmation
-                          prompt before cancelling a KOT, requiring a cancellation
-                          reason before the action can be processed and finalized."
-
-                          There are two ways to stop food being cooked from this
-                          screen, and only one of them could ever record why:
-
-                            * VOID (POST /orders/:id/void) takes a controlled
-                              reason, a free-text note and a second name, writes
-                              the OrderVoids control row the Void KOT report is
-                              built from, and prints the kitchen's cancellation
-                              slip. It lives in the CaptureActions menu beside
-                              this one.
-                            * DELETE (DELETE /orders/:id) destroys the row. It
-                              records nothing but "Deleted order <id>" in the
-                              audit log — there is no reason field on the route to
-                              send one to — and it was reachable behind a bare
-                              window.confirm() that said only "cannot be undone".
-
-                          So the destructive item now names itself honestly and,
-                          for anyone who CAN void, offers the recorded path first:
-                          a reason that ends up in a control report is worth more
-                          than a reason typed into a box that discards it. Delete
-                          survives for the rows a void cannot help with — a
-                          duplicate rung on the wrong table before anything was
-                          cooked — and its confirmation says what it does and does
-                          not keep.
-                        */}
-                        {canDeleteOrder ? (
-                          <DropdownMenuItem
-                            onClick={() => { setDeleteTarget(order); }}
-                            disabled={
-                              order.status === 'Bill Verification' ||
-                              order.status === 'Payment Pending Approval'
-                              || order.status === 'Paid'
-                              || order.status === 'Closed'
-                              || order.status === 'Cancelled'
-                            }
-                            className="text-red-600"
-                          >
-                            Delete Order
-                          </DropdownMenuItem>
-                        ) : null}
-                        {/* Unchanged for every senior identity: `billPrintScope`
-                            answers `print: true` for anyone the server has not
-                            scoped as waiter-only, however many times the bill has
-                            been printed. C3 names "Super Admins" as who a WAITER
-                            escalates to, not as a new ceiling on the people who
-                            run the floor. */}
-                        <DropdownMenuItem onClick={() => { void triggerPrint(order); }} disabled={order.status !== 'Bill Verification' && order.status !== 'Payment Pending Approval' && order.status !== 'Paid' && order.status !== 'Closed'}>
-                            <Printer className="mr-2 h-4 w-4" />
-                            Print Bill
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                    </>
-                    )}
-                    </div>
-                  </TableCell>
-                </TableRow>
-              )})}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
-
-      {/*
-        A2 — DELETING AN ORDER, SAID OUT LOUD.
-
-        A2 asks for "a mandatory confirmation prompt before cancelling a KOT,
-        requiring a cancellation reason before the action can be processed".
-
-        On this screen the reason-recording path already exists and already
-        enforces the reason: Controls -> "Void this order…" refuses to submit
-        without a controlled void_kind, a free-text reason AND a second person's
-        name, and POST /orders/:id/void validates all three server-side before it
-        writes the OrderVoids row the Void KOT report is built from.
-
-        DELETE is the other path, and it is the one that could not carry a
-        reason: the route takes no body, so there is nowhere for one to go. It
-        was reachable behind a one-line window.confirm() reading "This action
-        cannot be undone", which said nothing about what was being destroyed and
-        nothing about the recorded alternative sitting two clicks away. Putting a
-        reason box on it would be theatre — the text would be discarded. So this
-        dialog does the honest thing: it names the ticket, counts what goes, says
-        the reason will NOT be recorded, and points at the path that records one.
-      */}
-      <AlertDialog open={deleteTarget !== null} onOpenChange={(open) => { if (!open) { setDeleteTarget(null); } }}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              Delete the order on table {deleteTarget?.table}?
-            </AlertDialogTitle>
-            <AlertDialogDescription asChild>
-              <div className="space-y-3 text-sm">
-                <div>
-                  <p className="font-medium text-foreground">This destroys the ticket:</p>
-                  <ul className="mt-1 list-disc space-y-1 pl-5">
-                    <li>
-                      {(deleteTarget?.items_flattened ?? deleteTarget?.items ?? []).length} line
-                      {((deleteTarget?.items_flattened ?? deleteTarget?.items ?? []).length) === 1 ? "" : "s"}
-                      {deleteTarget ? ` worth ${currencySymbol}${deleteTarget.total.toFixed(2)}` : ""}
-                      {deleteTarget && kotLabel(deleteTarget) ? ` — ${kotLabel(deleteTarget)}` : ""}.
-                    </li>
-                    <li>The row is removed, so it leaves the sales figures and the order history with it.</li>
-                    <li>A cancellation slip goes to the kitchen so nothing is cooked for a ticket that no longer exists.</li>
-                    <li>It cannot be undone.</li>
-                  </ul>
-                </div>
-                <div className="rounded-md border border-amber-500/60 bg-amber-500/[0.07] p-2.5">
-                  <p className="font-medium text-foreground">No reason is recorded.</p>
-                  <p className="mt-0.5">
-                    {canVoidOrder
-                      ? "Use Controls → “Void this order…” instead if you want the cancellation to carry a reason, an authoriser and a figure — that is the one that reaches the Void KOT report."
-                      : "Only the audit log will show that it was deleted, and by whom. A manager holding “Void Orders With Reason” can cancel it with a recorded reason instead."}
-                  </p>
-                </div>
-              </div>
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Keep the order</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
-              onClick={() => {
-                const target = deleteTarget;
-                setDeleteTarget(null);
-                if (target) { void handleDeleteOrder(target.id); }
-              }}
-            >
-              Delete permanently
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      <Dialog open={splitPayOrder !== null} onOpenChange={(v) => { if (!v && !splitBusy) {setSplitPayOrder(null);} }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Split payment · Table {splitPayOrder?.table}</DialogTitle>
-            <DialogDescription>
-              {splitPayTotal != null
-                ? `Bill total ${currencySymbol}${splitPayTotal.toFixed(2)} — the amounts must add up exactly (the last row auto-balances).`
-                : "Enter the amount taken by each payment mode — together they must add up to the bill total."}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2">
-            {splitRows.map((row, idx) => (
-              <div key={idx} className="flex items-center gap-2">
-                <Select value={row.method} onValueChange={(v) => { updateSplitRow(idx, { method: v }); }}>
-                  <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {tillOptions.map((o) => (
-                      <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={row.amount}
-                  onChange={(e) => { updateSplitRow(idx, { amount: e.target.value }); }}
+          {hiddenNote}
+        </div>
+      ) : (
+        <div className="grid gap-7">
+          {([0, 1, 2] as const).map((s) => {
+            const rows = grouped[s];
+            if (rows.length === 0) { return null; }
+            return (
+              <section key={ORDER_SECTION_TITLES[s]}>
+                <SectionHeader
+                  title={ORDER_SECTION_TITLES[s]}
+                  count={rows.length}
+                  trailing={s === 2 && rows.some((o) => isCancelledStatus(o.status))
+                    ? <span className="text-xs text-muted-foreground">{ORDER_PAID_CAPTION}</span>
+                    : null}
                 />
-                {splitRows.length > 2 ? (
-                  <Button variant="ghost" size="icon" onClick={() => { setSplitRows((rows) => rows.filter((_, i) => i !== idx)); }}>
-                    <X className="h-4 w-4" />
-                  </Button>
-                ) : null}
-              </div>
-            ))}
-            {/* Six, the server's own ceiling for split parts (was four here). */}
-            {splitRows.length < MAX_SPLIT_PARTS ? (
-              <Button variant="outline" size="sm" onClick={() => { setSplitRows((rows) => [...rows, { method: nextSplitMethod(tillOptions, rows), amount: "0.00" }]); }}>
-                Add payment mode
-              </Button>
-            ) : null}
-            {splitPayTotal != null ? (() => {
-              const sum = splitRows.reduce((s, r) => s + (Number(r.amount) || 0), 0);
-              const diff = Math.round((splitPayTotal - sum) * 100) / 100;
-              return Math.abs(diff) > 0.01 ? (
-                <p className="text-xs text-red-600">
-                  {diff > 0
-                    ? `${currencySymbol}${diff.toFixed(2)} still unallocated`
-                    : `${currencySymbol}${Math.abs(diff).toFixed(2)} over the bill total`}
-                </p>
-              ) : (
-                <p className="text-xs text-muted-foreground">Amounts match the bill total.</p>
-              );
-            })() : null}
+                <div className="mt-3 grid grid-cols-1 gap-3.5 min-[720px]:grid-cols-2 min-[1120px]:grid-cols-3 min-[1500px]:grid-cols-4">
+                  {rows.map((o) => (
+                    <div key={o.id} id={`order-card-${o.id}`}>
+                      <OrderCard
+                        order={o}
+                        focused={isFocused(o)}
+                        showsMoney={moneyShows}
+                        money={money}
+                        placedLabel={placedShort(o.created_at)}
+                        canBark={canBark}
+                        busy={busyOrderId === o.id}
+                        onOpen={() => { setOpenOrderId(o.id); }}
+                        onBark={() => { void handleBark(o); }}
+                        onApprove={() => { void handleApprovePending(o); }}
+                        onDecline={() => { requestCancel(o, true); }}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </section>
+            );
+          })}
+          {hiddenNote}
+        </div>
+      )}
+
+      <CacheStalePill offline={bundle.offline} fromCache={bundle.fromCache} updatedAt={bundle.updatedAt} />
+
+      {/* The floating "Takeaway / Delivery" action (finding 27). */}
+      {mayAddOrder ? (
+        <Button
+          size="lg"
+          className="fixed bottom-6 right-6 z-40 shadow-card-hover"
+          onClick={() => { setChannelOpen(true); }}
+        >
+          <ShoppingBag /> Takeaway / Delivery
+        </Button>
+      ) : null}
+
+      {/* ── Drill-down & flows ─────────────────────────────────────────── */}
+
+      <OrderDetailSheet
+        order={openOrder}
+        open={openOrderId !== null && openOrder !== null}
+        onOpenChange={(o) => { if (!o) { setOpenOrderId(null); } }}
+        restaurantId={rid}
+        focused={openOrder ? isFocused(openOrder) : false}
+        showsMoney={moneyShows}
+        money={money}
+        placedLabel={placedShort(openOrder?.created_at)}
+        showsControls={openOrder !== null && openOrder.table !== "" && !isOrderCancelled(openOrder) && (!isWaiterOnly || canAnyControlAct)}
+        canSettleBill={canSettleBill}
+        canBark={canBark}
+        onChangeStage={() => { if (openOrder) { openChangeStage(openOrder); } }}
+        onBark={() => { if (openOrder) { void handleBark(openOrder); } }}
+        onOpenTableBill={() => { if (openOrder) { openTableBill(openOrder); } }}
+        onApprovePayment={() => { if (openOrder) { void handleApprovePaymentAndClose(openOrder); } }}
+        onSettle={() => { if (openOrder) { setSettleTarget(openOrder); } }}
+        canComp={can(user, "comp_item")}
+        onComp={() => { if (openOrder) { setCompTarget(openOrder); } }}
+        onViewProof={openOrderProofUrl === null ? null : () => { setProofPreviewUrl(openOrderProofUrl); }}
+        extraRows={openOrderApc && moneyShows ? (
+          <div className="flex items-baseline justify-between gap-3 border-b border-divider py-1.5 text-sm last:border-b-0">
+            <span className="shrink-0 text-xs text-muted-foreground">APC zone</span>
+            <StatusChip
+              status={openOrderApc.zone === "green" ? "success" : openOrderApc.zone === "yellow" ? "warning" : "danger"}
+              label={`${openOrderApc.zone.toUpperCase()} (${currencySymbol}${openOrderApc.target_total.toFixed(2)} target)`}
+              dense
+            />
           </div>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => { setSplitPayOrder(null); }} disabled={splitBusy}>Cancel</Button>
-            <Button onClick={() => { void submitSplitPayment(); }} disabled={splitBusy}>Record split payment</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        ) : null}
+        extraActions={openOrder ? sheetExtras(openOrder) : null}
+        onChanged={() => { refreshOrders(); }}
+        busy={openOrder !== null && busyOrderId === openOrder.id}
+      />
 
-      {selectedOrder && <OrderDetailsDialog
-        order={selectedOrder}
-        canEditPrice={isAdmin}
-        open={isDetailsOpen}
-        onOpenChange={(isOpen) => {
-          setIsDetailsOpen(isOpen);
-          if (!isOpen) {setSelectedOrder(null);}
-        }}
-        onSave={async (updatedOrder) => {
-          if (!user?.restaurantUsername) {return;}
-          try {
-            // detect removed item ids and call delete endpoint for each
+      {stageOrder ? (
+        <ChangeStageDialog
+          open={stageOrderId !== null}
+          onOpenChange={(o) => { if (!o) { setStageOrderId(null); } }}
+          current={stageOrder.status}
+          barked={isOrderBarked(stageOrder)}
+          mayCancel={orderIsPending(stageOrder.status) || cancelKotRoute(user, stageOrder.status) !== null}
+          onPick={(stage) => { void handleStagePick(stage); }}
+          busy={busyOrderId === stageOrder.id}
+        />
+      ) : null}
+
+      {cancelReq !== null && cancelOrderRow !== null ? (
+        <CancelOrderDialog
+          open
+          onOpenChange={(o) => { if (!o) { setCancelReq(null); } }}
+          restaurantId={rid}
+          order={cancelOrderRow}
+          route={cancelReq.route}
+          value={money(cancelOrderRow.total)}
+          pending={cancelReq.pending}
+          suggestedAuthoriser={actorName}
+          onCancelled={() => { setCancelReq(null); refreshOrders(); }}
+        />
+      ) : null}
+
+      <ChannelSheet
+        open={channelOpen}
+        onOpenChange={setChannelOpen}
+        onPick={(channel) => { setChannelOpen(false); setPadRequest({ kind: channel }); }}
+      />
+
+
+      <ConfirmActionDialog request={confirmAction} onClose={() => { setConfirmAction(null); }} />
+
+      {/* The in-place bill preview: nothing is claimed until Print. */}
+      {!isWaiterOnly ? (
+        <BillPreviewDialog
+          open={printPreviewTable !== null}
+          onOpenChange={(open) => { if (!open) { setPrintPreviewTable(null); } }}
+          restaurantId={rid}
+          tableName={printPreviewTable ?? ""}
+          printedFallback={printPreviewTable !== null && serverSaysBillPrinted(billPrintByTable.get(printPreviewTable.toLowerCase()) ?? null)}
+          onPrint={() => (printPreviewTable === null ? Promise.resolve(false) : printTableBillNow(printPreviewTable))}
+        />
+      ) : null}
+
+      {/* The staff order pad (docs/parity/order-entry.md) — dine-in via the
+          ?table= deep link, takeaway / delivery via the channel picker. */}
+      {padRequest !== null && rid !== "" ? (
+        <OrderPad
+          request={padRequest}
+          restaurantId={rid}
+          onClose={closePad}
+          onSent={() => { refreshOrders(); refreshSupport(); }}
+        />
+      ) : null}
+
+      {settleTarget !== null && user ? (
+        <PaymentSheet
+          open
+          onOpenChange={(o) => { if (!o) { setSettleTarget(null); } }}
+          restaurantId={rid}
+          user={user}
+          orderId={settleTarget.id}
+          tableName={settleTarget.table}
+          fallbackTotal={Number.isFinite(settleTarget.total) ? settleTarget.total : null}
+          onSettled={() => { setOpenOrderId(null); refreshOrders(); }}
+        />
+      ) : null}
+      {compTarget !== null && user ? (
+        <CompSheet
+          open
+          onOpenChange={(o) => { if (!o) { setCompTarget(null); } }}
+          restaurantId={rid}
+          user={user}
+          tableName={compTarget.table}
+          orderIds={[compTarget.id]}
+          onChanged={refreshOrders}
+        />
+      ) : null}
+
+      {updateOrderTarget ? (
+        <OrderDetailsDialog
+          order={updateOrderTarget}
+          canEditPrice={isAdmin}
+          open
+          onOpenChange={(isOpen) => { if (!isOpen) { setUpdateOrderTarget(null); } }}
+          onSave={async (updatedOrder) => {
+            if (!user?.restaurantUsername) { return; }
             try {
-              const orig = selectedOrder;
-              const origIds = Array.isArray(orig?.items) ? orig.items.map(i => String(i.id)) : [];
-              const updatedIds = Array.isArray(updatedOrder.items) ? updatedOrder.items.map(i => String(i.id)) : [];
-              const removed = origIds.filter(id => !updatedIds.includes(id));
-              if (removed.length > 0) {
-                await Promise.all(removed.map(id => requestBackend({ path: `/orders/${encodeURIComponent(String(updatedOrder.id))}/items/${encodeURIComponent(id)}`, method: 'DELETE', restaurantId: user.restaurantUsername })));
+              // Removed lines go through the item-delete endpoint first.
+              try {
+                const orig = updateOrderTarget;
+                const origIds = orig.items.map((i) => i.id);
+                const updatedIds = updatedOrder.items.map((i) => i.id);
+                const removed = origIds.filter((id) => !updatedIds.includes(id));
+                if (removed.length > 0) {
+                  await Promise.all(removed.map((id) => requestBackend({ path: `/orders/${encodeURIComponent(updatedOrder.id)}/items/${encodeURIComponent(id)}`, method: "DELETE", restaurantId: user.restaurantUsername })));
+                }
+              } catch (e) {
+                console.error("Failed to call delete-item endpoints", e);
               }
-            } catch (e) {
-              console.error('Failed to call delete-item endpoints', e);
+
+              await addOrder(user.restaurantUsername, updatedOrder);
+              refreshOrders();
+              refreshSupport();
+            } catch (err) {
+              toast({ title: "Unable to save order", description: serverWords(err), variant: "destructive" });
+            } finally {
+              setUpdateOrderTarget(null);
             }
-
-            await addOrder(user.restaurantUsername, updatedOrder);
-            const [updatedOrders, updatedApcInsight] = await Promise.all([
-              getOrders(user.restaurantUsername),
-              getMonthlyApcInsight(user.restaurantUsername),
-            ]);
-            setOrders(Array.isArray(updatedOrders) ? dedupeOrdersById(updatedOrders) : []);
-            setMonthlyApcInsight(updatedApcInsight ?? null);
-          } catch (err) {
-            console.error('Failed to save order', err);
-            alert('Unable to save order.');
-          } finally {
-            setSelectedOrder(null);
-            setIsDetailsOpen(false);
-          }
-        }}
-        menuItems={menuItems}
-      />}
-
-      {selectedOrder && <OrderViewDialog
-        order={selectedOrder}
-        open={isViewOpen}
-        onOpenChange={(isOpen) => {
-          setIsViewOpen(isOpen);
-          if (!isOpen) {setSelectedOrder(null);}
-        }}
-        onRefreshOrders={refreshOrders}
-      />}
-
-        {selectedOrder && <EditOrderDialog
-          key={selectedOrder.id}
-          order={selectedOrder} 
-          open={isEditDialogOpen}
-          onOpenChange={(isOpen) => {
-            if(!isOpen) {setSelectedOrder(null);}
-            setIsEditDialogOpen(isOpen);
           }}
-          onSubmit={handleEditOrder}
+          menuItems={menuItems}
+        />
+      ) : null}
+
+      {editBillTarget ? (
+        <EditOrderDialog
+          key={editBillTarget.id}
+          order={editBillTarget}
+          open
+          onOpenChange={(isOpen) => { if (!isOpen) { setEditBillTarget(null); } }}
           onReplace={handleReplaceBill}
           canEditPrice={isAdmin}
           defaultTax={defaultTax}
           menuItems={menuItems}
-        />}
+        />
+      ) : null}
+
       <DefaultTaxDialog
         open={isDefaultTaxDialogOpen}
         onOpenChange={setIsDefaultTaxDialogOpen}
         defaultTax={defaultTax}
-        onSaved={async (t) => {
+        onSaved={(t) => {
+          setDefaultTaxOverride(t);
           if (user?.restaurantUsername) {
-            try {
-              await setOutletDefaultTax(user.restaurantUsername, t);
-            } catch (err) {
-              console.error('failed to save default tax', err);
-            }
+            void setOutletDefaultTax(user.restaurantUsername, t).catch((err: unknown) => {
+              toast({ title: "Unable to save default tax", description: serverWords(err), variant: "destructive" });
+            });
           }
-          setDefaultTax(t);
         }}
       />
 
       <Dialog
-        open={isProofPreviewOpen}
-        onOpenChange={(open) => {
-          setIsProofPreviewOpen(open);
-          if (!open) {setProofPreviewUrl(null);}
-        }}
+        open={proofPreviewUrl !== null}
+        onOpenChange={(open) => { if (!open) { setProofPreviewUrl(null); } }}
       >
-        <DialogContent className="sm:max-w-2xl w-full">
+        <DialogContent className="w-full sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>Payment Screenshot</DialogTitle>
             <DialogDescription>
               Preview the uploaded payment proof before approval.
             </DialogDescription>
           </DialogHeader>
-          {proofPreviewUrl ? (
-            <div className="max-h-[70vh] overflow-auto rounded-md border p-2">
+          {proofPreviewUrl !== null ? (
+            <div className="max-h-[70vh] overflow-auto rounded-md border border-border p-2">
               <Image
                 src={proofPreviewUrl}
                 alt="Payment proof screenshot"
@@ -2824,7 +1583,7 @@ function OrdersDashboard() {
             <div className="text-sm text-muted-foreground">No screenshot available.</div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => { setIsProofPreviewOpen(false); }}>Close</Button>
+            <Button variant="outline" onClick={() => { setProofPreviewUrl(null); }}>Close</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -2832,1094 +1591,100 @@ function OrdersDashboard() {
   );
 }
 
-// ---- Kitchen display (KDS): station-filtered tickets + expo/pass view ------
+/* ── The hidden-orders accounting note (findings 22–23) ────────────────── */
 
-/*
-  The prep timer and its formatter used to live here, as a second copy of the
-  arithmetic. D2 asks for the table clocks to read "identical to the kitchen
-  section display", and the only way that stays true is for both to BE the same
-  code — so both now come from `src/lib/order-clock.ts`, which is tested and
-  which the tables screen reads as well. The aliases keep every call site below
-  spelled exactly as it was.
-*/
-const formatElapsed = formatDuration;
-
-const isItemHeld = (item: OrderItem) => item.course_hold === true && !item.fired_at;
-
-const StationBadge = ({ station }: { station?: string | null }) =>
-  station ? (
-    <Badge variant="outline" className="text-[10px] uppercase tracking-wide px-1.5 py-0">
-      {station}
-    </Badge>
-  ) : null;
-
-// Order-channel badge (Swiggy/Zomato/takeaway/delivery) so aggregator tickets
-// are unmissable on the pass. Dine-in (the default) shows nothing.
-const SOURCE_BADGE_CLASS: Record<string, string> = {
-  swiggy: "border-orange-400 bg-orange-50 text-orange-700",
-  zomato: "border-red-400 bg-red-50 text-red-700",
-};
-const SourceBadge = ({ source }: { source?: string | null }) => {
-  const s = (source ?? "").trim().toLowerCase();
-  if (!s || s === "dine_in") {return null;}
+function HiddenOrdersNote({ hidden, canOpenHistory, onOpenHistory }: { hidden: number; canOpenHistory: boolean; onOpenHistory: () => void }): React.JSX.Element {
   return (
-    <Badge variant="outline" className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0 ${SOURCE_BADGE_CLASS[s] ?? ""}`}>
-      {s.replace(/_/g, " ")}
-    </Badge>
-  );
-};
-
-function KitchenDisplay({ orders, restaurantId, onRefresh, managedSections = [], initialStation }: { orders: Order[]; restaurantId: string; onRefresh: () => Promise<void>; managedSections?: string[]; initialStation?: string }) {
-  const { toast } = useToast();
-  const { user } = useAuth();
-  // "Bark to kitchen" is this product's name for announcing a ticket to the
-  // kitchen, not a typo. The Current Orders row already hid it from a scoped
-  // waiter, whom POST /orders/:id/bark refuses; this board now asks the same
-  // question (src/lib/orders-grid.ts).
-  const mayBark = canBarkFromBoard(user);
-  // A placed-at clock on a kitchen board must be the RESTAURANT's time, not the
-  // browser's — this board is read next to printed dockets, which carry the
-  // house clock, and a laptop on the wrong zone would silently disagree.
-  const { timezone } = useTimezone();
-  const [mode, setMode] = useState<"tickets" | "expo">("tickets");
-  // ?station= deep link initialises the filter so a wall screen stays locked to
-  // one kitchen section.
-  const [station, setStation] = useState<string>(initialStation?.trim() || "All");
-  const [expo, setExpo] = useState<ExpoTable[]>([]);
-  const [now, setNow] = useState(() => Date.now());
-  const [busyItem, setBusyItem] = useState<string | null>(null);
-
-  // Kitchen tickets = orders still in service; settled/verification orders left
-  // out, and cancelled ones can never appear (terminal — no fire/serve/bark).
-  const activeOrders = useMemo(
-    () => orders.filter((o) => !isOrderCancelled(o) && (o.status === "Preparing" || o.status === "Served")),
-    [orders],
-  );
-
-  // Chips = union of the MANAGED section list (settings order first) and any
-  // station present on active tickets (legacy/free-form labels).
-  const stations = useMemo(() => {
-    const out: string[] = ["All"];
-    const seen = new Set<string>();
-    for (const s of managedSections) {
-      const key = s.toLowerCase();
-      if (!seen.has(key)) { seen.add(key); out.push(s); }
-    }
-    const extras = new Set<string>();
-    for (const o of activeOrders) {for (const it of o.items) {
-      if (it.station && !seen.has(it.station.toLowerCase())) {extras.add(it.station);}
-    }}
-    out.push(...Array.from(extras).sort());
-    return out;
-  }, [activeOrders, managedSections]);
-
-  // Ageing tick while tickets are on screen.
-  useEffect(() => {
-    if (mode !== "tickets" || activeOrders.length === 0) {return;}
-    const t = setInterval(() => { setNow(Date.now()); }, 10000);
-    return () => { clearInterval(t); };
-  }, [mode, activeOrders.length]);
-
-  useEffect(() => {
-    if (mode !== "expo" || !restaurantId) {return;}
-    let cancelled = false;
-    const load = async () => {
-      try {
-        const r = await getKdsExpo(restaurantId);
-        if (!cancelled) {setExpo(r.tables);}
-      } catch { /* keep the previous snapshot */ }
-    };
-    void load();
-    const t = setInterval(() => { void load(); }, 15000);
-    return () => { cancelled = true; clearInterval(t); };
-  }, [mode, restaurantId, orders]);
-
-  const handleFire = async (orderId: string, itemId: string) => {
-    setBusyItem(itemId);
-    try {
-      await fireOrderItems(restaurantId, orderId, [itemId]);
-      toast({ title: "Course fired", description: "The kitchen has it now." });
-      await onRefresh();
-    } catch (err: unknown) {
-      toast({ title: "Unable to fire course", description: String((err as Error)?.message ?? err), variant: "destructive" });
-    } finally {
-      setBusyItem(null);
-    }
-  };
-
-  const handleServe = async (orderId: string, itemId: string) => {
-    setBusyItem(itemId);
-    try {
-      await requestBackend({
-        path: `/orders/${encodeURIComponent(orderId)}/items/${encodeURIComponent(itemId)}/serve`,
-        method: "POST",
-        restaurantId,
-      });
-      await onRefresh();
-    } catch (err: unknown) {
-      toast({ title: "Unable to mark served", description: String((err as Error)?.message ?? err), variant: "destructive" });
-    } finally {
-      setBusyItem(null);
-    }
-  };
-
-  // Bark the ticket to the kitchen — the prep timers start at this instant.
-  // Undo a mis-tapped serve. The server refuses this once the WHOLE order is
-  // Served, so the button is disabled in that case rather than erroring.
-  const handleUnserve = async (orderId: string, itemId: string) => {
-    setBusyItem(itemId);
-    try {
-      await requestBackend({ path: `/orders/${encodeURIComponent(orderId)}/items/${encodeURIComponent(itemId)}/unserve`, method: "POST", restaurantId });
-      await onRefresh();
-    } catch (err: unknown) {
-      toast({ title: "Unable to undo", description: String((err as Error)?.message ?? err), variant: "destructive" });
-    } finally {
-      setBusyItem(null);
-    }
-  };
-
-  const handleBark = async (orderId: string) => {
-    setBusyItem(orderId);
-    try {
-      await barkOrder(restaurantId, orderId);
-      toast({ title: "Order barked", description: "The kitchen has it now — timers started." });
-      await onRefresh();
-    } catch (err: unknown) {
-      toast({ title: "Unable to bark order", description: String((err as Error)?.message ?? err), variant: "destructive" });
-    } finally {
-      setBusyItem(null);
-    }
-  };
-
-  const tickets = activeOrders
-    .map((order) => ({
-      order,
-      items: order.items.filter((it) => station === "All" || (it.station ?? "").toLowerCase() === station.toLowerCase()),
-    }))
-    .filter((t) => t.items.length > 0);
-
-  const expoChipClass = (status: string) =>
-    status === "served"
-      ? "bg-green-100 text-green-800 border-green-300"
-      : status === "held"
-        ? "bg-muted text-muted-foreground border-dashed"
-        : status === "unbarked"
-          ? "bg-muted/70 text-muted-foreground border-dotted opacity-80"
-          : "bg-amber-100 text-amber-900 border-amber-300";
-
-  return (
-    <Card>
-      <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <CardTitle className="flex items-center gap-2"><ChefHat className="h-5 w-5" /> Kitchen display</CardTitle>
-          <CardDescription>
-            {mode === "tickets"
-              ? "Live tickets with station routing and course holds."
-              : "Expo/pass: per-table ready vs pending consolidation."}
-          </CardDescription>
-        </div>
-        <div className="flex gap-1 rounded-md border p-1">
-          <Button size="sm" variant={mode === "tickets" ? "default" : "ghost"} onClick={() => { setMode("tickets"); }}>Tickets</Button>
-          <Button size="sm" variant={mode === "expo" ? "default" : "ghost"} onClick={() => { setMode("expo"); }}>Expo</Button>
-        </div>
-      </CardHeader>
-      <CardContent>
-        {mode === "tickets" ? (
-          <>
-            {stations.length > 1 ? (
-              <div className="mb-3 flex flex-wrap items-center gap-1.5">
-                {stations.map((s) => (
-                  <span key={s} className="inline-flex items-center">
-                    <Button
-                      size="sm"
-                      variant={station.toLowerCase() === s.toLowerCase() ? "default" : "outline"}
-                      className={`h-7 px-2.5 text-xs capitalize ${s === "All" ? "" : "rounded-r-none"}`}
-                      onClick={() => { setStation(s); }}
-                    >
-                      {s}
-                    </Button>
-                    {s !== "All" ? (
-                      <Button
-                        asChild
-                        size="sm"
-                        variant="outline"
-                        className="h-7 rounded-l-none border-l-0 px-1.5"
-                        title={`Open the locked ${s} kitchen display in a new tab`}
-                      >
-                        <a
-                          href={`/dashboard/orders?station=${encodeURIComponent(s)}&kiosk=1`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          aria-label={`Open locked ${s} kitchen display`}
-                        >
-                          <MonitorSmartphone className="h-3 w-3" />
-                        </a>
-                      </Button>
-                    ) : null}
-                  </span>
-                ))}
-              </div>
-            ) : null}
-            {tickets.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No active kitchen tickets{station !== "All" ? ` for ${station}` : ""}.</p>
-            ) : (
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                {tickets.map(({ order, items }) => {
-                  const orderMs = timerElapsedMs(order.timing?.order, now);
-                  // B1 — the number the kitchen calls this ticket by, and the
-                  // only thing that ties a card to the docket in a cook's hand
-                  // or to a reprint/cancel/move request.
-                  const kot = kotLabel(order);
-                  // A3 — WHEN the ticket was placed. The chip beside the stage
-                  // counts elapsed minutes, which answers "how late is this"
-                  // but never "when did it land" — the question at a shift
-                  // handover, and the only one that matches printed paper.
-                  const placed = order.created_at ? formatTime(order.created_at, timezone) : "";
-                  // Un-barked tickets sit greyed with idle timers until barked.
-                  const barked = isOrderBarked(order);
-                  // Items can only be un-served while the ORDER is still in progress; once it is Served as a whole the server refuses.
-                  const orderFullyServed = !["preparing", "pending"].includes(String(order.status ?? "").toLowerCase());
-                  return (
-                    <Card key={order.id} className={`border-dashed ${barked ? "" : "bg-muted/40"}`}>
-                      <CardHeader className="pb-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <CardTitle className="flex items-center gap-1.5 text-base">
-                            {order.table || "—"}
-                            <SourceBadge source={order.order_type} />
-                          </CardTitle>
-                          <div className="flex items-center gap-2">
-                            {barked && order.timing?.order?.started_at ? (
-                              <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                                <Clock className="h-3 w-3" />{formatElapsed(orderMs)}
-                              </span>
-                            ) : null}
-                            {barked ? (
-                              <Badge variant={order.status === "Preparing" ? "secondary" : "default"}>{order.status}</Badge>
-                            ) : (
-                              <Badge variant="outline" className="border-dashed text-muted-foreground">Not barked</Badge>
-                            )}
-                          </div>
-                        </div>
-                        {/* Ticket identity on its own line: the header row above
-                            already gives way to the timer and the stage, and a
-                            fourth thing in it would start truncating the table
-                            name — the one label on a kitchen card that may
-                            never be cut. Each half renders only when its data
-                            exists, so a ticket carrying neither adds no line at
-                            all and the card is unchanged. */}
-                        {kot || placed ? (
-                          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                            {kot ? (
-                              <span className="inline-flex items-center gap-1 font-medium text-foreground">
-                                <ReceiptText className="h-3 w-3 shrink-0" />
-                                <span className="tabular-nums">{kot}</span>
-                              </span>
-                            ) : null}
-                            {placed ? (
-                              <span
-                                className="inline-flex items-center gap-1"
-                                title={order.created_at ? formatFullDateTime(order.created_at, timezone) : undefined}
-                              >
-                                <Clock className="h-3 w-3 shrink-0" />
-                                <span className="tabular-nums">Placed {placed}</span>
-                              </span>
-                            ) : null}
-                            {/* 1.3 — Cancel KOT on the numbered ticket itself, through
-                                one of the two existing cancel routes, so the reason
-                                (1.2) and the CANCELLED slip (1.1) come with it.
-                                Drawn only when `cancelKotRoute` offers a route. */}
-                            {kot && cancelKotRoute(user, order.status) !== null ? (
-                            <CancelKotButton
-                              className="ml-auto h-7"
-                              restaurantId={restaurantId}
-                              kotLabel={kot}
-                              onChanged={() => { void onRefresh(); }}
-                              order={{
-                                id: order.id,
-                                table: order.table,
-                                status: order.status,
-                                items: (order.items_flattened ?? order.items).map((i) => ({
-                                  id: i.id,
-                                  name: i.name,
-                                  quantity: i.quantity,
-                                  price: i.price,
-                                  nc: i.nc === true,
-                                  nc_id: i.nc_id ?? null,
-                                  nc_kind: i.nc_kind ?? null,
-                                })),
-                              }}
-                            />
-                            ) : null}
-                          </div>
-                        ) : null}
-                      </CardHeader>
-                      <CardContent className="space-y-1.5 pt-0">
-                        {items.map((item) => {
-                          const held = isItemHeld(item);
-                          const timer = order.timing?.items?.[item.id];
-                          const served = Boolean(timer?.ended_at);
-                          const ms = timerElapsedMs(timer, now);
-                          return (
-                            <div key={item.id} className={`flex items-center justify-between gap-2 text-sm ${held || !barked ? "opacity-60" : ""}`}>
-                              <div className="min-w-0">
-                                <span className={served ? "line-through text-muted-foreground" : ""}>
-                                  {item.quantity}× {item.name}
-                                </span>{" "}
-                                <StationBadge station={item.station} />
-                                {held ? (
-                                  <Badge variant="outline" className="ml-1 border-amber-400 bg-amber-50 text-amber-800 text-[10px] px-1.5 py-0">HOLD</Badge>
-                                ) : null}
-                                {item.note ? <div className="text-xs text-muted-foreground">Note: {item.note}</div> : null}
-                              </div>
-                              <div className="flex shrink-0 items-center gap-1">
-                                {!barked ? null : served ? (
-                                  // Was a dead icon — now the undo control.
-                                  <Button size="sm" variant="ghost" className="h-7 px-2"
-                                    title={orderFullyServed ? "The whole order is served — items can no longer be undone" : "Undo served"}
-                                    disabled={busyItem === item.id || orderFullyServed}
-                                    onClick={() => { void handleUnserve(order.id, item.id); }}>
-                                    <CheckCircle2 className={`h-4 w-4 ${orderFullyServed ? "text-muted-foreground" : "text-green-600"}`} />
-                                  </Button>
-                                ) : held ? (
-                                  <Button size="sm" variant="outline" className="h-7 px-2 text-xs" disabled={busyItem === item.id} onClick={() => { void handleFire(order.id, item.id); }}>
-                                    <Flame className="mr-1 h-3 w-3 text-orange-500" /> Fire
-                                  </Button>
-                                ) : (
-                                  <>
-                                    {timer?.started_at ? (
-                                      <span className="text-xs text-muted-foreground">{formatElapsed(ms)}</span>
-                                    ) : null}
-                                    <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" disabled={busyItem === item.id} onClick={() => { void handleServe(order.id, item.id); }}>
-                                      Serve
-                                    </Button>
-                                  </>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })}
-                        {!barked && mayBark ? (
-                          <Button size="sm" className="mt-2 w-full" disabled={busyItem === order.id} onClick={() => { void handleBark(order.id); }}>
-                            <Megaphone className="mr-1.5 h-4 w-4" /> Bark to kitchen
-                          </Button>
-                        ) : null}
-                      </CardContent>
-                    </Card>
-                  );
-                })}
-              </div>
-            )}
-          </>
-        ) : expo.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No active tables on the pass.</p>
-        ) : (
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {expo.map((t) => (
-              <Card key={t.table} className={`border ${t.pending_count === 0 ? "border-green-300" : "border-amber-300"}`}>
-                <CardHeader className="pb-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <CardTitle className="flex items-center gap-1.5 text-base">
-                      {t.table}
-                      <SourceBadge source={t.source} />
-                    </CardTitle>
-                    <div className="flex items-center gap-1 text-xs">
-                      <Badge className="bg-green-100 text-green-800 hover:bg-green-100">{t.ready_count} ready</Badge>
-                      <Badge variant="secondary" className={t.pending_count > 0 ? "bg-amber-100 text-amber-900 hover:bg-amber-100" : ""}>{t.pending_count} pending</Badge>
-                    </div>
-                  </div>
-                </CardHeader>
-                <CardContent className="pt-0">
-                  <div className="flex flex-wrap gap-1.5">
-                    {t.items.map((item, idx) => (
-                      <span key={idx} className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs ${expoChipClass(item.status)}`}>
-                        {item.qty}× {item.name}
-                        {item.station ? <span className="uppercase text-[9px] opacity-70">· {item.station}</span> : null}
-                        {item.status === "held" ? <span className="text-[9px] font-semibold">HOLD</span> : null}
-                        {item.status === "unbarked" ? <span className="text-[9px] font-semibold">NOT BARKED</span> : null}
-                      </span>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-// ---- Locked per-zone kitchen display (kiosk) -------------------------------
-// A wall-mounted kitchen monitor locked to ONE section via ?station=X&kiosk=1.
-// It renders ONLY that section's live tickets, full-screen and large, with
-// nothing that could let kitchen staff switch sections or reach bill/admin
-// actions. It pulls only that section server-side (?station=) AND re-filters
-// client-side, so it stays locked even against a backend that ignores the
-// param. There is deliberately NO chip bar and NO way to change the section.
-function KitchenKioskDisplay({ station }: { station: string }) {
-  const { user } = useAuth();
-  const { toast } = useToast();
-  // The wall clock on a kitchen kiosk must be the restaurant's own time — this
-  // is a shared screen and staff read it as the house clock, so the device's
-  // own timezone (often just wrong on a cheap tablet) must not leak into it.
-  const { timezone } = useTimezone();
-  const restaurantId = user?.restaurantUsername ?? "";
-  const [orders, setOrders] = useState<Order[]>([]);
-  const [now, setNow] = useState(() => Date.now());
-  const [busyItem, setBusyItem] = useState<string | null>(null);
-  const [loaded, setLoaded] = useState(false);
-  // Same symptom as the Orders grid: a kitchen screen pointed at the wrong outlet
-  // shows nothing at all. Scope context turns that into an explanation.
-  const [ordersScope, setOrdersScope] = useState<OrdersScope | null>(null);
-
-  const load = useCallback(async () => {
-    if (!restaurantId) {return;}
-    try {
-      const data = await getOrders(restaurantId, station);
-      setOrders(Array.isArray(data) ? dedupeOrdersById(data) : []);
-    } catch {
-      // Keep the previous snapshot on a transient failure — a kitchen screen
-      // should never flash empty because one poll blipped.
-    } finally {
-      setLoaded(true);
-    }
-  }, [restaurantId, station]);
-
-  // Scope context on its own, slower cadence. It only changes when outlets or
-  // tables change, so tying it to the 10s ticket poll would run two grouped
-  // aggregates every 10 seconds per kitchen screen for no benefit.
-  useEffect(() => {
-    if (!restaurantId) {return;}
-    let cancelled = false;
-    const loadScope = () => {
-      getOrdersScope(restaurantId)
-        .then((s) => { if (!cancelled) {setOrdersScope(s);} })
-        .catch(() => { /* context only — never blank the tickets */ });
-    };
-    loadScope();
-    const t = setInterval(loadScope, 120000);
-    return () => { cancelled = true; clearInterval(t); };
-  }, [restaurantId]);
-
-  // Initial load + polling auto-refresh + realtime nudges.
-  useEffect(() => { void load(); }, [load]);
-  useEffect(() => {
-    const t = setInterval(() => { void load(); }, 10000);
-    return () => { clearInterval(t); };
-  }, [load]);
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent)?.detail as { event?: string } | undefined;
-      if (!detail) {return;}
-      if (detail.event === "order:updated" || detail.event === "bill:updated") {void load();}
-    };
-    window.addEventListener("realtime:event", handler as EventListener);
-    return () => { window.removeEventListener("realtime:event", handler as EventListener); };
-  }, [load]);
-
-  // Ageing tick so item/urgency timers keep advancing on the wall screen.
-  useEffect(() => {
-    const t = setInterval(() => { setNow(Date.now()); }, 5000);
-    return () => { clearInterval(t); };
-  }, []);
-
-  // Cancelled tickets are terminal and never reach a station display.
-  const activeOrders = useMemo(
-    () => orders.filter((o) => !isOrderCancelled(o) && (o.status === "Preparing" || o.status === "Served")),
-    [orders],
-  );
-
-  // Locked to ONE section — re-filter client-side (defence in depth) so this
-  // display can never show another zone's items even if the server returned the
-  // full set.
-  const tickets = useMemo(
-    () =>
-      activeOrders
-        .map((order) => ({
-          order,
-          items: order.items.filter((it) => (it.station ?? "").toLowerCase() === station.toLowerCase()),
-        }))
-        .filter((t) => t.items.length > 0),
-    [activeOrders, station],
-  );
-
-  const handleFire = async (orderId: string, itemId: string) => {
-    setBusyItem(itemId);
-    try {
-      await fireOrderItems(restaurantId, orderId, [itemId]);
-      await load();
-    } catch (err: unknown) {
-      toast({ title: "Unable to fire course", description: String((err as Error)?.message ?? err), variant: "destructive" });
-    } finally {
-      setBusyItem(null);
-    }
-  };
-
-  // Undo a mis-tapped serve (server refuses once the whole order is Served).
-  const handleUnserve = async (orderId: string, itemId: string) => {
-    setBusyItem(itemId);
-    try {
-      await requestBackend({ path: `/orders/${encodeURIComponent(orderId)}/items/${encodeURIComponent(itemId)}/unserve`, method: "POST", restaurantId });
-      await load();
-    } catch (err: unknown) {
-      toast({ title: "Unable to undo", description: String((err as Error)?.message ?? err), variant: "destructive" });
-    } finally {
-      setBusyItem(null);
-    }
-  };
-
-  const handleServe = async (orderId: string, itemId: string) => {
-    setBusyItem(itemId);
-    try {
-      await requestBackend({ path: `/orders/${encodeURIComponent(orderId)}/items/${encodeURIComponent(itemId)}/serve`, method: "POST", restaurantId });
-      await load();
-    } catch (err: unknown) {
-      toast({ title: "Unable to mark served", description: String((err as Error)?.message ?? err), variant: "destructive" });
-    } finally {
-      setBusyItem(null);
-    }
-  };
-
-  const handleBark = async (orderId: string) => {
-    setBusyItem(orderId);
-    try {
-      await barkOrder(restaurantId, orderId);
-      await load();
-    } catch (err: unknown) {
-      toast({ title: "Unable to bark order", description: String((err as Error)?.message ?? err), variant: "destructive" });
-    } finally {
-      setBusyItem(null);
-    }
-  };
-
-  // Order-level urgency by minutes since the prep timer started (i.e. barked).
-  const urgency = (order: Order): "fresh" | "warn" | "late" => {
-    const min = timerElapsedMs(order.timing?.order, now) / 60000;
-    if (min >= 10) {return "late";}
-    if (min >= 5) {return "warn";}
-    return "fresh";
-  };
-
-  return (
-    <div className="fixed inset-0 z-[60] flex flex-col overflow-hidden bg-background text-foreground">
-      {/* Locked header: section name + kitchen-display badge. No chips, no way to switch. */}
-      <header className="flex items-center justify-between gap-3 border-b bg-card px-6 py-4">
-        <div className="flex min-w-0 items-center gap-3">
-          <ChefHat className="h-8 w-8 shrink-0 text-primary" />
-          <h1 className="truncate text-3xl font-bold capitalize md:text-4xl">{station}</h1>
-          <Badge variant="secondary" className="ml-1 hidden items-center gap-1 text-xs uppercase tracking-wide sm:inline-flex">
-            <MonitorSmartphone className="h-3.5 w-3.5" /> Kitchen display
-          </Badge>
-        </div>
-        <div className="flex items-center gap-3 text-sm text-muted-foreground">
-          {/* Which branch this wall screen is pointed at — otherwise a kitchen
-              can't tell "quiet night" from "wrong outlet". */}
-          {ordersScope ? (
-            <span className="hidden items-center gap-1 lg:inline-flex">
-              <Store className="h-4 w-4" />
-              {ordersScope.is_all_outlets ? "All outlets" : ordersScope.outlet.name || "This outlet"}
-            </span>
-          ) : null}
-          <span className="hidden sm:inline">{tickets.length} active ticket{tickets.length === 1 ? "" : "s"}</span>
-          <span className="flex items-center gap-1 tabular-nums">
-            <Clock className="h-4 w-4" />{formatTime(now, timezone)}
-            <span className="text-xs opacity-70">{timezoneAbbreviation(timezone, now)}</span>
-          </span>
-        </div>
-      </header>
-
-      <main className="flex-1 overflow-auto p-4 md:p-6">
-        {!restaurantId ? (
-          <div className="flex h-full items-center justify-center">
-            <p className="text-2xl text-muted-foreground">Signing in…</p>
-          </div>
-        ) : !loaded ? (
-          <div className="flex h-full items-center justify-center">
-            <p className="text-2xl text-muted-foreground">Loading kitchen tickets…</p>
-          </div>
-        ) : tickets.length === 0 ? (
-          <div className="flex h-full items-center justify-center">
-            <div className="w-full max-w-2xl">
-              {/* Never a bare "nothing here": names the outlet this screen is
-                  scoped to and offers the switch when the tickets are elsewhere. */}
-              {/* A wall-mounted kitchen screen is not signed in as a manager, so
-                  it gets the explanation without the outlet-switch buttons. */}
-              <OrdersScopeNotice scope={ordersScope} visibleCount={0} station={station} large />
-              {!ordersScope && (
-                <p className="text-center text-2xl text-muted-foreground">No active tickets for {station}.</p>
-              )}
-            </div>
-          </div>
-        ) : (
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
-            {tickets.map(({ order, items }) => {
-              const barked = isOrderBarked(order);
-              // Same two facts as the in-dashboard board, set larger: which KOT
-              // this is, and the wall-clock instant it was placed.
-              const kot = kotLabel(order);
-              const placed = order.created_at ? formatTime(order.created_at, timezone) : "";
-              // Items can only be un-served while the ORDER is still in progress; once it is Served as a whole the server refuses.
-              const orderFullyServed = !["preparing", "pending"].includes(String(order.status ?? "").toLowerCase());
-              const orderMs = timerElapsedMs(order.timing?.order, now);
-              const u = barked ? urgency(order) : "fresh";
-              const accent = !barked
-                ? "border-dashed opacity-80"
-                : u === "late"
-                  ? "border-red-500 ring-2 ring-red-500/40"
-                  : u === "warn"
-                    ? "border-amber-500"
-                    : "border-border";
-              return (
-                <Card key={order.id} className={`flex flex-col border-2 ${accent} ${barked ? "" : "bg-muted/40"}`}>
-                  <CardHeader className="pb-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <CardTitle className="flex items-center gap-2 text-2xl">
-                        {order.table || "—"}
-                        <SourceBadge source={order.order_type} />
-                      </CardTitle>
-                      <div className="flex items-center gap-2">
-                        {barked && order.timing?.order?.started_at ? (
-                          <span className={`flex items-center gap-1 text-base font-semibold tabular-nums ${u === "late" ? "text-red-600" : u === "warn" ? "text-amber-600" : "text-muted-foreground"}`}>
-                            <Clock className="h-4 w-4" />{formatElapsed(orderMs)}
-                          </span>
-                        ) : null}
-                        {barked ? (
-                          <Badge variant={order.status === "Preparing" ? "secondary" : "default"} className="text-sm">{order.status}</Badge>
-                        ) : (
-                          <Badge variant="outline" className="border-dashed text-muted-foreground">Not barked</Badge>
-                        )}
-                      </div>
-                    </div>
-                    {/* Read from across the kitchen, so a size up from the
-                        dashboard board. Omitted entirely when the order carries
-                        neither number nor placed time. */}
-                    {kot || placed ? (
-                      <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-base text-muted-foreground">
-                        {kot ? (
-                          <span className="inline-flex items-center gap-1.5 font-semibold text-foreground">
-                            <ReceiptText className="h-4 w-4 shrink-0" />
-                            <span className="tabular-nums">{kot}</span>
-                          </span>
-                        ) : null}
-                        {placed ? (
-                          <span className="inline-flex items-center gap-1.5">
-                            <Clock className="h-4 w-4 shrink-0" />
-                            <span className="tabular-nums">Placed {placed}</span>
-                          </span>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </CardHeader>
-                  <CardContent className="flex-1 space-y-2 pt-0">
-                    {items.map((item) => {
-                      const held = isItemHeld(item);
-                      const timer = order.timing?.items?.[item.id];
-                      const served = Boolean(timer?.ended_at);
-                      const ms = timerElapsedMs(timer, now);
-                      return (
-                        <div key={item.id} className={`flex items-center justify-between gap-2 text-lg ${held || !barked ? "opacity-60" : ""}`}>
-                          <div className="min-w-0">
-                            <span className={served ? "line-through text-muted-foreground" : "font-medium"}>
-                              {item.quantity}× {item.name}
-                            </span>
-                            {held ? (
-                              <Badge variant="outline" className="ml-2 border-amber-400 bg-amber-50 text-amber-800 text-[11px] px-1.5 py-0">HOLD</Badge>
-                            ) : null}
-                            {item.note ? <div className="text-sm text-muted-foreground">Note: {item.note}</div> : null}
-                          </div>
-                          <div className="flex shrink-0 items-center gap-1.5">
-                            {!barked ? null : served ? (
-                              <Button size="sm" variant="ghost" className="h-9 px-2"
-                                title={orderFullyServed ? "The whole order is served — items can no longer be undone" : "Undo served"}
-                                disabled={busyItem === item.id || orderFullyServed}
-                                onClick={() => { void handleUnserve(order.id, item.id); }}>
-                                <CheckCircle2 className={`h-6 w-6 ${orderFullyServed ? "text-muted-foreground" : "text-green-600"}`} />
-                              </Button>
-                            ) : held ? (
-                              <Button size="sm" variant="outline" className="h-9 px-3 text-sm" disabled={busyItem === item.id} onClick={() => { void handleFire(order.id, item.id); }}>
-                                <Flame className="mr-1 h-4 w-4 text-orange-500" /> Fire
-                              </Button>
-                            ) : (
-                              <>
-                                {timer?.started_at ? <span className="text-sm text-muted-foreground tabular-nums">{formatElapsed(ms)}</span> : null}
-                                <Button size="sm" variant="ghost" className="h-9 px-3 text-sm" disabled={busyItem === item.id} onClick={() => { void handleServe(order.id, item.id); }}>
-                                  Serve
-                                </Button>
-                              </>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                    {!barked ? (
-                      <Button className="mt-2 w-full" disabled={busyItem === order.id} onClick={() => { void handleBark(order.id); }}>
-                        <Megaphone className="mr-1.5 h-4 w-4" /> Bark to kitchen
-                      </Button>
-                    ) : null}
-                  </CardContent>
-                </Card>
-              );
-            })}
-          </div>
-        )}
-      </main>
-    </div>
-  );
-}
-
-/*
-  C4 — THE ORDER CART A WAITER SEES HAS NO MONEY ON IT.
-
-  "When a waiter is taking an order at a table, remove the prices from the list
-  of ordered dishes displayed on the right side. Only the dish name and quantity
-  should remain visible."
-
-  WHAT IS HIDDEN HERE: the per-line amount down the right of the cart, and the
-  Subtotal underneath it. WHAT SURVIVES, because the requirement says so and
-  because it is the ticket: the dish, its size, its HOLD flag, its kitchen note
-  and its quantity. That is the same cut the Flutter app makes
-  (`widgets/table_bill.dart`, `_items` and `_totals` both gated on
-  `RoleScope.showsMoney`), and making it differently on the web is how one
-  restaurant ends up with two answers to one requirement.
-
-  IT IS ASKED THROUGH `visibleLineAmount` / `visibleSubtotal`, NOT THROUGH AN
-  `if` ON THE ROLE, because the role is only half of it: the backend is
-  redacting the price out of the payload for a waiter-only session, so a price
-  can also arrive ABSENT. `Number(undefined || 0).toFixed(2)` is "0.00" — a
-  confident figure printed where a hidden one belongs, and on a cart that means
-  a dish that reads as free. Those helpers answer `null` for both causes and the
-  JSX draws nothing at all; see `order-prices.ts` for why they do not
-  distinguish the two.
-*/
-function OrderForm({ onSubmit, menuItems, tables, selectedTableName, onClearSelectedTable, variationsByMenuId }: { onSubmit: (data: { tableId: number; items: { id?: string; name: string; price: number; quantity?: number; note?: string | null; course_hold?: boolean; variation_id?: string }[]; covers?: number }) => Promise<void> | void; menuItems: MenuItem[]; tables: { id: number; name: string; capacity: number }[]; selectedTableName?: string; onClearSelectedTable?: () => void; variationsByMenuId?: Map<string, MenuVariationRecord[]> }) {
-  const { currencySymbol } = useCurrency();
-  // C4's gate, from the session and therefore from the server. Read here rather
-  // than passed in as a prop: a prop could be forgotten at one of the call
-  // sites, and there is no correct default for "may this person see money".
-  const { user } = useAuth();
-  const [selectedTableId, setSelectedTableId] = useState<string>(() => {
-    if (selectedTableName) {
-      const matched = tables.find((table) => table.name.toLowerCase() === selectedTableName.toLowerCase());
-      if (matched) {return String(matched.id);}
-    }
-    return tables?.[0]?.id?.toString() ?? '';
-  });
-  const [selectedItemValue, setSelectedItemValue] = useState("");
-  const [selectedQuantity, setSelectedQuantity] = useState<number>(1);
-  const [selectedNote, setSelectedNote] = useState("");
-  const [selectedHold, setSelectedHold] = useState(false);
-  // Migration 039 — which SIZE of the picked dish. "" is the dish's base price,
-  // which is what every line was before variations existed and what every dish
-  // that has none still is.
-  const [selectedVariationId, setSelectedVariationId] = useState("");
-  const [itemsList, setItemsList] = useState<{ id?: string; name: string; price: number; quantity: number; note?: string | null; course_hold?: boolean; variation_id?: string; variation_label?: string }[]>([]);
-  const [covers, setCovers] = useState<number>(1);
-
-  useEffect(() => {
-    if (selectedTableName) {
-      const matched = tables.find((table) => table.name.toLowerCase() === selectedTableName.toLowerCase());
-      if (matched) {
-        setSelectedTableId(String(matched.id));
-      }
-      return;
-    }
-
-    if (!selectedTableId && tables[0]) {
-      setSelectedTableId(String(tables[0].id));
-    }
-  }, [selectedTableName, selectedTableId, tables]);
-
-  
-
-  const menuOptions = menuItems.map(item => ({ value: item.name.toLowerCase(), label: item.name }));
-  const tableOptions = tables.map(t => ({ value: String(t.id), label: t.name }));
-
-  // The sizes this dish is sold in, if any. A dish with none behaves exactly as
-  // it always has — no picker, no extra key on the line, no change anywhere.
-  const selectedMenuItemForSize = menuItems.find((m) => m.name.toLowerCase() === selectedItemValue.trim().toLowerCase());
-  const sizesForSelected = selectedMenuItemForSize
-    ? variationsByMenuId?.get(selectedMenuItemForSize.id) ?? []
-    : [];
-  const chosenSize = sizesForSelected.find((v) => v.id === selectedVariationId) ?? null;
-
-  const addItem = () => {
-    const name = selectedItemValue.trim();
-    const selectedMenuItem = menuItems.find((m) => m.name.toLowerCase() === name.toLowerCase());
-    if (!selectedMenuItem) {return;}
-    // The size's price when one was picked. It is a PREVIEW: the server floors
-    // this line at the same variation's stored price, so a stale price here is
-    // corrected rather than billed — which is also what makes C4 safe to
-    // implement by hiding. A waiter whose payload has had its prices redacted
-    // sends 0 here and the line is still billed at the menu's price, because
-    // applyMenuPriceFloor never trusts a client-supplied figure.
-    const price = chosenSize ? Number(chosenSize.price || 0) : Number(selectedMenuItem.price || 0);
-    const note = selectedNote.trim();
-    const hold = selectedHold;
-    const variationId = chosenSize?.id;
-    // Half and Full are DIFFERENT LINES, so the size is part of what makes two
-    // adds the same line. Without it, adding a Full after a Half would silently
-    // bump the Half's quantity and the guest would be billed the wrong size.
-    const same = (p: { name: string; note?: string | null; course_hold?: boolean; variation_id?: string }) =>
-      p.name.toLowerCase() === name.toLowerCase()
-      && String(p.note ?? "") === note
-      && Boolean(p.course_hold) === hold
-      && String(p.variation_id ?? "") === String(variationId ?? "");
-    setItemsList(prev => {
-      if (prev.some(same)) {
-        return prev.map(p => (same(p) ? { ...p, quantity: p.quantity + selectedQuantity } : p));
-      }
-      return [...prev, {
-        id: undefined, name, price, quantity: selectedQuantity, note: note || null, course_hold: hold,
-        ...(variationId ? { variation_id: variationId, variation_label: chosenSize?.name } : {}),
-      }];
-    });
-    setSelectedItemValue("");
-    setSelectedQuantity(1);
-    setSelectedNote("");
-    setSelectedHold(false);
-    setSelectedVariationId("");
-  };
-
-  /** "Half — ₹150" where the money shows, plain "Half" where it does not. */
-  const sizeOptionLabel = (label: string, price: unknown): string => {
-    const money = visibleMoneyText(currencySymbol, visibleAmount(user, price));
-    return money === null ? label : `${label} — ${money}`;
-  };
-
-  const removeItem = (name: string, note?: string | null, variationId?: string) => {
-    setItemsList(prev => prev.filter(p => !(
-      p.name === name
-      && String(p.note ?? "") === String(note ?? "")
-      && String(p.variation_id ?? "") === String(variationId ?? "")
-    )));
-  };
-
-  /*
-    Null for a scoped waiter, and null again if ANY line's price was redacted out
-    of the payload — see `visibleSubtotal` for why a partial total is worse than
-    none. `null * qty === 0` in JavaScript, which is exactly how a redacted cart
-    would otherwise have added up to a confident ₹0.00.
-  */
-  const subtotal = visibleSubtotal(user, itemsList);
-
-  const handleSubmit = () => {
-    const tableIdNum = Number(selectedTableId);
-    if (!selectedTableId || Number.isNaN(tableIdNum) || itemsList.length === 0) {return;}
-    // `variation_label` is a label for THIS form and nothing else — the server
-    // stamps its own from the live variation. Sending it would put a
-    // client-authored string on a stored order line, which is exactly the kind of
-    // key that later gets read as authoritative by something.
-    const items = itemsList.map(({ variation_label: _label, ...rest }) => rest);
-    void onSubmit({ tableId: tableIdNum, items, covers });
-  };
-
-  /*
-    6.8 — SEND ORDER IS AT THE TOP, AND IT STAYS THERE.
-
-    "While sending an order to the kitchen, move the Send Order button higher up
-    in placement instead of having it at the very bottom of the page."
-
-    It used to be a footer under the item list, so every dish added pushed it
-    further down until the dialog ran off the screen. It is now pinned to the top
-    of the (scrolling) dialog, full width and full size, and it says what it is
-    about to send. Disabled until there is a table and a line to send — the
-    handler already refused both silently, which read as a button that did
-    nothing. The count is lines-by-quantity, like the owner app's bar; the money
-    stays off it (C4), because a waiter-only session has none to show.
-  */
-  const itemCount = itemsList.reduce((sum, it) => sum + it.quantity, 0);
-  const canSend = Boolean(selectedTableId) && itemsList.length > 0;
-
-  return (
-    <div className="grid gap-4 py-4">
-      <div className="sticky -top-6 z-10 -mx-6 -mt-4 border-b bg-background px-6 pb-3 pt-4">
-        <Button size="lg" className="h-12 w-full text-base" onClick={handleSubmit} disabled={!canSend}>
-          {itemCount > 0 ? `Send order · ${String(itemCount)} item${itemCount === 1 ? "" : "s"}` : "Send order"}
+    <div className="flex items-center gap-2">
+      <History className="h-3.5 w-3.5 shrink-0 text-tertiary" aria-hidden />
+      <span className="min-w-0 flex-1 text-xs text-muted-foreground">
+        {hidden} settled order{hidden === 1 ? "" : "s"} placed over {ORDERS_LIVE_WINDOW_HOURS} hours ago {hidden === 1 ? "is" : "are"} hidden here.{" "}
+        {canOpenHistory
+          ? "Nothing was deleted — they are in History."
+          : "Nothing was deleted — they are kept on record, and anyone with History access can still pull them up."}
+      </span>
+      {canOpenHistory ? (
+        <Button variant="ghost" size="sm" className="shrink-0" onClick={onOpenHistory}>
+          <CalendarDays /> History
         </Button>
-      </div>
-      <div className="grid grid-cols-4 items-center gap-4">
-      <Label htmlFor="table" className="text-right">Table</Label>
-      <div className="col-span-3">
-        {selectedTableName ? (
-          <div className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
-            <span className="font-medium">{selectedTableName}</span>
-            {onClearSelectedTable ? (
-              <Button variant="ghost" size="sm" onClick={onClearSelectedTable}>Change</Button>
-            ) : null}
-          </div>
-        ) : (
-          <Combobox
-            options={tableOptions}
-            value={selectedTableId || (tables?.[0]?.id?.toString() ?? '')}
-            onChange={(value) => { setSelectedTableId(String(value ?? '')); }}
-            placeholder="Select a table"
-            searchPlaceholder="Search tables..."
-            emptyPlaceholder="No tables available"
-          />
-        )}
-      </div>
-      </div>
-      <div className="grid grid-cols-4 items-center gap-4">
-      <Label htmlFor="covers" className="text-right">Guests</Label>
-      <div className="col-span-3">
-        <Input id="covers" type="number" min={1} value={String(covers)} onChange={(e) => { setCovers(Math.max(1, Number(e.target.value) || 1)); }} placeholder="Number of guests (covers)" />
-      </div>
-      </div>
-      <div className="grid grid-cols-4 items-center gap-4">
-      <Label htmlFor="item" className="text-right">Add Item</Label>
-      <div className="col-span-3 grid grid-cols-12 gap-2">
-        <div className="col-span-6">
-          <Combobox
-            options={menuOptions}
-            value={selectedItemValue.toLowerCase()}
-            onChange={(value) => {
-              const selected = menuItems.find(m => m.name.toLowerCase() === value);
-              setSelectedItemValue(selected?.name ?? value ?? '');
-              // A size belongs to ONE dish, so changing the dish drops it. Carrying
-              // it over would attach another dish's price point to this line, which
-              // the server refuses — but only after the waiter has pressed Add.
-              setSelectedVariationId('');
-            }}
-            placeholder="Select or type item"
-            searchPlaceholder="Search for an item..."
-            emptyPlaceholder="No items found."
-          />
-        </div>
-        <Input placeholder="Qty" type="number" value={String(selectedQuantity)} onChange={e => { setSelectedQuantity(Math.max(1, Number(e.target.value) || 1)); }} className="col-span-4" />
-        <Button onClick={addItem} className="col-span-2">Add</Button>
-      </div>
-      </div>
-      {/* Only for a dish that actually has sizes. A picker offering nothing but
-          "Base" on 300 dishes is noise on the busiest screen in the building. */}
-      {sizesForSelected.length > 0 ? (
-      <div className="grid grid-cols-4 items-center gap-4">
-        <Label htmlFor="item-size" className="text-right">Size</Label>
-        <div className="col-span-3">
-          <Select value={selectedVariationId || "__base__"} onValueChange={(v) => { setSelectedVariationId(v === "__base__" ? "" : v); }}>
-            <SelectTrigger id="item-size"><SelectValue /></SelectTrigger>
-            {/* The size picker is the MENU, not the order — C4 is about the
-                list of ordered dishes — but it is read off the same payload the
-                backend redacts for a waiter-only session, so it goes through the
-                same gate. Without it this row was `Number(undefined ?? 0)`, i.e.
-                every size priced "₹0.00" on a waiter's screen: not a hidden
-                price, a wrong one. Falling back to the bare size NAME is what
-                the picker is actually for — Half and Full are different lines
-                whether or not their prices are on show. */}
-            <SelectContent>
-              <SelectItem value="__base__">{sizeOptionLabel('Standard', selectedMenuItemForSize?.price)}</SelectItem>
-              {sizesForSelected.map((v) => (
-                <SelectItem key={v.id} value={v.id}>{sizeOptionLabel(v.name, v.price)}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <p className="pt-1 text-xs text-muted-foreground">
-            The size is billed and reported at its own price — the server floors this line at that
-            price, so it can never be rung below it.
-          </p>
-        </div>
-      </div>
       ) : null}
-      <div className="grid grid-cols-4 items-center gap-4">
-        <Label htmlFor="item-note" className="text-right">Note</Label>
-        <Input
-          id="item-note"
-          placeholder="No onion, extra spicy, etc."
-          value={selectedNote}
-          onChange={(e) => { setSelectedNote(e.target.value); }}
-          className="col-span-3"
-        />
-      </div>
-      <div className="grid grid-cols-4 items-center gap-4">
-        <Label htmlFor="item-hold" className="text-right">Hold</Label>
-        <div className="col-span-3 flex items-center gap-2">
-          <Switch id="item-hold" checked={selectedHold} onCheckedChange={setSelectedHold} />
-          <span className="text-sm text-muted-foreground">Hold this course — the kitchen fires it later.</span>
-        </div>
-      </div>
-
-      <div>
-      {itemsList.length === 0 ? (
-        <div className="text-sm text-muted-foreground">No items added.</div>
-      ) : (
-        <div className="space-y-2">
-          {itemsList.map(it => (
-            <div key={`${it.name}-${String(it.note ?? "")}-${it.course_hold ? "h" : ""}-${String(it.variation_id ?? "")}`} className="flex items-center justify-between">
-              <div>
-                <div className="flex items-center gap-1.5">
-                  {it.quantity}x {it.name}
-                  {it.variation_label ? (
-                    <Badge variant="outline" className="text-[10px] px-1.5 py-0">{it.variation_label}</Badge>
-                  ) : null}
-                  {it.course_hold ? (
-                    <Badge variant="outline" className="border-amber-400 bg-amber-50 text-amber-800 text-[10px] px-1.5 py-0">HOLD</Badge>
-                  ) : null}
-                </div>
-                {it.note ? <div className="text-xs text-muted-foreground">Note: {it.note}</div> : null}
-              </div>
-              <div className="flex items-center gap-2">
-                {/* C4 — the element GOES, it is not blanked. A "—" or a "₹0.00"
-                    in this column is a price as far as the person reading the
-                    cart is concerned. */}
-                {(() => {
-                  const amount = visibleMoneyText(currencySymbol, visibleLineAmount(user, it.price, it.quantity));
-                  return amount === null ? null : <div>{amount}</div>;
-                })()}
-                <Button variant="ghost" size="icon" onClick={() => { removeItem(it.name, it.note, it.variation_id); }}><X className="h-4 w-4"/></Button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-      </div>
-
-      {/* C4 — the Subtotal is the same money in one line instead of many, so it
-          goes with them. The whole row disappears rather than the figure alone:
-          a label reading "Subtotal" with nothing after it is a gap a waiter will
-          read as a loading state and wait on. */}
-      {subtotal === null ? null : (
-      <div className="flex justify-between text-sm border-t pt-2">
-        <div>Subtotal</div>
-        <div>{currencySymbol}{subtotal.toFixed(2)}</div>
-      </div>
-      )}
     </div>
-  )
+  );
 }
 
-const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit, onReplace, canEditPrice, defaultTax, menuItems }: { order: Order, open: boolean, onOpenChange: (open: boolean) => void, onSubmit: (data: Omit<Order, 'total'>) => void, onReplace?: (order: Order, replacement: { items: OrderItem[]; taxes: { id?: string; name: string; percentage: number }[]; serviceChargePercentage?: number | undefined; applyServiceCharge?: boolean; reason: string; }) => Promise<void>, canEditPrice?: boolean, defaultTax?: Record<string, number> | null, menuItems?: MenuItem[] }) => {
+/* ── The styled confirmation every window.confirm() became (finding 33) ── */
+
+function ConfirmActionDialog({ request, onClose }: { request: ConfirmActionRequest | null; onClose: () => void }): React.JSX.Element {
+  const [busy, setBusy] = useState(false);
+  return (
+    <AlertDialog open={request !== null} onOpenChange={(open) => { if (!open && !busy) { onClose(); } }}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{request?.title}</AlertDialogTitle>
+          <AlertDialogDescription asChild>
+            <div className="space-y-2 text-sm">{request?.description}</div>
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            className={request?.destructive ? "bg-destructive text-destructive-foreground hover:bg-destructive/90" : undefined}
+            disabled={busy || request === null}
+            onClick={(e) => {
+              // Keep the dialog up while the write runs; close when it lands.
+              e.preventDefault();
+              if (request === null) { return; }
+              setBusy(true);
+              void request.run()
+                .catch(() => { /* each run() reports its own failure */ })
+                .finally(() => { setBusy(false); onClose(); });
+            }}
+          >
+            {busy ? <Loader2 className="animate-spin" /> : null}
+            {request?.confirmLabel}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+/* ── Edit Bill (web-extra 40 — bill replacement with a recorded reason) ── */
+
+function EditOrderDialog({ order, open, onOpenChange, onReplace, canEditPrice, defaultTax, menuItems }: { order: Order; open: boolean; onOpenChange: (open: boolean) => void; onReplace: (order: Order, replacement: { items: OrderItem[]; taxes: { id?: string; name: string; percentage: number }[]; serviceChargePercentage?: number | undefined; applyServiceCharge?: boolean; reason: string }) => void; canEditPrice?: boolean; defaultTax?: Record<string, number> | null; menuItems?: MenuItem[] }): React.JSX.Element {
   const { currencySymbol } = useCurrency();
-  const [serviceChargePerc, setServiceChargePerc] = useState(order.serviceChargePercentage?.toString() || "");
-  const [taxes, setTaxes] = useState<Tax[]>(order.taxes || []);
+  const [serviceChargePerc, setServiceChargePerc] = useState(order.serviceChargePercentage?.toString() ?? "");
+  const [taxes, setTaxes] = useState<Tax[]>(order.taxes ?? []);
   const [applyServiceCharge, setApplyServiceCharge] = useState(order.applyServiceCharge);
-  const [localItems, setLocalItems] = useState<OrderItem[]>(order.items.map(i => ({ ...i })));
+  const [localItems, setLocalItems] = useState<OrderItem[]>(order.items.map((i) => ({ ...i })));
   const [newItemName, setNewItemName] = useState("");
   const [newItemQuantity, setNewItemQuantity] = useState<number>(1);
   const [newItemNote, setNewItemNote] = useState("");
   const [reason, setReason] = useState("");
 
   useEffect(() => {
-    Promise.resolve().then(() => {
-      setServiceChargePerc(order.serviceChargePercentage?.toString() || "");
+    void Promise.resolve().then(() => {
+      setServiceChargePerc(order.serviceChargePercentage?.toString() ?? "");
       setApplyServiceCharge(order.applyServiceCharge);
-      setLocalItems(order.items.map(i => ({ ...i })));
+      setLocalItems(order.items.map((i) => ({ ...i })));
       setReason("");
       setNewItemName("");
       setNewItemQuantity(1);
       setNewItemNote("");
 
       if (Array.isArray(order.taxes) && order.taxes.length > 0) {
-        setTaxes(order.taxes as any);
+        setTaxes(order.taxes);
       } else if (defaultTax && typeof defaultTax === "object") {
         const taxesFromDefault: Tax[] = [];
         for (const [k, v] of Object.entries(defaultTax)) {
-          if (!k) {continue;}
+          if (!k) { continue; }
           if (/service ?charge/i.test(k) || /service ?charges/i.test(k)) {
-            if (Number(v) > 0) {
-              setServiceChargePerc(String(Number(v)));
+            if (v > 0) {
+              setServiceChargePerc(String(v));
               setApplyServiceCharge(true);
             }
           } else {
-            taxesFromDefault.push({ id: `d-${k}`, name: k, percentage: Number(v) });
+            taxesFromDefault.push({ id: `d-${k}`, name: k, percentage: v });
           }
         }
         setTaxes(taxesFromDefault);
@@ -3929,36 +1694,36 @@ const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit, onRep
     });
   }, [order, defaultTax]);
 
-  const handleTaxChange = (id: string, field: "name" | "percentage", value: string) => {
-    setTaxes(taxes.map(tax => tax.id === id ? { ...tax, [field]: field === "percentage" ? (parseFloat(value) || 0) : value } : tax));
+  const handleTaxChange = (id: string, field: "name" | "percentage", value: string): void => {
+    setTaxes(taxes.map((tax) => tax.id === id ? { ...tax, [field]: field === "percentage" ? (parseFloat(value) || 0) : value } : tax));
   };
 
-  const addTax = () => {
+  const addTax = (): void => {
     setTaxes([...taxes, { id: `t${Date.now()}`, name: "", percentage: 0 }]);
   };
 
-  const removeTax = (id: string) => {
-    setTaxes(taxes.filter(tax => tax.id !== id));
+  const removeTax = (id: string): void => {
+    setTaxes(taxes.filter((tax) => tax.id !== id));
   };
 
-  const handleAddItem = () => {
+  const handleAddItem = (): void => {
     const itemName = newItemName.trim();
-    const selectedMenuItem = (menuItems ?? []).find(m => m.name.toLowerCase() === itemName.toLowerCase());
-    if (!selectedMenuItem) {return;}
+    const selectedMenuItem = (menuItems ?? []).find((m) => m.name.toLowerCase() === itemName.toLowerCase());
+    if (!selectedMenuItem) { return; }
     const normalizedNote = newItemNote.trim();
 
-    setLocalItems(prev => {
+    setLocalItems((prev) => {
       const existing = prev.find(
-        p => p.name.trim().toLowerCase() === itemName.toLowerCase() && String(p.note ?? "") === normalizedNote,
+        (p) => p.name.trim().toLowerCase() === itemName.toLowerCase() && (p.note ?? "") === normalizedNote,
       );
       if (existing) {
-        return prev.map(p => p.id === existing.id ? { ...p, quantity: p.quantity + newItemQuantity } : p);
+        return prev.map((p) => p.id === existing.id ? { ...p, quantity: p.quantity + newItemQuantity } : p);
       }
       return [...prev, {
         id: `i${Date.now()}`,
         name: selectedMenuItem.name,
         quantity: newItemQuantity,
-        price: Number(selectedMenuItem.price) || 0,
+        price: selectedMenuItem.price || 0,
         orderedAt: new Date().toISOString(),
         note: normalizedNote || null,
       }];
@@ -3969,36 +1734,21 @@ const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit, onRep
     setNewItemNote("");
   };
 
-  const handleRemoveItem = (id: string) => { setLocalItems(prev => prev.filter(i => i.id !== id)); };
+  const handleRemoveItem = (id: string): void => { setLocalItems((prev) => prev.filter((i) => i.id !== id)); };
 
-  const handleSubmit = async () => {
-    const updatedOrder = {
-      ...order,
-      serviceChargePercentage: serviceChargePerc ? parseFloat(serviceChargePerc) : undefined,
-      taxes: taxes.filter(t => t.name && t.percentage > 0),
-      applyServiceCharge,
+  const handleSubmit = (): void => {
+    const cleanTaxes = taxes.filter((t) => t.name && t.percentage > 0);
+    if (!reason.trim()) { return; }
+    onReplace(order, {
       items: localItems,
-    };
-
-    if (onReplace) {
-      if (!reason?.trim()) {
-        alert("Reason is required to replace bill");
-        return;
-      }
-      await onReplace(order, {
-        items: localItems,
-        taxes: updatedOrder.taxes as any,
-        serviceChargePercentage: updatedOrder.serviceChargePercentage,
-        applyServiceCharge: updatedOrder.applyServiceCharge,
-        reason: reason.trim(),
-      });
-      return;
-    }
-
-    onSubmit(updatedOrder);
+      taxes: cleanTaxes,
+      serviceChargePercentage: serviceChargePerc ? parseFloat(serviceChargePerc) : undefined,
+      applyServiceCharge,
+      reason: reason.trim(),
+    });
   };
 
-  const localSubtotal = localItems.reduce((acc, it) => acc + (Number(it.price) || 0) * (Number(it.quantity) || 0), 0);
+  const localSubtotal = localItems.reduce((acc, it) => acc + (it.price || 0) * (it.quantity || 0), 0);
   const serviceChargeAmount = calculateServiceCharge(localSubtotal, parseFloat(serviceChargePerc), applyServiceCharge);
   const calculatedTaxesWithAmounts = calculateTaxes(localSubtotal, taxes);
   const totalTaxAmount = calculatedTaxesWithAmounts.reduce((acc, tax) => acc + tax.amount, 0);
@@ -4033,17 +1783,17 @@ const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit, onRep
 
           <div className="grid grid-cols-1 gap-y-2">
             <Label>Items</Label>
-            <div className="max-h-40 overflow-y-auto mb-2">
+            <div className="mb-2 max-h-40 overflow-y-auto">
               <Table>
                 <TableBody>
-                  {localItems.map(item => (
+                  {localItems.map((item) => (
                     <TableRow key={item.id}>
                       <TableCell className="font-medium">
                         <div>{item.name}</div>
                         {item.note ? <div className="text-xs text-muted-foreground">Note: {item.note}</div> : null}
                       </TableCell>
                       <TableCell className="text-center">
-                        <Input type="number" value={String(item.quantity)} onChange={(e) => { setLocalItems(prev => prev.map(p => p.id === item.id ? { ...p, quantity: Math.max(1, Number(e.target.value) || 1) } : p)); }} className="w-16 mx-auto" />
+                        <Input type="number" value={String(item.quantity)} onChange={(e) => { setLocalItems((prev) => prev.map((p) => p.id === item.id ? { ...p, quantity: Math.max(1, Number(e.target.value) || 1) } : p)); }} className="mx-auto w-16" />
                       </TableCell>
                       <TableCell className="text-right">{currencySymbol}{(item.price * item.quantity).toFixed(2)}</TableCell>
                       <TableCell className="text-right">
@@ -4057,14 +1807,14 @@ const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit, onRep
               </Table>
             </div>
 
-            <div className="grid grid-cols-12 gap-2 my-2">
+            <div className="my-2 grid grid-cols-12 gap-2">
               <div className="col-span-5">
                 <Combobox
-                  options={(menuItems ?? []).map(m => ({ value: m.name.toLowerCase(), label: m.name }))}
+                  options={(menuItems ?? []).map((m) => ({ value: m.name.toLowerCase(), label: m.name }))}
                   value={newItemName.toLowerCase()}
                   onChange={(value) => {
-                    const selected = (menuItems ?? []).find(m => m.name.toLowerCase() === value);
-                    setNewItemName(selected?.name ?? (value ?? ""));
+                    const selected = (menuItems ?? []).find((m) => m.name.toLowerCase() === value);
+                    setNewItemName(selected?.name ?? value);
                   }}
                   placeholder="Select item"
                   searchPlaceholder="Search for an item..."
@@ -4093,49 +1843,51 @@ const EditOrderDialog = React.memo(({ order, open, onOpenChange, onSubmit, onRep
                 </div>
               ))}
             </div>
-            <Button variant="outline" size="sm" onClick={addTax} className="w-full mt-2">Add Tax</Button>
+            <Button variant="outline" size="sm" onClick={addTax} className="mt-2 w-full">Add Tax</Button>
           </div>
 
-          <div className="border-t pt-4 mt-2">
+          <div className="mt-2 border-t pt-4">
             <div className="flex justify-between text-sm">
               <span>Calculated Service Charge:</span>
               <span>{applyServiceCharge ? `${currencySymbol}${serviceChargeAmount.toFixed(2)}` : `${currencySymbol}0.00`}</span>
             </div>
-            {calculatedTaxesWithAmounts.map(tax => (
+            {calculatedTaxesWithAmounts.map((tax) => (
               <div key={tax.id} className="flex justify-between text-sm">
                 <span>{tax.name} ({tax.percentage}%):</span>
                 <span>{currencySymbol}{tax.amount.toFixed(2)}</span>
               </div>
             ))}
-            <div className="flex justify-between font-bold text-lg mt-2 border-t pt-2">
+            <div className="mt-2 flex justify-between border-t pt-2 text-lg font-bold">
               <span>Final Total:</span>
               <span>{currencySymbol}{totalAmount.toFixed(2)}</span>
             </div>
           </div>
 
           <div className="mt-4">
-            <Label>Reason for Edit (required)</Label>
+            <Label htmlFor="edit-bill-reason">Reason for Edit (required)</Label>
             <textarea
+              id="edit-bill-reason"
               aria-label="Reason for bill replacement"
               placeholder="Write the reason for replacement"
               value={reason}
-              onChange={e => { setReason(e.target.value); }}
-              className="w-full border rounded p-2 mt-1"
+              onChange={(e) => { setReason(e.target.value); }}
+              className="mt-1 w-full rounded border p-2"
               rows={3}
             />
           </div>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => { onOpenChange(false); }}>Cancel</Button>
-          <Button onClick={handleSubmit}>Save Changes</Button>
+          <Button disabled={!reason.trim()} onClick={handleSubmit}>Save Changes</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
   );
-});
-EditOrderDialog.displayName = "EditOrderDialog";
+}
 
-const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menuItems, canEditPrice }: { order: Order | null, open: boolean, onOpenChange: (open: boolean) => void, onSave: (updated: Order) => Promise<void>, menuItems: MenuItem[], canEditPrice?: boolean }) => {
+/* ── Update Order (web-extra 39 — the item editor) ────────────────────── */
+
+function OrderDetailsDialog({ order, open, onOpenChange, onSave, menuItems, canEditPrice }: { order: Order | null; open: boolean; onOpenChange: (open: boolean) => void; onSave: (updated: Order) => Promise<void>; menuItems: MenuItem[]; canEditPrice?: boolean }): React.JSX.Element | null {
   const { currencySymbol } = useCurrency();
   const { timezone } = useTimezone();
   const [localItems, setLocalItems] = useState<OrderItem[]>([]);
@@ -4145,8 +1897,8 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
 
   useEffect(() => {
     if (open && order) {
-      Promise.resolve().then(() => {
-        setLocalItems(order.items.map(i => ({ ...i })));
+      void Promise.resolve().then(() => {
+        setLocalItems(order.items.map((i) => ({ ...i })));
         setNewItemName("");
         setNewItemNote("");
         setNewItemHold(false);
@@ -4154,33 +1906,33 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
     }
   }, [open, order]);
 
-  if (!order) {return null;}
+  if (!order) { return null; }
 
   // Defence in depth: the "Update Order" entry is already disabled for a
   // cancelled order, but if this dialog is ever reached the editors stay locked.
   const cancelledLock = isOrderCancelled(order);
 
-  const handleAddItem = () => {
-    if (cancelledLock) {return;}
+  const handleAddItem = (): void => {
+    if (cancelledLock) { return; }
     const itemName = newItemName.trim();
-    const selectedMenuItem = menuItems.find(item => item.name.toLowerCase() === itemName.toLowerCase());
+    const selectedMenuItem = menuItems.find((item) => item.name.toLowerCase() === itemName.toLowerCase());
     if (!selectedMenuItem) {
       return;
     }
     const normalizedNote = newItemNote.trim();
     const hold = newItemHold;
 
-    setLocalItems(prev => {
+    setLocalItems((prev) => {
       const nameLower = selectedMenuItem.name.trim().toLowerCase();
-      const existing = prev.find(i => i.name.trim().toLowerCase() === nameLower && String(i.note ?? "") === normalizedNote && isItemHeld(i) === hold);
+      const existing = prev.find((i) => i.name.trim().toLowerCase() === nameLower && (i.note ?? "") === normalizedNote && isItemHeld(i) === hold);
       if (existing) {
-        return prev.map(i => i.id === existing.id ? { ...i, quantity: i.quantity + 1 } : i);
+        return prev.map((i) => i.id === existing.id ? { ...i, quantity: i.quantity + 1 } : i);
       }
       const newItem: OrderItem = {
         id: `i${Date.now()}`,
         name: selectedMenuItem.name,
         quantity: 1,
-        price: Number(selectedMenuItem.price) || 0,
+        price: selectedMenuItem.price || 0,
         orderedAt: new Date().toISOString(),
         note: normalizedNote || null,
         ...(hold ? { course_hold: true } : {}),
@@ -4192,9 +1944,9 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
     setNewItemHold(false);
   };
 
-  const handleRemove = (itemId: string) => {
-    if (cancelledLock) {return;}
-    setLocalItems(prev => prev.filter(i => i.id !== itemId));
+  const handleRemove = (itemId: string): void => {
+    if (cancelledLock) { return; }
+    setLocalItems((prev) => prev.filter((i) => i.id !== itemId));
   };
 
   const subtotal = localItems.reduce((acc, it) => acc + it.price * it.quantity, 0);
@@ -4203,10 +1955,10 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
   const totalTaxAmount = calculatedTaxes.reduce((sum, tax) => sum + tax.amount, 0);
   const total = subtotal + serviceCharge + totalTaxAmount;
 
-  const menuOptions = menuItems.map(item => ({ value: item.name.toLowerCase(), label: item.name }));
+  const menuOptions = menuItems.map((item) => ({ value: item.name.toLowerCase(), label: item.name }));
 
-  const handleSave = async () => {
-    if (cancelledLock) {return;}
+  const handleSave = async (): Promise<void> => {
+    if (cancelledLock) { return; }
     const updatedOrder: Order = {
       ...order,
       items: localItems,
@@ -4217,7 +1969,7 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
     await onSave(updatedOrder);
   };
 
-  const handleCancel = () => {
+  const handleCancel = (): void => {
     onOpenChange(false);
   };
 
@@ -4230,7 +1982,7 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
             <span className="flex items-center gap-2">
               <span>Status:</span>
               {order.status === "Preparing" && !isOrderBarked(order) ? (
-                <Badge variant="outline" className="border-dashed text-muted-foreground text-xs">Not barked</Badge>
+                <Badge variant="outline" className="border-dashed text-xs text-muted-foreground">Not barked</Badge>
               ) : (
                 <Badge variant={cancelledLock ? "destructive" : order.status === "Preparing" ? "secondary" : order.status === "Served" ? "default" : "outline"} className="text-xs">{order.status}</Badge>
               )}
@@ -4242,7 +1994,7 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
           </DialogDescription>
         </DialogHeader>
         <div className="p-4">
-          <div className="max-h-[40vh] overflow-y-auto my-4">
+          <div className="my-4 max-h-[40vh] overflow-y-auto">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -4254,22 +2006,21 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {localItems.map(item => (
+                {localItems.map((item) => (
                   <TableRow key={item.id}>
                     <TableCell className="font-medium">
                       <div className="flex items-center gap-1.5">
                         {item.name}
                         <StationBadge station={item.station} />
                         {isItemHeld(item) ? (
-                          <Badge variant="outline" className="border-amber-400 bg-amber-50 text-amber-800 text-[10px] px-1.5 py-0">HOLD</Badge>
+                          <Badge variant="outline" className="border-warning/40 bg-warning/10 px-1.5 py-0 text-[10px] text-warning">HOLD</Badge>
                         ) : null}
                       </div>
                       {item.note ? <div className="text-xs text-muted-foreground">Note: {item.note}</div> : null}
                     </TableCell>
                     <TableCell className="text-center">{item.quantity}</TableCell>
-                    <TableCell className="text-muted-foreground text-center">
+                    <TableCell className="text-center text-muted-foreground">
                       <div className="flex items-center justify-center">
-                        <Clock className="h-3 w-3 mr-1" />
                         {formatOrderedAt(item.orderedAt, timezone)}
                       </div>
                     </TableCell>
@@ -4284,12 +2035,12 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
               </TableBody>
             </Table>
           </div>
-          <div className="grid grid-cols-12 gap-2 my-4 border-t pt-4">
+          <div className="my-4 grid grid-cols-12 gap-2 border-t pt-4">
             <Combobox
               options={menuOptions}
               value={newItemName.toLowerCase()}
               onChange={(value) => {
-                const selectedItem = menuItems.find(item => item.name.toLowerCase() === value);
+                const selectedItem = menuItems.find((item) => item.name.toLowerCase() === value);
                 setNewItemName(selectedItem?.name || value);
               }}
               placeholder="Select item"
@@ -4314,22 +2065,21 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
               <span>Subtotal</span>
               <span>{currencySymbol}{subtotal.toFixed(2)}</span>
             </div>
-            {/* Only a charge that is charged. A removed one shows no row — the
-                client's rule, the same on every bill surface — and a 0% no
-                longer renders a stray "0" through the && short-circuit. */}
+            {/* Only a charge that is charged. A removed one shows no row, and a
+                0% no longer renders a stray "0" through the && short-circuit. */}
             {order.applyServiceCharge && (order.serviceChargePercentage ?? 0) > 0 && (
               <div className="flex justify-between">
                 <span>Service Charge ({order.serviceChargePercentage}%)</span>
                 <span>{currencySymbol}{serviceCharge.toFixed(2)}</span>
               </div>
             )}
-            {calculatedTaxes.map(tax => (
+            {calculatedTaxes.map((tax) => (
               <div key={tax.id} className="flex justify-between">
                 <span>{tax.name} ({tax.percentage}%)</span>
                 <span>{currencySymbol}{tax.amount.toFixed(2)}</span>
               </div>
             ))}
-            <div className="flex justify-between font-bold text-lg border-t pt-2 mt-2">
+            <div className="mt-2 flex justify-between border-t pt-2 text-lg font-bold">
               <span>Total:</span>
               <span>{currencySymbol}{total.toFixed(2)}</span>
             </div>
@@ -4340,233 +2090,23 @@ const OrderDetailsDialog = React.memo(({ order, open, onOpenChange, onSave, menu
             <span className="mr-auto self-center text-xs text-muted-foreground">{CANCELLED_LOCK_REASON}</span>
           ) : null}
           <Button variant="outline" onClick={handleCancel}>Cancel</Button>
-          <Button onClick={handleSave} disabled={cancelledLock}>Save Changes</Button>
+          <Button onClick={() => { void handleSave(); }} disabled={cancelledLock}>Save Changes</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
   );
-});
-OrderDetailsDialog.displayName = "OrderDetailsDialog";
+}
 
-const OrderViewDialog = React.memo(({ order, open, onOpenChange, onRefreshOrders }: { order: Order | null, open: boolean, onOpenChange: (open: boolean) => void, onRefreshOrders?: () => Promise<void> }) => {
-  const { currencySymbol } = useCurrency();
-  const { user } = useAuth();
-  // Read before the early return — this component already calls useState below it.
-  const { timezone } = useTimezone();
-  // C4 — opening a row as a waiter-only session drew a Price column and a
-  // Subtotal / Total of ₹0.00 off the redacted payload. Same cut as the grid.
-  const moneyVisible = ordersGridColumns(user).includes("total");
-  if (!order) {return null;}
+/* ── Default tax (web-extra 41 — the header's tax defaults editor) ─────── */
 
-  const calculatedTaxes = calculateTaxes(order.subtotal, order.taxes);
-  const serviceCharge = calculateServiceCharge(order.subtotal, order.serviceChargePercentage, order.applyServiceCharge);
-  const totalTaxAmount = calculatedTaxes.reduce((sum, t) => sum + t.amount, 0);
-  const total = order.subtotal + serviceCharge + totalTaxAmount;
-
-  // derive split items
-  const split = order.items_split ?? [['Served', order.items_flattened ?? order.items], ['Preparing', []]] as [string, OrderItem[]][];
-  const servedInitial = Array.isArray(split[0][1]) ? split[0][1] : [];
-  const preparingInitial = Array.isArray(split[1][1]) ? split[1][1] : [];
-
-  const [served, setServed] = React.useState<OrderItem[]>(servedInitial);
-  const [preparing, setPreparing] = React.useState<OrderItem[]>(preparingInitial);
-  const [isDirty, setIsDirty] = React.useState(false);
-
-  React.useEffect(() => {
-    setServed(servedInitial);
-    setPreparing(preparingInitial);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [order.id, order.items_flattened?.length, order.items_split]);
-
-  const dndEnabled = !(order.status === 'Bill Verification' || order.status === 'Payment Pending Approval' || order.status === 'Paid' || order.status === 'Closed' || order.status === 'Cancelled');
-
-  const persistSplit = async (servedList: OrderItem[], preparingList: OrderItem[]) => {
-    try {
-      await requestBackend({ path: `/bills/order/${encodeURIComponent(order.id)}/status`, method: 'PATCH', restaurantId: user?.restaurantUsername, body: { items_split: [['Served', servedList], ['Preparing', preparingList]] } });
-      // call parent refresh handler so OrdersPage can reload state
-      if (onRefreshOrders) {await onRefreshOrders();}
-    } catch (err) {
-      console.error('persist items_split failed', err);
-    }
-  };
-
-  const handleSaveChanges = async () => {
-    if (!dndEnabled) {return;}
-    try {
-      await persistSplit(served, preparing);
-      setIsDirty(false);
-    } catch (err) {
-      console.error('save changes failed', err);
-    }
-  };
-
-  const handleDiscardChanges = () => {
-    // reset to initial values from the order
-    setServed(servedInitial);
-    setPreparing(preparingInitial);
-    setIsDirty(false);
-  };
-
-  const ItemRow: React.FC<{ item: OrderItem; side: 'served' | 'preparing' }> = ({ item, side }) => {
-    const moveToOther = () => {
-      const activeId = item.id;
-      if (side === 'preparing') {
-        const moving = preparing.find(p => p.id === activeId);
-        if (!moving) {return;}
-        setPreparing(prev => prev.filter(p => p.id !== activeId));
-        setServed(prev => [...prev, moving]);
-        setIsDirty(true);
-      } else {
-        const moving = served.find(s => s.id === activeId);
-        if (!moving) {return;}
-        setServed(prev => prev.filter(s => s.id !== activeId));
-        setPreparing(prev => [...prev, moving]);
-        setIsDirty(true);
-      }
-    };
-
-    return (
-      <TableRow key={item.id}>
-        <TableCell className="font-medium">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="flex items-center gap-1.5">
-                {item.name}
-                <StationBadge station={item.station} />
-                {isItemHeld(item) ? (
-                  <Badge variant="outline" className="border-amber-400 bg-amber-50 text-amber-800 text-[10px] px-1.5 py-0">HOLD</Badge>
-                ) : null}
-              </div>
-              {item.note ? <div className="text-xs text-muted-foreground">Note: {item.note}</div> : null}
-            </div>
-            <div>
-              {!dndEnabled ? null : side === 'preparing' ? (
-                <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); moveToOther(); }} title="Move to Served">
-                  <ChevronUp className="h-4 w-4" />
-                </Button>
-              ) : (
-                <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); moveToOther(); }} title="Move to Preparing">
-                  <ChevronDown className="h-4 w-4" />
-                </Button>
-              )}
-            </div>
-          </div>
-        </TableCell>
-        <TableCell className="text-center">{item.quantity}</TableCell>
-        <TableCell className="text-muted-foreground text-center">
-          <div className="flex items-center justify-center">
-            <Clock className="h-3 w-3 mr-1" />
-            {formatOrderedAt(item.orderedAt, timezone)}
-          </div>
-        </TableCell>
-        {moneyVisible ? (
-          <TableCell className="text-right">{visibleMoneyText(currencySymbol, visibleLineAmount(user, item.price, item.quantity))}</TableCell>
-        ) : null}
-      </TableRow>
-    );
-  };
-
-  // DnD removed: using explicit arrow controls for moves between Preparing and Served
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>View Order - {order.table}</DialogTitle>
-          <DialogDescription>
-            <span className="flex items-center gap-2">
-              <span>Status:</span>
-              <Badge variant={isOrderCancelled(order) ? 'destructive' : order.status === 'Preparing' ? 'secondary' : order.status === 'Served' ? 'default' : 'outline'} className="text-xs">{order.status}</Badge>
-            </span>
-            {isOrderCancelled(order) ? (
-              <span className="mt-1 block text-xs text-muted-foreground">{CANCELLED_LOCK_REASON}</span>
-            ) : null}
-          </DialogDescription>
-        </DialogHeader>
-        <div className="p-4">
-            <div className="flex flex-col gap-4 max-h-[60vh] overflow-y-auto my-4">
-              <div>
-                <h4 className="text-sm font-medium mb-2">Served</h4>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Item</TableHead>
-                      <TableHead className="text-center">Qty</TableHead>
-                      <TableHead className="text-center">Time</TableHead>
-                      {moneyVisible ? <TableHead className="text-right">Price</TableHead> : null}
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {served.map(item => <ItemRow key={item.id} item={item} side="served" />)}
-                  </TableBody>
-                </Table>
-              </div>
-              <div>
-                <h4 className="text-sm font-medium mb-2">Preparing</h4>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Item</TableHead>
-                      <TableHead className="text-center">Qty</TableHead>
-                      <TableHead className="text-center">Time</TableHead>
-                      {moneyVisible ? <TableHead className="text-right">Price</TableHead> : null}
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {preparing.map(item => <ItemRow key={item.id} item={item} side="preparing" />)}
-                  </TableBody>
-                </Table>
-              </div>
-            </div>
-          {moneyVisible ? (
-          <div className="space-y-2 text-sm">
-            <div className="flex justify-between border-t pt-2">
-              <span>Subtotal</span>
-              <span>{currencySymbol}{order.subtotal.toFixed(2)}</span>
-            </div>
-            {/* Only a charge that is charged; a removed one shows no row. */}
-            {order.applyServiceCharge && (order.serviceChargePercentage ?? 0) > 0 && (
-              <div className="flex justify-between">
-                <span>Service Charge ({order.serviceChargePercentage}%)</span>
-                <span>{currencySymbol}{serviceCharge.toFixed(2)}</span>
-              </div>
-            )}
-            {calculatedTaxes.map(tax => (
-              <div key={tax.id} className="flex justify-between">
-                <span>{tax.name} ({tax.percentage}%):</span>
-                <span>{currencySymbol}{tax.amount.toFixed(2)}</span>
-              </div>
-            ))}
-            <div className="flex justify-between font-bold text-lg border-t pt-2 mt-2">
-              <span>Total:</span>
-              <span>{currencySymbol}{total.toFixed(2)}</span>
-            </div>
-          </div>
-          ) : null}
-        </div>
-        <DialogFooter>
-          {isDirty && dndEnabled ? (
-            <>
-              <Button variant="outline" onClick={handleDiscardChanges}>Discard</Button>
-              <Button className="ml-2" onClick={handleSaveChanges}>Save Changes</Button>
-            </>
-          ) : null}
-          <Button onClick={() => { onOpenChange(false); }}>Close</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-});
-OrderViewDialog.displayName = 'OrderViewDialog';
-
-const DefaultTaxDialog = React.memo(({ open, onOpenChange, defaultTax, onSaved }: { open: boolean; onOpenChange: (open: boolean) => void; defaultTax: Record<string, number> | null; onSaved: (t: Record<string, number>) => void }) => {
+function DefaultTaxDialog({ open, onOpenChange, defaultTax, onSaved }: { open: boolean; onOpenChange: (open: boolean) => void; defaultTax: Record<string, number> | null; onSaved: (t: Record<string, number>) => void }): React.JSX.Element {
   const [taxes, setTaxes] = useState<{ id: string; name: string; percentage: number }[]>([]);
 
   useEffect(() => {
     if (open) {
-      Promise.resolve().then(() => {
-        if (defaultTax && typeof defaultTax === 'object') {
-          setTaxes(Object.keys(defaultTax).map((k, i) => ({ id: `t${i}-${k}`, name: k, percentage: Number(defaultTax[k]) })));
+      void Promise.resolve().then(() => {
+        if (defaultTax && typeof defaultTax === "object") {
+          setTaxes(Object.keys(defaultTax).map((k, i) => ({ id: `t${i}-${k}`, name: k, percentage: defaultTax[k] })));
         } else {
           setTaxes([]);
         }
@@ -4574,16 +2114,16 @@ const DefaultTaxDialog = React.memo(({ open, onOpenChange, defaultTax, onSaved }
     }
   }, [open, defaultTax]);
 
-  const addTax = () => { setTaxes(prev => [...prev, { id: `t${Date.now()}`, name: '', percentage: 0 }]); };
-  const removeTax = (id: string) => { setTaxes(prev => prev.filter(t => t.id !== id)); };
-  const updateTax = (id: string, field: 'name' | 'percentage', value: string) => {
-    setTaxes(prev => prev.map(t => t.id === id ? { ...t, [field]: field === 'percentage' ? (parseFloat(value) || 0) : value } : t));
+  const addTax = (): void => { setTaxes((prev) => [...prev, { id: `t${Date.now()}`, name: "", percentage: 0 }]); };
+  const removeTax = (id: string): void => { setTaxes((prev) => prev.filter((t) => t.id !== id)); };
+  const updateTax = (id: string, field: "name" | "percentage", value: string): void => {
+    setTaxes((prev) => prev.map((t) => t.id === id ? { ...t, [field]: field === "percentage" ? (parseFloat(value) || 0) : value } : t));
   };
 
-  const handleSave = async () => {
+  const handleSave = (): void => {
     const payload: Record<string, number> = {};
     for (const t of taxes) {
-      if (t.name && !Number.isNaN(t.percentage)) {payload[t.name] = Number(t.percentage);}
+      if (t.name && !Number.isNaN(t.percentage)) { payload[t.name] = t.percentage; }
     }
     onSaved(payload);
     onOpenChange(false);
@@ -4599,11 +2139,11 @@ const DefaultTaxDialog = React.memo(({ open, onOpenChange, defaultTax, onSaved }
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-4 py-4">
-          {taxes.map(t => (
-            <div key={t.id} className="grid grid-cols-12 gap-2 items-center">
-              <Input value={t.name} placeholder="Tax name" onChange={e => { updateTax(t.id, 'name', e.target.value); }} className="col-span-7" />
-              <Input value={String(t.percentage)} placeholder="%" type="number" onChange={e => { updateTax(t.id, 'percentage', e.target.value); }} className="col-span-3" />
-              <Button variant="ghost" size="icon" onClick={() => { removeTax(t.id); }} className="col-span-2"><X className="h-4 w-4"/></Button>
+          {taxes.map((t) => (
+            <div key={t.id} className="grid grid-cols-12 items-center gap-2">
+              <Input value={t.name} placeholder="Tax name" onChange={(e) => { updateTax(t.id, "name", e.target.value); }} className="col-span-7" />
+              <Input value={String(t.percentage)} placeholder="%" type="number" onChange={(e) => { updateTax(t.id, "percentage", e.target.value); }} className="col-span-3" />
+              <Button variant="ghost" size="icon" onClick={() => { removeTax(t.id); }} className="col-span-2"><X className="h-4 w-4" /></Button>
             </div>
           ))}
           <Button variant="outline" onClick={addTax}>Add Tax</Button>
@@ -4615,5 +2155,4 @@ const DefaultTaxDialog = React.memo(({ open, onOpenChange, defaultTax, onSaved }
       </DialogContent>
     </Dialog>
   );
-});
-DefaultTaxDialog.displayName = 'DefaultTaxDialog';
+}

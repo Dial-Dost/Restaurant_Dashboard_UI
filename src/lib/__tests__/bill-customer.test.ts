@@ -30,7 +30,7 @@ function readSource(relative: string): string {
     for (const base of [process.cwd(), path.join(__dirname, '..', '..', '..')]) {
         const full = path.join(base, relative);
         // A fixed list of this repo's own source files, not user input.
-        // eslint-disable-next-line security/detect-non-literal-fs-filename
+         
         if (fs.existsSync(full)) { return fs.readFileSync(full, 'utf8'); }
     }
     throw new Error(`readSource could not find ${relative} from ${process.cwd()}`);
@@ -297,8 +297,14 @@ describe('the customer slot on the printed bill — as on the client\'s own rece
     });
 
     it('Accounting\'s bill views show the GSTIN when the server sends the field', () => {
-        expect(code(readSource('src/components/closed-bills.tsx'))).toMatch(/"customer_gstin" in d \? <Fact label="Customer GSTIN"/);
-        expect(code(readSource('src/app/dashboard/reports/drill-down.tsx'))).toMatch(/"customer_gstin" in bill \? <Field label="Customer GSTIN"/);
+        // The rebuilt sheet draws the paper's own customer slot (finding 38):
+        // "Customer GSTIN:" whenever the server sent one, and the list row chips it.
+        const closed = code(readSource('src/components/closed-bills.tsx'));
+        expect(closed).toContain('const customerLines = settledBillCustomerLines(d)');
+        expect(closed).toContain('{customerLines.map((l, i) => <div key={i}>{l}</div>)}');
+        expect(closed).toContain('const gstin = (bill.customer_gstin ?? "").trim()');
+        expect(code(readSource('src/components/history/settled-bill-lib.ts'))).toContain("...(gstin === '' ? [] : [`Customer GSTIN: ${gstin}`]),");
+        expect(code(readSource('src/components/reports/drill-down.tsx'))).toMatch(/"customer_gstin" in bill \? <Field label="Customer GSTIN"/);
     });
 });
 
@@ -313,21 +319,25 @@ describe('where the edit is offered, and to whom', () => {
 
         const closed = code(readSource('src/components/closed-bills.tsx'));
         expect(closed).toContain('const canEditCustomer = canEditSettledBillCustomer(user)');
-        expect(closed).toMatch(/\{canEditCustomer \? \(\s*<Button[\s\S]{0,120}<Pencil[^>]*\/>\s*Edit name \/ GSTIN/);
-        expect(closed).toMatch(/target=\{\{ kind: "bill", billId: detail\.id, billNo: detail\.bill_no \}\}/);
+        // The list row offers the shared settled-bill editor only behind the gate…
+        expect(closed).toMatch(/edit=\{canEditCustomer \? \(\s*<EditSettledBillCustomerButton/);
+        // …and the detail sheet offers it beside Reprint, behind the same permission.
+        expect(closed).toContain('const canWrite = canEditSettledBillCustomer(user)');
+        const gated = closed.slice(closed.indexOf('{canWrite && ('));
+        expect(gated.indexOf('<EditSettledBillCustomerButton')).toBeGreaterThan(-1);
     });
 
     it('a live table: the line at the top of the preview card for everyone with orders; Edit only as the 6.5 Bill menu', () => {
         const preview = code(readSource('src/app/dashboard/orders/table-kot-preview.tsx'));
         // Read-only for a waiter, as in the owner app: neither field is money.
         expect(preview).toContain('const showCustomer = blocks.length > 0;');
-        expect(preview).toMatch(/\{canEditCustomer \? \(\s*<>\s*<Button[\s\S]{0,200}Edit name \/ GSTIN[\s\S]*?<BillCustomerDialog/);
+        expect(preview).toMatch(/\{canEditCustomer \? \(\s*<>\s*<Button[\s\S]{0,200}Edit name \/ GSTIN \/ address[\s\S]*?<BillCustomerDialog/);
         const strip = preview.indexOf('data-testid="table-bill-customer"');
         const controls = preview.indexOf('<PlusCircle /> Add Order');
         expect(strip).toBeGreaterThan(-1);
         expect(controls).toBeGreaterThan(strip);
         expect(preview).toMatch(/target=\{\{ kind: "table", tableName \}\}/);
-        expect(preview).toContain('Edit name / GSTIN');
+        expect(preview).toContain('Edit name / GSTIN / address');
 
         const page = code(readSource('src/app/dashboard/orders/page.tsx'));
         expect(page).toContain('canEditCustomer={!isWaiterOnly}');
@@ -367,13 +377,18 @@ describe('item 4 — the REPRINT banner on the web preview', () => {
         expect(bannerDiv).toMatch(/text-2xl|text-3xl/);
     });
 
-    it('the orders page stamps bill_print_state from the read BEFORE claimBillPrint', () => {
+    it('the orders page previews in place and claims nothing until Print (bill-preview.md 1-3)', () => {
         const page = code(readSource('src/app/dashboard/orders/page.tsx'));
-        const trigger = page.slice(page.indexOf('const triggerPrint = async'));
-        const stamp = trigger.indexOf('priorPrintState = billPrintStateFields(fresh) ?? priorPrintState;');
-        const claim = trigger.indexOf('await claimBillPrint(');
-        expect(stamp).toBeGreaterThan(-1);
-        expect(claim).toBeGreaterThan(stamp);
-        expect(trigger).toContain('bill_print_state: priorPrintState,');
+        // No claim before the paper: the old tab-first claimBillPrint flow is gone.
+        expect(page).not.toContain('claimBillPrint(');
+        const trigger = page.slice(page.indexOf('const triggerPrint = ('), page.indexOf('const requestBillVerification'));
+        expect(trigger).toContain('setPrintPreviewTable(tableName);');
+        expect(trigger).not.toContain('printTableBill(');
+        // The dialog reads the server's print state itself; the print runs only from its Print.
+        expect(page).toMatch(/<BillPreviewDialog[\s\S]*?onPrint=\{\(\) => \(printPreviewTable === null \? Promise\.resolve\(false\) : printTableBillNow\(printPreviewTable\)\)\}/);
+        // A waiter confirms without a priced preview (item 19).
+        expect(trigger).toMatch(/if \(isWaiterOnly\) \{\s*setConfirmAction\(/);
+        const dialog = code(readSource('src/components/bill-print/bill-preview-dialog.tsx'));
+        expect(dialog).toContain('const printedBefore = serverBillPrintState(bill) ?? printedFallback;');
     });
 });

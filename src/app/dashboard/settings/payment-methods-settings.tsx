@@ -25,61 +25,69 @@
 // SAVES THE WHOLE LIST, and the server merges: a mode missing from a save — an
 // older app that has never heard of it — is kept, never erased.
 //
-// EVERY BUTTON HERE IS type="button". This card is mounted INSIDE Settings'
-// restaurant-profile <form>, and a <button> with no type in a form submits it:
-// "Save changes", "Add payment mode" and "Try again" each also fired the profile
-// save (a second, unrelated write, and an "Access denied" toast for a settings
-// holder who is not an admin), and Enter in the new-mode name saved the profile
-// instead of adding the mode.
+// PAYMENTS & CURRENCY (Flutter `_PaymentSettingsCard`, modules.dart ~33383):
+// the CURRENCY row sits above the modes and rides the same POST
+// {currency, payment_methods}, so a currency picked here reaches every device.
+// Adding a mode is a dialog; its Add saves the on-screen list plus the new mode.
 
-import { useCallback, useEffect, useState, type ReactElement } from "react"
-import { Loader2, Plus, Save } from "lucide-react"
+import { useState, type ReactElement } from "react"
+import { Plus, Zap, CreditCard } from "lucide-react"
 
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { InfoChip } from "@/components/ui/status-chip"
 import { Switch } from "@/components/ui/switch"
+import { useCurrency } from "@/hooks/use-currency"
 import { useToast } from "@/hooks/use-toast"
-import { getPaymentMethods, savePaymentMethods } from "@/lib/db"
+import { errorText, postSettings } from "@/lib/api/settings"
 import {
     DEFAULT_PAYMENT_METHODS,
     PAYMENT_MODE_ID_MAX,
     PAYMENT_MODE_LABEL_MAX,
     newPaymentModeRefusal,
     paymentLabelRefusal,
+    readPaymentMethods,
     tidyPaymentName,
     withCustomPaymentMode,
     type PaymentMethodConfig,
 } from "@/lib/payment-methods"
+import { cn } from "@/lib/utils"
+import { SaveButton } from "@/components/settings/razorpay-messaging-cards"
+import { FieldLabel, SettingsCard } from "@/components/settings/settings-card"
 
-export function PaymentMethodsCard({ restaurantId, canEdit }: { restaurantId: string; canEdit: boolean }): ReactElement {
+/** Flutter's currency presets (symbols, as the server stores them). */
+const CURRENCY_PRESETS = ["₹", "$", "€", "£", "AED", "¥"]
+/** The browser-side display hook still speaks codes; keep it in step with the server. */
+const SYMBOL_TO_CODE: Record<string, string> = { "₹": "INR", "$": "USD", "€": "EUR", "£": "GBP" }
+
+export function PaymentMethodsCard({ restaurantId, canEdit, initialCurrency, initialMethods }: {
+    restaurantId: string
+    canEdit: boolean
+    initialCurrency: string
+    initialMethods: unknown
+}): ReactElement {
     const { toast } = useToast()
-    const [methods, setMethods] = useState<PaymentMethodConfig[] | null>(null)
-    const [failed, setFailed] = useState(false)
+    const { setCurrency: setDisplayCurrency } = useCurrency()
+    const [methods, setMethods] = useState<PaymentMethodConfig[]>(() => readPaymentMethods(initialMethods))
+    const [currency, setCurrency] = useState(initialCurrency.trim() === "" ? "₹" : initialCurrency.trim())
     const [busy, setBusy] = useState(false)
-    const [dirty, setDirty] = useState(false)
-    // The add form.
+    // The add dialog.
+    const [adding, setAdding] = useState(false)
     const [name, setName] = useState("")
     const [needsShot, setNeedsShot] = useState(false)
     const [showGuests, setShowGuests] = useState(false)
 
-    const load = useCallback(() => {
-        setFailed(false)
-        getPaymentMethods(restaurantId)
-            .then((m) => { setMethods(m); setDirty(false) })
-            .catch(() => { setFailed(true) })
-    }, [restaurantId])
-    useEffect(() => { if (restaurantId) {load()} }, [restaurantId, load])
+    const currencyOptions = CURRENCY_PRESETS.includes(currency) ? CURRENCY_PRESETS : [currency, ...CURRENCY_PRESETS]
 
     const patch = (id: string, p: Partial<PaymentMethodConfig>): void => {
-        setMethods((prev) => (prev ?? []).map((m) => (m.id === id ? { ...m, ...p } : m)))
-        setDirty(true)
+        setMethods((prev) => prev.map((m) => (m.id === id ? { ...m, ...p } : m)))
     }
 
-    const list = methods ?? []
+    const list = methods
     const addRefusal = name.trim() ? newPaymentModeRefusal(name, list) : null
     const labelRefusals = list
         .map((m) => ({ id: m.id, why: paymentLabelRefusal(m.label, m.id, list) }))
@@ -92,14 +100,16 @@ export function PaymentMethodsCard({ restaurantId, canEdit }: { restaurantId: st
         }
         setBusy(true)
         try {
-            const saved = await savePaymentMethods(restaurantId, next.map((m) => ({ ...m, label: tidyPaymentName(m.label) })))
-            setMethods(saved)
-            setDirty(false)
-            toast({ title: "Payment modes saved", description: success })
+            const tidy = next.map((m) => ({ ...m, label: tidyPaymentName(m.label) }))
+            const reply = await postSettings(restaurantId, { currency, payment_methods: tidy })
+            setMethods(reply && Array.isArray(reply.payment_methods) ? readPaymentMethods(reply.payment_methods) : tidy)
+            const code = SYMBOL_TO_CODE[currency]
+            if (code) {setDisplayCurrency(code)}
+            toast({ description: success })
             return true
         } catch (error: unknown) {
             // The server's own sentences (a reserved name, a clash…), verbatim.
-            toast({ title: "Couldn't save payment modes", description: error instanceof Error ? error.message : "Unable to save.", variant: "destructive" })
+            toast({ title: "Couldn't save payment settings", description: errorText(error, "Unable to save."), variant: "destructive" })
             return false
         } finally {
             setBusy(false)
@@ -108,153 +118,141 @@ export function PaymentMethodsCard({ restaurantId, canEdit }: { restaurantId: st
 
     const add = async (): Promise<void> => {
         const refusal = newPaymentModeRefusal(name, list)
-        if (refusal) {
-            toast({ title: "Can't add that payment mode", description: refusal, variant: "destructive" })
-            return
-        }
+        if (refusal) {return}
         const id = tidyPaymentName(name)
         const ok = await save(
             withCustomPaymentMode(list, { name: id, requiresScreenshot: needsShot, showToGuests: showGuests }),
             `${id} can now be chosen when settling a bill.`,
         )
-        if (ok) { setName(""); setNeedsShot(false); setShowGuests(false) }
+        if (ok) { setAdding(false); setName(""); setNeedsShot(false); setShowGuests(false) }
     }
 
     return (
-        <Card>
-            <CardHeader>
-                <CardTitle>Payment modes</CardTitle>
-                <CardDescription>
-                    Payment modes offered at the till and on the guest QR page. Add your own (an aggregator, a card
-                    machine, a bank), rename any, or switch one off — switched-off modes can&apos;t be used for new
-                    payments, and past bills keep their mode.
-                </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-                {failed ? (
-                    <div className="flex items-center justify-between gap-3 rounded-lg border p-4 text-sm">
-                        <span className="text-muted-foreground">Couldn&apos;t load this restaurant&apos;s payment modes.</span>
-                        <Button type="button" variant="outline" size="sm" onClick={load}>Try again</Button>
-                    </div>
-                ) : methods === null ? (
-                    <p className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Loading…</p>
-                ) : (
-                    <>
-                        <div className="divide-y rounded-lg border">
-                            {list.map((m) => {
-                                const builtin = DEFAULT_PAYMENT_METHODS.find((d) => d.id === m.id)
-                                const why = labelRefusals.find((r) => r.id === m.id)?.why
-                                return (
-                                    <div key={m.id} className="space-y-2 p-3" data-payment-mode={m.id}>
-                                        <div className="flex flex-wrap items-center gap-3">
-                                            <div className="min-w-[10rem] flex-1">
-                                                <Input
-                                                    aria-label={`Label for ${m.id}`}
-                                                    value={m.label}
-                                                    maxLength={PAYMENT_MODE_LABEL_MAX}
-                                                    placeholder={builtin?.label ?? m.id}
-                                                    disabled={!canEdit || busy}
-                                                    onChange={(e) => { patch(m.id, { label: e.target.value }) }}
-                                                />
-                                            </div>
-                                            {m.custom ? <Badge variant="outline">Added</Badge> : null}
-                                            {m.online ? <Badge variant="secondary">Online</Badge> : null}
-                                            {!m.enabled ? <Badge variant="secondary">Off</Badge> : null}
-                                            <Switch
-                                                checked={m.enabled}
-                                                disabled={!canEdit || busy}
-                                                onCheckedChange={(v) => { patch(m.id, { enabled: v }) }}
-                                                aria-label={`${m.label} switched on`}
-                                            />
-                                        </div>
-                                        {why ? <p className="text-xs text-red-600">{why}</p> : null}
-                                        {m.label.trim() && tidyPaymentName(m.label) !== m.id ? (
-                                            <p className="text-xs text-muted-foreground">Stored on bills as “{m.id}”.</p>
-                                        ) : null}
-                                        {m.online ? null : (
-                                            <div className="flex flex-wrap gap-4 text-sm">
-                                                <label className="flex items-center gap-2">
-                                                    <Checkbox
-                                                        checked={m.requires_screenshot}
-                                                        disabled={!canEdit || busy}
-                                                        onCheckedChange={(v) => { patch(m.id, { requires_screenshot: v === true }) }}
-                                                    />
-                                                    Require payment screenshot
-                                                </label>
-                                                <label className="flex items-center gap-2">
-                                                    <Checkbox
-                                                        checked={m.show_to_guests !== false}
-                                                        disabled={!canEdit || busy}
-                                                        onCheckedChange={(v) => { patch(m.id, { show_to_guests: v === true }) }}
-                                                    />
-                                                    Show on guest QR page
-                                                </label>
-                                            </div>
-                                        )}
-                                    </div>
-                                )
-                            })}
+        <SettingsCard
+            title="Payments & currency"
+            caption="Payment modes offered at the till and on the guest QR page. Add your own, rename any, or switch one off — a switched-off mode can’t be used for new payments, and past bills keep their mode."
+        >
+            <div className="flex items-center justify-between gap-3">
+                <FieldLabel>Currency</FieldLabel>
+                <Select value={currency} onValueChange={setCurrency} disabled={!canEdit || busy}>
+                    <SelectTrigger className="w-28" aria-label="Currency"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                        {currencyOptions.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                    </SelectContent>
+                </Select>
+            </div>
+            <FieldLabel>Payment modes</FieldLabel>
+            <div className="divide-y divide-divider rounded-lg border">
+                {list.map((m) => {
+                    const builtin = DEFAULT_PAYMENT_METHODS.find((d) => d.id === m.id)
+                    const why = labelRefusals.find((r) => r.id === m.id)?.why
+                    const showStored = m.custom === true || tidyPaymentName(m.label) !== m.id
+                    return (
+                        <div key={m.id} className="space-y-2 p-3" data-payment-mode={m.id}>
+                            <div className="flex flex-wrap items-center gap-2">
+                                <div className="min-w-[10rem] flex-1">
+                                    <Input
+                                        aria-label={`Label for ${m.id}`}
+                                        value={m.label}
+                                        maxLength={PAYMENT_MODE_LABEL_MAX}
+                                        placeholder={builtin?.label ?? m.id}
+                                        disabled={!canEdit || busy}
+                                        className={cn(!m.enabled && "text-muted-foreground")}
+                                        onChange={(e) => { patch(m.id, { label: e.target.value }) }}
+                                    />
+                                </div>
+                                {m.custom ? <InfoChip icon={<CreditCard className="h-3 w-3" />} label="added" /> : null}
+                                {m.online ? <InfoChip icon={<Zap className="h-3 w-3" />} label="online" /> : null}
+                                <Switch
+                                    checked={m.enabled}
+                                    disabled={!canEdit || busy}
+                                    onCheckedChange={(v) => { patch(m.id, { enabled: v }) }}
+                                    aria-label={`${m.label} switched on`}
+                                />
+                            </div>
+                            {why ? <p className="text-xs text-destructive">{why}</p> : null}
+                            {showStored ? (
+                                <p className="text-xs text-muted-foreground">Stored on bills as “{m.id}”{m.enabled ? "" : " · switched off"}</p>
+                            ) : null}
+                            {m.online ? null : (
+                                <div className="flex flex-wrap gap-4 text-xs sm:text-sm">
+                                    <label className="flex items-center gap-2">
+                                        <Checkbox
+                                            checked={m.requires_screenshot}
+                                            disabled={!canEdit || busy}
+                                            onCheckedChange={(v) => { patch(m.id, { requires_screenshot: v === true }) }}
+                                        />
+                                        Require payment screenshot
+                                    </label>
+                                    <label className="flex items-center gap-2">
+                                        <Checkbox
+                                            checked={m.show_to_guests !== false}
+                                            disabled={!canEdit || busy}
+                                            onCheckedChange={(v) => { patch(m.id, { show_to_guests: v === true }) }}
+                                        />
+                                        Show on guest QR page
+                                    </label>
+                                </div>
+                            )}
                         </div>
+                    )
+                })}
+            </div>
 
-                        <div className="flex justify-end">
-                            <Button
-                                type="button"
-                                size="sm" className="gap-1"
-                                disabled={!canEdit || busy || !dirty || labelRefusals.length > 0}
-                                onClick={() => { void save(list, "Every till picks up the change on its next load.") }}
-                            >
-                                {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />} Save changes
-                            </Button>
-                        </div>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+                <Button type="button" variant="outline" size="sm" className="gap-1.5" disabled={!canEdit || busy} onClick={() => { setAdding(true) }}>
+                    <Plus className="h-3.5 w-3.5" /> Add payment mode
+                </Button>
+                <SaveButton
+                    busy={busy}
+                    label="Save payments & currency"
+                    disabled={!canEdit || labelRefusals.length > 0}
+                    onClick={() => { void save(list, "Payment settings saved.") }}
+                />
+            </div>
 
-                        <div className="space-y-3 rounded-lg border p-3">
-                            <Label htmlFor="new-payment-mode" className="text-sm font-medium">Add payment mode</Label>
+            <Dialog open={adding} onOpenChange={(o) => { if (!busy) {setAdding(o)} }}>
+                <DialogContent className="sm:max-w-md">
+                    <DialogHeader><DialogTitle>Add payment mode</DialogTitle></DialogHeader>
+                    <div className="space-y-3">
+                        <div className="space-y-1.5">
+                            <Label htmlFor="new-payment-mode">Name</Label>
                             <Input
                                 id="new-payment-mode"
+                                autoFocus
                                 placeholder="e.g. Swiggy Dineout, Magicpin, HDFC card machine"
                                 value={name}
                                 maxLength={PAYMENT_MODE_ID_MAX}
-                                disabled={!canEdit || busy}
+                                disabled={busy}
                                 onChange={(e) => { setName(e.target.value) }}
                                 onKeyDown={(e) => {
-                                    // Enter adds the mode — it must not submit the surrounding profile form.
                                     if (e.key !== "Enter") {return}
                                     e.preventDefault()
-                                    if (canEdit && !busy && name.trim() && addRefusal === null && !dirty) {void add()}
+                                    if (!busy && name.trim() && addRefusal === null) {void add()}
                                 }}
                             />
-                            {addRefusal ? <p className="text-xs text-red-600">{addRefusal}</p> : null}
-                            <div className="flex flex-wrap gap-4 text-sm">
-                                <label className="flex items-center gap-2">
-                                    <Checkbox checked={needsShot} disabled={!canEdit || busy} onCheckedChange={(v) => { setNeedsShot(v === true) }} />
-                                    Require payment screenshot
-                                </label>
-                                <label className="flex items-center gap-2">
-                                    <Checkbox checked={showGuests} disabled={!canEdit || busy} onCheckedChange={(v) => { setShowGuests(v === true) }} />
-                                    Show on guest QR page
-                                </label>
-                            </div>
-                            <p className="text-xs text-muted-foreground">
-                                The name is permanent — it is what bills and reports record — but the label can be changed
-                                later. Modes you add count as non-cash: the cash drawer and “Cash collection” include Cash only.
-                                For free food use “Mark as non-chargeable” on the bill, not a payment mode.
-                            </p>
-                            <div className="flex justify-end">
-                                <Button
-                                    type="button"
-                                    size="sm" variant="outline" className="gap-1"
-                                    disabled={!canEdit || busy || !name.trim() || addRefusal !== null || dirty}
-                                    title={dirty ? "Save or reload your other changes first" : undefined}
-                                    onClick={() => { void add() }}
-                                >
-                                    <Plus className="h-3.5 w-3.5" /> Add payment mode
-                                </Button>
-                            </div>
-                            {dirty ? <p className="text-xs text-muted-foreground">Save your changes above before adding a new mode.</p> : null}
+                            {addRefusal ? <p className="text-xs text-destructive">{addRefusal}</p> : null}
                         </div>
-                    </>
-                )}
-            </CardContent>
-        </Card>
+                        <label className="flex items-center gap-2 text-sm">
+                            <Checkbox checked={needsShot} disabled={busy} onCheckedChange={(v) => { setNeedsShot(v === true) }} />
+                            Require payment screenshot
+                        </label>
+                        <label className="flex items-center gap-2 text-sm">
+                            <Checkbox checked={showGuests} disabled={busy} onCheckedChange={(v) => { setShowGuests(v === true) }} />
+                            Show on guest QR page
+                        </label>
+                        <p className="text-xs text-muted-foreground">
+                            The name is permanent — it is what bills and reports record — but the label can be changed
+                            later. Modes you add count as non-cash: the cash drawer counts Cash only. For free food use
+                            “Mark as non-chargeable” on the bill, not a payment mode.
+                        </p>
+                    </div>
+                    <DialogFooter>
+                        <Button type="button" variant="ghost" disabled={busy} onClick={() => { setAdding(false) }}>Cancel</Button>
+                        <Button type="button" disabled={busy || !name.trim() || addRefusal !== null} onClick={() => { void add() }}>Add</Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+        </SettingsCard>
     )
 }

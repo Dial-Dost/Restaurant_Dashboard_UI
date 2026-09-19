@@ -36,7 +36,18 @@ import { useToast } from "@/hooks/use-toast"
 import type { BillPrintSettings } from "@/lib/db"
 import { getBillPrintSettings, setBillPrintSettings } from "@/lib/db"
 
-export function BillPrintSettingsCard({ restaurantId, isAdmin }: { restaurantId: string; isAdmin: boolean }) {
+// Flutter counts the note in grapheme clusters (`characters.length`), so an
+// emoji or a combined Indic letter is one character, not two or three.
+const segmenter: Intl.Segmenter | null =
+  typeof Intl !== "undefined" && "Segmenter" in Intl ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null
+const graphemes = (s: string): string[] => (segmenter ? Array.from(segmenter.segment(s), (g) => g.segment) : Array.from(s))
+const graphemeCount = (s: string): number => graphemes(s).length
+const capGraphemes = (s: string, max: number): string => {
+  const g = graphemes(s)
+  return g.length > max ? g.slice(0, max).join("") : s
+}
+
+export function BillPrintSettingsCard({ restaurantId, isAdmin }: { restaurantId: string; isAdmin: boolean }): React.JSX.Element {
   const { toast } = useToast()
 
   // `saved` is what the server last confirmed; the three controlled strings are
@@ -72,14 +83,7 @@ export function BillPrintSettingsCard({ restaurantId, isAdmin }: { restaurantId:
   // disagree with the truncation there.
   const noteMax = saved?.qrNoteMax ?? 120
 
-  const dirty =
-    saved !== null &&
-    (legalName.trim() !== saved.legalName ||
-      gstin.trim() !== saved.gstin ||
-      qrNote.trim() !== saved.qrNote ||
-      showQr !== saved.showQr)
-
-  const handleSave = async () => {
+  const handleSave = async (): Promise<void> => {
     if (!restaurantId) {return}
     if (!isAdmin) {
       toast({
@@ -104,13 +108,13 @@ export function BillPrintSettingsCard({ restaurantId, isAdmin }: { restaurantId:
       setQrNote(next.qrNote)
       setShowQr(next.showQr)
       toast({
-        title: "Bill printing updated",
+        title: "Bill details saved",
         description: "New bills will print with these details.",
       })
-    } catch (error: any) {
+    } catch (error: unknown) {
       toast({
-        title: "Couldn't save bill settings",
-        description: error?.message ?? "Unable to update the bill printing settings.",
+        title: "Couldn't save bill details",
+        description: error instanceof Error ? error.message : "Unable to update the bill details.",
         variant: "destructive",
       })
     } finally {
@@ -118,20 +122,12 @@ export function BillPrintSettingsCard({ restaurantId, isAdmin }: { restaurantId:
     }
   }
 
-  const handleReset = () => {
-    if (!saved) {return}
-    setLegalName(saved.legalName)
-    setGstin(saved.gstin)
-    setQrNote(saved.qrNote)
-    setShowQr(saved.showQr)
-  }
-
   return (
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <Receipt className="h-5 w-5" />
-          Bill printing
+          Bill details
         </CardTitle>
         <CardDescription>
           Printed under your restaurant name on every bill, plus the message above the
@@ -178,7 +174,7 @@ export function BillPrintSettingsCard({ restaurantId, isAdmin }: { restaurantId:
           <Switch
             id="bill-show-qr"
             checked={showQr}
-            onCheckedChange={(v) => { setShowQr(v === true) }}
+            onCheckedChange={(v) => { setShowQr(v) }}
             disabled={!isAdmin || loading}
           />
         </div>
@@ -188,11 +184,10 @@ export function BillPrintSettingsCard({ restaurantId, isAdmin }: { restaurantId:
           <Textarea
             id="bill-qr-note"
             value={qrNote}
-            onChange={(e) => { setQrNote(e.target.value.slice(0, noteMax)) }}
+            onChange={(e) => { setQrNote(capGraphemes(e.target.value, noteMax)) }}
             placeholder={saved?.qrNoteDefault || "Scan the QR code below"}
             className="resize-none"
             rows={2}
-            maxLength={noteMax}
             disabled={!isAdmin || loading || !showQr}
           />
           <div className="flex items-center justify-between gap-3">
@@ -202,20 +197,15 @@ export function BillPrintSettingsCard({ restaurantId, isAdmin }: { restaurantId:
                 : "Leave blank to use the built-in default."}
             </p>
             <p className="text-xs text-muted-foreground tabular-nums shrink-0">
-              {qrNote.length}/{noteMax}
+              {graphemeCount(qrNote)}/{noteMax}
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          <Button type="button" onClick={handleSave} disabled={!isAdmin || !dirty || saving || loading}>
-            {saving ? "Saving..." : "Save bill settings"}
+        <div className="flex justify-end">
+          <Button type="button" size="sm" onClick={() => { void handleSave() }} disabled={!isAdmin || saving || loading}>
+            {saving ? "Saving…" : "Save bill details"}
           </Button>
-          {dirty ? (
-            <Button type="button" variant="ghost" onClick={handleReset} disabled={saving}>
-              Cancel
-            </Button>
-          ) : null}
         </div>
 
         {!isAdmin ? (

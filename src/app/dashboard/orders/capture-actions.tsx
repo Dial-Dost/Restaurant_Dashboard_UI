@@ -85,6 +85,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { useAuth } from "@/context/AuthContext"
+import { CaptureReasonDialog } from "@/components/payment/capture-reason-dialog"
 import { useCurrency } from "@/hooks/use-currency"
 import { useToast } from "@/hooks/use-toast"
 import {
@@ -507,25 +508,12 @@ function CompDialog({
         } catch (e) { fail(e) } finally { setBusy(false) }
     }
 
-    const reverse = async (rec: NonChargeableRecord): Promise<void> => {
-        const why = window.prompt(
-            `Put "${rec.item_name}" back on the bill?\n\nThe comp is not deleted — it stays in the record, marked reversed, so the NC report still shows it. Say why:`,
-            "",
-        )
-        if (why === null || why.trim().length === 0) {return}
-        setBusy(true)
-        try {
-            await reverseNonChargeable(restaurantId, rec.id, why.trim())
-            toast({
-                title: "Back on the bill",
-                description: `${rec.item_name} is chargeable again. The original comp stays in the record, marked reversed.`,
-            })
-            refreshLedger()
-            onChanged()
-        } catch (e) { fail(e) } finally { setBusy(false) }
-    }
+    // Put a comp back — the styled reason dialog, never window.prompt (mis-capture.md 9/12).
+    const [reverseTarget, setReverseTarget] = useState<NonChargeableRecord | null>(null)
+    const reverse = (rec: NonChargeableRecord): void => { setReverseTarget(rec) }
 
     return (
+        <>
         <Dialog open onOpenChange={(v) => { if (!v && !busy) {onClose()} }}>
             <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
                 <DialogHeader>
@@ -579,7 +567,7 @@ function CompDialog({
                                         )}
                                     </div>
                                     {rec ? (
-                                        <Button variant="ghost" size="sm" className="shrink-0 gap-1" disabled={busy} onClick={() => void reverse(rec)}>
+                                        <Button variant="ghost" size="sm" className="shrink-0 gap-1" disabled={busy} onClick={() => { reverse(rec) }}>
                                             <RotateCcw className="h-3.5 w-3.5" /> Put back
                                         </Button>
                                     ) : null}
@@ -657,6 +645,25 @@ function CompDialog({
                 )}
             </DialogContent>
         </Dialog>
+        <CaptureReasonDialog
+            open={reverseTarget !== null}
+            onOpenChange={(o) => { if (!o) { setReverseTarget(null) } }}
+            title="Put it back on the bill"
+            headline={reverseTarget ? money(reverseTarget.value) : null}
+            subtitle={reverseTarget ? `${reverseTarget.item_name} becomes chargeable again. The original comp stays in the record, marked reversed, so the NC report still shows it.` : ""}
+            confirmLabel="Charge it again"
+            onConfirm={async ({ reason: why }) => {
+                if (!reverseTarget) { return }
+                await reverseNonChargeable(restaurantId, reverseTarget.id, why)
+                toast({
+                    title: "Back on the bill",
+                    description: `${reverseTarget.item_name} is chargeable again. The original comp stays in the record, marked reversed.`,
+                })
+                refreshLedger()
+                onChanged()
+            }}
+        />
+        </>
     )
 }
 
@@ -954,20 +961,12 @@ function WaiverDialog({
         } catch (e) { fail(e) } finally { setBusy(false) }
     }
 
-    const reverse = async (): Promise<void> => {
-        if (!live) {return}
-        const why = window.prompt("Put the service charge back on this bill? Say why:", "")
-        if (why === null || why.trim().length === 0) {return}
-        setBusy(true)
-        try {
-            await reverseServiceChargeWaiver(restaurantId, live.id, why.trim())
-            setDone(null)
-            load()
-            onChanged()
-        } catch (e) { fail(e) } finally { setBusy(false) }
-    }
+    // Put the service charge back — the styled reason dialog, never window.prompt (mis-capture.md 17/18).
+    const [putBackOpen, setPutBackOpen] = useState(false)
+    const reverse = (): void => { if (live) { setPutBackOpen(true) } }
 
     return (
+        <>
         <Dialog open onOpenChange={(v) => { if (!v && !busy) {onClose()} }}>
             <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto">
                 <DialogHeader>
@@ -1034,7 +1033,7 @@ function WaiverDialog({
                         </Note>
                         <DialogFooter>
                             <Button variant="ghost" onClick={onClose} disabled={busy}>Close</Button>
-                            <Button variant="outline" onClick={() => void reverse()} disabled={busy} className="gap-1">
+                            <Button variant="outline" onClick={() => { reverse() }} disabled={busy} className="gap-1">
                                 <RotateCcw className="h-4 w-4" /> Put the charge back
                             </Button>
                         </DialogFooter>
@@ -1096,6 +1095,21 @@ function WaiverDialog({
                 ) : null}
             </DialogContent>
         </Dialog>
+        <CaptureReasonDialog
+            open={putBackOpen && live !== null}
+            onOpenChange={setPutBackOpen}
+            title="Put the service charge back"
+            subtitle="The charge goes back on this bill. The original waiver stays on the report, marked reversed — it is never deleted."
+            confirmLabel="Charge it again"
+            onConfirm={async ({ reason: why }) => {
+                if (!live) { return }
+                await reverseServiceChargeWaiver(restaurantId, live.id, why)
+                setDone(null)
+                load()
+                onChanged()
+            }}
+        />
+        </>
     )
 }
 
@@ -1157,17 +1171,11 @@ function TenderDialog({
         } catch (e) { fail(e) } finally { setBusy(false) }
     }
 
-    const voidTender = async (id: string, label: string): Promise<void> => {
-        const why = window.prompt(`Void the ${label} payment?\n\nThe row is not deleted — it stays, marked voided, so a payment keyed twice leaves the evidence behind. Say why:`, "")
-        if (why === null || why.trim().length === 0) {return}
-        setBusy(true)
-        try {
-            setState(await voidBillTender(restaurantId, id, why.trim()))
-            onChanged()
-        } catch (e) { fail(e) } finally { setBusy(false) }
-    }
+    // Void a payment — the styled reason dialog, never window.prompt (mis-capture.md 30/47).
+    const [voidTarget, setVoidTarget] = useState<{ id: string; method: string; amount: number } | null>(null)
 
     return (
+        <>
         <Dialog open onOpenChange={(v) => { if (!v && !busy) {onClose()} }}>
             <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
                 <DialogHeader>
@@ -1231,7 +1239,7 @@ function TenderDialog({
                                             {t.txn_ref ? <div className="text-xs text-muted-foreground">ref {t.txn_ref}</div> : null}
                                         </div>
                                         <Button variant="ghost" size="sm" className="shrink-0 gap-1" disabled={busy}
-                                            onClick={() => void voidTender(t.id, t.method)}>
+                                            onClick={() => { setVoidTarget({ id: t.id, method: t.method, amount: t.amount }) }}>
                                             <Trash2 className="h-3.5 w-3.5" /> Void
                                         </Button>
                                     </div>
@@ -1384,6 +1392,22 @@ function TenderDialog({
                 )}
             </DialogContent>
         </Dialog>
+        <CaptureReasonDialog
+            open={voidTarget !== null}
+            onOpenChange={(o) => { if (!o) { setVoidTarget(null) } }}
+            title="Void this payment"
+            headline={voidTarget ? money(voidTarget.amount) : null}
+            danger
+            subtitle={`${voidTarget ? paymentMethodLabel(voidTarget.method, paymentMethods) : ""} · the row is not deleted — it stays, marked voided, so a payment keyed twice leaves the evidence behind.`}
+            confirmLabel="Void it"
+            onConfirm={async ({ reason }) => {
+                if (!voidTarget) { return }
+                setState(await voidBillTender(restaurantId, voidTarget.id, reason))
+                toast({ title: "Payment voided." })
+                onChanged()
+            }}
+        />
+        </>
     )
 }
 

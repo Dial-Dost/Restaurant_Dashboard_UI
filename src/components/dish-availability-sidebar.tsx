@@ -6,6 +6,10 @@
  * V3: "Add a quick-access sidebar menu that allows staff to easily toggle
  * individual dishes as 'available' or 'unavailable' to save time."
  *
+ * [web-extra] (menu audit finding 41): Flutter's equivalent job is the on-tile
+ * eye toggle on the menu page; this global sheet is kept because it opens over
+ * whatever the operator was doing on ANY dashboard page.
+ *
  * ============================================================================
  * WHAT MAKES THIS DIFFERENT FROM THE MENU EDITOR
  * ============================================================================
@@ -32,43 +36,66 @@
  * kitchen gets a ticket for something they have already said they cannot cook.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import { SkeletonRows } from "@/components/ui/fork-skeleton"
+import { LoadErrorState } from "@/components/ui/load-error-state"
+import { CacheStalePill } from "@/components/ui/stale-pill"
 import { CircleSlash, Search, UtensilsCrossed } from "lucide-react"
+import { useCachedFetch } from "@/hooks/use-cached-fetch"
 import { useToast } from "@/hooks/use-toast"
-import { getMenuItems, setMenuItemAvailability } from "@/lib/db"
-import type { MenuItem } from "@/app/dashboard/menu/data"
+import { setMenuItemAvailability } from "@/lib/db"
+import { fetchMenuItemsStrict } from "@/lib/api/menu"
+import type { MenuModuleItem } from "@/lib/api/menu"
 
 /** An item is available unless it says otherwise — the stored default. */
-const isAvailable = (m: MenuItem): boolean => m.available !== false
+const isAvailable = (m: MenuModuleItem): boolean => m.available !== false
 
-export function DishAvailabilitySidebar({ rid }: { rid: string }) {
+export function DishAvailabilitySidebar({ rid }: { rid: string }): React.JSX.Element {
   const { toast } = useToast()
   const [open, setOpen] = useState(false)
-  const [items, setItems] = useState<MenuItem[]>([])
-  const [loading, setLoading] = useState(false)
   const [query, setQuery] = useState("")
   /** Ids with a write in flight, so a double-tap cannot race itself. */
   const [busy, setBusy] = useState<Set<string>>(new Set())
-
-  const load = useCallback(async () => {
-    if (!rid) { return }
-    setLoading(true)
-    try { setItems(await getMenuItems(rid)) } finally { setLoading(false) }
-  }, [rid])
+  /** Optimistic flips, applied over the fetched list until the server agrees. */
+  const [override, setOverride] = useState<Record<string, boolean>>({})
 
   // Loaded when the sheet OPENS, not on mount: this component sits in the
   // header of every dashboard page, and fetching a 96-item menu on every page
   // load to populate a panel nobody opened is pure cost.
-  useEffect(() => { if (open) { void load() } }, [open, load])
+  const menu = useCachedFetch<MenuModuleItem[]>(
+    `menu:availability:${rid}`,
+    () => fetchMenuItemsStrict(rid),
+    { enabled: open && !!rid },
+  )
+
+  const items = useMemo<MenuModuleItem[]>(() => {
+    const base = menu.data ?? []
+    if (Object.keys(override).length === 0) { return base }
+    return base.map((m) => (m.id in override ? { ...m, available: override[m.id] } : m))
+  }, [menu.data, override])
+
+  // Drop overrides the server has confirmed.
+  useEffect(() => {
+    const fetched = menu.data
+    if (!fetched) { return }
+    setOverride((prev) => {
+      const entries = Object.entries(prev).filter(([id, want]) => {
+        const server = fetched.find((m) => m.id === id)
+        return server != null && isAvailable(server) !== want
+      })
+      if (entries.length === Object.keys(prev).length) { return prev }
+      return Object.fromEntries(entries)
+    })
+  }, [menu.data])
 
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase()
     const matched = q
-      ? items.filter((m) => m.name.toLowerCase().includes(q) || (m.category ?? "").toLowerCase().includes(q))
+      ? items.filter((m) => m.name.toLowerCase().includes(q) || m.category.toLowerCase().includes(q))
       : items
     // Unavailable first — putting a dish BACK is the second half of this job and
     // the half that is otherwise slow.
@@ -80,14 +107,15 @@ export function DishAvailabilitySidebar({ rid }: { rid: string }) {
 
   const offCount = useMemo(() => items.filter((m) => !isAvailable(m)).length, [items])
 
-  const toggle = async (item: MenuItem) => {
+  const toggle = async (item: MenuModuleItem): Promise<void> => {
     if (busy.has(item.id)) { return }
     const next = !isAvailable(item)
     setBusy((b) => new Set(b).add(item.id))
     // Optimistic: the flip lands before the round trip.
-    setItems((list) => list.map((m) => (m.id === item.id ? { ...m, available: next } : m)))
+    setOverride((prev) => ({ ...prev, [item.id]: next }))
     try {
       await setMenuItemAvailability(rid, item.id, next)
+      menu.refresh()
       toast({
         title: next ? `${item.name} is back on` : `${item.name} is off the menu`,
         description: next
@@ -97,7 +125,9 @@ export function DishAvailabilitySidebar({ rid }: { rid: string }) {
     } catch (e) {
       // REVERTED. A control that pretends to have worked leaves the dish
       // orderable and the kitchen gets a ticket for something they cannot cook.
-      setItems((list) => list.map((m) => (m.id === item.id ? { ...m, available: !next } : m)))
+      setOverride((prev) =>
+        Object.fromEntries(Object.entries(prev).filter(([id]) => id !== item.id)),
+      )
       toast({
         title: "Could not change that",
         description: e instanceof Error ? e.message : "The change was not saved.",
@@ -141,9 +171,15 @@ export function DishAvailabilitySidebar({ rid }: { rid: string }) {
           />
         </div>
 
-        <div className="mt-3 flex-1 overflow-y-auto pr-1">
-          {loading && items.length === 0 ? (
-            <p className="py-8 text-center text-sm text-muted-foreground">Loading the menu…</p>
+        <div className="relative mt-3 flex-1 overflow-y-auto pr-1">
+          {menu.loading ? (
+            <SkeletonRows rows={6} />
+          ) : menu.error != null ? (
+            <LoadErrorState
+              whatFailed="Couldn't load the menu."
+              error={menu.error}
+              onRetry={menu.retry}
+            />
           ) : shown.length === 0 ? (
             <p className="py-8 text-center text-sm text-muted-foreground">
               {items.length === 0 ? "No dishes on the menu yet." : "No dish matches that."}
@@ -180,6 +216,7 @@ export function DishAvailabilitySidebar({ rid }: { rid: string }) {
               })}
             </ul>
           )}
+          <CacheStalePill offline={menu.offline} fromCache={menu.fromCache} updatedAt={menu.updatedAt} />
         </div>
       </SheetContent>
     </Sheet>

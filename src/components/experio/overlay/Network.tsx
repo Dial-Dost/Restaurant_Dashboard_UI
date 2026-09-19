@@ -76,7 +76,7 @@ export default function Network() {
           };
           for (let j = 0; j < 2; j++) {
             const el = pulses.current[i * 2 + j];
-            if (!el) continue;
+            if (!el) {continue;}
             if (scrollState.reducedMotion) {
               el.setAttribute("opacity", "0");
               continue;
@@ -93,7 +93,7 @@ export default function Network() {
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
+    return () => { cancelAnimationFrame(raf); };
   }, []);
 
   return (

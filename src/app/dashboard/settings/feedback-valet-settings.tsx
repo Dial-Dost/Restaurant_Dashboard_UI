@@ -90,7 +90,7 @@ export function FeedbackValetCard({ restaurantId, canEdit }: { restaurantId: str
           <Switch
             id="feedback-valet"
             checked={enabled}
-            onCheckedChange={(v) => { void handleChange(v === true) }}
+            onCheckedChange={(v) => { void handleChange(v) }}
             disabled={saving || loading || !canEdit}
             aria-label="Valet parking on the feedback form"
           />

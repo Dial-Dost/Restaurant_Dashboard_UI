@@ -59,12 +59,12 @@ describe("the form, its reset and Settings are wired to the switch", () => {
   const page = read("src/app/feedback/page.tsx");
   const db = read("src/lib/db.ts");
   const settingsForm = read("src/app/dashboard/settings/settings-form.tsx");
-  const card = read("src/app/dashboard/settings/feedback-valet-settings.tsx");
+  const card = read("src/components/settings/branding-feedback-cards.tsx");
 
   test("the loaded config's categories go through the rule, numbered BEFORE the filter", () => {
     // The id is what picks each question on the server (6 is the valet one), so
     // a category after "Valet Parking" must keep its own number when valet is off.
-    expect(page).toMatch(/feedbackFormCategories\(\s*configured\.map\(\(c, i\) => \(\{ id: i \+ 1, key: c\.key, label: c\.label \}\)\),\s*cfg\.valet_enabled === true,\s*\)/);
+    expect(page).toMatch(/feedbackFormCategories\(\s*configured\.map\(\(c, i\) => \(\{ id: i \+ 1, key: c\.key, label: c\.label \}\)\),\s*cfg\.valet_enabled,\s*\)/);
   });
 
   test("filtering keeps each remaining question's own number", () => {
@@ -83,9 +83,15 @@ describe("the form, its reset and Settings are wired to the switch", () => {
     expect(page).not.toMatch(/setValetGateComplete\(false\);\s*setValetGateMessage\(""\);\s*setQuestions/);
   });
 
-  test("Settings renders the valet card, editable with the permission the save needs", () => {
-    expect(settingsForm).toMatch(/<FeedbackValetCard\s+restaurantId=\{user\.restaurantUsername\}\s+canEdit=\{hasPermission\(user\.actions_set, PERM_SETTINGS\)\}/);
-    expect(card).toContain("setFeedbackValetEnabled(restaurantId, next)");
+  test("Settings renders the feedback form card, whose valet switch saves only what changed", () => {
+    // The valet-only card was replaced by the full Flutter _FeedbackSettingsCard
+    // (settings.md finding 36); the valet switch lives inside it.
+    expect(settingsForm).toMatch(/<FeedbackFormCard rid=\{rid\} initial=\{feedback\} \/>/);
+    expect(card).toContain('const [valet, setValet] = React.useState(initial.valet_enabled === true)');
+    expect(card).toMatch(/switchRow\("fb-valet", "Valet parking",[\s\S]*?valet, setValet\)/);
+    // Changed keys only, so a flip of valet cannot clobber the rest of the form.
+    expect(card).toContain('for (const k of ["title", "subtitle", "review_url", "valet_enabled", "require_image"] as const)');
+    expect(card).toContain("postSettings(rid, { feedback_config: changes })");
   });
 
   test("the save sends the freshly-read whole form with only valet changed — safe on an old backend too", () => {

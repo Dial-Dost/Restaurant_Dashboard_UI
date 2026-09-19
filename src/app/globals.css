@@ -2,6 +2,10 @@
    Imported first so the cascade order is: shadcn defaults -> palette
    overrides -> everything else. */
 @import "./palette.css";
+/* The appearance AXES — 8 accent ramps and 5 dark shell schemes — generated
+   from appearance.dart. Higher-specificity than the palette blocks, so an
+   accent/scheme choice overrides the defaults above. */
+@import "./appearance.css";
 
 @tailwind base;
 @tailwind components;
@@ -20,11 +24,30 @@
     --secondary: 220 14.3% 95.9%;
     --secondary-foreground: 220.9 39.3% 11%;
     --muted: 220 14.3% 95.9%;
-    --muted-foreground: 220 8.9% 46.1%;
+    /* gray-600, one step darker than shadcn's gray-500 — the app's White
+       palette pins secondary ink here because gray-500 drops to 3.6:1 under
+       the table-state washes (AppLightPalettes.white). gray-500 becomes the
+       tertiary ink. */
+    --muted-foreground: 215 13.8% 34.1%;  /* #4B5563 */
+    --text-tertiary: 220 8.9% 46.1%;      /* #6B7280 */
     --accent: 220 14.3% 95.9%;
     --accent-foreground: 220.9 39.3% 11%;
-    --destructive: 0 84.2% 60.2%;
+    /* #C32222 — the app's light danger; #EF4444 is only 3.8:1 as text on
+       white (AppLightPalettes.white.danger). */
+    --destructive: 0 70.3% 44.9%;
     --destructive-foreground: 210 20% 98%;
+    --success: 115.1 44.5% 26.9%;         /* #2B6326 */
+    --warning: 39.1 100% 27.1%;           /* #8A5A00 */
+    --info: 207.1 43.7% 37.6%;            /* #36648A */
+    --neutral: 215.3 8.2% 40.6%;          /* #5F6670 */
+    --status-lift: var(--foreground);
+    --background-deep: 220 14.3% 95.9%;   /* #F3F4F6 */
+    --card-top: 0 0% 100%;
+    --card-bottom: 0 0% 100%;
+    --inset: 220 14.3% 95.9%;             /* #F3F4F6 */
+    --divider: 220 14.3% 95.9%;
+    --shadow-card: 0 10px 18px rgb(0 0 0 / 0.05);
+    --shadow-card-hover: 0 10px 26px rgb(0 0 0 / 0.10);
     --border: 220 13% 91%;
     --input: 220 13% 91%;
     --ring: 224 71.4% 4.1%;
@@ -61,6 +84,21 @@
     --accent-foreground: 210 20% 98%;
     --destructive: 0 62.8% 30.6%;
     --destructive-foreground: 210 20% 98%;
+    /* Fallbacks for the app-ladder tokens when no data-palette is set; every
+       real page gets the palette blocks' values instead. */
+    --success: 98.9 26% 59.2%;
+    --warning: 35.8 61% 61.8%;
+    --info: 210.7 22.4% 64.1%;
+    --neutral: 43.6 5.2% 58.2%;
+    --status-lift: 0 0% 100%;
+    --background-deep: 224 71.4% 3%;
+    --card-top: 224 71.4% 4.1%;
+    --card-bottom: 224 71.4% 4.1%;
+    --inset: 224 50% 3%;
+    --text-tertiary: 217.9 10.6% 44%;
+    --divider: 215 27.9% 12%;
+    --shadow-card: 0 10px 18px rgb(0 0 0 / 0.30);
+    --shadow-card-hover: 0 10px 26px rgb(0 0 0 / 0.45);
     --border: 215 27.9% 16.9%;
     --input: 215 27.9% 16.9%;
     --ring: 216 12.2% 83.9%;
@@ -87,30 +125,84 @@
   body {
     @apply bg-background text-foreground;
   }
-  .animated-gradient {
-    background-size: 400% 400%;
-    animation: gradient-animation 10s ease infinite;
+}
+
+/* ---------------------------------------------------------------------------
+   THE APP'S TYPE VOICES (app_theme.dart), as utilities.
+
+   .display-lg / .display-md — the oversized stat figures: weight 300, tight
+   tracking, line-height 1 (displayLarge 40/-1.2, displayMedium 32/-0.8).
+   `tabular-nums` keeps columns of figures aligned, the web's equivalent of the
+   app's lining figures. .display-sm is displaySmall (24/400/-0.5).
+
+   .micro-label — labelSmall, the "CROWD SIZE" voice: 10px, w600, +1.1px
+   tracking, UPPERCASE, tertiary ink. Card captions, column heads, eyebrows,
+   chart axes.
+
+   Under Gaia the figures switch to the serif (Cormorant Garamond with lining
+   figures — the face defaults to old-style numerals) and the micro label takes
+   Gaia's wider .18em tracking (GaiaType.eyebrow).
+   --------------------------------------------------------------------------- */
+@layer components {
+  .display-lg {
+    font-size: 40px;
+    font-weight: 300;
+    letter-spacing: -0.03em;
+    line-height: 1;
+    color: hsl(var(--foreground));
+    font-variant-numeric: tabular-nums lining-nums;
+  }
+  .display-md {
+    font-size: 32px;
+    font-weight: 300;
+    letter-spacing: -0.025em;
+    line-height: 1;
+    color: hsl(var(--foreground));
+    font-variant-numeric: tabular-nums lining-nums;
+  }
+  .display-sm {
+    font-size: 24px;
+    font-weight: 400;
+    letter-spacing: -0.021em;
+    line-height: 1.05;
+    color: hsl(var(--foreground));
+    font-variant-numeric: tabular-nums lining-nums;
+  }
+  .micro-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: hsl(var(--text-tertiary));
   }
 
-  @keyframes gradient-animation {
-    0% {
-      background-position: 0% 50%;
-    }
-    50% {
-      background-position: 100% 50%;
-    }
-    100% {
-      background-position: 0% 50%;
-    }
+  [data-palette="gaia"] .display-lg,
+  [data-palette="gaia"] .display-md,
+  [data-palette="gaia"] .display-sm {
+    font-family: var(--font-cormorant), Georgia, 'Times New Roman', serif;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+  }
+  [data-palette="gaia"] .micro-label {
+    font-weight: 400;
+    letter-spacing: 0.18em;
+    color: hsl(var(--muted-foreground));
   }
 }
 
-.light .animated-gradient {
-  background-image: linear-gradient(-45deg, #e0e7ff, #c7d2fe, #a5b4fc, #818cf8);
+/* GAIA TYPE (gaia_type.dart): Instrument Sans carries the UI, Cormorant
+   Garamond carries figures and names; `lining-nums` is mandatory — Cormorant
+   defaults to old-style numerals that drop below the baseline. The rule beats
+   next/font's per-element Inter class (0,1,0) by specificity. */
+[data-palette="gaia"] body,
+[data-palette="gaia"] .dashboard-shell {
+  font-family: var(--font-instrument), var(--font-cormorant), 'Segoe UI',
+    'Helvetica Neue', Arial, sans-serif;
+  font-variant-numeric: lining-nums;
 }
-
-.dark .animated-gradient {
-  background-image: linear-gradient(-45deg, #1e1b4b, #1e293b, #334155, #475569);
+.gaia-serif {
+  font-family: var(--font-cormorant), Georgia, 'Times New Roman', serif;
+  font-variant-numeric: lining-nums;
 }
 
 /* ---------------------------------------------------------------------------
@@ -140,8 +232,21 @@
             muted surface 5.3
    --------------------------------------------------------------------------- */
 @media screen {
-  /* BEIGE — warm cream. Hexes are the source; each triple is its conversion. */
-  [data-light-tone="beige"]:not(.dark) {
+  /* BEIGE — warm cream. Hexes are the source; each triple is its conversion.
+     `:not([data-palette="gaia"])` on every tone block: Gaia has no light
+     variant in the app — a tone picked under Gaia is remembered, not applied
+     (appearance.dart lightActive) — so the tone must not repaint its ground. */
+  [data-light-tone="beige"]:not(.dark):not([data-palette="gaia"]) {
+    --background-deep: 39.2 40.6% 87.5%;  /* #ECE3D2 */
+    --card-top: 40 60% 96.1%;             /* = card: light cards are flat */
+    --card-bottom: 40 60% 96.1%;
+    --inset: 39.2 40.6% 87.5%;            /* #ECE3D2 */
+    --text-tertiary: 30.9 14.3% 48%;      /* #8C7B69 */
+    --divider: 39.3 36.7% 84.5%;          /* #E6DCC9 */
+    --success: 115.1 44.5% 26.9%;         /* #2B6326 */
+    --warning: 38.9 100% 25.1%;           /* #805300 — deeper on cream */
+    --info: 207.1 43.7% 37.6%;            /* #36648A */
+    --neutral: 31.2 14.6% 33.5%;          /* #625649 */
     --background: 40 47.4% 92.5%;         /* #F5EFE3 ground */
     --foreground: 30 26.5% 13.3%;         /* #2B2219 warm near-black */
     --card: 40 60% 96.1%;                 /* #FBF7EF */
@@ -165,7 +270,17 @@
   }
 
   /* SOFT GREY — a neutral with less glare than white. */
-  [data-light-tone="grey"]:not(.dark) {
+  [data-light-tone="grey"]:not(.dark):not([data-palette="gaia"]) {
+    --background-deep: 216 9.8% 90%;      /* #E3E5E8 */
+    --card-top: 210 16.7% 97.6%;
+    --card-bottom: 210 16.7% 97.6%;
+    --inset: 216 9.8% 90%;                /* #E3E5E8 */
+    --text-tertiary: 216 6.1% 52%;        /* #7D838C */
+    --divider: 225 9.5% 91.8%;            /* #E8E9EC */
+    --success: 115.1 44.5% 26.9%;         /* #2B6326 */
+    --warning: 38.9 100% 25.1%;           /* #805300 */
+    --info: 207.1 43.7% 37.6%;            /* #36648A */
+    --neutral: 216 7.9% 37.1%;            /* #575D66 */
     --background: 220 9.7% 93.9%;         /* #EEEFF1 */
     --foreground: 218 12.1% 12.9%;        /* #1D2025 */
     --card: 210 16.7% 97.6%;              /* #F8F9FA */

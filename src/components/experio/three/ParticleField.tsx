@@ -46,7 +46,7 @@ function sampleWordmark(): Float32Array {
       }
     }
   }
-  if (pts.length < 8) pts.push(-0.4, 0, -0.2, 0, 0, 0, 0.2, 0);
+  if (pts.length < 8) {pts.push(-0.4, 0, -0.2, 0, 0, 0, 0.2, 0);}
   return new Float32Array(pts);
 }
 
@@ -161,7 +161,7 @@ export default function ParticleField() {
     const repelR = hh * 0.24;
 
     // Lazily sample the wordmark once fonts are likely ready.
-    if (p > 0.7 && !sim.letters) sim.letters = sampleWordmark();
+    if (p > 0.7 && !sim.letters) {sim.letters = sampleWordmark();}
 
     /* -------- global act weights (windows with soft crossfades) -------- */
     const wBuild = smoothstep(seg(p, 0.11, 0.15)) * (1 - smoothstep(seg(p, 0.33, 0.36)));

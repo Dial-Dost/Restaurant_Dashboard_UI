@@ -34,7 +34,7 @@ interface ComboboxProps {
     className?: string;
 }
 
-export function Combobox({ options, value, onChange, placeholder, searchPlaceholder, emptyPlaceholder, className }: ComboboxProps) {
+export function Combobox({ options, value, onChange, placeholder, searchPlaceholder, emptyPlaceholder, className }: ComboboxProps): React.JSX.Element {
   const [open, setOpen] = React.useState(false)
 
   return (

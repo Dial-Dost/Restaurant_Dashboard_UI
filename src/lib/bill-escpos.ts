@@ -418,6 +418,12 @@ export interface BillEscPosInput extends BillTotalsSource {
     feedbackUrl: string | null;
     /** The sentence above the QR; '' prints none. */
     qrNote: string;
+    /**
+     * What the comped (NC) lines were worth. Those lines print at 0.00, so this
+     * discloses the value given away under the Grand Total, ruled off, exactly
+     * as the on-screen receipt and escpos.ts do. null / 0 prints nothing.
+     */
+    ncValue?: number | null;
 }
 
 /**
@@ -578,7 +584,8 @@ export function buildBillEscPos(bill: BillEscPosInput): Uint8Array {
     // rungs above it on every bill of Rs 1000 or more.
     const totals = billTotals(bill);
     const grandText = money(bill.grandTotal);
-    const amtW = Math.max(COL_TOTAL, ...[totals.subtotal, ...totals.rungs.map((r) => r.value), totals.roundOff ?? '', grandText]
+    const ncText = bill.ncValue != null && Math.round(bill.ncValue * 100) > 0 ? bill.ncValue.toFixed(2) : null;
+    const amtW = Math.max(COL_TOTAL, ...[totals.subtotal, ...totals.rungs.map((r) => r.value), totals.roundOff ?? '', grandText, ncText ?? '']
         .filter((v) => v.length > 0)
         .map((v) => v.length + 1));
     const labelW = Math.max(1, W - amtW);
@@ -615,6 +622,11 @@ export function buildBillEscPos(bill: BillEscPosInput): Uint8Array {
     raw(ESC, 0x21, 0x00);
     raw(ESC, 0x45, 0x00);
     rule();
+    // Beside the ladder, never in it: what the comped lines were worth.
+    if (ncText !== null) {
+        ladder('NC value (not charged)', ncText);
+        rule();
+    }
 
     // --- Footer (centred): the disclaimer, bold, then the valet/feedback QR ---
     raw(ESC, 0x61, 0x01);

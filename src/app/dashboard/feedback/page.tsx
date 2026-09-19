@@ -1,944 +1,503 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState, useCallback } from "react";
-import QRCode from "qrcode";
-import {
-  ResponsiveContainer,
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-  CartesianGrid,
-} from "recharts";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+// Feedback — the web copy of the Flutter `feedbackModule`
+// (restaurant_owner_app/lib/screens/modules.dart ~18732): the three
+// drill-down KPI tiles (Responses / AVG RATING with the donut gauge /
+// RECOVERY), the collapsible per-waiter QR card, the Service recovery queue
+// with its Resolve flow, and the "All feedback" list with the
+// question-by-question expansion — in exactly that order.
+
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { JSX } from "react";
+import { ChevronDown, ChevronRight, ChevronUp, Inbox, Star } from "lucide-react";
+
 import { Button } from "@/components/ui/button";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { EmptyState } from "@/components/ui/empty-state";
+import { Donut } from "@/components/ui/fork-charts";
+import { ForkCard } from "@/components/ui/fork-card";
+import { SkeletonRows, SkeletonStats } from "@/components/ui/fork-skeleton";
+import { Label } from "@/components/ui/label";
+import { LoadErrorState } from "@/components/ui/load-error-state";
+import { MicroStat } from "@/components/ui/micro-stat";
+import { SectionHeader } from "@/components/ui/section-header";
+import { CacheStalePill } from "@/components/ui/stale-pill";
+import { StatCard } from "@/components/ui/stat-card";
+import { InfoChip, StatusChip } from "@/components/ui/status-chip";
+import { Textarea } from "@/components/ui/textarea";
+import { FocusBanner, useFocusRequest } from "@/components/focus-banner";
+import { InitialsAvatar } from "@/components/feedback/bits";
+import {
+  RatingSheet,
+  RecoveryQueueSheet,
+  RecoveryTicketSheet,
+  VolumeSheet,
+} from "@/components/feedback/feedback-sheets";
+import {
+  fmtShort,
+  initialsOf,
+  numOf,
+  scoreOf,
+  sOf,
+} from "@/components/feedback/feedback-format";
+import { WaiterQrSection } from "@/components/feedback/waiter-qr-section";
+import { useCachedFetch } from "@/hooks/use-cached-fetch";
+import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/context/AuthContext";
 import { useRealtime } from "@/context/RealtimeContext";
-import { useToast } from "@/hooks/use-toast";
-import { useHighlightRow } from "@/hooks/use-highlight-row";
-import { requestBackend } from "@/lib/db";
-import { dayKeyInZone, formatDateTime, formatLongDate, formatMonth, startOfWeekInZone, timezoneCaption, todayInZone, yearInZone } from "@/lib/tz";
 import { useTimezone } from "@/lib/use-timezone";
+import {
+  fetchFeedbackBundle,
+  resolveRecoveryTicket,
+  type FeedbackBundle,
+  type FeedbackEntry,
+  type RecoveryTicket,
+} from "@/lib/api/feedback";
 
-interface FeedbackCategoryRating {
-  key: string;
-  label: string;
-  rating: number;
-  question?: string | null;
-  follow_up?: string | null;
-  /** The guest's reply to the follow-up, when one was asked. */
-  follow_up_answer?: string | null;
+/** Which drill sheet is open — every figure on this tab opens what is
+ *  behind it, computed from the payloads already in hand. */
+type SheetState =
+  | { kind: "volume" }
+  | { kind: "rating" }
+  | { kind: "queue" }
+  | { kind: "ticket"; ticket: RecoveryTicket }
+  | null;
+
+/** The copper "DETAILS ›" footer affordance on the Responses tile
+ *  (Flutter `_statCard`). */
+function DetailsFooter(): JSX.Element {
+  return (
+    <span className="flex items-center text-[10px] font-semibold uppercase tracking-[0.11em] text-accent-foreground">
+      DETAILS
+      <ChevronRight aria-hidden className="ml-0.5 h-3.5 w-3.5" />
+    </span>
+  );
 }
 
-// A score is stored to 2dp, so 4.8 must read "4.8" — not the "5/5" a rounded
-// integer column used to produce. Whole numbers stay clean ("5", not "5.0").
-function formatScore(value: number | null | undefined): string | null {
-  if (typeof value !== "number" || !Number.isFinite(value)) {return null;}
-  return Number.isInteger(value) ? String(value) : value.toFixed(1);
-}
-
-interface FeedbackEntry {
-  id: string;
-  restaurant_id: string;
-  employee_id: string;
-  customer_name?: string | null;
-  visit_date?: string | null;
-  comments?: string | null;
-  overall_rating?: number | null;
-  category_ratings: FeedbackCategoryRating[];
-  image_theme?: { background: string; surface: string; text: string; accent: string } | null;
-  source?: string | null;
-  /** 0–10 "would you recommend" score, when the guest answered it. */
-  nps?: number | null;
-  submitted_at: string;
-}
-
-interface FeedbackSummary {
-  totalResponses: number;
-  averageRating: number | null;
-  categoryAverages: Record<string, { label: string; average: number | null }>;
-  last30DaysResponses: number;
-}
-
-function formatDate(input: string | null | undefined, timeZone: string): string {
-  return formatDateTime(input, timeZone, "Unknown");
-}
-
-function FeedbackPageInner() {
+function FeedbackPageInner(): JSX.Element {
   const { user } = useAuth();
   const { toast } = useToast();
   const { timezone } = useTimezone();
-  const [entries, setEntries] = useState<FeedbackEntry[]>([]);
-  /** Which feedback card is expanded (one at a time keeps the list scannable). */
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  // A complaint notification links here as ?highlightFeedback=<id>; ring and
-  // scroll to that submission instead of leaving the user to search the list.
-  const highlight = useHighlightRow("highlightFeedback", entries.length);
-  const [summary, setSummary] = useState<FeedbackSummary | null>(null);
-  const [employeesMap, setEmployeesMap] = useState<Record<string, { name: string; role?: string }>>({});
-  // Raw employee list (kept alongside employeesMap) so we can build a per-employee feedback QR.
-  const [employees, setEmployees] = useState<any[]>([]);
-  const [employeeQrMap, setEmployeeQrMap] = useState<Record<string, string>>({});
-  const [loading, setLoading] = useState(true);
   const { lastEvent } = useRealtime();
-  const [stats, setStats] = useState<{ daily?: any; weekly?: any; overall?: any[]; monthly?: any; yearly?: any } | null>(null);
-  // Which day/week/month/year is "current" depends on where the restaurant is,
-  // not on where the person reading the report is.
-  const [dailyDate, setDailyDate] = useState<string>(() => todayInZone(timezone));
-  const [weeklyStart, setWeeklyStart] = useState<string>(() => startOfWeekInZone(timezone));
-  const [monthlyStart, setMonthlyStart] = useState<string>(() => `${dayKeyInZone(new Date(), timezone).slice(0, 7)}-01`);
-  const [yearlyYear, setYearlyYear] = useState<number>(() => yearInZone(timezone));
+  const rid = user?.restaurantUsername ?? "";
+  const employeeId = user?.employeeId;
+  const outletId = user?.outlet_id;
 
+  const scope = useMemo(
+    () => ({ restaurantId: rid, employeeId, outletId }),
+    [rid, employeeId, outletId],
+  );
+
+  const bundle = useCachedFetch<FeedbackBundle>(
+    `feedback:${rid}:${outletId ?? ""}`,
+    useCallback(() => fetchFeedbackBundle(scope), [scope]),
+    { enabled: rid.length > 0 },
+  );
+  const refresh = bundle.refresh;
+
+  // Realtime: any feedback* event refetches all four payloads silently — the
+  // backend emits feedback:created on every submission and a dedicated
+  // feedback:recovery on new low-rating ones; both start with "feedback".
   useEffect(() => {
-    let active = true;
+    if (lastEvent?.event.startsWith("feedback")) {
+      refresh();
+    }
+  }, [lastEvent, refresh]);
 
-    const run = async () => {
-      if (!user?.restaurantUsername) {
-        setLoading(false);
-        return;
-      }
+  /* ── Notification deep-link focus (a low-rating alert asked us to focus
+        one response) ─────────────────────────────────────────────────── */
 
-      // No baseUrl is computed here on purpose. requestBackend comes from the
-      // "use server" module lib/db.ts, so it is a Server Action: the fetch runs
-      // inside the Next container, not in this browser. Deriving an address from
-      // window.location and shipping it to the server was always wrong, and the
-      // `??` made it worse — an empty NEXT_PUBLIC_BACKEND_URL is not null, so it
-      // won the fallback and the server fetched a bare path. (The fallback it
-      // shadowed was wrong too: port 3000 is the dashboard, the backend is 3001.)
-      // requestBackend now resolves the internal backend address itself.
+  const focus = useFocusRequest();
+  const focusId = focus?.idOf(["feedback_id"]) ?? null;
+
+  // A new focus request refetches — the response may have just arrived.
+  useEffect(() => {
+    if (!focus) { return; }
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus?.serial]);
+
+  const summary = bundle.data?.summary ?? null;
+  const items = useMemo(() => bundle.data?.items ?? [], [bundle.data]);
+  const tickets = useMemo(() => bundle.data?.tickets ?? [], [bundle.data]);
+  const employees = useMemo(() => bundle.data?.employees ?? [], [bundle.data]);
+
+  const isFocused = useCallback(
+    (row: { id?: string | null }): boolean => focusId != null && sOf(row.id, "") === focusId,
+    [focusId],
+  );
+  const focusFound =
+    focusId != null && (items.some((m) => isFocused(m)) || tickets.some((t) => isFocused(t)));
+
+  // Bring the focused record on screen once the list holding it has painted.
+  const scrolledFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (focusId == null || !focusFound || scrolledFor.current === focusId) { return; }
+    scrolledFor.current = focusId;
+    document.getElementById(`feedback-${focusId}`)?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [focusId, focusFound]);
+
+  /* ── Screen state ───────────────────────────────────────────────────── */
+
+  const [sheet, setSheet] = useState<SheetState>(null);
+  /** Which feedback card is expanded (one at a time keeps the list scannable). */
+  const [openId, setOpenId] = useState("");
+  const [resolving, setResolving] = useState<RecoveryTicket | null>(null);
+  const [resolveNote, setResolveNote] = useState("");
+
+  /**
+   * The Resolve flow (Flutter `_resolveRecovery`): the dialog closes on
+   * "Mark resolved", then the POST runs — an error surfaces as a toast with
+   * the server's own sentence, success reloads the queue.
+   */
+  const submitResolve = (): void => {
+    const ticket = resolving;
+    if (ticket == null) { return; }
+    const note = resolveNote;
+    setResolving(null);
+    void (async () => {
       try {
-        const [itemsRes, summaryRes] = await Promise.all([
-          requestBackend<{ items?: FeedbackEntry[] }>({
-            path: `/feedback?limit=100`,
-            restaurantId: user.restaurantUsername,
-            employeeId: user.employeeId,
-            outletId: user.outlet_id,
-          }),
-          requestBackend<FeedbackSummary>({
-            path: `/feedback/summary`,
-            restaurantId: user.restaurantUsername,
-            employeeId: user.employeeId,
-            outletId: user.outlet_id,
-          }),
-        ]);
-
-        console.log("Fetched feedback data", { itemsRes, summaryRes });
-
-        const feedbackRows = itemsRes.ok ? itemsRes.data?.items ?? [] : [];
-        const feedbackSummary = summaryRes.ok ? summaryRes.data : null;
-        const usersRes = await requestBackend<{ users?: any[] }>({
-          path: `/restaurant/users`,
-          restaurantId: user.restaurantUsername,
-          employeeId: user.employeeId,
-          outletId: user.outlet_id,
+        await resolveRecoveryTicket(scope, sOf(ticket.id, ""), note);
+        refresh();
+      } catch (error) {
+        toast({
+          title: String(error instanceof Error ? error.message : error),
+          variant: "destructive",
         });
-        const usersPayload = usersRes.ok ? usersRes.data : { users: [] };
-        const usersList = Array.isArray(usersPayload?.users) ? usersPayload.users : [];
-        const map: Record<string, { name: string; role?: string }> = {};
-        for (const u of usersList) {
-          const fname = String(u?.emp_Fname ?? u?.first_name ?? u?.employeeId ?? u?.id ?? "Unknown");
-          const lname = String(u?.emp_Lname ?? u?.last_name ?? "");
-          const name = `${fname}${lname ? ` ${lname}` : ""}`;
-          const role = String(u?.role ?? "");
-          const keys = [u?.employeeId, u?.id, u?.employee_id].filter(Boolean as any);
-          for (const k of keys) {
-            map[String(k)] = { name, role };
-          }
-        }
-        setEmployeesMap(map);
-        setEmployees(usersList);
-        // debug: log users payload and built map to help diagnose missing names
-        try {
-          console.debug("feedback: usersList", usersList);
-          console.debug("feedback: employeesMap keys", Object.keys(map));
-        } catch (e) {
-          // ignore in environments without console
-        }
-
-        if (!active) {return;}
-
-        setEntries(feedbackRows);
-        setSummary(feedbackSummary);
-        const statsDailyRes = await requestBackend<any>({
-          path: `/feedback/stats?mode=daily&date=${dailyDate}`,
-          restaurantId: user.restaurantUsername,
-          employeeId: user.employeeId,
-          outletId: user.outlet_id,
-        });
-        const statsWeeklyRes = await requestBackend<any>({
-          path: `/feedback/stats?mode=weekly&weekStart=${weeklyStart}`,
-          restaurantId: user.restaurantUsername,
-          employeeId: user.employeeId,
-          outletId: user.outlet_id,
-        });
-        const statsMonthlyRes = await requestBackend<any>({
-          path: `/feedback/stats?mode=monthly&start=${monthlyStart}`,
-          restaurantId: user.restaurantUsername,
-          employeeId: user.employeeId,
-          outletId: user.outlet_id,
-        });
-        const statsYearlyRes = await requestBackend<any>({
-          path: `/feedback/stats?mode=yearly&year=${yearlyYear}`,
-          restaurantId: user.restaurantUsername,
-          employeeId: user.employeeId,
-          outletId: user.outlet_id,
-        });
-        const statsDaily = statsDailyRes.ok ? statsDailyRes.data : null;
-        const statsWeekly = statsWeeklyRes.ok ? statsWeeklyRes.data : null;
-        const statsMonthly = statsMonthlyRes.ok ? statsMonthlyRes.data : null;
-        const statsYearly = statsYearlyRes.ok ? statsYearlyRes.data : null;
-        setStats({ daily: statsDaily, weekly: statsWeekly, monthly: statsMonthly, yearly: statsYearly });
-      } finally {
-        if (active) {setLoading(false);}
       }
-    };
-
-    run();
-
-    return () => {
-      active = false;
-    };
-  }, [user?.restaurantUsername, user?.employeeId, user?.outlet_id, dailyDate, weeklyStart, monthlyStart, yearlyYear]);
-
-  useEffect(() => {
-    if (!user?.restaurantUsername) {return;}
-    if (!lastEvent) {return;}
-    if (lastEvent.event && lastEvent.event.startsWith('feedback')) {
-      // Re-fetch when feedback changes
-      (async () => {
-        setLoading(true);
-        // See the note above: requestBackend is a Server Action and resolves the
-        // backend address on the server. Nothing browser-derived belongs here.
-        try {
-          const itemsRes = await requestBackend<{ items?: FeedbackEntry[] }>({
-            path: `/feedback?limit=100`,
-            restaurantId: user.restaurantUsername,
-            employeeId: user.employeeId,
-            outletId: user.outlet_id,
-          });
-          const summaryRes = await requestBackend<FeedbackSummary>({
-            path: `/feedback/summary`,
-            restaurantId: user.restaurantUsername,
-            employeeId: user.employeeId,
-            outletId: user.outlet_id,
-          });
-          const feedbackRows = itemsRes.ok ? itemsRes.data?.items ?? [] : [];
-          const feedbackSummary = summaryRes.ok ? summaryRes.data : null;
-          // re-fetch stats windows
-          const statsDailyRes = await requestBackend<any>({
-            path: `/feedback/stats?mode=daily&date=${dailyDate}`,
-            restaurantId: user.restaurantUsername,
-            employeeId: user.employeeId,
-            outletId: user.outlet_id,
-          });
-          const statsWeeklyRes = await requestBackend<any>({
-            path: `/feedback/stats?mode=weekly&weekStart=${weeklyStart}`,
-            restaurantId: user.restaurantUsername,
-            employeeId: user.employeeId,
-            outletId: user.outlet_id,
-          });
-          const statsMonthlyRes = await requestBackend<any>({
-            path: `/feedback/stats?mode=monthly&start=${monthlyStart}`,
-            restaurantId: user.restaurantUsername,
-            employeeId: user.employeeId,
-            outletId: user.outlet_id,
-          });
-          const statsYearlyRes = await requestBackend<any>({
-            path: `/feedback/stats?mode=yearly&year=${yearlyYear}`,
-            restaurantId: user.restaurantUsername,
-            employeeId: user.employeeId,
-            outletId: user.outlet_id,
-          });
-          const statsDaily = statsDailyRes.ok ? statsDailyRes.data : null;
-          const statsWeekly = statsWeeklyRes.ok ? statsWeeklyRes.data : null;
-          const statsMonthly = statsMonthlyRes.ok ? statsMonthlyRes.data : null;
-          const statsYearly = statsYearlyRes.ok ? statsYearlyRes.data : null;
-          setEntries(feedbackRows);
-          setSummary(feedbackSummary);
-          setStats({ daily: statsDaily, weekly: statsWeekly, monthly: statsMonthly, yearly: statsYearly });
-          // refresh employee list
-          try {
-            const usersRes = await requestBackend<{ users?: any[] }>({
-              path: `/restaurant/users`,
-              restaurantId: user.restaurantUsername,
-              employeeId: user.employeeId,
-              outletId: user.outlet_id,
-            });
-            const usersPayload = usersRes.ok ? usersRes.data : { users: [] };
-            const usersList = Array.isArray(usersPayload?.users) ? usersPayload.users : [];
-            const map: Record<string, { name: string; role?: string }> = {};
-            for (const u of usersList) {
-              const fname = String(u?.emp_Fname ?? u?.first_name ?? u?.employeeId ?? u?.id ?? "Unknown");
-              const lname = String(u?.emp_Lname ?? u?.last_name ?? "");
-              const name = `${fname}${lname ? ` ${lname}` : ""}`;
-              const role = String(u?.role ?? "");
-              const keys = [u?.employeeId, u?.id, u?.employee_id].filter(Boolean as any);
-              for (const k of keys) {
-                map[String(k)] = { name, role };
-              }
-            }
-            setEmployeesMap(map);
-            setEmployees(usersList);
-            try {
-              console.debug("feedback: usersList (refetch)", usersList);
-              console.debug("feedback: employeesMap keys (refetch)", Object.keys(map));
-            } catch (e) {}
-          } catch (err) {
-            // ignore
-          }
-        } finally {
-          setLoading(false);
-        }
-      })();
-    }
-  }, [lastEvent, user?.restaurantUsername, user?.employeeId, user?.outlet_id, dailyDate, weeklyStart, monthlyStart, yearlyYear]);
-
-  function shiftDate(iso: string, days: number) {
-    // operate in UTC to avoid local timezone shifts
-    const parts = iso.split("-").map((s) => parseInt(s, 10));
-    if (parts.length !== 3 || parts.some(isNaN)) {
-      // fallback to safe Date arithmetic
-      const d = new Date(iso + "T00:00:00");
-      d.setDate(d.getDate() + days);
-      return d.toISOString().slice(0, 10);
-    }
-    const [y, m, day] = parts;
-    const utc = Date.UTC(y, m - 1, day + days);
-    const d2 = new Date(utc);
-    return d2.toISOString().slice(0, 10);
-  }
-
-  function shiftWeek(iso: string, weeks: number) {
-    return shiftDate(iso, weeks * 7);
-  }
-
-  function shiftWeeks(iso: string, weeks: number) {
-    return shiftDate(iso, weeks * 7);
-  }
-
-  function shiftMonth(iso: string, delta: number) {
-    const parts = iso.split('-').map((s) => parseInt(s, 10));
-    if (parts.length !== 3 || parts.some(isNaN)) {
-      const d = new Date(iso + 'T00:00:00');
-      d.setMonth(d.getMonth() + delta);
-      d.setDate(1);
-      return d.toISOString().slice(0, 10);
-    }
-    let [y, m] = parts;
-    m = m - 1 + delta;
-    const newDate = new Date(Date.UTC(y, m, 1));
-    return newDate.toISOString().slice(0, 10);
-  }
-
-  function shiftYear(year: number, delta: number) {
-    return year + delta;
-  }
-
-  // NB: `iso` here is a bare calendar date (YYYY-MM-DD), not an instant, so it
-  // must NOT be shifted into any zone — anchor and read it in UTC so the label
-  // says the same day everywhere.
-  function formatISODate(iso: string) {
-    const [y, m, d] = iso.split("-").map(Number);
-    if (!y || !m || !d) {return iso;}
-    return formatLongDate(Date.UTC(y, m - 1, d), "UTC", iso);
-  }
-
-  function formatMonthWeek(iso: string) {
-    const [y, m, d] = iso.split("-").map(Number);
-    if (!y || !m || !d) {return iso;}
-    return `${formatMonth(Date.UTC(y, m - 1, d), "UTC", false, iso)} W${Math.ceil(d / 7)}`;
-  }
-
-  function formatMonthlyLabel(iso: string) {
-    const [y, m, d] = iso.split("-").map(Number);
-    if (!y || !m || !d) {return iso;}
-    return formatMonth(Date.UTC(y, m - 1, d), "UTC", true, iso);
-  }
-
-  const resolveEmployeeName = useCallback((employeeId: any) => {
-    if (employeeId === undefined || employeeId === null) {return null;}
-    const idStr = String(employeeId);
-    if (employeesMap[idStr]?.name) {return employeesMap[idStr].name;}
-    if (employeesMap[employeeId]?.name) {return employeesMap[employeeId].name;}
-    const numeric = Number(employeeId);
-    if (!Number.isNaN(numeric) && employeesMap[String(numeric)]?.name) {return employeesMap[String(numeric)].name;}
-    return null;
-  }, [employeesMap]);
-
-  // Feedback form base URL — same resolution as settings-form: same-origin /feedback
-  // by default, NEXT_PUBLIC_FEEDBACK_FORM_URL overrides, and a localhost placeholder is
-  // auto-rewritten to the current host on deployed/forwarded hosts.
-  const feedbackBase = useMemo(() => {
-    const fallbackBase = typeof window !== "undefined" ? `${window.location.origin}/feedback` : "";
-    const configuredBase = (process.env.NEXT_PUBLIC_FEEDBACK_FORM_URL ?? "").trim();
-    let baseUrl = configuredBase || fallbackBase;
-    if (typeof window !== "undefined" && baseUrl) {
-      try {
-        const parsed = new URL(baseUrl);
-        const configuredHost = parsed.hostname.toLowerCase();
-        const currentHost = window.location.hostname.toLowerCase();
-        const isConfiguredLocal = configuredHost === "localhost" || configuredHost === "127.0.0.1";
-        const isCurrentLocal = currentHost === "localhost" || currentHost === "127.0.0.1";
-        if (isConfiguredLocal && !isCurrentLocal) {
-          parsed.protocol = window.location.protocol;
-          parsed.hostname = window.location.hostname;
-          baseUrl = parsed.toString();
-        }
-      } catch {
-        // ignore invalid env URL, keep fallback
-      }
-    }
-    return baseUrl.replace(/\/$/, "");
-  }, []);
-
-  // Per-employee feedback link: {base}?rid=<restaurantUsername>&oid=<outlet_id>&eid=<Employees.id UUID>
-  const empQrId = (emp: any) => String(emp?.id ?? emp?.employee_id ?? emp?.employeeId ?? "");
-  const buildEmployeeFeedbackUrl = useCallback((eid: string) => {
-    if (!feedbackBase || !user?.restaurantUsername || !eid) {return "";}
-    const params = new URLSearchParams({
-      rid: String(user.restaurantUsername),
-      oid: String(user.outlet_id ?? ""),
-      eid: String(eid),
-    });
-    return `${feedbackBase}?${params.toString()}`;
-  }, [feedbackBase, user?.restaurantUsername, user?.outlet_id]);
-
-  // Generate a QR data URL per employee (admin only — this card is admin-gated).
-  useEffect(() => {
-    let active = true;
-    if (user?.role !== "admin" || employees.length === 0) {
-      setEmployeeQrMap({});
-      return;
-    }
-    (async () => {
-      const map: Record<string, string> = {};
-      for (const emp of employees) {
-        const eid = empQrId(emp);
-        const url = buildEmployeeFeedbackUrl(eid);
-        if (!eid || !url) {continue;}
-        try {
-          map[eid] = await QRCode.toDataURL(url, { width: 220, margin: 2 });
-        } catch {
-          // skip this employee's QR on failure
-        }
-      }
-      if (active) {setEmployeeQrMap(map);}
     })();
-    return () => { active = false; };
-  }, [employees, buildEmployeeFeedbackUrl, user?.role]);
+  };
 
-  const monthlyChartData = (() => {
-    const monthly = stats?.monthly;
-    const overall = stats?.overall;
-    if (monthly && Array.isArray(monthly.weeks)) {
-      return monthly.weeks.map((d: any) => ({ name: d.label ?? `${d.start?.slice(5)} - ${d.end?.slice(5)}`, count: d.count }));
-    }
-    if (Array.isArray(overall)) {return overall.map((d: any) => ({ name: d.month, count: d.count }));}
-    return [];
-  })();
+  if (bundle.loading) {
+    return (
+      <div className="grid gap-4">
+        <div className="flex flex-wrap gap-3">
+          {[0, 1, 2].map((i) => (
+            <ForkCard key={i} className="w-[200px]">
+              <SkeletonStats tiles={1} />
+            </ForkCard>
+          ))}
+        </div>
+        <SkeletonRows rows={6} />
+      </div>
+    );
+  }
 
-  const categoryRows = useMemo(() => {
-    if (!summary) {
-      return [];
-    }
-    return Object.entries(summary.categoryAverages).sort((a, b) => {
-      const av = a[1].average ?? 0;
-      const bv = b[1].average ?? 0;
-      return bv - av;
-    });
-  }, [summary]);
+  if (bundle.error != null || summary == null) {
+    return (
+      <LoadErrorState
+        whatFailed="Couldn't load feedback."
+        error={bundle.error}
+        onRetry={bundle.retry}
+      />
+    );
+  }
 
-  const employeeCounts = useMemo(() => {
-    const map: Record<string, number> = {};
-    for (const e of entries) {
-      const id = (e as any).employee_id ?? "unknown";
-      map[id] = (map[id] ?? 0) + 1;
-    }
-    return Object.entries(map)
-      .map(([employeeId, count]) => ({
-        employeeId,
-        name: resolveEmployeeName(employeeId) ?? employeesMap[employeeId]?.name ?? String(employeeId ?? "Unknown"),
-        count,
-      }))
-      .sort((a, b) => b.count - a.count);
-  }, [entries, employeesMap, resolveEmployeeName]);
-
-  const employeePerformance = useMemo(() => {
-    const map: Record<string, { name: string; responses: number; total: number; ratedResponses: number }> = {};
-
-    for (const entry of entries) {
-      const employeeId = entry.employee_id ?? "unknown";
-      if (!map[employeeId]) {
-        map[employeeId] = {
-          name: resolveEmployeeName(employeeId) ?? employeesMap[employeeId]?.name ?? String(employeeId ?? "Unknown"),
-          responses: 0,
-          total: 0,
-          ratedResponses: 0,
-        };
-      }
-
-      map[employeeId].responses += 1;
-
-      if (typeof entry.overall_rating === "number" && Number.isFinite(entry.overall_rating)) {
-        map[employeeId].total += entry.overall_rating;
-        map[employeeId].ratedResponses += 1;
-      }
-    }
-
-    return Object.entries(map)
-      .map(([employeeId, value]) => ({
-        employeeId,
-        name: value.name,
-        responses: value.responses,
-        averageRating:
-          value.ratedResponses > 0
-            ? Number((value.total / value.ratedResponses).toFixed(2))
-            : null,
-      }))
-      .sort((a, b) => {
-        const aAvg = a.averageRating ?? -1;
-        const bAvg = b.averageRating ?? -1;
-        if (bAvg !== aAvg) {return bAvg - aAvg;}
-        return b.responses - a.responses;
-      });
-  }, [entries, employeesMap, resolveEmployeeName]);
-
-  const myPerformance = useMemo(() => {
-    if (!user?.employeeId) {return null;}
-    return employeePerformance.find((row) => row.employeeId === user.employeeId) ?? null;
-  }, [employeePerformance, user]);
+  const avgRating = numOf(summary.averageRating ?? 0);
 
   return (
-    <div className="grid gap-4 md:gap-6">
-      <div className="grid gap-4 md:grid-cols-4">
-        <Card>
-            <CardHeader className="flex items-center justify-between">
-              <div>
-                <CardTitle className="text-sm font-medium">Daily (hours)</CardTitle>
-                <div className="text-xs text-muted-foreground">{formatISODate(dailyDate)}</div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setDailyDate(shiftDate(dailyDate, -1)); }}>Prev</button>
-                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setDailyDate(todayInZone(timezone)); }}>Now</button>
-                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setDailyDate(shiftDate(dailyDate, 1)); }}>Next</button>
-              </div>
-            </CardHeader>
-          <CardContent style={{ height: 160 }}>
-            {stats?.daily ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={
-                  Array.isArray(stats.daily?.hours)
-                    ? stats.daily.hours.map((h: any) => ({ name: String(h.hour).padStart(2,'0'), count: h.count }))
-                    : Array.isArray(stats.daily)
-                    ? stats.daily.map((d: any) => ({ name: d.date?.slice(5) ?? d.label ?? d.hour, count: d.count }))
-                    : []
-                }>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="name" tick={{ fontSize: 10 }} />
-                  <YAxis />
-                  <Tooltip />
-                  <Line type="monotone" dataKey="count" stroke="#8884d8" strokeWidth={2} dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            ) : (
-              <p className="text-sm text-muted-foreground">Loading...</p>
-            )}
-          </CardContent>
-        </Card>
+    <div className="relative grid gap-6">
+      {focus != null && (
+        <FocusBanner
+          className="mb-0"
+          found={focusFound}
+          message={
+            focusFound
+              ? "Highlighted the response from your notification."
+              : "That response isn't in this list — it may have been removed, or belong to another outlet."
+          }
+          onDismiss={focus.dismiss}
+          showAllLabel="Show all feedback"
+        />
+      )}
 
-        <Card>
-            <CardHeader className="flex items-center justify-between">
-              <div>
-                <CardTitle className="text-sm font-medium">Weekly (Mon–Sun)</CardTitle>
-                <div className="text-xs text-muted-foreground">{formatMonthWeek(weeklyStart)}</div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setWeeklyStart(shiftWeek(weeklyStart, -1)); }}>Prev</button>
-                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setWeeklyStart(() => {
-                  return startOfWeekInZone(timezone);
-                }); }}>Now</button>
-                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setWeeklyStart(shiftWeek(weeklyStart, 1)); }}>Next</button>
-              </div>
-            </CardHeader>
-          <CardContent style={{ height: 160 }}>
-            {stats?.weekly ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={
-                  Array.isArray(stats.weekly?.days)
-                    ? stats.weekly.days.map((d: any) => ({ name: d.label ?? d.date?.slice(5), count: d.count }))
-                    : Array.isArray(stats.weekly)
-                    ? stats.weekly.map((d: any) => ({ name: d.weekStart?.slice(5) ?? d.label, count: d.count }))
-                    : []
-                }>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="name" tick={{ fontSize: 10 }} />
-                  <YAxis />
-                  <Tooltip />
-                  <Line type="monotone" dataKey="count" stroke="#82ca9d" strokeWidth={2} dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            ) : (
-              <p className="text-sm text-muted-foreground">Loading...</p>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-            <CardHeader className="flex items-center justify-between">
-              <div>
-                <CardTitle className="text-sm font-medium">Monthly (4-week)</CardTitle>
-                <div className="text-xs text-muted-foreground">{formatMonthlyLabel(monthlyStart)}</div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setMonthlyStart(shiftMonth(monthlyStart, -1)); }}>Prev</button>
-                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setMonthlyStart(`${dayKeyInZone(new Date(), timezone).slice(0, 7)}-01`); }}>Now</button>
-                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setMonthlyStart(shiftMonth(monthlyStart, 1)); }}>Next</button>
-              </div>
-            </CardHeader>
-          <CardContent style={{ height: 160 }}>
-            {stats?.monthly ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={monthlyChartData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="name" tick={{ fontSize: 10 }} />
-                  <YAxis />
-                  <Tooltip />
-                  <Line type="monotone" dataKey="count" stroke="#ffc658" strokeWidth={2} dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            ) : (
-              <p className="text-sm text-muted-foreground">Loading...</p>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-            <CardHeader className="flex items-center justify-between">
-              <div>
-                <CardTitle className="text-sm font-medium">Yearly (Jan–Dec)</CardTitle>
-                <div className="text-xs text-muted-foreground">{yearlyYear}</div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setYearlyYear(shiftYear(yearlyYear, -1)); }}>Prev</button>
-                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setYearlyYear(yearInZone(timezone)); }}>Now</button>
-                <button className="border border-gray-200 rounded px-2 py-1 text-xs" onClick={() => { setYearlyYear(shiftYear(yearlyYear, 1)); }}>Next</button>
-              </div>
-            </CardHeader>
-          <CardContent style={{ height: 160 }}>
-            {stats?.yearly ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={
-                  Array.isArray(stats.yearly?.months)
-                    ? stats.yearly.months.map((m: any) => ({ name: m.label ?? m.month, count: m.count }))
-                    : []
-                }>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="name" tick={{ fontSize: 10 }} />
-                  <YAxis />
-                  <Tooltip />
-                  <Line type="monotone" dataKey="count" stroke="#a29bfe" strokeWidth={2} dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            ) : (
-              <p className="text-sm text-muted-foreground">Loading...</p>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-      
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-semibold md:text-2xl">Feedback</h1>
-          <p className="text-xs text-muted-foreground">All times in restaurant time · {timezoneCaption(timezone)}</p>
-        </div>
-      </div>
-
-      <div className="grid gap-4 md:grid-cols-3">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">Total Responses</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-bold">{summary?.totalResponses ?? 0}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">Average Rating</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-bold">
-              {summary?.averageRating !== null && summary?.averageRating !== undefined
-                ? `${summary.averageRating}/5`
-                : "N/A"}
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">Last 30 Days</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-bold">{summary?.last30DaysResponses ?? 0}</p>
-          </CardContent>
-        </Card>
-      </div>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Category Averages</CardTitle>
-          <CardDescription>Average scores for each service category</CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-3 md:grid-cols-2">
-          {categoryRows.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No category ratings yet.</p>
-          ) : (
-            categoryRows.map(([key, value]) => (
-              <div className="rounded-md border p-3" key={key}>
-                <div className="flex items-center justify-between gap-2">
-                  <p className="font-medium">{value.label}</p>
-                  <Badge variant="secondary">{value.average !== null ? `${value.average}/5` : "N/A"}</Badge>
-                </div>
-              </div>
-            ))
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Employees</CardTitle>
-          <CardDescription>Feedback count per Captains</CardDescription>
-        </CardHeader>
-        <CardContent className="max-h-64 overflow-y-auto">
-          {employeeCounts.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No feedback associated with employees yet.</p>
-          ) : (
-            <div className="grid gap-2">
-              {employeeCounts.map((row) => (
-                <div key={row.employeeId} className="flex items-center justify-between rounded-md border p-2">
-                  <div>
-                    <p className="font-medium">{row.name}</p>
-                  </div>
-                  <Badge variant="secondary">{row.count}</Badge>
-                </div>
-              ))}
+      {/* ── The three drill-down KPI tiles ──────────────────────────── */}
+      <div className="flex flex-wrap gap-3">
+        <StatCard
+          className="w-[200px]"
+          value={`${summary.totalResponses ?? 0}`}
+          caption="RESPONSES"
+          footer={<DetailsFooter />}
+          onClick={() => { setSheet({ kind: "volume" }); }}
+        />
+        <StatCard
+          className="w-[200px]"
+          value={`${summary.averageRating ?? 0}`}
+          unit="/ 5"
+          caption="AVG RATING"
+          chart={
+            <div className="flex justify-start">
+              <Donut fraction={Math.min(1, Math.max(0, avgRating / 5))} size={46} />
             </div>
-          )}
-        </CardContent>
-      </Card>
+          }
+          onClick={() => { setSheet({ kind: "rating" }); }}
+        />
+        {/* Always opens the queue — at zero the sheet explains what service
+            recovery IS instead of eating the tap. */}
+        <StatCard
+          className="w-[200px]"
+          value={`${tickets.length}`}
+          caption="RECOVERY"
+          tag={tickets.length > 0 ? "Open" : undefined}
+          tagColor="hsl(var(--destructive))"
+          onClick={() => { setSheet({ kind: "queue" }); }}
+        />
+      </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>{user?.role === "admin" ? "Employee Ratings" : "Your Rating"}</CardTitle>
-          <CardDescription>
-            {user?.role === "admin"
-              ? "Average feedback rating by employee"
-              : "Average rating from feedback forms linked to your QR code"}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="max-h-72 overflow-y-auto">
-          {user?.role === "admin" ? (
-            employeePerformance.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No employee feedback ratings yet.</p>
-            ) : (
-              <div className="grid gap-2">
-                {employeePerformance.map((row) => (
-                  <div key={row.employeeId} className="flex items-center justify-between rounded-md border p-2">
-                    <div>
-                      <p className="font-medium">{row.name}</p>
-                      <p className="text-xs text-muted-foreground">Responses: {row.responses}</p>
+      {/* ── Per-waiter feedback QR (collapsed by default) ───────────── */}
+      <WaiterQrSection
+        employees={employees}
+        items={items}
+        timezone={timezone}
+        restaurantUsername={rid}
+        outletId={outletId ?? ""}
+      />
+
+      {/* ── Service recovery ────────────────────────────────────────── */}
+      {tickets.length > 0 && (
+        <section>
+          <SectionHeader
+            title="Service recovery"
+            count={tickets.length}
+            trailing={<StatusChip status="danger" label="Needs follow-up" dense />}
+          />
+          {tickets.map((t) => {
+            const comment = sOf(t.comments, "");
+            const cats = t.category_ratings ?? [];
+            return (
+              <ForkCard
+                key={t.id}
+                id={`feedback-${sOf(t.id, "")}`}
+                selected={isFocused(t)}
+                // Opens the full response — the question wording, the
+                // follow-up prompts and the recommend score the recovery
+                // reader does not return. "Resolve" keeps its own button so
+                // reading a complaint can never close it.
+                onClick={() => { setSheet({ kind: "ticket", ticket: t }); }}
+                className="mb-2"
+              >
+                <div className="flex flex-col gap-2 min-[760px]:flex-row min-[760px]:items-center">
+                  <div className="flex min-w-0 flex-1 items-center gap-3">
+                    {/* The raw rating in a red ring, exactly as the app draws it. */}
+                    <InitialsAvatar text={`${t.overall_rating ?? "-"}`} danger />
+                    <div className="min-w-0">
+                      <p className="line-clamp-2 text-sm font-semibold text-foreground">
+                        {sOf(t.customer_name, "Guest")}
+                      </p>
+                      {/* Not the raw ISO date: submitted_at is a UTC instant,
+                          so slicing at the "T" dates a 1am review to the
+                          previous day in Asia/Kolkata. */}
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        {fmtShort(sOf(t.submitted_at, ""), timezone)}
+                      </p>
                     </div>
-                    <Badge variant="secondary">
-                      {row.averageRating !== null ? `${row.averageRating}/5` : "N/A"}
-                    </Badge>
                   </div>
-                ))}
-              </div>
-            )
-          ) : myPerformance ? (
-            <div className="rounded-md border p-3">
-              <p className="text-sm text-muted-foreground">Responses received</p>
-              <p className="text-xl font-semibold">{myPerformance.responses}</p>
-              <p className="mt-2 text-sm text-muted-foreground">Average rating</p>
-              <p className="text-xl font-semibold">
-                {myPerformance.averageRating !== null ? `${myPerformance.averageRating}/5` : "N/A"}
-              </p>
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">No feedback linked to your profile yet.</p>
-          )}
-        </CardContent>
-      </Card>
-
-      {user?.role === "admin" && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Employee feedback QR codes</CardTitle>
-            <CardDescription>
-              Each staff member&apos;s personal feedback link. Print or share it so customer reviews are attributed to them.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {employees.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No employees found.</p>
-            ) : (
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {employees.map((emp) => {
-                  const eid = empQrId(emp);
-                  const url = buildEmployeeFeedbackUrl(eid);
-                  const name = resolveEmployeeName(eid) ?? String(emp?.emp_Fname ?? "Unknown");
-                  const role = employeesMap[eid]?.role || String(emp?.role ?? "");
-                  const qr = employeeQrMap[eid];
-                  return (
-                    <div key={eid || name} className="flex flex-col items-center gap-3 rounded-md border p-4 text-center">
-                      <div className="w-full">
-                        <p className="truncate font-medium">{name}</p>
-                        {role ? <p className="text-xs capitalize text-muted-foreground">{role}</p> : null}
-                      </div>
-                      {qr ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={qr} alt={`Feedback QR for ${name}`} className="h-40 w-40 rounded-md border bg-white p-2" />
-                      ) : (
-                        <div className="flex h-40 w-40 items-center justify-center rounded-md border bg-muted text-xs text-muted-foreground">
-                          {url ? "Generating…" : "Unavailable"}
-                        </div>
-                      )}
-                      <p className="w-full break-all text-[11px] text-muted-foreground">{url || "—"}</p>
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <StatusChip status="danger" label="Low rating" dense />
+                    <span
+                      onClick={(e) => { e.stopPropagation(); }}
+                      onKeyDown={(e) => { e.stopPropagation(); }}
+                    >
                       <Button
                         type="button"
                         size="sm"
-                        variant="outline"
-                        disabled={!url}
-                        onClick={async () => {
-                          if (!url) {return;}
-                          try {
-                            await navigator.clipboard.writeText(url);
-                            toast({ title: "Link copied", description: `Feedback link for ${name} copied.` });
-                          } catch {
-                            toast({ title: "Copy failed", description: "Could not copy the feedback link.", variant: "destructive" });
-                          }
+                        onClick={() => {
+                          setResolveNote("");
+                          setResolving(t);
                         }}
                       >
-                        Copy link
+                        Resolve
                       </Button>
+                    </span>
+                  </div>
+                </div>
+                {comment !== "" && (
+                  <p className="mt-2 text-sm italic text-foreground">&quot;{comment}&quot;</p>
+                )}
+                {cats.map((c, i) => {
+                  const ans = sOf(c.follow_up_answer);
+                  return (
+                    <div key={`${sOf(c.key, "")}-${i}`} className="mt-1.5 flex items-start gap-2">
+                      <InfoChip icon={<Star />} label={`${sOf(c.label)} · ${c.rating}/5`} />
+                      {ans !== "" && (
+                        <p className="min-w-0 flex-1 pt-1 text-xs text-muted-foreground">{ans}</p>
+                      )}
                     </div>
                   );
                 })}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Latest Feedback</CardTitle>
-          <CardDescription>Most recent customer submissions</CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-3">
-          {loading ? <p className="text-sm text-muted-foreground">Loading feedback...</p> : null}
-          {!loading && entries.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No feedback submissions yet.</p>
-          ) : null}
-          {entries.map((entry) => {
-            const open = expandedId === entry.id;
-            const score = formatScore(entry.overall_rating);
-            return (
-              <article
-                key={entry.id}
-                id={highlight.rowProps(entry.id).id}
-                className={`rounded-md border ${highlight.rowProps(entry.id).className}`}
-              >
-                {/* The whole header is the toggle: a click opens the full
-                    question-by-question breakdown rather than the 6-badge preview. */}
-                <button
-                  type="button"
-                  onClick={() => { setExpandedId(open ? null : entry.id); }}
-                  aria-expanded={open}
-                  className="flex w-full items-start justify-between gap-2 p-3 text-left transition-colors hover:bg-muted/50"
-                >
-                  <span className="min-w-0">
-                    <span className="flex items-center gap-1.5 font-medium">
-                      {open ? <ChevronDown className="h-4 w-4 shrink-0" /> : <ChevronRight className="h-4 w-4 shrink-0" />}
-                      {entry.customer_name || "Anonymous"}
-                    </span>
-                    <span className="mt-1 block truncate text-sm text-muted-foreground">
-                      {entry.comments?.trim() ? entry.comments : `${entry.category_ratings.length} question${entry.category_ratings.length === 1 ? "" : "s"} answered`}
-                    </span>
-                  </span>
-                  <span className="flex shrink-0 items-center gap-2">
-                    <Badge>{score ? `${score}/5` : "No score"}</Badge>
-                    <span className="text-xs text-muted-foreground">{formatDate(entry.submitted_at, timezone)}</span>
-                  </span>
-                </button>
-
-                {open ? (
-                  <div className="space-y-3 border-t px-3 pb-3 pt-3">
-                    {/* Every question, its score, and the follow-up if one was asked. */}
-                    <div className="space-y-2">
-                      {entry.category_ratings.length === 0 ? (
-                        <p className="text-sm text-muted-foreground">No per-question ratings were recorded.</p>
-                      ) : entry.category_ratings.map((category) => (
-                        <div key={`${entry.id}-${category.key}`} className="rounded border bg-muted/30 p-2">
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <p className="text-sm font-medium">{category.label}</p>
-                              {category.question ? (
-                                <p className="text-xs text-muted-foreground">{category.question}</p>
-                              ) : null}
-                            </div>
-                            <Badge variant={category.rating <= 2 ? "destructive" : "outline"} className="shrink-0">
-                              {category.rating}/5
-                            </Badge>
-                          </div>
-                          {category.follow_up ? (
-                            <div className="mt-2 border-l-2 pl-2">
-                              <p className="text-xs italic text-muted-foreground">{category.follow_up}</p>
-                              <p className="text-xs">
-                                {category.follow_up_answer?.trim()
-                                  ? category.follow_up_answer
-                                  : <span className="text-muted-foreground">— not answered</span>}
-                              </p>
-                            </div>
-                          ) : null}
-                        </div>
-                      ))}
-                    </div>
-
-                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                      {score ? <span>Overall <strong className="text-foreground">{score}/5</strong> (average of {entry.category_ratings.length})</span> : null}
-                      {typeof entry.nps === "number" ? <span>Recommend score <strong className="text-foreground">{entry.nps}/10</strong></span> : null}
-                      {entry.source ? <span>Source: {entry.source}</span> : null}
-                      {entry.visit_date ? <span>Visit: {formatDate(entry.visit_date, timezone)}</span> : null}
-                    </div>
-
-                    {entry.comments?.trim() ? (
-                      <div>
-                        <p className="text-xs font-medium text-muted-foreground">Comment</p>
-                        <p className="text-sm">{entry.comments}</p>
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-              </article>
+              </ForkCard>
             );
           })}
-        </CardContent>
-      </Card>
-      
+        </section>
+      )}
+
+      {/* ── All feedback ────────────────────────────────────────────── */}
+      <section>
+        <SectionHeader title="All feedback" count={items.length} />
+        {items.length === 0 ? (
+          <EmptyState icon={<Inbox />} title="Nothing to show" caption="No feedback yet." />
+        ) : (
+          items.map((m: FeedbackEntry, index) => {
+            const id = sOf(m.id, "");
+            const open = openId === id && id !== "";
+            const guest = sOf(m.customer_name, "Guest");
+            const cats = m.category_ratings ?? [];
+            const comment = sOf(m.comments, "");
+            return (
+              <ForkCard
+                key={id !== "" ? id : `row-${index}`}
+                id={`feedback-${id}`}
+                selected={isFocused(m)}
+                chevron={false}
+                // Tapping opens the full question-by-question breakdown; the
+                // collapsed row alone can't show WHY a score is what it is.
+                onClick={id === "" ? undefined : () => { setOpenId(open ? "" : id); }}
+                className="mb-2 px-4 py-3"
+                aria-expanded={id === "" ? undefined : open}
+              >
+                <div className="flex items-center gap-3">
+                  <InitialsAvatar text={initialsOf(guest)} />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-semibold text-foreground">{guest}</p>
+                    <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+                      {comment !== ""
+                        ? comment
+                        : `${cats.length} question${cats.length === 1 ? "" : "s"} answered`}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 flex-col items-end gap-1">
+                    <MicroStat value={`${scoreOf(m.overall_rating)} / 5`} label="Rating" alignEnd />
+                    <span className="micro-label">{fmtShort(sOf(m.submitted_at, ""), timezone)}</span>
+                  </div>
+                  {id !== "" &&
+                    (open ? (
+                      <ChevronUp aria-hidden className="h-[18px] w-[18px] shrink-0 text-muted-foreground" />
+                    ) : (
+                      <ChevronDown aria-hidden className="h-[18px] w-[18px] shrink-0 text-muted-foreground" />
+                    ))}
+                </div>
+                {open && (
+                  <div className="mt-3 border-t border-divider pt-3">
+                    {cats.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">No per-question ratings were recorded.</p>
+                    ) : (
+                      cats.map((c, i) => {
+                        const r = numOf(c.rating);
+                        const followUp = sOf(c.follow_up);
+                        const answer = sOf(c.follow_up_answer);
+                        return (
+                          <div key={`${sOf(c.key, "")}-${i}`} className="mb-2">
+                            <div className="flex items-center gap-2">
+                              <div className="min-w-0 flex-1">
+                                <p className="text-sm text-foreground">{sOf(c.label, sOf(c.key))}</p>
+                                {sOf(c.question) !== "" && (
+                                  <p className="micro-label">{sOf(c.question)}</p>
+                                )}
+                              </div>
+                              <StatusChip
+                                dense
+                                label={`${r.toFixed(0)}/5`}
+                                status={r <= 2 ? "danger" : r >= 4 ? "success" : "warning"}
+                              />
+                            </div>
+                            {followUp !== "" && (
+                              <div className="ml-2 mt-1">
+                                <p className="micro-label">{followUp}</p>
+                                <p className="text-xs text-muted-foreground">
+                                  {answer !== "" ? answer : "— not answered"}
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })
+                    )}
+                    <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                      <InfoChip label={`Overall ${scoreOf(m.overall_rating)}/5 (avg of ${cats.length})`} />
+                      {m.nps != null && <InfoChip label={`Recommend ${numOf(m.nps).toFixed(0)}/10`} />}
+                      {sOf(m.source) !== "" && <InfoChip label={`Via ${sOf(m.source)}`} />}
+                    </div>
+                    {comment !== "" && (
+                      <p className="mt-2 text-xs text-muted-foreground">{comment}</p>
+                    )}
+                  </div>
+                )}
+              </ForkCard>
+            );
+          })
+        )}
+      </section>
+
+      <CacheStalePill offline={bundle.offline} fromCache={bundle.fromCache} updatedAt={bundle.updatedAt} />
+
+      {/* ── Drill sheets ────────────────────────────────────────────── */}
+      {sheet?.kind === "volume" && (
+        <VolumeSheet
+          summary={summary}
+          items={items}
+          timezone={timezone}
+          onClose={() => { setSheet(null); }}
+        />
+      )}
+      {sheet?.kind === "rating" && (
+        <RatingSheet summary={summary} items={items} onClose={() => { setSheet(null); }} />
+      )}
+      {sheet?.kind === "queue" && (
+        <RecoveryQueueSheet tickets={tickets} timezone={timezone} onClose={() => { setSheet(null); }} />
+      )}
+      {sheet?.kind === "ticket" && (
+        <RecoveryTicketSheet
+          ticket={sheet.ticket}
+          items={items}
+          timezone={timezone}
+          onClose={() => { setSheet(null); }}
+        />
+      )}
+
+      {/* ── Resolve recovery ticket ─────────────────────────────────── */}
+      <Dialog open={resolving != null} onOpenChange={(open) => { if (!open) { setResolving(null); } }}>
+        <DialogContent className="sm:max-w-[400px]">
+          <DialogHeader>
+            <DialogTitle>Resolve recovery ticket</DialogTitle>
+            <DialogDescription className="sr-only">
+              Record how the guest was followed up, then mark the ticket resolved.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-1.5">
+            <Label htmlFor="resolve-note">How was it resolved? (optional)</Label>
+            <Textarea
+              id="resolve-note"
+              rows={3}
+              value={resolveNote}
+              onChange={(e) => { setResolveNote(e.target.value); }}
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => { setResolving(null); }}>
+              Cancel
+            </Button>
+            <Button type="button" onClick={submitResolve}>
+              Mark resolved
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
-// useSearchParams (via useHighlightRow) requires a Suspense boundary
-// (same pattern as the accounting and queue pages).
-export default function FeedbackPage() {
+// useSearchParams (via useFocusRequest) requires a Suspense boundary
+// (same pattern as the bookings and accounting pages).
+export default function FeedbackPage(): JSX.Element {
   return (
-    <Suspense fallback={<div className="py-10 text-center text-muted-foreground">Loading…</div>}>
+    <Suspense fallback={<SkeletonRows rows={6} />}>
       <FeedbackPageInner />
     </Suspense>
   );

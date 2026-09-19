@@ -1,6 +1,6 @@
 
 import type {Metadata} from 'next';
-import { Alegreya, Inter } from 'next/font/google';
+import { Cormorant_Garamond, Instrument_Sans, Inter } from 'next/font/google';
 import './globals.css';
 import { Toaster } from "@/components/ui/toaster";
 import { ThemeProvider } from '@/components/ThemeProvider';
@@ -8,14 +8,24 @@ import { LanguageProvider } from '@/context/LanguageContext';
 import { AuthProvider } from '@/context/AuthContext';
 import { CurrencyProvider } from '@/hooks/use-currency';
 
-const alegreya = Alegreya({
-  subsets: ['latin'],
-  variable: '--font-alegreya',
-});
-
 const inter = Inter({
   subsets: ['latin'],
   variable: '--font-inter',
+});
+
+/* GAIA'S TWO FACES (gaia_type.dart): Cormorant Garamond carries figures and
+   names, Instrument Sans carries labels. Registered as variables and consumed
+   only under [data-palette="gaia"] (globals.css), so a Rustic session never
+   downloads them — a @font-face fetches when text actually uses it. */
+const cormorant = Cormorant_Garamond({
+  subsets: ['latin'],
+  weight: ['300', '400', '500', '600', '700'],
+  variable: '--font-cormorant',
+});
+
+const instrumentSans = Instrument_Sans({
+  subsets: ['latin'],
+  variable: '--font-instrument',
 });
 
 export const metadata: Metadata = {
@@ -27,9 +37,9 @@ export default function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
-}>) {
+}>): React.JSX.Element {
   return (
-    <html lang="en" suppressHydrationWarning data-scroll-behavior="smooth" className={`${alegreya.variable} ${inter.variable}`}>
+    <html lang="en" suppressHydrationWarning data-scroll-behavior="smooth" className={`${inter.variable} ${cormorant.variable} ${instrumentSans.variable}`}>
       <head>
         {/*
           THE PALETTE GOES ON <html> BEFORE THE FIRST PAINT.
@@ -71,6 +81,31 @@ export default function RootLayout({
               + "if(t!=='white'&&t!=='beige'&&t!=='grey'){t='white';}"
               + "document.documentElement.setAttribute('data-light-tone',t);}"
               + "catch(e){document.documentElement.setAttribute('data-light-tone','white');}})();",
+          }}
+        />
+        {/*
+          THE APPEARANCE AXES (accent ramp + shell scheme), same reasoning as
+          the palette above: before first paint, or a sage-on-midnight till
+          flashes copper-on-rustic. Own try/catch; any failure lands on
+          copper/rustic — the shipped defaults, which is what every device
+          starts as. And while GAIA is worn the `dark` class is forced on
+          before paint, because Gaia has no light variant (a picked light tone
+          is remembered, not applied — appearance.dart lightActive) and the
+          tokens paint dark whatever the class says; keeping the class aligned
+          keeps `dark:` utilities agreeing with the tokens.
+          Literals duplicated from src/lib/appearance.ts; pinned by its test.
+        */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              "(function(){var d=document.documentElement;"
+              + "try{var a=localStorage.getItem('cuisineflow-accent');"
+              + "if(['copper','brass','sage','teal','steel','lavender','rose','ember'].indexOf(a)<0){a='copper';}"
+              + "d.setAttribute('data-accent',a);}catch(e){d.setAttribute('data-accent','copper');}"
+              + "try{var s=localStorage.getItem('cuisineflow-scheme');"
+              + "if(['rustic','slate','charcoal','midnight','graphite'].indexOf(s)<0){s='rustic';}"
+              + "d.setAttribute('data-scheme',s);}catch(e){d.setAttribute('data-scheme','rustic');}"
+              + "try{if(d.getAttribute('data-palette')==='gaia'){d.classList.add('dark');}}catch(e){}})();",
           }}
         />
       </head>

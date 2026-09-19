@@ -66,7 +66,7 @@ export function loadBrandFont(family: string | undefined): void {
 // on every render — it de-dupes by id and no-ops on the server.
 export function loadDesignFonts(): void {
   if (typeof document === "undefined") {return;}
-  const links: Array<[string, string]> = [
+  const links: [string, string][] = [
     ["design-font-instrument-serif", "https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&display=swap"],
     ["design-font-roboto", "https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;600;700&display=swap"],
     ["design-font-material-symbols", "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-25..0&display=swap"],

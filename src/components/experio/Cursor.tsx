@@ -16,7 +16,7 @@ export default function Cursor() {
     const fine = window.matchMedia("(pointer: fine)").matches;
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const unbindAlways = bindPointer();
-    if (!fine) return unbindAlways;
+    if (!fine) {return unbindAlways;}
 
     document.documentElement.classList.add("exp-cursor");
 
@@ -78,16 +78,16 @@ export default function Cursor() {
     const onOver = (e: PointerEvent) => {
       hoverInteractive = isInteractive(e.target);
 
-      const m = e.target instanceof Element ? (e.target.closest("[data-magnetic]") as HTMLElement | null) : null;
+      const m = e.target instanceof Element ? e.target.closest<HTMLElement>("[data-magnetic]") : null;
       if (m !== magneticEl) {
-        if (magneticEl) gsap.to(magneticEl, { x: 0, y: 0, duration: 0.7, ease: "power3.out" });
+        if (magneticEl) {gsap.to(magneticEl, { x: 0, y: 0, duration: 0.7, ease: "power3.out" });}
         magneticEl = m;
       }
 
-      const t = e.target instanceof Element ? (e.target.closest("[data-tilt]") as HTMLElement | null) : null;
+      const t = e.target instanceof Element ? e.target.closest<HTMLElement>("[data-tilt]") : null;
       if (t !== tiltEl) {
         if (tiltEl)
-          gsap.to(tiltEl, { rotateX: 0, rotateY: 0, duration: 0.9, ease: "power3.out", overwrite: "auto" });
+          {gsap.to(tiltEl, { rotateX: 0, rotateY: 0, duration: 0.9, ease: "power3.out", overwrite: "auto" });}
         tiltEl = t;
       }
     };

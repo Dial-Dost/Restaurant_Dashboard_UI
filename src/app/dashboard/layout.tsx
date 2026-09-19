@@ -1,36 +1,39 @@
-
 "use client";
 
-import { useEffect, useMemo } from 'react';
-import { Inter } from 'next/font/google';
+// THE DASHBOARD SHELL — the web copy of the Flutter owner app's HomeShell
+// (restaurant_owner_app/lib/screens/home_shell.dart, the source of truth).
+//
+// Chassis: a fixed left sidebar (224px, collapsible to a 68px icon rail,
+// persisted) over the shared gradient backdrop; below 700px the same nav list
+// becomes a drawer behind a hamburger. The top bar carries the back trail, the
+// module title, and — left to right — the outbox chip, outlet switcher, bell,
+// theme toggle, Refresh and a visible "Sign out"; below 760px everything but
+// the chip and the bell folds into one overflow menu.
+//
+// The module registry (labels, grouping, order, every permission/plan/role
+// gate) lives in src/lib/nav-registry.ts and is resolved once by useVisibleNav
+// — the sidebar, the route guard and the notifications bell all read that one
+// source.
+
+import * as React from "react";
+import { Inter } from "next/font/google";
+import { usePathname, useRouter } from "next/navigation";
+import { useTheme } from "next-themes";
 import {
-  Home,
-  LineChart,
-  Package,
-  ShoppingCart,
-  Users,
-  Globe,
-  ClipboardList,
-  ListOrdered,
-  FileText,
-  Settings,
-  LifeBuoy,
+  ArrowLeft,
+  Check,
+  EllipsisVertical,
+  Layers,
   LogOut,
-  BookOpen,
-  Activity,
-  Clock,
-  Ticket,
-  Wallet,
-  Truck,
-  CreditCard,
-  Hourglass,
-  History,
-  SlidersHorizontal,
-  FileSpreadsheet,
-  LayoutGrid,
-} from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import Link from 'next/link';
+  Menu,
+  Moon,
+  RefreshCw,
+  Sparkles,
+  Store,
+  Sun,
+} from "lucide-react";
+
+import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -38,522 +41,426 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import Image from 'next/image';
-import { ThemeProvider } from '@/components/ThemeProvider';
-import { ThemeToggle } from '@/components/ThemeToggle';
-import { PaletteToggle } from '@/components/PaletteToggle';
-import { OutletSwitcher } from './outlet-switcher';
-import { NotificationsBell } from '@/components/notifications-bell';
-import { SubscriptionBanner } from '@/components/subscription-banner';
-import { usePathname, useRouter } from 'next/navigation';
-import { useTranslation } from '@/context/LanguageContext';
-import { useAuth } from '@/context/AuthContext';
-import { canEditDishAvailability, canOpenEmployeesPage, canOpenFloorPlan, isWaiterOnly as sessionIsWaiterOnly } from '@/lib/session-scope';
-import { DishAvailabilitySidebar } from '@/components/dish-availability-sidebar';
-import { RealtimeProvider } from '@/context/RealtimeContext';
-import { TimezoneProvider } from '@/lib/use-timezone';
-import Dock, { type DockSectionData } from '@/components/ui/Dock';
-import { MobileNav } from '@/components/mobile-nav';
-import '@/components/ui/Dock.css';
+} from "@/components/ui/dropdown-menu";
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
+import { GradientBackdrop } from "@/components/ui/gradient-backdrop";
+import { ThemeToggle } from "@/components/ThemeToggle";
+import { NotificationsBell } from "@/components/notifications-bell";
+import { SubscriptionBanner } from "@/components/subscription-banner";
+import { DishAvailabilitySidebar } from "@/components/dish-availability-sidebar";
+import { OutboxChip } from "@/components/outbox-chip";
+import { ReprintNeededListener } from "@/components/reprint-needed";
+import {
+  DRAWER_GRADIENT,
+  RAIL_GRADIENT,
+  SIDEBAR_COLLAPSED_WIDTH,
+  SIDEBAR_WIDTH,
+  SidebarNav,
+  readSidebarCollapsed,
+  writeSidebarCollapsed,
+} from "@/components/app-sidebar";
+import { OutletSwitcher, outletDisplayName, useOutletScope } from "./outlet-switcher";
+import { useAuth } from "@/context/AuthContext";
+import { RealtimeProvider } from "@/context/RealtimeContext";
+import { TimezoneProvider } from "@/lib/use-timezone";
+import { useVisibleNav } from "@/hooks/use-nav";
+import { canEditDishAvailability } from "@/lib/session-scope";
+import { moduleByLabel, moduleForPath } from "@/lib/nav-registry";
+import { ALL_OUTLETS, OUTLET_CHANGED_EVENT } from "@/lib/outlet";
+import { setOutboxScope } from "@/lib/outbox";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import {
+  LIGHT_TONES,
+  activeAppearance,
+  applyAppearancePick,
+  applyLightTone,
+  DEFAULT_LIGHT_TONE,
+  LIGHT_TONE_STORAGE_KEY,
+  lightToneFromStorage,
+  type AppearancePick,
+  type LightToneId,
+} from "@/lib/light-tone";
 
-const inter = Inter({ subsets: ['latin'] });
+const inter = Inter({ subsets: ["latin"] });
 
-const normalizeActionName = (value: string) => value.trim().toLowerCase();
+// A workspace trail, not a browser history: far more hops than anyone walks
+// back through, and it stops a long shift growing the list without bound.
+const HISTORY_LIMIT = 20;
 
-const hasKeywordAction = (actionNames: Set<string>, keywords: string[]) => {
-  if (keywords.length === 0) {return true;}
-  for (const actionName of actionNames) {
-    if (keywords.some((keyword) => actionName.includes(keyword.toLowerCase()))) {
-      return true;
-    }
-  }
-  return false;
+/** True when the caret sits in a text field — Escape there means "I am typing". */
+const editingText = (): boolean => {
+  const el = document.activeElement;
+  if (!el) { return false; }
+  const tag = el.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" ||
+    (el as HTMLElement).isContentEditable;
 };
 
-function LayoutContent({ children }: { children: React.ReactNode }) {
+/** An open dialog / menu / sheet claims Escape before the shell may. */
+const overlayOpen = (): boolean =>
+  document.querySelector(
+    '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"], [role="menu"][data-state="open"], [role="listbox"][data-state="open"]',
+  ) != null;
+
+function LayoutContent({ children }: { children: React.ReactNode }): React.JSX.Element {
   const pathname = usePathname();
   const router = useRouter();
-  const { t, setLanguage } = useTranslation();
   const { user, logout } = useAuth();
+  const nav = useVisibleNav();
+  const outletScope = useOutletScope();
+  const { theme, setTheme } = useTheme();
 
-  const hasRole = (role: 'admin' | 'employee' | 'valet' | 'waiter' | 'cashier' | 'captain' | 'manager') => {
-    if (!user) {return false;}
-    if (user.role === role) {return true;}
-    return Array.isArray(user.role_all) ? user.role_all.includes(role) : false;
+  // ------------------------------------------------------------- chrome state
+  const [collapsed, setCollapsed] = React.useState(false);
+  const [drawerOpen, setDrawerOpen] = React.useState(false);
+  const [refreshTick, setRefreshTick] = React.useState(0);
+  // Restore the persisted collapse preference after mount (hydration-safe —
+  // the Flutter shell restores it async from SharedPreferences the same way).
+  React.useEffect(() => { setCollapsed(readSidebarCollapsed()); }, []);
+  const toggleCollapsed = (): void => {
+    setCollapsed((prev) => {
+      writeSidebarCollapsed(!prev);
+      return !prev;
+    });
   };
 
-  const isValet = hasRole('valet') && !hasRole('admin');
-  /*
-    THE SERVER DECIDES WHO IS A SCOPED WAITER, AND THIS FILE OBEYS.
-
-    This used to read `hasRole('waiter') && !hasRole('admin')` — one of three
-    copies of that rule in this app, and a test on the SPELLING of a role rather
-    than on authority. A waiter granted any custom role carries that role's UUID
-    in `role_all`, so on any tenant using granular RBAC the rule answered
-    differently here than it did on the phone in the same person's pocket.
-
-    `scope.waiter_only` is the backend's single answer (role_scope.ts), shipped
-    on the session payload. Nothing below re-derives it.
-  */
-  const isWaiterOnly = sessionIsWaiterOnly(user);
-  const canAccessValet = hasRole('valet') || hasRole('admin');
-
-  const actionNames = useMemo(
-    () => new Set((user?.action_names ?? []).map(normalizeActionName).filter((name) => name.length > 0)),
-    [user?.action_names],
-  );
-
-  /*
-    D5 — the floor PLAN is a separate destination from the tables it draws.
-    Offered only to a session holding at least one of the three layout
-    permissions, because every control on that page rides on one of them and a
-    page where nothing works is worse than no page.
-  */
-  const canEditFloorPlan = canOpenFloorPlan(user);
-
-  const hasAllActions = Array.isArray(user?.actions_set) && user.actions_set.includes('*');
-  const canAccessByAction = (keywords: string[]) => {
-    if (hasAllActions) {return true;}
-    if (actionNames.size === 0) {return true;}
-    return hasKeywordAction(actionNames, keywords);
+  // The theme rows for the narrow overflow fold — same entries as ThemeToggle.
+  const [tone, setTone] = React.useState<LightToneId>(DEFAULT_LIGHT_TONE);
+  const [mounted, setMounted] = React.useState(false);
+  React.useEffect(() => {
+    setTone(lightToneFromStorage(typeof window === "undefined" ? null : window.localStorage));
+    setMounted(true);
+  }, []);
+  const activeTheme = mounted ? activeAppearance(theme, tone) : null;
+  const chooseTheme = (pick: AppearancePick): void => {
+    const next = applyAppearancePick(pick);
+    if (next.tone) {
+      setTone(next.tone);
+      applyLightTone(next.tone, document.documentElement);
+      try { window.localStorage.setItem(LIGHT_TONE_STORAGE_KEY, next.tone); } catch { /* private mode */ }
+    }
+    setTheme(next.theme);
   };
 
-  type NavItem = {
-    href: string;
-    label: string;
-    icon: React.ReactNode;
-    exact?: boolean;
-    actionKeywords: string[];
-  };
-  type NavSection = { title: string; items: NavItem[] };
+  // ------------------------------------------------------------ refresh paths
+  // The shell Refresh: remounts the current page content so it refetches, and
+  // asks Next for fresh server data — the web's `_refreshTick`.
+  const refresh = React.useCallback(() => {
+    setRefreshTick((t) => t + 1);
+    router.refresh();
+  }, [router]);
 
-  // The nav, grouped by area of work. Every item keeps its exact href, icon
-  // and action-keyword gate from the old flat list; per-section filtering
-  // happens below, and a section whose every item is filtered out (role or
-  // action permissions) disappears entirely — never an orphan header.
-  //
-  // Settings is NOT here: it lives in the avatar menu (admin-only), mirroring
-  // the backend enforceAdmin gate — see the dropdown below.
-  const navSections: NavSection[] = [
-    {
-      title: 'Operations',
-      items: [
-        { href: '/dashboard', label: t('dashboard'), icon: <Home className="h-6 w-6" />, exact: true, actionKeywords: [] },
-        { href: '/dashboard/orders', label: t('orders'), icon: <ListOrdered className="h-6 w-6" />, actionKeywords: ['order', 'bill', 'payment'] },
-        { href: '/dashboard/tables', label: t('tables'), icon: <Package className="h-6 w-6" />, actionKeywords: ['table'] },
-        /*
-          D5 — FLOOR PLAN IS ITS OWN DESTINATION, BESIDE TABLES AND NOT INSIDE IT.
-          Tables is the SERVICE screen (occupy, covers, release, take orders);
-          this is the LAYOUT screen (zones, add, move, re-seat, delete). They were
-          one card grid, which is precisely what D5 forbids.
+  // An in-place outlet switch (the switcher, the bell's "Switch outlet", any
+  // module affordance) refreshes the current module the same way — the user
+  // stays exactly where they were, no flash, no reload.
+  React.useEffect(() => {
+    const handler = (): void => { refresh(); };
+    window.addEventListener(OUTLET_CHANGED_EVENT, handler);
+    return () => { window.removeEventListener(OUTLET_CHANGED_EVENT, handler); };
+  }, [refresh]);
 
-          Hidden — not merely disabled — for a session holding none of the three
-          layout permissions, and every control on the page is separately gated
-          by the permission its own route demands.
-        */
-        ...(canEditFloorPlan
-          ? [{ href: '/dashboard/floor-plan', label: 'Floor plan', icon: <LayoutGrid className="h-6 w-6" />, actionKeywords: [] as string[] }]
-          : []),
-        { href: '/dashboard/waitlist', label: 'Waitlist', icon: <Hourglass className="h-6 w-6" />, actionKeywords: ['table', 'order', 'waitlist'] },
-        { href: '/dashboard/bookings', label: t('bookings'), icon: <ShoppingCart className="h-6 w-6" />, actionKeywords: ['booking'] },
-        { href: '/dashboard/menu', label: 'Menu', icon: <BookOpen className="h-6 w-6" />, actionKeywords: ['menu'] },
-      ],
-    },
-    {
-      title: 'Inventory',
-      items: [
-        { href: '/dashboard/inventory', label: t('inventory'), icon: <ClipboardList className="h-6 w-6" />, actionKeywords: ['inventory', 'stock'] },
-        { href: '/dashboard/purchase-orders', label: 'Purchase orders', icon: <Truck className="h-6 w-6" />, actionKeywords: ['inventory', 'stock', 'purchase', 'vendor'] },
-      ],
-    },
-    {
-      title: 'Guests',
-      items: [
-        { href: '/dashboard/customers', label: t('customers'), icon: <Users className="h-6 w-6" />, actionKeywords: ['customer'] },
-        { href: '/dashboard/feedback', label: 'Feedback', icon: <FileText className="h-6 w-6" />, actionKeywords: ['feedback'] },
-        ...(hasRole('admin')
-          ? [{ href: '/dashboard/coupons', label: 'Coupons', icon: <Ticket className="h-6 w-6" />, actionKeywords: [] as string[] }]
-          : []),
-      ],
-    },
-    {
-      title: 'Team',
-      items: [
-        { href: '/dashboard/attendance', label: 'Attendance', icon: <Clock className="h-6 w-6" />, actionKeywords: [] },
-        ...(hasRole('admin')
-          ? [{ href: '/dashboard/valet', label: 'Valet Dashboard', icon: <Activity className="h-6 w-6" />, actionKeywords: ['valet', 'parking'] }]
-          : []),
-      ],
-    },
-    {
-      title: 'Insights',
-      items: [
-        { href: '/dashboard/analytics', label: t('analytics'), icon: <LineChart className="h-6 w-6" />, actionKeywords: ['analytics', 'apc', 'report'] },
-        // Simulation is analytics-derived (same backend action gate), so it sits
-        // beside Analytics and opens for exactly the same roles.
-        { href: '/dashboard/simulation', label: 'Simulation', icon: <SlidersHorizontal className="h-6 w-6" />, actionKeywords: ['analytics', 'apc', 'report'] },
-        { href: '/dashboard/history', label: 'History', icon: <History className="h-6 w-6" />, actionKeywords: ['analytics', 'report'] },
-        // The MIS / control report set (Item Wise, Void KOT, Bill Edit, …).
-        // Gated on ACCOUNTING, not analytics: every /reports/mis/* route carries
-        // the SAME ACCOUNTING_PERM as the rest of /reports/*, so keywording it
-        // like its Insights neighbours would show the tab to a user whose every
-        // request inside it comes back 403.
-        { href: '/dashboard/reports', label: 'Reports', icon: <FileSpreadsheet className="h-6 w-6" />, actionKeywords: ['report', 'accounting', 'finance'] },
-      ],
-    },
-    {
-      title: 'Money',
-      items: [
-        { href: '/dashboard/accounting', label: 'Accounting', icon: <FileText className="h-6 w-6" />, actionKeywords: ['report', 'accounting', 'finance'] },
-        { href: '/dashboard/cash', label: 'Cash register', icon: <Wallet className="h-6 w-6" />, actionKeywords: ['report', 'accounting', 'finance', 'cash'] },
-        ...(hasRole('admin')
-          ? [{ href: '/dashboard/billing', label: 'Billing & plan', icon: <CreditCard className="h-6 w-6" />, actionKeywords: [] as string[] }]
-          : []),
-      ],
-    },
-    {
-      title: 'Setup',
-      items: [
-        { href: '/dashboard/outlets', label: 'Outlets', icon: <Globe className="h-6 w-6" />, actionKeywords: ['outlet', 'branch', 'setting', 'profile'] },
-      ],
-    },
-  ]
-    .map((section) => ({ ...section, items: section.items.filter((item) => canAccessByAction(item.actionKeywords)) }))
-    .filter((section) => section.items.length > 0);
+  // The offline outbox is scoped restaurant|outlet, exactly like the read
+  // cache — switching branches switches queues.
+  React.useEffect(() => {
+    const rid = user?.restaurantUsername ?? null;
+    setOutboxScope(rid, outletScope.activeId || user?.outlet_id || "");
+  }, [user?.restaurantUsername, user?.outlet_id, outletScope.activeId]);
 
-  // The flat list every existing consumer (route allow-list, valet/waiter
-  // fallbacks) keeps reading — identical items, now in section order.
-  const fullNavItems: NavItem[] = navSections.flatMap((section) => section.items);
+  // ---------------------------------------------------------------- back trail
+  // Labels, not paths: the visible module list is permission- and plan-
+  // dependent, so an entry hidden mid-session must read as "no history".
+  const trailRef = React.useRef<string[]>([]);
+  const currentLabelRef = React.useRef<string>("");
+  const pendingBackRef = React.useRef<string | null>(null);
+  const [backTarget, setBackTarget] = React.useState<string | null>(null);
 
-  const navItems = useMemo(() => {
-    if (isValet) {return [{ href: '/dashboard/valet', label: 'Valet Dashboard', icon: <Activity className="h-6 w-6" />, exact: true }];}
-    /*
-      A WAITER WORKS FROM TWO SCREENS, NOT ONE.
-
-      This used to pin a waiter to /dashboard/orders alone, which contradicted
-      C1 outright: a waiter is supposed to get "Add Order" and "Print Bill", and
-      both start from a table. The Tables screen is now the SERVICE screen (D5),
-      and every route it calls — /get-tables, /table-status, /occupy-table,
-      /release-table, /table-covers — rides on the same "Table Occupied"
-      permission the core waiter role already holds, so showing it grants
-      nothing the server was not already answering. The floor-plan screen, which
-      is where the layout acts moved to, is NOT on this list and its routes
-      refuse a waiter anyway.
-    */
-    if (isWaiterOnly) {
-      return [
-        { href: '/dashboard/tables', label: t('tables'), icon: <Package className="h-6 w-6" />, exact: true },
-        { href: '/dashboard/orders', label: t('orders'), icon: <ListOrdered className="h-6 w-6" />, exact: true },
-      ];
+  const computeBackTarget = React.useCallback((): string | null => {
+    for (let i = trailRef.current.length - 1; i >= 0; i--) {
+      const label = trailRef.current[i];
+      if (nav.labels.includes(label)) { return label; }
     }
-    return fullNavItems;
-  }, [isValet, isWaiterOnly, fullNavItems, t]);
+    return null;
+  }, [nav.labels]);
 
-  useEffect(() => {
-    if (!user) {
+  React.useEffect(() => {
+    const label = moduleForPath(pathname)?.label ?? "";
+    const prev = currentLabelRef.current;
+    if (label && prev && label !== prev) {
+      if (pendingBackRef.current === label) {
+        // This navigation IS the back step — never re-record it.
+        pendingBackRef.current = null;
+      } else {
+        // Record the module being LEFT, never the same label twice in a row.
+        const trail = trailRef.current;
+        if (trail.length === 0 || trail[trail.length - 1] !== prev) {
+          trail.push(prev);
+          if (trail.length > HISTORY_LIMIT) { trail.shift(); }
+        }
+      }
+    }
+    if (label) { currentLabelRef.current = label; }
+    setBackTarget(computeBackTarget());
+  }, [pathname, computeBackTarget]);
+
+  const goBack = React.useCallback(() => {
+    const trail = trailRef.current;
+    while (trail.length > 0) {
+      const label = trail.pop();
+      if (!label || !nav.labels.includes(label)) { continue; } // module retired mid-session
+      const mod = moduleByLabel(label);
+      if (!mod) { continue; }
+      pendingBackRef.current = label;
+      router.push(mod.href);
+      setBackTarget(computeBackTarget());
       return;
     }
+    setBackTarget(null);
+  }, [nav.labels, router, computeBackTarget]);
 
-    // Settings holds payment keys, taxes and branding — admin-only, so it is NOT
-    // in any non-admin allow-list (mirrors the backend enforceAdmin gate).
-    const isAdmin = hasRole('admin');
-    const valetAllowedPaths = new Set(['/dashboard/valet']);
-    // Kept in step with the waiter dock above: the two screens a waiter works
-    // from. Deep-linking one of them elsewhere still bounces here, and the
-    // floor-plan page is deliberately absent — its routes refuse a waiter, so
-    // landing there would be a screen of controls that all fail.
-    //
-    // PLUS THE PRINT PAGE, and the bug its absence caused. This set is matched
-    // EXACTLY (`.has(pathname)`), so `/dashboard/orders/print` — which is not
-    // `/dashboard/orders` — was bounced for every waiter. On its own that was a
-    // print that silently did nothing. Together with C3 it was destructive: Print
-    // Bill claims the waiter's single print on the server FIRST, then opens this
-    // page, and the redirect below threw them back to Orders with no bill and
-    // their one attempt already spent. Only a manager could print the table
-    // after that. Found clicking through as a waiter; no unit test covered it.
-    //
-    // Named explicitly rather than switched to prefix matching like the branch
-    // further down. `/orders/print` is the only sub-route today, so prefix
-    // matching would work — and would also hand a waiter whatever
-    // `/dashboard/orders/<anything>` somebody adds next, a refunds screen
-    // included, without anyone deciding that. An allow-list should say what it
-    // allows.
-    const waiterAllowedPaths = new Set(['/dashboard/orders', '/dashboard/orders/print', '/dashboard/tables']);
-    const roleAwareAllowedPaths = new Set([
-      ...navItems.map((item) => item.href),
-      ...(isAdmin ? ['/dashboard/settings'] : []),
-    ]);
+  // Escape walks the back trail — but only an Escape nothing closer to the
+  // focus claimed: not while a dialog / menu / the drawer is open (they close
+  // themselves first), and never while typing in a text field.
+  React.useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape" || event.defaultPrevented) { return; }
+      if (overlayOpen()) { return; } // the drawer and every dialog close themselves
+      if (editingText()) { return; }
+      if (backTarget != null) {
+        event.preventDefault();
+        goBack();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => { window.removeEventListener("keydown", onKeyDown); };
+  }, [backTarget, goBack]);
 
-    if (isValet && !valetAllowedPaths.has(pathname)) {
-      router.replace('/dashboard/valet');
-      return;
+  // ---------------------------------------------------------------- route guard
+  // Landing is applied ONCE — a starting position, not a rule (Flutter's
+  // `_landed`): after it, the URL belongs to whatever the user did last.
+  const landedRef = React.useRef(false);
+  React.useEffect(() => {
+    if (!user || nav.modules.length === 0) { return; }
+
+    if (!landedRef.current) {
+      landedRef.current = true;
+      if (pathname === "/dashboard" && nav.landing && nav.landing.href !== "/dashboard") {
+        router.replace(nav.landing.href);
+        return;
+      }
     }
 
-    if (isWaiterOnly && !waiterAllowedPaths.has(pathname)) {
-      router.replace('/dashboard/orders');
-      return;
+    // Routable but deliberately out of nav: Coupons keeps its page (admin).
+    const extraAllowed = nav.isAdmin ? ["/dashboard/coupons"] : [];
+    const allowed = [...nav.modules.map((m) => m.href), ...extraAllowed];
+    const canAccess = pathname === "/dashboard"
+      ? nav.modules.some((m) => m.href === "/dashboard")
+      : allowed.some((href) => href !== "/dashboard" && (pathname === href || pathname.startsWith(`${href}/`)));
+
+    if (!canAccess) {
+      router.replace(nav.landing?.href ?? "/dashboard");
     }
+  }, [user, nav.modules, nav.landing, nav.isAdmin, pathname, router]);
 
-    if (!canAccessValet && pathname.startsWith('/dashboard/valet')) {
-      router.replace('/dashboard');
-      return;
-    }
+  // ------------------------------------------------------------------ render
+  const currentModule = moduleForPath(pathname);
+  const title = currentModule?.label ?? "";
+  const restaurantName = user?.restaurantName.trim() || "CuisineFlow";
 
-    const canAccessCurrentPath = Array.from(roleAwareAllowedPaths).some(
-      (allowedPath) => pathname === allowedPath || pathname.startsWith(`${allowedPath}/`),
-    );
-
-    if (!canAccessCurrentPath) {
-      const firstAllowed = navItems[0]?.href ?? '/dashboard/settings';
-      router.replace(firstAllowed);
-    }
-  }, [user, isValet, isWaiterOnly, canAccessValet, pathname, navItems, router]);
-
-  const toDockItem = (item: { href: string; label: string; icon: React.ReactNode; exact?: boolean }) => ({
-    icon: item.icon,
-    label: item.label,
-    onClick: () => { router.push(item.href); },
-    className: (item.exact ? pathname === item.href : pathname.startsWith(item.href)) ? 'active-dock-item' : ''
-  });
-
-  // Valet / waiter-only sessions have a single pinned destination, so their
-  // dock stays a plain untitled group; everyone else gets the titled sections.
-  const dockSections: DockSectionData[] = isValet || isWaiterOnly
-    ? [{ items: navItems.map(toDockItem) }]
-    : navSections.map((section) => ({ title: section.title, items: section.items.map(toDockItem) }));
-  const dockHasTitles = dockSections.some((section) => Boolean(section.title));
-
-  const languages: { code: 'en' | 'hi' | 'kn' | 'te' | 'ta' | 'ml'; name: string }[] = [
-    { code: 'en', name: 'English' },
-    { code: 'hi', name: 'हिन्दी (Hindi)' },
-    { code: 'kn', name: 'ಕನ್ನಡ (Kannada)' },
-    { code: 'te', name: 'తెలుగు (Telugu)' },
-    { code: 'ta', name: 'தமிழ் (Tamil)' },
-    { code: 'ml', name: 'മലയാളം (Malayalam)' },
-  ];
-
-  const handleLogout = () => {
+  const handleLogout = (): void => {
     logout();
-    router.push('/login');
+    router.push("/login");
+  };
+
+  // The shell's "no modules" state — never a redirect loop onto a 403 page.
+  if (user && nav.modules.length === 0) {
+    return (
+      <div className={`dashboard-shell ${inter.className} relative flex min-h-screen w-full items-center justify-center`}>
+        <GradientBackdrop />
+        <div className="relative flex flex-col items-center gap-4 text-center">
+          <p className="text-sm text-muted-foreground">No modules available for your role.</p>
+          <Button variant="outline" size="sm" onClick={handleLogout}>
+            <LogOut className="mr-1.5 h-3.5 w-3.5" /> Sign out
+          </Button>
+        </div>
+      </div>
+    );
   }
 
-  /*
-    C5 + C6 — THE LINK TO THE ROLES SCREEN IS A PERMISSION, NOT A ROLE NAME.
-
-    This read `hasRole('admin')`, which is the other half of the defect the page
-    itself carried: the backend rewrites a primary role it cannot recognise (a
-    custom role's uuid, or a record whose primary was never set) to the literal
-    string "employee", and a manager the tenant has deliberately granted "View
-    Roles" was never an admin to begin with. Both were shown a menu with no way
-    into the screen the server would happily have served them.
-
-    `canOpenRoles` asks the resolved action set — the same list GET /roles and
-    GET /core-roles are gated on — so the menu entry appears exactly when the
-    route would answer.
-  */
-  const canViewEmployees = canOpenEmployeesPage(user);
-  const canViewAuditLogs = hasRole('admin') && canAccessByAction(['audit', 'log']);
+  const overflowTint = outletScope.canSwitch && outletScope.isAll;
 
   return (
-      /* `dashboard-shell` is the hook H3's scrollbar rules hang off (globals.css).
-         Scoped to this subtree on purpose: the guest-facing pages are phones,
-         where the OS draws an overlay scrollbar and a permanent grey bar down
-         the side of somebody's ordering screen would be a regression. */
-      <div className={`dashboard-shell ${inter.className} flex min-h-screen w-full flex-col`}>
-        {/* THE HEADER ON A PHONE, MEASURED.
-            Logo + wordmark + outlet switcher (190px) + dish availability + five
-            40px icon buttons at `gap-4` is ~640px of controls. In a 375px
-            `nowrap` row flexbox "fitted" them by crushing every icon button to
-            24px wide — a touch target nobody can hit — and with the outlet
-            switcher present it still overflowed.
+    <div className={`dashboard-shell ${inter.className} relative min-h-screen w-full`}>
+      {/* 6 — the shared warm backdrop behind the whole shell; the rail carries
+          its own translucent glow gradient on top of it. */}
+      <GradientBackdrop className="fixed" />
 
-            A 768px tablet is no better: the worst case (multi-outlet admin with
-            the labelled dish button and its "3 off" badge) needs ~880px, and
-            measured there the icon buttons came out 16px wide and the avatar 8px.
+      <div className="relative flex min-h-screen w-full">
+        {/* The fixed sidebar — a drawer below 700px. */}
+        <aside
+          className="sticky top-0 hidden h-screen shrink-0 overflow-hidden border-r border-divider transition-[width] duration-base ease-in-out min-[700px]:block"
+          style={{ width: collapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_WIDTH, background: RAIL_GRADIENT }}
+        >
+          <SidebarNav
+            sections={nav.sections}
+            pathname={pathname}
+            restaurantName={restaurantName}
+            collapsed={collapsed}
+            onToggleCollapsed={toggleCollapsed}
+          />
+        </aside>
 
-            So BELOW `lg` (1024px) it is a three-column GRID — logo | space |
-            buttons — with tight gaps, the wordmark from 480px up only, the icon
-            buttons at their full 40px, and the outlet switcher explicitly on
-            row 2 (`col-span-full row-start-2`). That wrapper is `empty:hidden`,
-            so a single-outlet restaurant — where the switcher renders nothing
-            — keeps the one-row header.
-
-            A grid and not `flex-wrap`, because wrapping is decided by content:
-            with the "3 off" badge showing, the buttons were a few pixels too
-            wide for a 360px phone and dropped to a THIRD row, and everything
-            that sticks below the header (globals.css: --dash-header-h) was
-            then offset wrongly. In the grid the row count is fixed — one, or
-            two with the switcher — and on a very narrow phone the icon buttons
-            give up a few pixels each instead.
-
-            DOM order is unchanged (so is keyboard focus order), and from `lg`
-            up the header is `flex` again with exactly the old classes
-            (`lg:contents` dissolves the button group), so desktop is untouched. */}
-        <header className="dashboard-header sticky top-0 z-40 grid min-h-14 grid-cols-[auto_minmax(0,1fr)_minmax(0,auto)] items-center gap-x-1 gap-y-1 border-b bg-background px-3 py-2 sm:px-4 lg:flex lg:h-[60px] lg:gap-4 lg:px-6 lg:py-0">
-        <Link href={isValet ? "/dashboard/valet" : isWaiterOnly ? "/dashboard/orders" : "/dashboard"} className="flex shrink-0 items-center gap-2 font-semibold">
-                <Package className="h-6 w-6" />
-                <span className="hidden min-[480px]:inline">CuisineFlow</span>
-            </Link>
-          <div className="w-full flex-1">
-            {/* Add nav items here */}
-          </div>
-          <div className="dashboard-outlet-slot col-span-full row-start-2 empty:hidden [&>button]:w-full sm:[&>button]:max-w-sm lg:[&>button]:w-[190px]">
-            <OutletSwitcher />
-          </div>
-          <div className="flex min-w-0 items-center justify-end gap-1 sm:gap-2 lg:contents">
-          {/* Clicking one resolves its target server-side, then opens the exact
-              record — or explains why it can't be opened from this outlet. */}
-          {/* H4 — in the HEADER, so it opens over whatever the person was doing
-              and closes back to it. Navigating to the menu page mid-rush loses
-              the order somebody was taking, which is the whole reason this is a
-              sheet and not a page. */}
-          {canEditDishAvailability(user) && user?.restaurantUsername
-            ? <DishAvailabilitySidebar rid={user.restaurantUsername} />
-            : null}
-          <NotificationsBell />
-          {/* Two controls, not one: dark/light is "how bright is the room",
-              palette is "which product is this". See PaletteToggle's header. */}
-          <PaletteToggle />
-          <ThemeToggle />
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon">
-                <Globe className="h-5 w-5" />
-                <span className="sr-only">{t('selectLanguage')}</span>
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              {languages.map((lang) => (
-                <DropdownMenuItem key={lang.code} onSelect={() => { setLanguage(lang.code); }}>
-                  {lang.name}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="secondary"
-                size="icon"
-                className="rounded-full"
-              >
-                 <Image 
-                    src="https://picsum.photos/seed/1/36/36"
-                    width={36} 
-                    height={36} 
-                    alt="Avatar" 
-                    className="rounded-full"
-                    data-ai-hint="manager portrait"
-                />
-                <span className="sr-only">{t('toggleUserMenu')}</span>
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuLabel>{t('myAccount')}</DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              {hasRole('admin') && (
-                <DropdownMenuItem asChild>
-                  <Link href="/dashboard/settings">
-                    <Settings className="mr-2 h-4 w-4" />
-                    {t('settings')}
-                  </Link>
-                </DropdownMenuItem>
-              )}
-               {(canViewEmployees || canViewAuditLogs) && (
-                <>
-                  {canViewEmployees && (
-                    <DropdownMenuItem asChild>
-                      <Link href="/dashboard/employees">
-                        <Users className="mr-2 h-4 w-4" />
-                        Employee List
-                      </Link>
-                    </DropdownMenuItem>
-                  )}
-                  {canViewAuditLogs && (
-                    <DropdownMenuItem asChild>
-                      <Link href="/dashboard/audit-logs">
-                        <FileText className="mr-2 h-4 w-4" />
-                        Audit Logs
-                      </Link>
-                    </DropdownMenuItem>
-                  )}
-                </>
-              )}
-              {!isValet && (
-                <DropdownMenuItem>
-                  <LifeBuoy className="mr-2 h-4 w-4" />
-                  {t('support')}
-                </DropdownMenuItem>
-              )}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={handleLogout}>
-                <LogOut className="mr-2 h-4 w-4" />
-                {t('logout')}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-          </div>
-        </header>
-        {/* NO `p-` SHORTHAND HERE, and that is not a style preference.
-            `p-4 pb-20 lg:p-6` looks like "16px all round, 80px at the bottom,
-            24px all round from lg" — and at 1280px it renders 24px at the
-            bottom, because `lg:p-6` lives in a media query that comes AFTER the
-            base `pb-20` in the generated stylesheet whatever order the classes
-            are written in. Measured in the browser: the nav bar is 57px and the
-            last card on every page was sitting underneath it.
-
-            Axis utilities have no such collision, so the bottom padding is
-            stated once and only ever overridden by another bottom padding:
-            80px to clear the mobile bar, 96px from 2xl to clear the dock. */}
-        <main className="flex flex-1 flex-col gap-4 px-4 pt-4 pb-20 lg:gap-6 lg:px-6 lg:pt-6 2xl:pb-24">
-          <SubscriptionBanner />
-          {children}
-        </main>
-        {/* THE DOCK ONLY APPEARS WHERE IT ACTUALLY FITS, and the threshold is
-            MEASURED rather than guessed.
-
-            It is `width: fit-content`, centred with a -50% transform, and an
-            admin's 22 icons across 7 titled sections with dividers measure
-            1,364px in the browser. So it does not merely break on a phone — it
-            overflows a 1,280px LAPTOP by 42px a side, and a 1,024px screen by
-            170px a side, which is three destinations hidden off each end. There
-            is no scrollbar and no visual cut: the icons are simply not there,
-            and nothing tells the person they are missing anything.
-
-            The centred transform is also why the document reports no horizontal
-            overflow — the panel hangs off both sides of the viewport rather than
-            widening the page — so this was invisible to every check that asks
-            "does the page scroll sideways".
-
-            2xl (1536px) is the first Tailwind breakpoint with room for 1,364px
-            plus its margins. Below it the mobile bar takes over, and it is a
-            COMPLETE navigation with visible labels rather than a degraded one —
-            which is why widening the range it covers is an improvement for a
-            1,280px laptop too, not a compromise.
-
-            (The other half of the phone problem: every dock label is
-            `opacity: 0` until `:hover`, and a touch screen never fires hover.) */}
-        <div className="fixed bottom-0 left-0 right-0 z-50 hidden justify-center 2xl:flex">
-           <Dock
-              sections={dockSections}
-              // Titled sections stack a small caption above each icon group,
-              // so the panel needs the extra rows' height; the untitled
-              // valet/waiter dock keeps its original height.
-              panelHeight={dockHasTitles ? 84 : 68}
-              baseItemSize={50}
+        <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
+          <SheetContent side="left" className="w-[280px] border-divider p-0" style={{ background: DRAWER_GRADIENT }}>
+            <SheetTitle className="sr-only">Navigation</SheetTitle>
+            <SidebarNav
+              sections={nav.sections}
+              pathname={pathname}
+              restaurantName={restaurantName}
+              inDrawer
+              onNavigate={() => { setDrawerOpen(false); }}
             />
+          </SheetContent>
+        </Sheet>
+
+        <div className="flex min-h-screen min-w-0 flex-1 flex-col">
+          {/* The top bar. `dashboard-header` keeps --dash-header-h honest for
+              anything that sticks below it. */}
+          <header className="dashboard-header sticky top-0 z-40 flex h-14 items-center gap-1 border-b border-divider bg-background/80 px-2 backdrop-blur sm:px-3 lg:h-[60px] lg:px-4">
+            {/* Drawer button — narrow windows only, the AppBar's leading slot. */}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="min-[700px]:hidden"
+              onClick={() => { setDrawerOpen(true); }}
+            >
+              <Menu className="h-5 w-5" />
+              <span className="sr-only">Open navigation</span>
+            </Button>
+
+            {/* Back walks the module trail; greyed out rather than removed — a
+                control that appears and disappears is harder to aim at. */}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 shrink-0"
+              disabled={backTarget == null}
+              title={backTarget == null ? "No previous tab" : `Back to ${backTarget}`}
+              onClick={goBack}
+            >
+              <ArrowLeft className={`h-[18px] w-[18px] ${backTarget == null ? "text-tertiary/45" : "text-muted-foreground"}`} />
+              <span className="sr-only">{backTarget == null ? "No previous tab" : `Back to ${backTarget}`}</span>
+            </Button>
+
+            <Sparkles aria-hidden className="ml-0.5 h-3.5 w-3.5 shrink-0 text-accent-foreground" />
+            <h1 className="ml-1.5 min-w-0 flex-1 truncate text-[17px] font-semibold tracking-[-0.2px] text-foreground">
+              {title}
+            </h1>
+
+            {/* The outbox chip sits ahead of everything and is NEVER folded
+                away; it renders nothing while the queue is empty. */}
+            <OutboxChip />
+
+            {/* Web-extra, kept deliberately: the "86 a dish" sheet opens over
+                whatever the person was doing (H4). */}
+            {canEditDishAvailability(user) && user?.restaurantUsername
+              ? <DishAvailabilitySidebar rid={user.restaurantUsername} />
+              : null}
+
+            <div className="hidden min-[760px]:block">
+              <OutletSwitcher scope={outletScope} />
+            </div>
+
+            <NotificationsBell />
+
+            {/* Wide chrome: theme, Refresh, a visible "Sign out". */}
+            <div className="hidden items-center gap-1 min-[760px]:flex">
+              <ThemeToggle />
+              <Button variant="ghost" size="icon" title="Refresh" onClick={refresh}>
+                <RefreshCw className="h-4 w-4" />
+                <span className="sr-only">Refresh</span>
+              </Button>
+              <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={handleLogout}>
+                <LogOut className="mr-1.5 h-4 w-4" /> Sign out
+              </Button>
+            </div>
+
+            {/* Narrow chrome: outlet, theme, Refresh and Sign out fold into ONE
+                menu — nothing dropped, nothing duplicated, and the combined-view
+                signal survives the fold (copper trigger + tooltip). */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className={`min-[760px]:hidden ${overflowTint ? "text-accent-foreground" : ""}`}
+                  title={overflowTint ? "Viewing all outlets (combined)" : "More"}
+                >
+                  <EllipsisVertical className="h-5 w-5" />
+                  <span className="sr-only">More</span>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-64">
+                {outletScope.canSwitch && (
+                  <>
+                    <DropdownMenuLabel className="text-xs text-muted-foreground">OUTLET</DropdownMenuLabel>
+                    <DropdownMenuItem onSelect={() => { outletScope.select(ALL_OUTLETS); }} className="gap-2">
+                      <span className="w-4 shrink-0">{outletScope.isAll && <Check className="h-4 w-4" />}</span>
+                      <Layers className="h-4 w-4 text-muted-foreground" /> All outlets (combined)
+                    </DropdownMenuItem>
+                    {outletScope.outlets.map((o) => (
+                      <DropdownMenuItem key={o.id} onSelect={() => { outletScope.select(o.id); }} className="gap-2">
+                        <span className="w-4 shrink-0">{o.id === outletScope.activeId && <Check className="h-4 w-4" />}</span>
+                        <Store className="h-4 w-4 text-muted-foreground" /> {outletDisplayName(o)}
+                      </DropdownMenuItem>
+                    ))}
+                    <DropdownMenuSeparator />
+                  </>
+                )}
+                {/* The theme entries — same rows as the wide bar's ThemeToggle. */}
+                <DropdownMenuItem onSelect={() => { chooseTheme("dark"); }} className="gap-2.5">
+                  <Moon className="h-4 w-4" />
+                  <span className="flex-1">Dark</span>
+                  {activeTheme === "dark" && <Check className="h-3.5 w-3.5" />}
+                </DropdownMenuItem>
+                <DropdownMenuLabel className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                  <Sun aria-hidden className="h-3.5 w-3.5" /> LIGHT
+                </DropdownMenuLabel>
+                {LIGHT_TONES.map((t) => (
+                  <DropdownMenuItem key={t.id} onSelect={() => { chooseTheme(t.id); }} className="gap-2.5">
+                    <span
+                      aria-hidden
+                      className="h-4 w-4 shrink-0 rounded-full border"
+                      style={{ backgroundColor: t.swatch.bg, borderColor: t.swatch.border }}
+                    />
+                    <span className="flex-1">{t.label}</span>
+                    {activeTheme === t.id && <Check className="h-3.5 w-3.5" />}
+                  </DropdownMenuItem>
+                ))}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={refresh} className="gap-2.5">
+                  <RefreshCw className="h-4 w-4 text-muted-foreground" /> Refresh
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={handleLogout} className="gap-2.5">
+                  <LogOut className="h-4 w-4 text-muted-foreground" /> Sign out
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </header>
+
+          <main className="flex flex-1 flex-col gap-4 px-4 pb-8 pt-4 lg:gap-6 lg:px-6 lg:pt-6">
+            <SubscriptionBanner />
+            {/* Keyed on the refresh tick, so Refresh / an outlet switch remounts
+                the module and it refetches — the web's KeyedSubtree. */}
+            <div key={refreshTick} className="flex flex-1 flex-col gap-4 lg:gap-6">
+              {children}
+            </div>
+          </main>
         </div>
-        <MobileNav sections={dockSections.map((section) => ({
-          title: section.title,
-          // The dock's items carry an onClick router.push; the mobile nav wants
-          // real <Link>s, so it is fed from the SAME source list rather than a
-          // second copy that could drift out of step with the permissions.
-          items: (isValet || isWaiterOnly ? navItems : fullNavItems)
-            .filter((n) => section.items.some((d) => d.label === n.label))
-            .map((n) => ({ href: n.href, label: n.label, icon: n.icon, exact: n.exact })),
-        }))} pathname={pathname} />
       </div>
+
+      {/* Shell-level "Print the updated bill?" listener (client item 6). */}
+      <ReprintNeededListener />
+    </div>
   );
 }
 
@@ -561,7 +468,7 @@ export default function DashboardLayout({
   children,
 }: {
   children: React.ReactNode;
-}) {
+}): React.JSX.Element {
   const { user } = useAuth();
   const restaurantId = user?.restaurantUsername ?? "";
 
@@ -571,7 +478,9 @@ export default function DashboardLayout({
   if (!restaurantId) {
     return (
       <TimezoneProvider restaurantId="">
-        <LayoutContent>{children}</LayoutContent>
+        <TooltipProvider delayDuration={300}>
+          <LayoutContent>{children}</LayoutContent>
+        </TooltipProvider>
       </TimezoneProvider>
     );
   }
@@ -579,7 +488,9 @@ export default function DashboardLayout({
   return (
     <RealtimeProvider restaurantId={restaurantId}>
       <TimezoneProvider restaurantId={restaurantId}>
-        <LayoutContent>{children}</LayoutContent>
+        <TooltipProvider delayDuration={300}>
+          <LayoutContent>{children}</LayoutContent>
+        </TooltipProvider>
       </TimezoneProvider>
     </RealtimeProvider>
   );

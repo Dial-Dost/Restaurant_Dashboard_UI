@@ -356,7 +356,7 @@ function FeedbackForm({
         setCategories(
           feedbackFormCategories(
             configured.map((c, i) => ({ id: i + 1, key: c.key, label: c.label })),
-            cfg.valet_enabled === true,
+            cfg.valet_enabled,
           ),
         );
         // Skip the valet gate entirely when the restaurant doesn't use valet.

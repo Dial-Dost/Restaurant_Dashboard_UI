@@ -69,7 +69,7 @@ describe("an email schedule is refused before it is saved", () => {
   it("refuses with nothing typed, and says what to do instead", () => {
     const r = buildSchedulePatch(form({ channel: "email" }));
     expect(r.ok).toBe(false);
-    expect(r.ok === false && r.message).toMatch(/in-app inbox/i);
+    expect(!r.ok && r.message).toMatch(/in-app inbox/i);
   });
 
   it("says something DIFFERENT when addresses were typed but none are usable", () => {
@@ -77,18 +77,18 @@ describe("an email schedule is refused before it is saved", () => {
     // clearly typed three. The useful information is that none of them parsed.
     const r = buildSchedulePatch(form({ channel: "email", recipients: "owner, accounts, me" }));
     expect(r.ok).toBe(false);
-    expect(r.ok === false && r.message).toMatch(/missing @|typo/i);
+    expect(!r.ok && r.message).toMatch(/missing @|typo/i);
   });
 
   it("accepts one good address even when it is typed beside bad ones", () => {
     const r = buildSchedulePatch(form({ channel: "email", recipients: "oops, owner@gaia.test" }));
     expect(r.ok).toBe(true);
-    expect(r.ok === true && r.patch.recipients).toEqual(["owner@gaia.test"]);
+    expect(r.ok && r.patch.recipients).toEqual(["owner@gaia.test"]);
   });
 
   it("sends the CLEANED list, not the raw text", () => {
     const r = buildSchedulePatch(form({ channel: "email", recipients: " A@x.test ,a@X.test, b@x.test" }));
-    expect(r.ok === true && r.patch.recipients).toEqual(["A@x.test", "b@x.test"]);
+    expect(r.ok && r.patch.recipients).toEqual(["A@x.test", "b@x.test"]);
   });
 });
 
@@ -96,7 +96,7 @@ describe("an inbox schedule is unaffected", () => {
   it("saves with no recipients at all, as it always could", () => {
     const r = buildSchedulePatch(form());
     expect(r.ok).toBe(true);
-    expect(r.ok === true && r.patch.channel).toBe("inbox");
+    expect(r.ok && r.patch.channel).toBe("inbox");
   });
 
   it("sends an EMPTY list even if the field still holds text from an earlier edit", () => {
@@ -104,12 +104,12 @@ describe("an inbox schedule is unaffected", () => {
     // waiting for whoever switches it to email later and finds it already
     // addressed to somebody they never chose.
     const r = buildSchedulePatch(form({ channel: "inbox", recipients: "someone@old.test" }));
-    expect(r.ok === true && r.patch.recipients).toEqual([]);
+    expect(r.ok && r.patch.recipients).toEqual([]);
   });
 
   it("still refuses a nameless schedule first — the older rules survive", () => {
     const r = buildSchedulePatch(form({ name: "  ", channel: "email", recipients: "a@x.test" }));
     expect(r.ok).toBe(false);
-    expect(r.ok === false && r.message).toMatch(/name/i);
+    expect(!r.ok && r.message).toMatch(/name/i);
   });
 });

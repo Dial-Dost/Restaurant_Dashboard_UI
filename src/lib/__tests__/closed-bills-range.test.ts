@@ -19,7 +19,7 @@ function readSource(relative: string): string {
     for (const base of [process.cwd(), path.join(__dirname, '..', '..', '..')]) {
         const full = path.join(base, relative);
         // A fixed list of this repo's own source files, not user input.
-        // eslint-disable-next-line security/detect-non-literal-fs-filename
+         
         if (fs.existsSync(full)) { return fs.readFileSync(full, 'utf8'); }
     }
     throw new Error(`readSource could not find ${relative} from ${process.cwd()}`);
@@ -41,18 +41,20 @@ describe('Closed bills card — the date frame is selectable where the bills are
 
     it('renders the shared DateRangePicker in the header when the host owns the window', () => {
         expect(closed).toMatch(/import \{ DateRangePicker, RangeNote \} from "@\/components\/date-range-picker"/);
-        // The picker is the branch AFTER History's own inputs, bound to the host's
-        // range and callback — not to a useState of the card's own.
+        // The picker is bound to the host's range and callback — not to a
+        // useState of the card's own (the card no longer has own date inputs).
         expect(closed).toMatch(
-            /ownDateFilter \? \([\s\S]*?aria-label="Settled to"[\s\S]*?\) : range && onRangeChange \? \(\s*<DateRangePicker value=\{range\} onChange=\{onRangeChange\} timezone=\{timezone\}/,
+            /range && onRangeChange \? \(\s*<DateRangePicker value=\{range\} onChange=\{onRangeChange\} timezone=\{timezone\}/,
         );
+        expect(closed).not.toMatch(/aria-label="Settled to"/);
         // A host that hands only the range still gets the days stated.
         expect(closed).toMatch(/\) : range \? \(\s*<RangeNote range=\{range\} timezone=\{timezone\} \/>/);
     });
 
     it('keeps no private window: the list is still fetched on the host from/to', () => {
-        expect(closed).toMatch(/const effFrom = ownDateFilter \? ownFrom : from/);
-        expect(closed).toMatch(/const effTo = ownDateFilter \? ownTo : to/);
+        expect(closed).toMatch(/const effFrom = range\?\.from \?\? from/);
+        expect(closed).toMatch(/const effTo = range\?\.to \?\? to/);
+        expect(closed).toMatch(/from: effFrom \|\| undefined,\s*to: effTo \|\| undefined,/);
         expect(closed).not.toMatch(/useState<DateRange>/);
     });
 });
@@ -72,15 +74,21 @@ describe('Accounting wires the card to the ONE page window', () => {
     it('that setter is the page window the toolbar picker and every report use', () => {
         expect(page).toMatch(/const \{ range, setRange \} = useDateRange\("accounting", \{ params: search \}\)/);
         expect(page).toMatch(/const \{ from, to \} = range/);
-        expect(page).toMatch(/<DateRangePicker value=\{range\} onChange=\{setRange\} timezone=\{timezone\} \/>/);
-        expect(page).toMatch(/getSalesReport\(rid, from, to\)/);
+        expect(page).toMatch(/<DateRangePicker value=\{range\} onChange=\{setRange\} timezone=\{timezone\} align="start" \/>/);
+        // Every report in the batch is cut on the same from/to.
+        expect(page).toMatch(/fetchAccountingBundle\(rid, from, to, payrollMonth\)/);
+        const api = code(readSource('src/lib/api/accounting.ts'));
+        expect(api).toMatch(/\/reports\/sales\?restaurantId=\$\{ridQ\}\$\{fromTo\(from, to\)\}/);
     });
 });
 
-describe('History is unchanged', () => {
-    it('keeps its own two date inputs and hands no page setter to the card', () => {
+describe('History lists on its own page window', () => {
+    it('hands the card its page from/to on the history surface, with no setter of its own', () => {
         const props = elementProps(code(readSource('src/app/dashboard/history/page.tsx')), 'ClosedBillsSection');
-        expect(props).toMatch(/ownDateFilter/);
+        expect(props).toMatch(/from=\{range\.from\}/);
+        expect(props).toMatch(/to=\{range\.to\}/);
+        expect(props).toMatch(/surface="history"/);
         expect(props).not.toMatch(/onRangeChange/);
+        expect(props).not.toMatch(/ownDateFilter/);
     });
 });

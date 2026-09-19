@@ -641,7 +641,7 @@ function QueueInner() {
     try {
       const r = await fetch(`${BASE}/qr/${encodeURIComponent(restaurant)}/waitlist/${token}/preorder/confirm`, { method: "POST" });
       if (!r.ok) {
-        const d = await r.json().catch(() => ({} as { error?: string }));
+        const d = await r.json().catch(() => ({}));
         setDecideError((d as { error?: string })?.error ?? t("decideFailed"));
         return;
       }
@@ -656,7 +656,7 @@ function QueueInner() {
     try {
       const r = await fetch(`${BASE}/qr/${encodeURIComponent(restaurant)}/waitlist/${token}/preorder/decline`, { method: "POST" });
       if (!r.ok) {
-        const d = await r.json().catch(() => ({} as { error?: string }));
+        const d = await r.json().catch(() => ({}));
         setDecideError((d as { error?: string })?.error ?? t("decideFailed"));
         return;
       }
@@ -937,7 +937,7 @@ function QueueInner() {
                 </div>
               </div>
             </section>
-          ) : entry && entry.status === "seated" && entry.pre_order_status === "pending" && entry.pre_order.length > 0 ? (
+          ) : entry?.status === "seated" && entry.pre_order_status === "pending" && entry.pre_order.length > 0 ? (
             // Seated with a HELD pre-order: nothing has gone to the kitchen yet.
             // This decision blocks the table redirect so the picks can't be
             // silently stranded in 'pending'.
@@ -987,7 +987,7 @@ function QueueInner() {
                 </button>
               </div>
             </section>
-          ) : entry && entry.status === "seated" ? (
+          ) : entry?.status === "seated" ? (
             <section className="rf-rise px-6 py-9 text-center" style={PANEL}>
               <div className="relative mx-auto flex h-20 w-20 items-center justify-center">
                 <span className="absolute inset-0 rounded-full" style={{ background: "rgba(var(--okRGB),0.35)", animation: "rfHalo 2.4s ease-out infinite" }} />
@@ -1239,7 +1239,7 @@ function QueueInner() {
                 {queueMenu.showPrices ? money(cartTotal) : <>{cartCount} {cartCount === 1 ? t("item") : t("items")}</>}
               </div>
             </div>
-            <button onClick={() => setConfirming(true)} disabled={busy || cartItems().length === 0} className="rf-press flex flex-shrink-0 items-center gap-1.5 px-4 py-3 text-[length:calc(13px*var(--fs,1))] font-bold disabled:opacity-50" style={PRIMARY_BTN}>
+            <button onClick={() => { setConfirming(true); }} disabled={busy || cartItems().length === 0} className="rf-press flex flex-shrink-0 items-center gap-1.5 px-4 py-3 text-[length:calc(13px*var(--fs,1))] font-bold disabled:opacity-50" style={PRIMARY_BTN}>
               <Icon name="bookmark_added" style={{ fontSize: "calc(17px*var(--fs,1))" }} />{t("savePicks")}
             </button>
           </div>

@@ -25,15 +25,18 @@
 // it, which is what keeps last quarter's cash-up readable.
 
 import { useCallback, useEffect, useState } from "react"
-import { Loader2, Monitor, Plus, RotateCcw, Save } from "lucide-react"
+import type * as React from "react"
+import { Loader2, Monitor, Pencil, Plus, RotateCcw, Save } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useToast } from "@/hooks/use-toast"
+import { forgetTillIfRetired } from "@/lib/api/payment"
 import { getBillingCounters, saveBillingCounter } from "@/lib/db"
 import { COUNTER_KINDS, humaniseToken, type BillingCounterRecord } from "@/lib/mis-capture"
 
@@ -49,7 +52,7 @@ const EMPTY: Draft = { code: "", name: "", kind: "counter", device_hint: "" }
 export function BillingCountersCard({ restaurantId, canEdit }: {
     restaurantId: string
     canEdit: boolean
-}) {
+}): React.JSX.Element {
     const { toast } = useToast()
     const [counters, setCounters] = useState<BillingCounterRecord[]>([])
     // "None configured" and "could not be read" look identical as an empty list
@@ -59,6 +62,10 @@ export function BillingCountersCard({ restaurantId, canEdit }: {
     const [loading, setLoading] = useState(true)
     const [busy, setBusy] = useState(false)
     const [draft, setDraft] = useState<Draft>(EMPTY)
+    // The per-row edit dialog (finding 35 / settings 26): code, name, kind and
+    // device hint, saved explicitly rather than on blur.
+    const [editing, setEditing] = useState<BillingCounterRecord | null>(null)
+    const [edit, setEdit] = useState<Draft>(EMPTY)
 
     const load = useCallback(() => {
         if (!restaurantId) {return}
@@ -72,7 +79,7 @@ export function BillingCountersCard({ restaurantId, canEdit }: {
     useEffect(() => { load() }, [load])
 
     const fail = (e: unknown): void => {
-        toast({ title: "Not saved", description: String((e as Error)?.message ?? e), variant: "destructive" })
+        toast({ title: "Not saved", description: e instanceof Error ? e.message : String(e), variant: "destructive" })
     }
 
     const add = async (): Promise<void> => {
@@ -101,6 +108,9 @@ export function BillingCountersCard({ restaurantId, canEdit }: {
                 id: c.id, code: c.code, name: c.name, kind: c.kind,
                 device_hint: c.device_hint, sort_order: c.sort_order, active,
             })
+            // The payment sheet's session till memory must not keep offering a
+            // till that no longer rings sales.
+            if (!active) { forgetTillIfRetired(c.id) }
             toast({
                 title: active ? `${c.code} is back in service` : `${c.code} retired`,
                 description: active
@@ -119,6 +129,49 @@ export function BillingCountersCard({ restaurantId, canEdit }: {
                 id: c.id, code: c.code, name: name.trim(), kind: c.kind,
                 device_hint: c.device_hint, sort_order: c.sort_order, active: c.active,
             })
+            load()
+        } catch (e) { fail(e) } finally { setBusy(false) }
+    }
+
+    const openEdit = (c: BillingCounterRecord): void => {
+        setEdit({ code: c.code, name: c.name, kind: c.kind, device_hint: c.device_hint ?? "" })
+        setEditing(c)
+    }
+
+    const editCodeChanged = editing !== null && edit.code.trim().toLowerCase() !== editing.code.toLowerCase()
+
+    const saveEdit = async (): Promise<void> => {
+        if (editing === null || !edit.code.trim()) {return}
+        const c = editing
+        setBusy(true)
+        try {
+            const fields = {
+                name: edit.name.trim() || edit.code.trim(),
+                kind: edit.kind,
+                device_hint: edit.device_hint.trim() || null,
+                sort_order: c.sort_order,
+            }
+            if (!editCodeChanged) {
+                // Same code (case-insensitively) — the upsert merges onto this till.
+                await saveBillingCounter(restaurantId, { id: c.id, code: edit.code.trim(), active: c.active, ...fields })
+                toast({ title: `Saved ${edit.code.trim()}`, description: `${fields.name} · ${humaniseToken(fields.kind, COUNTER_KINDS)}` })
+            } else {
+                // THE WRITE UPSERTS ON THE CODE, so a new code is a different
+                // till: save it under the new code, then retire the old one so
+                // it stops being offered. Every bill the old code rang still
+                // resolves to it — history is never rewritten.
+                const saved = await saveBillingCounter(restaurantId, { code: edit.code.trim(), active: true, ...fields })
+                await saveBillingCounter(restaurantId, {
+                    id: c.id, code: c.code, name: c.name, kind: c.kind,
+                    device_hint: c.device_hint, sort_order: c.sort_order, active: false,
+                })
+                forgetTillIfRetired(c.id)
+                toast({
+                    title: `Saved ${saved.code}; ${c.code} retired`,
+                    description: `Bills ${c.code} already rang still name it. New sales ring on ${saved.code}.`,
+                })
+            }
+            setEditing(null)
             load()
         } catch (e) { fail(e) } finally { setBusy(false) }
     }
@@ -169,8 +222,18 @@ export function BillingCountersCard({ restaurantId, canEdit }: {
                                 {c.active ? null : (
                                     <Badge variant="secondary" className="text-[10px] uppercase">Retired</Badge>
                                 )}
+                                {canEdit ? (
+                                    <Button
+                                        variant="ghost" size="sm" className="ml-auto gap-1"
+                                        disabled={busy}
+                                        aria-label={`Edit till ${c.code}`}
+                                        onClick={() => { openEdit(c) }}
+                                    >
+                                        <Pencil className="h-3.5 w-3.5" /> Edit
+                                    </Button>
+                                ) : null}
                                 <Button
-                                    variant="ghost" size="sm" className="ml-auto gap-1"
+                                    variant="ghost" size="sm" className={canEdit ? "gap-1" : "ml-auto gap-1"}
                                     disabled={!canEdit || busy}
                                     onClick={() => void setActive(c, !c.active)}
                                 >
@@ -240,6 +303,66 @@ export function BillingCountersCard({ restaurantId, canEdit }: {
                     <Save className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                     Tills are retired, never deleted — a bill that names one must still resolve next year.
                 </p>
+
+                <Dialog open={editing !== null} onOpenChange={(v) => { if (!v && !busy) {setEditing(null)} }}>
+                    <DialogContent className="max-w-lg">
+                        <DialogHeader>
+                            <DialogTitle>Edit till {editing?.code ?? ""}</DialogTitle>
+                            <DialogDescription>
+                                Change what this till is called, what kind it is and which device it lives on.
+                            </DialogDescription>
+                        </DialogHeader>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                            <div className="space-y-1.5">
+                                <Label>Code</Label>
+                                <Input
+                                    value={edit.code} maxLength={16}
+                                    onChange={(e) => { setEdit((d) => ({ ...d, code: e.target.value })) }}
+                                />
+                                <p className="text-[11px] text-muted-foreground">
+                                    Short and unique — it is what a cash-up sheet says at 1am.
+                                </p>
+                            </div>
+                            <div className="space-y-1.5">
+                                <Label>Name</Label>
+                                <Input
+                                    value={edit.name}
+                                    onChange={(e) => { setEdit((d) => ({ ...d, name: e.target.value })) }}
+                                />
+                            </div>
+                            <div className="space-y-1.5">
+                                <Label>Kind</Label>
+                                <Select value={edit.kind} onValueChange={(v) => { setEdit((d) => ({ ...d, kind: v })) }}>
+                                    <SelectTrigger><SelectValue /></SelectTrigger>
+                                    <SelectContent>
+                                        {COUNTER_KINDS.map((k) => <SelectItem key={k.value} value={k.value}>{k.label}</SelectItem>)}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                            <div className="space-y-1.5">
+                                <Label>Device hint</Label>
+                                <Input
+                                    value={edit.device_hint} placeholder="optional"
+                                    onChange={(e) => { setEdit((d) => ({ ...d, device_hint: e.target.value })) }}
+                                />
+                            </div>
+                        </div>
+                        {editCodeChanged ? (
+                            <p className="rounded-md border border-warning/40 bg-warning/10 p-2 text-xs">
+                                A till is saved by its code, so a new code is a new till: saving creates (or updates)
+                                <b> {edit.code.trim()}</b>{" "}and retires <b>{editing.code}</b>. Bills {editing.code}{" "}
+                                already rang keep naming it.
+                            </p>
+                        ) : null}
+                        <DialogFooter>
+                            <Button variant="ghost" disabled={busy} onClick={() => { setEditing(null) }}>Cancel</Button>
+                            <Button disabled={busy || !edit.code.trim()} onClick={() => void saveEdit()}>
+                                {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+                                Save
+                            </Button>
+                        </DialogFooter>
+                    </DialogContent>
+                </Dialog>
             </CardContent>
         </Card>
     )

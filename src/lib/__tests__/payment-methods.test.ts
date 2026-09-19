@@ -225,14 +225,20 @@ describe('WIRED: the pickers read the config and keep no list of their own', () 
     const mis = source('src/lib/mis-capture.ts');
     const settings = source('src/app/dashboard/settings/settings-form.tsx');
     const card = source('src/app/dashboard/settings/payment-methods-settings.tsx');
+    const sheet = source('src/components/payment/payment-sheet.tsx');
     const db = source('src/lib/db.ts');
 
-    test('Orders: the settle submenu and split dialog are built from tillPaymentOptions', () => {
+    test('Orders: settling goes through the payment sheet, whose modes are tillPaymentOptions', () => {
+        // The settle submenu + split dialog were replaced by the Flutter payment
+        // sheet (tender-by-tender split); it reads the same config.
         expect(orders).toContain('usePaymentMethods(user?.restaurantUsername)');
-        expect(orders).toContain('tillOptions.map((option) => (');
-        expect(orders).toContain('tillOptions.map((o) => (');
-        expect(orders).toContain('splitRows.length < MAX_SPLIT_PARTS');
-        expect(orders).toContain('methodNeedsScreenshot(paymentMethod, paymentMethods)');
+        expect(orders).toContain('<PaymentSheet');
+        expect(sheet).toContain('const { methods: allModes } = usePaymentMethods(restaurantId);');
+        expect(sheet).toContain('const modes = React.useMemo(() => tillPaymentOptions(allModes), [allModes]);');
+        expect(sheet).toContain('{modes.map((m) => (');
+        expect(sheet).toContain('const needsProofNow = methodNeedsScreenshot(method, allModes);');
+        expect(orders).toContain('methodNeedsScreenshot(order.payment_method ?? "Cash", paymentMethods)');
+        expect(sheet).not.toMatch(/PAYMENT_METHOD_OPTIONS|PROOF_REQUIRED_METHODS/);
         // The lists that drifted from the server are gone.
         expect(orders).not.toMatch(/PAYMENT_METHOD_OPTIONS|PROOF_REQUIRED_METHODS/);
         expect(orders).not.toMatch(/^\s*"Online Transfer",/m);
@@ -250,43 +256,44 @@ describe('WIRED: the pickers read the config and keep no list of their own', () 
         expect(closed).not.toMatch(/const PAYMENT_METHODS = \[/);
     });
 
-    test('Settings mounts the editor, and the editor saves through savePaymentMethods', () => {
+    test('Settings mounts the editor, and the editor saves the list with the currency (merge-on-omit POST)', () => {
         expect(settings).toContain('<PaymentMethodsCard');
-        expect(card).toContain('savePaymentMethods(restaurantId');
+        expect(card).toContain('postSettings(restaurantId, { currency, payment_methods: tidy })');
         expect(card).toContain('withCustomPaymentMode(');
     });
 
-    test('the split dialog asks for the screenshot a part needs, and sends it', () => {
-        const start = orders.indexOf('const submitSplitPayment = async');
-        const body = orders.slice(start, orders.indexOf('const refreshOrders = async', start));
-        expect(body).toContain('splitScreenshotLabels(splits, paymentMethods)');
-        expect(body).toContain('pickPaymentProofScreenshot()');
-        expect(body).toContain('"Split", splitProofUrl, splits)');
-        expect(body).not.toContain('"Split", null, splits)');
+    test('the payment sheet asks for the screenshot the chosen mode needs, and sends it', () => {
+        const start = sheet.indexOf('const doSettle = async');
+        const body = sheet.slice(start, sheet.indexOf('};', start));
+        expect(sheet).toContain('if (needsProofNow && !hasProof) { return `${methodLabel} needs a payment screenshot before it can settle.`; }');
+        expect(body).toContain('...(needsProofNow && hasProof ? { payment_proof_screenshot_url: proofUrl } : {}),');
     });
 
     test('Accounting and the settlement card show the label the server attached', () => {
         const accounting = source('src/app/dashboard/accounting/page.tsx');
-        expect(accounting).toContain('{reportModeName(m)}');
-        expect(accounting).toContain('{reportModeName(r)}');
-        expect(accounting).not.toMatch(/font-medium">\{m\.method\}/);
-        expect(accounting).not.toMatch(/font-medium">\{r\.method\}/);
+        const recon = source('src/components/accounting/web-extra-sections.tsx');
+        expect(accounting).toContain('label={reportModeName(m)}');
+        expect(recon).toContain('{reportModeName(r)}');
+        expect(accounting).not.toMatch(/label=\{m\.method\}/);
+        expect(recon).not.toMatch(/font-medium">\{r\.method\}/);
         // …while the reconciliation save still keys on the id.
-        expect(accounting).toContain('void save(r.method)');
-        const card = source('src/app/dashboard/analytics/settlement-breakdown.tsx');
-        expect(card).toContain('{m.label}');
+        expect(recon).toContain('void save(r.method)');
+        // The settlement breakdown now lives on the Overview headline card.
+        const overview = source('src/components/headline-stats.tsx');
+        expect(overview).toContain('label={m.label}');
         expect(db).toMatch(/by_method: \{ method: string; label\?: string; sales: number; bills: number \}\[\]/);
     });
 
-    test('the Payment modes card never submits the profile form it sits inside', () => {
-        // It is mounted inside SettingsForm's <form>; a <button> with no type submits it.
-        expect(settings.indexOf('<PaymentMethodsCard')).toBeGreaterThan(settings.indexOf('<form'));
-        expect(settings.indexOf('<PaymentMethodsCard')).toBeLessThan(settings.indexOf('</form>'));
+    test('the Payment modes card never submits a form it might sit inside', () => {
+        // Settings no longer wraps the cards in one profile <form>, but every
+        // button still says type="button" so re-nesting can never submit one.
+        expect(settings).toContain('<PaymentMethodsCard');
         const buttons = card.match(/<Button\b[^>]*>/g) ?? [];
         expect(buttons.length).toBeGreaterThanOrEqual(3);
         for (const b of buttons) {expect(b).toContain('type="button"');}
         // Enter in the new-mode name adds the mode instead of submitting the form.
         const nameInput = card.slice(card.indexOf('id="new-payment-mode"'), card.indexOf('{addRefusal ?'));
+        expect(nameInput.length).toBeGreaterThan(0);
         expect(nameInput).toContain('onKeyDown');
         expect(nameInput).toContain('e.preventDefault()');
         expect(nameInput).toContain('void add()');

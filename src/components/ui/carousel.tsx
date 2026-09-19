@@ -32,7 +32,7 @@ type CarouselContextProps = {
 
 const CarouselContext = React.createContext<CarouselContextProps | null>(null)
 
-function useCarousel() {
+function useCarousel(): CarouselContextProps {
   const context = React.useContext(CarouselContext)
 
   if (!context) {
@@ -68,13 +68,13 @@ const Carousel = React.forwardRef<
     const [canScrollPrev, setCanScrollPrev] = React.useState(false)
     const [canScrollNext, setCanScrollNext] = React.useState(false)
 
-    const onSelect = React.useCallback((api: CarouselApi) => {
-      if (!api) {
+    const onSelect = React.useCallback((emblaApi: CarouselApi) => {
+      if (!emblaApi) {
         return
       }
 
-      setCanScrollPrev(api.canScrollPrev())
-      setCanScrollNext(api.canScrollNext())
+      setCanScrollPrev(emblaApi.canScrollPrev())
+      setCanScrollNext(emblaApi.canScrollNext())
     }, [])
 
     const scrollPrev = React.useCallback(() => {
@@ -103,7 +103,7 @@ const Carousel = React.forwardRef<
         return
       }
 
-      Promise.resolve().then(() => { setApi(api); })
+      void Promise.resolve().then(() => { setApi(api); })
     }, [api, setApi])
 
     React.useEffect(() => {
@@ -111,12 +111,12 @@ const Carousel = React.forwardRef<
         return
       }
 
-      Promise.resolve().then(() => { onSelect(api); })
+      void Promise.resolve().then(() => { onSelect(api); })
       api.on("reInit", onSelect)
       api.on("select", onSelect)
 
       return () => {
-        api?.off("select", onSelect)
+        api.off("select", onSelect)
       }
     }, [api, onSelect])
 
@@ -126,8 +126,8 @@ const Carousel = React.forwardRef<
           carouselRef,
           api,
           opts,
-          orientation:
-            orientation || (opts?.axis === "y" ? "vertical" : "horizontal"),
+          // The default parameter makes the old `|| axis` fallback dead code.
+          orientation,
           scrollPrev,
           scrollNext,
           canScrollPrev,

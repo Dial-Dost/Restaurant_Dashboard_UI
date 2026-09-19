@@ -1,612 +1,553 @@
 "use client"
 
-// INSIGHTS → REPORTS — the control / MIS report set.
+// INSIGHTS → REPORTS — the web copy of the app's Reports module
+// (screens/reports.dart + screens/report_email.dart).
 //
-// Fifteen documents an owner or an auditor reads, and ONE shell around all of them:
-// date range, outlet, search, column configuration, time-wise toggle, totals,
-// export and drill-down are built here once and mounted for every report. Nine
-// bespoke screens would drift — one would round differently, one would forget to
-// say which outlet it was showing, one would export a column set nobody asked
-// for — and a set of control documents that disagree with each other is worth
-// less than none at all.
+// Two views under one header: the fifteen-report MIS pack and Email reports
+// (address book, schedules, history). The MIS shell is built once for all
+// fifteen: range · session · outlet · basis · search · time-wise above the tabs;
+// tiles and flags; an action bar (Columns · Export · Email · How it is counted ·
+// Refresh · drill note); the grid (frozen identity column, per-row chevrons, a
+// card list under 760px); and a footer (count · Load more · clamps · applied
+// session · timezone).
 //
-// WHAT IS SHARED, AND WHY IT IS SHARED FROM WHERE
-//  * THE DATE RANGE is the SHIPPED control (`DateRangePicker` + `useDateRange`),
-//    not a second one built here. That module exists precisely because four
-//    reporting screens had each grown their own idea of "the last 30 days".
-//  * THE OUTLET SELECTOR is local to this screen and does NOT reload the page,
-//    unlike the global switcher in the header — comparing two branches is a
-//    normal thing to do inside a report, and a full reload between each look
-//    would make it unusable. It defaults to whatever scope the rest of the
-//    dashboard is in, so Reports opens showing what the user already thinks
-//    they are looking at.
-//  * COLUMNS persist per user per report; SORT and PAGING are per visit.
-//
-// EVERY NUMBER ON THIS SCREEN IS THE SERVER'S. The money ladder — Gross →
-// Discount → Net → Tax → Service Charge → Round Off → Grand Total — is pinned
-// once in the backend's `mis_report_math.ts` and all fifteen reports derive from
-// it there. Nothing here re-derives, re-rounds or cross-foots a figure. The only
-// arithmetic in this file counts rows.
+// EVERY NUMBER ON THIS SCREEN IS THE SERVER'S. The only arithmetic here counts rows.
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Suspense, useCallback, useEffect, useMemo, useState, type JSX } from "react"
 import { useSearchParams } from "next/navigation"
 import {
-    AlertCircle,
-    CalendarClock,
-    Download,
-    FileSpreadsheet,
-    FileText,
-    Info,
-    Layers,
-    Loader2,
-    Printer,
-    Search,
-    Store,
-    X,
+    CalendarDays, ChevronDown, Clock, Download, FileSpreadsheet, FileText, Filter, Globe, Info, Layers,
+    ListChecks, Loader2, Mail, Printer, RefreshCw, Sigma, Store, Hand,
 } from "lucide-react"
 
-import { Badge } from "@/components/ui/badge"
+import { AppSearchField } from "@/components/ui/app-search-field"
 import { Button } from "@/components/ui/button"
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import {
-    DropdownMenu,
-    DropdownMenuContent,
-    DropdownMenuItem,
-    DropdownMenuLabel,
-    DropdownMenuSeparator,
-    DropdownMenuTrigger,
+    DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { Input } from "@/components/ui/input"
+import { EmptyState } from "@/components/ui/empty-state"
+import { SkeletonRows, SkeletonStats } from "@/components/ui/fork-skeleton"
+import { LoadErrorState } from "@/components/ui/load-error-state"
+import { SectionHeader } from "@/components/ui/section-header"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { CacheStalePill } from "@/components/ui/stale-pill"
+import { InfoChip, StatusChip } from "@/components/ui/status-chip"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { DateRangePicker } from "@/components/date-range-picker"
+import { ContextPanel, ReportFlags } from "@/components/reports/context-panels"
+import { DrillDownDialog, type DrillRequest } from "@/components/reports/drill-down"
+import { EmailReportsPanel } from "@/components/reports/email-reports"
+import { EmailSendSheet, emailErrorSentence } from "@/components/reports/email-send"
+import { EMAIL_BUTTON_LABEL, EMAIL_BUTTON_TOOLTIP } from "@/components/reports/report-email"
+import { ReportGrid, TOTALS_LABEL, useCompactGrid } from "@/components/reports/report-grid"
+import { TimeSlotChip } from "@/components/reports/time-slot-chip"
+import {
+    basisLabel, drillNote, isSearchable, loadBucket, loadOpenTab, loadView, rowOpens, saveBucket, saveOpenTab, saveView,
+    searchHint, type RowOpenCtx,
+} from "@/components/reports/catalogue"
+import {
+    ALL_DAY, appliedFromMeta, appliedPhrase, catalogueFromJson, clampNotices, loadSlotMemory, reconcileSelection,
+    saveSlotMemory, selectionPhrase, selectionQuery, slotDefinitionKey, timeSlotProvenance, timeWiseOptions,
+    type MisBucket, type TimeSlotCatalogue, type TimeSlotSelection,
+} from "@/components/reports/time-slot"
 import { useAuth } from "@/context/AuthContext"
+import { useCachedFetch } from "@/hooks/use-cached-fetch"
 import { useCurrency } from "@/hooks/use-currency"
 import { useDateRange } from "@/hooks/use-date-range"
 import { useToast } from "@/hooks/use-toast"
-import { getMisCatalogue, getMisReport, getOutlets, type MisQuery, type OutletRow } from "@/lib/db"
+import { fetchMisReport, fetchTimeSlots } from "@/lib/api/reports"
+import { getMisCatalogue, getOutlets, type OutletRow } from "@/lib/db"
 import {
-    CLOCK_LABELS,
-    MIS_REPORTS,
-    buildExportMatrix,
-    clockFromBasis,
-    defaultHidden,
-    drillTarget,
-    formatMatrix,
-    loadColumnPrefs,
-    pageCaption,
-    rowsOf,
-    saveColumnPrefs,
-    sortRows,
-    totalsLabelFor,
-    visibleColumns,
-    type MisColumn,
-    type MisReportDef,
-    type MisReportKey,
-    type MisReportPayload,
-    type MisRow,
+    MIS_REPORTS, buildExportMatrix, clockFromBasis, defaultHidden, formatMatrix, loadColumnPrefs, rowsOf, saveColumnPrefs,
+    sortRows, visibleColumns, type MisColumn, type MisReportDef, type MisReportKey, type MisReportPayload, type MisRow,
     type SortState,
 } from "@/lib/mis-reports"
-import { ALL_OUTLETS, getSelectedOutletId } from "@/lib/outlet"
-import { formatFullDateTime, timezoneCaption } from "@/lib/tz"
+import { ALL_OUTLETS, applySelectedOutlet, getSelectedOutletId } from "@/lib/outlet"
 import { cn } from "@/lib/utils"
 
 import { ColumnPicker } from "./column-picker"
-import { ContextPanel } from "./context-panels"
-import { DrillDownDialog, type DrillRequest } from "./drill-down"
-import { ReportTable } from "./report-table"
-import { runExport, exportSummary, type ExportContext, type ExportFormat } from "./export"
+import { exportSummary, runExport, type ExportContext, type ExportFormat } from "./export"
 
-/** Server's own ceiling (MIS_MAX_PAGE). Asking for more just gets clamped. */
-const MAX_PAGE_SIZE = 500
-const PAGE_SIZES = [50, 100, 250, 500]
-/** Hard stop on the export's page loop, so a runaway total cannot spin forever. */
-const MAX_EXPORT_PAGES = 40
+/** The app's fixed page (`_pageSize`); Load more appends the next one. */
+const PAGE_SIZE = 100
+/** Export sweep: 500 a page, hard stop at 10,000 rows (the app's cap). */
+const EXPORT_PAGE = 500
+const EXPORT_CAP = 10_000
 
-function ReportsInner() {
+type View = "reports" | "email"
+
+function ReportsInner(): JSX.Element {
     const { user } = useAuth()
     const { currencySymbol } = useCurrency()
     const { toast } = useToast()
     const params = useSearchParams()
     const rid = user?.restaurantUsername ?? ""
     const userKey = user?.employeeId ?? user?.restaurantUsername ?? "anon"
+    const { range, setRange, query, label: rangeLabel, timezone } = useDateRange("reports", { params })
 
-    const { range, setRange, query, timezone } = useDateRange("reports", { params })
-
-    // --- Which report ---------------------------------------------------------
-    // Seeded from `?report=` so a link to "the Void KOT report" opens on it.
+    // --- View + report (session-remembered, `?view=` / `?report=` win) -------
+    const [view, setViewState] = useState<View>(() => (params.get("view") === "email" ? "email" : loadView()))
+    const setView = (v: View): void => { setViewState(v); saveView(v) }
     const [defs, setDefs] = useState<MisReportDef[]>([...MIS_REPORTS])
     const [activeKey, setActiveKey] = useState<MisReportKey>(() => {
-        const wanted = params?.get("report")
-        return (MIS_REPORTS.find((r) => r.key === wanted)?.key ?? "sales_summary")
+        const wanted = params.get("report") ?? loadOpenTab()
+        return MIS_REPORTS.find((r) => r.key === wanted)?.key ?? MIS_REPORTS[0].key
     })
     const def = useMemo(() => defs.find((d) => d.key === activeKey) ?? defs[0], [defs, activeKey])
 
-    // --- Scope ----------------------------------------------------------------
+    // --- Scope: drives the app-wide outlet switch, like the app --------------
     const roles = [user?.role, ...(Array.isArray(user?.role_all) ? user.role_all : [])]
     const canSwitchOutlet = roles.includes("admin") || roles.includes("manager")
     const [outlets, setOutlets] = useState<OutletRow[]>([])
-    // undefined = "the scope the rest of the dashboard is in". Seeded from the
-    // global switcher so this screen opens on what the user expects, then owned
-    // locally so changing it here costs no page reload.
-    const [outletId, setOutletId] = useState<string | undefined>(undefined)
+    const [outletId] = useState<string | null>(() => (typeof window === "undefined" ? null : getSelectedOutletId()))
+    const combined = outletId === ALL_OUTLETS
 
-    const [searchInput, setSearchInput] = useState("")
+    // --- Filters ---------------------------------------------------------------
+    const searchable = isSearchable(activeKey)
     const [search, setSearch] = useState("")
-    const [bucket, setBucket] = useState<"day" | "hour">("day")
-    const [limit, setLimit] = useState(100)
-    const [offset, setOffset] = useState(0)
+    const [bucket, setBucketState] = useState<MisBucket>(() => loadBucket())
+    const setBucket = (b: MisBucket): void => { setBucketState(b); saveBucket(b) }
+    const [slotCatalogue, setSlotCatalogue] = useState<TimeSlotCatalogue | null>(null)
+    const [slot, setSlotState] = useState<TimeSlotSelection>(() => (typeof window === "undefined" ? ALL_DAY : loadSlotMemory()))
+    const setSlot = (sel: TimeSlotSelection): void => { setSlotState(sel); saveSlotMemory(sel) }
+    const presets = useMemo(() => slotCatalogue?.slots ?? [], [slotCatalogue])
+
     const [sort, setSort] = useState<SortState | null>(null)
     const [hidden, setHidden] = useState<string[]>([])
-
-    const [payload, setPayload] = useState<MisReportPayload | null>(null)
-    const [loading, setLoading] = useState(true)
-    // Distinct from "loaded, and empty". A restaurant shut all week is a 200 with
-    // zeros; an unreachable backend is not, and rendering both as a blank grid
-    // would report an outage as "no trade".
-    const [failed, setFailed] = useState(false)
+    const [extra, setExtra] = useState<MisRow[]>([])
+    const [appending, setAppending] = useState(false)
     const [exporting, setExporting] = useState<ExportFormat | null>(null)
     const [drill, setDrill] = useState<DrillRequest | null>(null)
-    const [showNotes, setShowNotes] = useState(false)
+    const [notesOpen, setNotesOpen] = useState(false)
+    const [emailOpen, setEmailOpen] = useState(false)
+    const compact = useCompactGrid()
 
-    // --- The catalogue --------------------------------------------------------
-    // The backend owns the list; this merges its path/rows/paged onto the local
-    // definitions (which carry the blurb and the drill-down wiring) and drops any
-    // report the server does not serve. A failure leaves the fallback in place,
-    // so a catalogue outage costs nothing.
+    useEffect(() => { saveOpenTab(activeKey) }, [activeKey])
+
+    // Catalogue merge (server owns path/rows/paged); fallback stays on failure.
     useEffect(() => {
-        if (!rid) {return}
+        if (!rid) { return }
         let active = true
-        void getMisCatalogue(rid, outletId).then((cat) => {
-            if (!active || !cat?.reports?.length) {return}
+        void getMisCatalogue(rid).then((cat) => {
+            if (!active || !cat?.reports.length) { return }
             const merged = cat.reports
                 .map((entry) => {
                     const local = MIS_REPORTS.find((r) => r.key === entry.key)
-                    if (!local) {return null}
-                    return {
-                        ...local,
-                        title: entry.title, path: entry.path, rowsKey: entry.rows, paged: entry.paged,
-                        // The clock the SERVER says this report buckets on. Null when
-                        // its basis map does not name the report — in which case the
-                        // local value stands rather than being replaced with a guess.
-                        clock: clockFromBasis(cat.shell?.basis, entry.key) ?? local.clock,
-                    }
+                    return local ? { ...local, title: entry.title, path: entry.path, rowsKey: entry.rows, paged: entry.paged, clock: clockFromBasis(cat.shell?.basis, entry.key) ?? local.clock } : null
                 })
                 .filter((d): d is MisReportDef => d !== null)
-            if (merged.length > 0) {setDefs(merged)}
+            if (merged.length > 0) { setDefs(merged) }
         })
         return () => { active = false }
-    }, [rid, outletId])
+    }, [rid])
 
     useEffect(() => {
-        if (!rid || !canSwitchOutlet) {return}
+        if (!rid || !canSwitchOutlet) { return }
         let active = true
-        void getOutlets(rid).then((res) => {
-            if (!active) {return}
-            setOutlets(res?.outlets ?? [])
-            // Match the header switcher's current choice on first paint.
-            const stored = getSelectedOutletId()
-            if (stored && (stored === ALL_OUTLETS || (res?.outlets ?? []).some((o) => o.id === stored))) {
-                setOutletId(stored)
-            }
-        })
+        void getOutlets(rid).then((res) => { if (active) { setOutlets(res?.outlets ?? []) } })
         return () => { active = false }
     }, [rid, canSwitchOutlet])
 
-    // Debounced search: a control report is an expensive query, and firing one
-    // per keystroke on "Bill No. 10423" is nine wasted round trips.
+    // Saved sessions. No answer = no picker, and only Day-/Hour-wise.
     useEffect(() => {
-        const t = setTimeout(() => { setSearch(searchInput.trim()) }, 350)
-        return () => { clearTimeout(t) }
-    }, [searchInput])
+        if (!rid) { return }
+        let active = true
+        void fetchTimeSlots().then((raw) => {
+            if (!active) { return }
+            const cat = catalogueFromJson(raw)
+            setSlotCatalogue(cat)
+            if (cat) { setSlotState((cur) => reconcileSelection(cur, cat.slots)) }
+        }).catch(() => { /* older server: no sessions */ })
+        return () => { active = false }
+    }, [rid])
 
-    // Any change to WHAT is being asked returns to the first page. Staying on
-    // page 7 of a new question shows an empty grid that looks like no data.
-    useEffect(() => { setOffset(0) }, [activeKey, search, outletId, bucket, limit, range.from, range.to])
-    // Switching tabs drops the previous report's payload rather than leaving it
-    // on screen under the new report's heading. The two do not share a column
-    // set, so the old rows would render as a grid of blanks beneath the new
-    // title — which on a control document reads as "this report has no data"
-    // rather than as "still loading".
-    useEffect(() => { setSort(null); setPayload(null); setFailed(false) }, [activeKey])
+    // Switching to a report whose endpoint ignores search DROPS the term.
+    useEffect(() => { if (!searchable) { setSearch("") } }, [searchable])
+    useEffect(() => { setSort(null) }, [activeKey])
 
-    // --- Column preferences ---------------------------------------------------
-    // Loaded per user per report. Until the payload arrives we do not know the
-    // column list, so the stored set is applied on arrival and the backend's own
-    // `default_on` layout is the fallback.
-    const columns = useMemo<MisColumn[]>(
-        () => (Array.isArray(payload?.columns) ? payload.columns : []),
-        [payload],
+    const slotsAvailable = slotCatalogue !== null
+    const effectiveBucket: MisBucket = def.timeWise
+        ? (timeWiseOptions(slotsAvailable).some(([b]) => b === bucket) ? bucket : "day")
+        : "day"
+
+    // --- The fetch ---------------------------------------------------------------
+    const slotQuery = useMemo(() => selectionQuery(slot), [slot])
+    const fetchKey = [
+        "reports", rid, outletId ?? "home", def.key, query.from, query.to, query.days, searchable ? search : "",
+        def.timeWise ? effectiveBucket : "", slotDefinitionKey(slot, presets, def.timeWise ? effectiveBucket : undefined),
+    ].join("|")
+    const report = useCachedFetch<MisReportPayload>(
+        fetchKey,
+        () => fetchMisReport(rid, def.path, {
+            from: query.from, to: query.to, days: query.days,
+            search: searchable ? search : undefined,
+            bucket: def.timeWise ? effectiveBucket : undefined,
+            slot: slotQuery,
+            ...(def.paged ? { limit: PAGE_SIZE, offset: 0 } : {}),
+        }),
+        { enabled: Boolean(rid) },
     )
-    const prefsAppliedFor = useRef<string>("")
-    useEffect(() => {
-        if (!def || columns.length === 0) {return}
-        // ONLY trust columns that came from THIS report's payload. Without this
-        // guard the effect fires the instant the tab changes — while `payload`
-        // is still the PREVIOUS report's — and derives the default layout from
-        // the wrong report's `default_on` flags, then latches it: the stamp is
-        // already set when the right columns arrive, so the backend's own
-        // default layout for the new report never gets applied at all.
-        if (payload?.meta.report !== def.key) {return}
-        const stamp = `${userKey}:${def.key}`
-        if (prefsAppliedFor.current === stamp) {return}
-        prefsAppliedFor.current = stamp
-        setHidden(loadColumnPrefs(userKey, def.key)?.hidden ?? defaultHidden(columns))
-    }, [def, columns, userKey, payload])
+    useEffect(() => { setExtra([]) }, [fetchKey])
 
+    // Never the previous tab's payload under this tab's heading.
+    const payload = report.data?.meta.report === def.key ? report.data : null
+    const columns = useMemo<MisColumn[]>(() => (Array.isArray(payload?.columns) ? payload.columns : []), [payload])
+
+    // Column prefs: per user per report; the server's `default_on` is the fallback.
+    const [prefsFor, setPrefsFor] = useState("")
+    useEffect(() => {
+        if (columns.length === 0 || payload?.meta.report !== def.key) { return }
+        const stamp = `${userKey}:${def.key}`
+        if (prefsFor === stamp) { return }
+        setPrefsFor(stamp)
+        setHidden(loadColumnPrefs(userKey, def.key)?.hidden ?? defaultHidden(columns))
+    }, [def, columns, userKey, payload, prefsFor])
     const setHiddenPersisted = useCallback((next: string[]) => {
         setHidden(next)
-        if (def) {saveColumnPrefs(userKey, def.key, { hidden: next })}
+        saveColumnPrefs(userKey, def.key, { hidden: next })
     }, [def, userKey])
 
-    const toggleColumn = useCallback((key: string) => {
-        setHiddenPersisted(hidden.includes(key) ? hidden.filter((k) => k !== key) : [...hidden, key])
-    }, [hidden, setHiddenPersisted])
-
-    const resetColumns = useCallback(() => { setHiddenPersisted(defaultHidden(columns)) }, [columns, setHiddenPersisted])
-
-    // --- The query and the fetch ---------------------------------------------
-    const baseQuery = useMemo<MisQuery>(() => ({
-        from: query.from,
-        to: query.to,
-        days: query.days,
-        outletId,
-        search: search || undefined,
-        bucket: def?.timeWise ? bucket : undefined,
-    }), [query.from, query.to, query.days, outletId, search, def?.timeWise, bucket])
-
-    useEffect(() => {
-        if (!rid || !def) {return}
-        let active = true
-        setLoading(true)
-        void getMisReport(rid, def.path, { ...baseQuery, ...(def.paged ? { limit, offset } : {}) })
-            .then((p) => {
-                if (!active) {return}
-                setPayload(p)
-                setFailed(p === null)
-            })
-            .catch(() => { if (active) { setPayload(null); setFailed(true) } })
-            .finally(() => { if (active) {setLoading(false)} })
-        return () => { active = false }
-    }, [rid, def, baseQuery, limit, offset])
-
-    // --- What the grid is showing --------------------------------------------
-    const rawRows = useMemo(() => (payload && def ? rowsOf(payload, def) : []), [payload, def])
-    const shownColumns = useMemo(() => visibleColumns(columns, hidden), [columns, hidden])
+    const baseRows = useMemo(() => (payload ? rowsOf(payload, def) : []), [payload, def])
+    const rawRows = useMemo(() => [...baseRows, ...extra], [baseRows, extra])
     const rows = useMemo(() => sortRows(rawRows, sort, columns), [rawRows, sort, columns])
-    const meta = (payload?.meta ?? null)
+    const shownColumns = useMemo(() => visibleColumns(columns, hidden), [columns, hidden])
+    const meta = payload?.meta ?? null
     const page = payload?.page
-    const totals = (payload?.totals ?? null) as Record<string, unknown> | null
-    const totalsLabel = totalsLabelFor(page, rows.length)
-    const sortLabel = sort
-        ? `${columns.find((c) => c.key === sort.key)?.label ?? sort.key} (${sort.dir === "asc" ? "ascending" : "descending"})`
-        : ""
-
+    const total = page?.total ?? rows.length
+    const hasMore = Boolean(def.paged && page && rows.length < page.total)
+    const totals = (payload?.totals ?? null)
+    const applied = appliedFromMeta(meta)
+    const slotPhrase = applied ? appliedPhrase(applied) : selectionPhrase(slot, presets)
+    const clamp = clampNotices((meta?.window as { clamped?: unknown } | undefined)?.clamped)
     const formatOpts = useMemo(() => ({ timezone, currencySymbol }), [timezone, currencySymbol])
 
-    // --- Export ---------------------------------------------------------------
-    // The export carries the CURRENT window, outlet, search, columns and sort.
-    // On a paged report it pulls every row in range first, because a control
-    // document that silently stops at row 100 is worse than no document — and
-    // the button says so, so the difference from the screen is never a surprise.
-    const wholeRange = Boolean(def?.paged && page && page.total > rows.length)
-
-    const collectRows = useCallback(async (): Promise<MisRow[]> => {
-        if (!rid || !def || !wholeRange || !page) {return rows}
-        const gathered: MisRow[] = []
-        for (let i = 0; i < MAX_EXPORT_PAGES && gathered.length < page.total; i += 1) {
-            const p = await getMisReport(rid, def.path, { ...baseQuery, limit: MAX_PAGE_SIZE, offset: i * MAX_PAGE_SIZE })
-            if (!p) {break}
-            const batch = rowsOf(p, def)
-            if (batch.length === 0) {break}
-            gathered.push(...batch)
-        }
-        // A partial gather is still the honest thing to export — but never a
-        // SMALLER set than the page already on screen.
-        return gathered.length >= rows.length ? sortRows(gathered, sort, columns) : rows
-    }, [rid, def, wholeRange, page, rows, baseQuery, sort, columns])
-
-    const doExport = useCallback(async (format: ExportFormat) => {
-        if (!def || rows.length === 0) {return}
-        setExporting(format)
+    const loadMore = async (): Promise<void> => {
+        if (!hasMore) { return }
+        setAppending(true)
         try {
-            const exportRows = await collectRows()
-            const matrix = buildExportMatrix(shownColumns, exportRows, totals, totalsLabelFor(page, exportRows.length))
+            const p = await fetchMisReport(rid, def.path, {
+                from: query.from, to: query.to, days: query.days, search: searchable ? search : undefined,
+                bucket: def.timeWise ? effectiveBucket : undefined, slot: slotQuery, limit: PAGE_SIZE, offset: rawRows.length,
+            })
+            setExtra((x) => [...x, ...rowsOf(p, def)])
+        } catch (e) {
+            toast({ title: "Couldn't load more rows", description: emailErrorSentence(e), variant: "destructive" })
+        } finally {
+            setAppending(false)
+        }
+    }
+
+    // --- Row actions -------------------------------------------------------------------
+    const openCtx: RowOpenCtx = { reportKey: activeKey, bucket: effectiveBucket, presets, applied, canSwitchOutlet: canSwitchOutlet && outlets.length > 1 }
+    const rowAction = (row: MisRow): (() => void) | null => {
+        const o = rowOpens(row, openCtx)
+        if (!o) { return null }
+        switch (o.kind) {
+            case "bill": return () => { setDrill({ kind: "bill", id: o.id }) }
+            case "kot": return () => { setDrill({ kind: "kot", id: o.id }) }
+            case "day": return () => { setRange({ from: o.day, to: o.day, preset: "custom" }) }
+            case "hour":
+            case "session": return () => { setSlot(o.slot); setBucket("day") }
+            case "outlet": return () => { void applySelectedOutlet(o.id) }
+        }
+    }
+    const note = drillNote(rows, openCtx)
+
+    // --- Export ------------------------------------------------------------------------
+    const doExport = async (format: ExportFormat): Promise<void> => {
+        if (rows.length === 0) { return }
+        setExporting(format)
+        toast({ title: `Preparing the ${format === "excel" ? "Excel file" : format.toUpperCase()}…` })
+        try {
+            let exportRows = rows
+            let truncatedAt: number | null = null
+            if (def.paged && page && page.total > rows.length) {
+                const gathered: MisRow[] = []
+                for (let off = 0; gathered.length < page.total && gathered.length < EXPORT_CAP; off += EXPORT_PAGE) {
+                    const p = await fetchMisReport(rid, def.path, {
+                        from: query.from, to: query.to, days: query.days, search: searchable ? search : undefined,
+                        bucket: def.timeWise ? effectiveBucket : undefined, slot: slotQuery, limit: EXPORT_PAGE, offset: off,
+                    })
+                    const batch = rowsOf(p, def)
+                    if (batch.length === 0) { break }
+                    gathered.push(...batch)
+                }
+                if (gathered.length >= rows.length) { exportRows = sortRows(gathered.slice(0, EXPORT_CAP), sort, columns) }
+                if (exportRows.length < page.total) { truncatedAt = exportRows.length }
+            }
+            const exportMeta = meta ? {
+                ...meta,
+                notes: [
+                    `Time slot: ${timeSlotProvenance(applied)}`,
+                    ...(truncatedAt !== null ? [`Truncated at ${truncatedAt.toLocaleString("en-IN")} of ${total.toLocaleString("en-IN")} rows — narrow the dates or search to export the rest.`] : []),
+                    ...meta.notes,
+                ],
+            } : null
+            const matrix = buildExportMatrix(shownColumns, exportRows, totals, TOTALS_LABEL)
+            const sortLabel = sort ? `${columns.find((c) => c.key === sort.key)?.label ?? sort.key} (${sort.dir === "asc" ? "ascending" : "descending"})` : ""
             const ctx: ExportContext = {
-                matrix, meta, def, format: formatOpts, search,
-                sortLabel, wholeRange: !def.paged || exportRows.length >= (page?.total ?? exportRows.length),
+                matrix, meta: exportMeta, def, format: formatOpts, search: searchable ? search : "", sortLabel,
+                wholeRange: !def.paged || exportRows.length >= (page?.total ?? exportRows.length),
             }
             const message = await runExport(format, ctx, formatMatrix(matrix, formatOpts))
             toast({ title: message, description: exportSummary(ctx) })
         } catch (e) {
-            toast({
-                title: "Export failed",
-                description: String((e as Error)?.message ?? e),
-                variant: "destructive",
-            })
+            toast({ title: "Export failed", description: emailErrorSentence(e), variant: "destructive" })
         } finally {
             setExporting(null)
         }
-    }, [def, rows.length, collectRows, shownColumns, totals, page, meta, formatOpts, search, sortLabel, toast])
+    }
 
-    // --- Render ---------------------------------------------------------------
-    if (!def) {return null}
-
-    const outletLabel = meta?.outlet_scope === "all"
-        ? "All outlets (combined)"
-        : (meta?.outlet_name ?? "This outlet")
+    const outletControl = canSwitchOutlet && outlets.length > 1 ? (
+        <Select value={outletId ?? outlets[0].id} onValueChange={(v) => { void applySelectedOutlet(v) }}>
+            <SelectTrigger className={cn("h-8 w-[200px]", combined && "border-accent-base/60 text-accent-foreground")}>
+                {combined ? <Layers className="mr-1 h-4 w-4 shrink-0" /> : <Store className="mr-1 h-4 w-4 shrink-0" />}
+                <SelectValue placeholder="Outlet" />
+            </SelectTrigger>
+            <SelectContent>
+                <SelectItem value={ALL_OUTLETS}>All outlets (combined)</SelectItem>
+                {outlets.map((o) => <SelectItem key={o.id} value={o.id}>{o.outlet_name}</SelectItem>)}
+            </SelectContent>
+        </Select>
+    ) : (
+        <InfoChip
+            icon={combined ? <Layers className="h-3 w-3" /> : <Store className="h-3 w-3" />}
+            label={combined ? "All outlets" : "This outlet"}
+        />
+    )
 
     return (
         <div className="flex flex-col gap-4">
-            {/* Heading + scope. The window and the outlet are stated permanently,
-                because a filtered money figure sitting under a control that has
-                scrolled away is how a fortnight gets read as a month. */}
-            <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                    <h1 className="text-lg font-semibold md:text-2xl">Reports</h1>
-                    <p className="text-xs text-muted-foreground">
-                        Control &amp; MIS documents · all dates on the restaurant&apos;s calendar · {timezoneCaption(timezone)}
-                    </p>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                    {canSwitchOutlet && outlets.length > 1 ? (
-                        <Select
-                            value={outletId ?? outlets[0]?.id ?? ""}
-                            onValueChange={(v) => { setOutletId(v) }}
-                        >
-                            <SelectTrigger className={cn("h-9 w-[200px]", outletId === ALL_OUTLETS && "border-primary text-primary")}>
-                                {outletId === ALL_OUTLETS
-                                    ? <Layers className="mr-1 h-4 w-4 shrink-0" />
-                                    : <Store className="mr-1 h-4 w-4 shrink-0" />}
-                                <SelectValue placeholder="Outlet" />
-                            </SelectTrigger>
-                            <SelectContent>
-                                <SelectItem value={ALL_OUTLETS}>All outlets (combined)</SelectItem>
-                                {outlets.map((o) => (
-                                    <SelectItem key={o.id} value={o.id}>
-                                        {o.outlet_name}{o.is_active ? "" : " (inactive)"}
-                                    </SelectItem>
-                                ))}
-                            </SelectContent>
-                        </Select>
-                    ) : (
-                        <Badge variant="secondary" className="h-9 gap-1.5 px-3 font-normal">
-                            <Store className="h-3.5 w-3.5" /> {outletLabel}
-                        </Badge>
-                    )}
-                    <DateRangePicker value={range} onChange={setRange} timezone={timezone} disabled={!rid} />
-                </div>
-            </div>
-
-            {/* The tab strip. Fifteen reports, scrollable rather than wrapped, so
-                the strip stays one line and the grid below never shifts down as
-                the window narrows. Only the ones that EXIST are here — an empty
-                tab for a report this system cannot source is a promise the
-                numbers cannot keep, which is exactly why the last six were absent
-                until migrations 034-039 gave them something to report. */}
-            <div className="-mx-1 overflow-x-auto px-1 pb-1">
-                <div className="flex w-max items-center gap-1 rounded-lg border bg-muted/40 p-1">
-                    {defs.map((r) => (
-                        <button
-                            key={r.key}
-                            type="button"
-                            onClick={() => { setActiveKey(r.key) }}
-                            aria-current={r.key === activeKey ? "page" : undefined}
-                            className={cn(
-                                "whitespace-nowrap rounded-md px-3 py-1.5 text-sm transition-colors",
-                                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                                r.key === activeKey
-                                    ? "bg-background font-semibold text-foreground shadow-sm"
-                                    : "text-muted-foreground hover:text-foreground",
-                            )}
-                        >
-                            {r.title}
-                        </button>
-                    ))}
-                </div>
-            </div>
-
-            {/* The blurb says what the document is FOR; the chip beside it says what
-                its DATE RANGE MEANS. Three of the fifteen are dated by when the
-                order was placed and four by when an act was recorded — over the
-                same fortnight those do not reconcile with the settlement-clock
-                reports, and a toolbar that showed "1–15 Aug" over all fifteen
-                without saying which is how a manager concludes the reports
-                disagree with each other. */}
-            <div className="-mt-1 flex flex-wrap items-center gap-2">
-                <p className="text-sm text-muted-foreground">{def.blurb}</p>
-                <Badge
-                    variant="outline"
-                    className={cn(
-                        "font-normal",
-                        def.clock !== "settlement" && "border-amber-500/50 text-amber-700 dark:text-amber-400",
-                    )}
-                    title={CLOCK_LABELS[def.clock].long}
-                >
-                    <CalendarClock className="mr-1 h-3 w-3" />
-                    Dated {CLOCK_LABELS[def.clock].short}
-                </Badge>
-            </div>
-
-            {/* Toolbar: search, time-wise, columns, export. */}
-            <div className="flex flex-wrap items-center gap-2">
-                <div className="relative">
-                    <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                    <Input
-                        value={searchInput}
-                        onChange={(e) => { setSearchInput(e.target.value) }}
-                        placeholder="Bill No., KOT, table, mode…"
-                        className="h-9 w-[230px] pl-8 pr-8"
-                        aria-label="Search this report by bill number, KOT, table or payment mode"
-                    />
-                    {searchInput && (
-                        <button
-                            type="button"
-                            onClick={() => { setSearchInput("") }}
-                            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                            aria-label="Clear search"
-                        >
-                            <X className="h-3.5 w-3.5" />
-                        </button>
-                    )}
-                </div>
-
-                {/* Time-wise. Rendered ONLY on the report it changes: a toggle that
-                    is present but inert on fourteen of fifteen tabs teaches the user that
-                    the controls here do not do anything. */}
-                {def.timeWise && (
-                    <div className="flex h-9 items-center gap-0.5 rounded-md border bg-muted/40 p-0.5">
-                        <CalendarClock className="mx-1.5 h-3.5 w-3.5 text-muted-foreground" />
-                        {(["day", "hour"] as const).map((b) => (
-                            <button
-                                key={b}
-                                type="button"
-                                onClick={() => { setBucket(b) }}
-                                className={cn(
-                                    "rounded px-2.5 py-1 text-xs capitalize transition-colors",
-                                    bucket === b ? "bg-background font-semibold shadow-sm" : "text-muted-foreground hover:text-foreground",
-                                )}
-                            >
-                                {b === "day" ? "Day-wise" : "Hour-wise"}
-                            </button>
-                        ))}
-                    </div>
-                )}
-
-                <ColumnPicker
-                    columns={columns}
-                    hidden={hidden}
-                    onToggle={toggleColumn}
-                    onReset={resetColumns}
-                    disabled={columns.length === 0}
-                />
-
-                <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                        <Button variant="outline" size="sm" className="h-9" disabled={rows.length === 0 || exporting !== null}>
-                            {exporting
-                                ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                                : <Download className="mr-1.5 h-4 w-4" />}
-                            Export
-                        </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-72">
-                        <DropdownMenuLabel className="text-xs font-normal leading-snug text-muted-foreground">
-                            {/* Says exactly what will come out, so a file that differs from
-                                the screen is never a surprise. */}
-                            {wholeRange
-                                ? `All ${page?.total.toLocaleString("en-IN") ?? ""} rows in this range, in your current columns and sort.`
-                                : "Exactly what is on screen — current filters, columns and sort."}
-                        </DropdownMenuLabel>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem onSelect={() => { void doExport("excel") }}>
-                            <FileSpreadsheet className="mr-2 h-4 w-4" /> Excel (.xlsx)
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onSelect={() => { void doExport("csv") }}>
-                            <FileText className="mr-2 h-4 w-4" /> CSV
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onSelect={() => { void doExport("pdf") }}>
-                            <Printer className="mr-2 h-4 w-4" /> PDF (print)
-                        </DropdownMenuItem>
-                    </DropdownMenuContent>
-                </DropdownMenu>
-
-                <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
-                    {meta?.window.clamped && (
-                        <Badge variant="outline" className="border-amber-500/50 text-amber-600 dark:text-amber-400">
-                            Range shortened to {meta.window.from} – {meta.window.to}
-                        </Badge>
-                    )}
-                    {def.paged && page ? <span>{pageCaption(page, rows.length)}</span> : <span>{rows.length} row{rows.length === 1 ? "" : "s"}</span>}
-                </div>
-            </div>
-
-            {/* Headline figures and the caveats that belong with them. */}
-            {payload && !failed && (
-                <ContextPanel reportKey={def.key} payload={payload} currencySymbol={currencySymbol} />
-            )}
-
-            <ReportBody
-                hasRestaurant={Boolean(rid)}
-                failed={failed}
-                loading={loading}
-                payload={payload}
-                columns={shownColumns}
-                rows={rows}
-                totals={totals}
-                totalsLabel={totalsLabel}
-                sort={sort}
-                setSort={setSort}
-                def={def}
-                setDrill={setDrill}
-                formatOpts={formatOpts}
-                search={search}
+            <SectionHeader
+                title="Reports"
+                className="mb-0"
+                trailing={view === "reports" && !compact ? <InfoChip icon={<CalendarDays className="h-3 w-3" />} label={rangeLabel} /> : undefined}
             />
 
-            {/* Paging + the honesty note about what the server said. */}
-            <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground">
-                <div className="flex items-center gap-3">
-                    {meta && (
-                        <span title={`Built at ${formatFullDateTime(meta.generated_at, meta.timezone)}`}>
-                            {meta.window.from} → {meta.window.to} · {outletLabel}
-                        </span>
-                    )}
-                    {meta?.notes.length ? (
-                        <button
-                            type="button"
-                            onClick={() => { setShowNotes((v) => !v) }}
-                            className="inline-flex items-center gap-1 underline-offset-2 hover:underline"
-                        >
-                            <Info className="h-3.5 w-3.5" />
-                            {showNotes ? "Hide" : "How these numbers are counted"}
-                        </button>
-                    ) : null}
-                </div>
-
-                {def.paged && page && page.total > 0 && (
-                    <div className="flex items-center gap-2">
-                        <Select value={String(limit)} onValueChange={(v) => { setLimit(Number(v)) }}>
-                            <SelectTrigger className="h-8 w-[104px] text-xs"><SelectValue /></SelectTrigger>
-                            <SelectContent>
-                                {PAGE_SIZES.map((n) => <SelectItem key={n} value={String(n)}>{n} / page</SelectItem>)}
-                            </SelectContent>
-                        </Select>
-                        <Button
-                            variant="outline" size="sm" className="h-8"
-                            disabled={offset === 0 || loading}
-                            onClick={() => { setOffset(Math.max(0, offset - limit)) }}
-                        >
-                            Previous
-                        </Button>
-                        <Button
-                            variant="outline" size="sm" className="h-8"
-                            disabled={!page.has_more || loading}
-                            onClick={() => { setOffset(offset + limit) }}
-                        >
-                            Next
-                        </Button>
-                    </div>
-                )}
+            {/* Reports | Email reports */}
+            <div className="inline-flex w-fit rounded-lg border border-border bg-inset p-0.5" role="tablist">
+                {(["reports", "email"] as const).map((v) => (
+                    <button
+                        key={v}
+                        type="button"
+                        role="tab"
+                        aria-selected={view === v}
+                        onClick={() => { setView(v) }}
+                        className={cn("rounded-md px-3.5 py-1.5 text-sm transition-colors", view === v ? "bg-card font-semibold text-foreground shadow-card" : "text-muted-foreground hover:text-foreground")}
+                    >
+                        {v === "reports" ? "Reports" : "Email reports"}
+                    </button>
+                ))}
             </div>
 
-            {/* The backend's own caveats, in its own words. These say which clock a
-                report is bucketed on, what covers mean, and where a figure is
-                reconstructed rather than stored — the difference between a number
-                an auditor can use and one they cannot. */}
-            {showNotes && meta?.notes.length ? (
-                <ul className="space-y-1.5 rounded-lg border bg-muted/30 p-3 text-xs leading-snug text-muted-foreground">
-                    {meta.notes.map((note) => (
-                        <li key={note} className="flex gap-2">
-                            <span aria-hidden className="text-muted-foreground/50">•</span>
-                            <span>{note}</span>
-                        </li>
-                    ))}
-                </ul>
-            ) : null}
+            {view === "email" ? (
+                <EmailReportsPanel restaurantId={rid} timezone={timezone} combined={combined} />
+            ) : (
+                <>
+                    {/* Toolbar: the filters, above the figures. */}
+                    <div className="flex flex-wrap items-center gap-2">
+                        <DateRangePicker value={range} onChange={setRange} timezone={timezone} disabled={!rid} />
+                        {slotsAvailable && (
+                            <TimeSlotChip value={slot} onChange={setSlot} catalogue={slotCatalogue} onCatalogue={(c) => { setSlotCatalogue(c); setSlotState((cur) => reconcileSelection(cur, c.slots)) }} />
+                        )}
+                        {outletControl}
+                        <InfoChip icon={<Clock className="h-3 w-3" />} label={basisLabel(activeKey, slotPhrase)} />
+                        {searchable && (
+                            <AppSearchField
+                                key={activeKey}
+                                compact
+                                debounceMs={450}
+                                placeholder={searchHint(activeKey)}
+                                onQuery={setSearch}
+                                className="w-[240px] max-[759px]:w-full"
+                            />
+                        )}
+                        {def.timeWise && (
+                            <div className="flex flex-wrap items-center gap-0.5 rounded-md border border-border bg-inset p-0.5">
+                                {timeWiseOptions(slotsAvailable).map(([b, text]) => (
+                                    <button
+                                        key={b}
+                                        type="button"
+                                        onClick={() => { setBucket(b) }}
+                                        className={cn("rounded px-2.5 py-1 text-xs", effectiveBucket === b ? "bg-card font-semibold shadow-card" : "text-muted-foreground hover:text-foreground")}
+                                    >
+                                        {text}
+                                    </button>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* The tab strip + divider. */}
+                    <div>
+                        <div className="-mx-1 overflow-x-auto px-1">
+                            <div className="flex w-max items-center gap-1 pb-1.5">
+                                {defs.map((r) => (
+                                    <button
+                                        key={r.key}
+                                        type="button"
+                                        onClick={() => { setActiveKey(r.key) }}
+                                        aria-current={r.key === activeKey ? "page" : undefined}
+                                        className={cn(
+                                            "whitespace-nowrap rounded-md px-3 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                                            r.key === activeKey ? "bg-card font-semibold text-accent-foreground shadow-card" : "text-muted-foreground hover:text-foreground",
+                                        )}
+                                    >
+                                        {r.title}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                        <div className="h-px bg-divider" />
+                    </div>
+
+                    {!rid ? (
+                        <EmptyState icon={<FileText />} title="No restaurant on this session" caption="Reports are scoped to a signed-in restaurant. Sign in again and this page will build itself." />
+                    ) : report.loading || (!payload && !report.error) ? (
+                        <div className="space-y-4">
+                            <SkeletonStats tiles={5} />
+                            <SkeletonRows rows={8} title />
+                        </div>
+                    ) : report.error || !payload ? (
+                        <LoadErrorState whatFailed={`Couldn't load ${def.title}.`} error={report.error} onRetry={report.retry} />
+                    ) : (
+                        <div className="relative flex flex-col gap-4">
+                            <div className="flex flex-col gap-3 min-[760px]:max-h-[45vh] min-[760px]:overflow-y-auto">
+                                <ContextPanel reportKey={def.key} payload={payload} currencySymbol={currencySymbol} />
+                                <ReportFlags reportKey={def.key} payload={payload} currencySymbol={currencySymbol} />
+                            </div>
+
+                            {/* The action bar. */}
+                            <div className="flex flex-wrap items-center gap-2">
+                                <ColumnPicker
+                                    columns={columns}
+                                    hidden={hidden}
+                                    onToggle={(k) => { setHiddenPersisted(hidden.includes(k) ? hidden.filter((x) => x !== k) : [...hidden, k]) }}
+                                    onReset={() => { setHiddenPersisted(defaultHidden(columns)) }}
+                                    disabled={columns.length === 0}
+                                />
+                                <DropdownMenu>
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <DropdownMenuTrigger asChild>
+                                                <Button variant="outline" size="sm" disabled={rows.length === 0 || exporting !== null}>
+                                                    {exporting ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Download className="mr-1.5 h-4 w-4" />}
+                                                    Export <ChevronDown className="ml-1 h-3.5 w-3.5" />
+                                                </Button>
+                                            </DropdownMenuTrigger>
+                                        </TooltipTrigger>
+                                        <TooltipContent>Export this report</TooltipContent>
+                                    </Tooltip>
+                                    <DropdownMenuContent align="start" className="w-72">
+                                        <DropdownMenuLabel className="text-xs font-normal leading-snug text-muted-foreground">
+                                            {hasMore ? `All ${total.toLocaleString("en-IN")} rows in this range, in your current columns and sort.` : "Exactly what is on screen — current filters, columns and sort."}
+                                        </DropdownMenuLabel>
+                                        <DropdownMenuSeparator />
+                                        <DropdownMenuItem onSelect={() => { void doExport("csv") }}><FileText className="mr-2 h-4 w-4" /> Export CSV</DropdownMenuItem>
+                                        <DropdownMenuItem onSelect={() => { void doExport("excel") }}><FileSpreadsheet className="mr-2 h-4 w-4" /> Export Excel</DropdownMenuItem>
+                                        <DropdownMenuItem onSelect={() => { void doExport("pdf") }}><Printer className="mr-2 h-4 w-4" /> Export PDF</DropdownMenuItem>
+                                    </DropdownMenuContent>
+                                </DropdownMenu>
+                                <Tooltip>
+                                    <TooltipTrigger asChild>
+                                        <Button variant="outline" size="sm" onClick={() => { setEmailOpen(true) }}>
+                                            <Mail className="mr-1.5 h-4 w-4" /> {EMAIL_BUTTON_LABEL}
+                                        </Button>
+                                    </TooltipTrigger>
+                                    <TooltipContent>{EMAIL_BUTTON_TOOLTIP}</TooltipContent>
+                                </Tooltip>
+                                <Button variant="outline" size="sm" disabled={!meta?.notes.length} onClick={() => { setNotesOpen(true) }}>
+                                    <Info className="mr-1.5 h-4 w-4" /> How it is counted
+                                </Button>
+                                <Button variant="outline" size="sm" onClick={report.refresh}>
+                                    <RefreshCw className="mr-1.5 h-4 w-4" /> Refresh
+                                </Button>
+                                {note && (
+                                    <InfoChip
+                                        icon={note.opens ? <Hand className="h-3 w-3" /> : note.label.startsWith("Rows here") ? <Filter className="h-3 w-3" /> : <Sigma className="h-3 w-3" />}
+                                        label={note.label}
+                                        wrap
+                                    />
+                                )}
+                            </div>
+
+                            {rows.length === 0 ? (
+                                <EmptyState
+                                    icon={<ListChecks />}
+                                    title="Nothing in this period"
+                                    caption={searchable && search
+                                        ? `No rows match "${search}" in this period.`
+                                        : `${def.title} has no rows between ${meta?.window.from ?? query.from} and ${meta?.window.to ?? query.to}${slotPhrase ? ` in ${slotPhrase}` : ""}.`}
+                                />
+                            ) : (
+                                <ReportGrid
+                                    columns={shownColumns}
+                                    rows={rows}
+                                    totals={totals}
+                                    sort={sort}
+                                    onSort={setSort}
+                                    rowAction={rowAction}
+                                    format={formatOpts}
+                                    compact={compact}
+                                />
+                            )}
+
+                            {/* Footer. */}
+                            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                <span>{def.paged ? `Showing ${rows.length} of ${total} row${total === 1 ? "" : "s"}` : `${rows.length} row${rows.length === 1 ? "" : "s"}`}</span>
+                                {hasMore && (
+                                    <Button variant="outline" size="sm" disabled={appending} onClick={() => { void loadMore() }}>
+                                        <ChevronDown className="mr-1 h-3.5 w-3.5" /> {appending ? "Loading…" : "Load more"}
+                                    </Button>
+                                )}
+                                {clamp.range && <StatusChip dense status="warning" label={`Range shortened to ${meta?.window.from ?? "?"} – ${meta?.window.to ?? "?"}`} />}
+                                {clamp.slot && <StatusChip dense status="warning" label={clamp.slot} />}
+                                {applied && <InfoChip icon={<Clock className="h-3 w-3" />} label={appliedPhrase(applied)} />}
+                                <InfoChip icon={<Globe className="h-3 w-3" />} label={meta?.timezone ?? timezone} />
+                            </div>
+
+                            <CacheStalePill offline={report.offline} fromCache={report.fromCache} updatedAt={report.updatedAt} className="absolute right-0 top-0" />
+                        </div>
+                    )}
+                </>
+            )}
+
+            <Dialog open={notesOpen} onOpenChange={setNotesOpen}>
+                <DialogContent className="max-h-[88vh] max-w-lg overflow-y-auto">
+                    <DialogHeader>
+                        <div className="micro-label">HOW THESE NUMBERS ARE COUNTED</div>
+                        <DialogTitle>{meta?.title ?? def.title}</DialogTitle>
+                    </DialogHeader>
+                    <ul className="space-y-2 text-sm">
+                        {(meta?.notes ?? []).map((n) => (
+                            <li key={n} className="flex gap-2.5">
+                                <span aria-hidden className="mt-1.5 h-3 w-[3px] shrink-0 rounded-[2px] bg-accent-hi" />
+                                <span>{n}</span>
+                            </li>
+                        ))}
+                    </ul>
+                    <p className="text-xs text-muted-foreground">Every export of this report carries these lines on its first page.</p>
+                </DialogContent>
+            </Dialog>
+
+            <EmailSendSheet
+                open={emailOpen}
+                onClose={() => { setEmailOpen(false) }}
+                reportKey={activeKey}
+                from={meta?.window.from ?? query.from}
+                to={meta?.window.to ?? query.to}
+                slotPhrase={applied ? appliedPhrase(applied) : null}
+                timezone={timezone}
+                combined={combined}
+                homeOutletId={user?.outlet_id}
+            />
 
             <DrillDownDialog
                 request={drill}
                 onClose={() => { setDrill(null) }}
                 restaurantId={rid}
-                outletId={outletId}
+                outletId={outletId ?? undefined}
                 timezone={timezone}
                 currencySymbol={currencySymbol}
             />
@@ -614,100 +555,9 @@ function ReportsInner() {
     )
 }
 
-/** The grid, plus the three things that can be there instead of one. */
-function ReportBody({
-    hasRestaurant, failed, loading, payload, columns, rows, totals, totalsLabel, sort, setSort, def, setDrill, formatOpts, search,
-}: {
-    hasRestaurant: boolean
-    failed: boolean
-    loading: boolean
-    payload: MisReportPayload | null
-    columns: MisColumn[]
-    rows: MisRow[]
-    totals: Record<string, unknown> | null
-    totalsLabel: string
-    sort: SortState | null
-    setSort: (s: SortState) => void
-    def: MisReportDef
-    setDrill: (r: DrillRequest) => void
-    formatOpts: { timezone: string; currencySymbol: string }
-    search: string
-}) {
-    // No restaurant on the session yet. WITHOUT this branch the fetch effect
-    // returns early and `loading` never clears, so the screen sits on "Building
-    // the report…" for ever — a spinner that is not waiting for anything, which
-    // reads as a hung report rather than as a signed-out session.
-    if (!hasRestaurant) {
-        return (
-            <div className="flex flex-col items-center gap-2 rounded-lg border bg-card px-6 py-16 text-center">
-                <p className="font-medium">No restaurant on this session.</p>
-                <p className="max-w-md text-sm text-muted-foreground">
-                    Reports are scoped to a signed-in restaurant. Sign in again and this page will build itself.
-                </p>
-            </div>
-        )
-    }
-
-    if (failed) {
-        return (
-            <div className="flex flex-col items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/[0.03] px-6 py-14 text-center">
-                <AlertCircle className="h-6 w-6 text-destructive" />
-                <p className="font-medium">This report could not be loaded.</p>
-                <p className="max-w-md text-sm text-muted-foreground">
-                    This is not the same as &ldquo;no trade in this range&rdquo; — the request did not come back.
-                    Check your connection, or that your plan and role include the accounting reports, and try again.
-                </p>
-            </div>
-        )
-    }
-
-    if (loading && !payload) {
-        return (
-            <div className="flex items-center justify-center gap-2 rounded-lg border bg-card px-6 py-20 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" /> Building the report…
-            </div>
-        )
-    }
-
-    if (columns.length === 0) {return null}
-
-    const drillable = def.drill !== "none"
-
+export default function ReportsPage(): JSX.Element {
     return (
-        <ReportTable
-            columns={columns}
-            rows={rows}
-            totals={totals}
-            totalsLabel={totalsLabel}
-            sort={sort}
-            onSort={setSort}
-            drillable={drillable}
-            onDrill={drillable ? (row) => { const t = drillTarget(row, def); if (t) {setDrill(t)} } : null}
-            format={formatOpts}
-            loading={loading}
-            empty={
-                <div className="space-y-1">
-                    <p className="font-medium">
-                        {search ? `Nothing matches “${search}” in this range.` : "No records in this range."}
-                    </p>
-                    <p className="text-sm text-muted-foreground">
-                        {search
-                            ? "Try a different bill number, table or payment mode — or clear the search."
-                            : "The report ran and came back empty: there is nothing to show for this window and outlet."}
-                    </p>
-                </div>
-            }
-        />
-    )
-}
-
-export default function ReportsPage() {
-    return (
-        <Suspense fallback={
-            <div className="flex items-center justify-center gap-2 py-24 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" /> Loading reports…
-            </div>
-        }>
+        <Suspense fallback={<div className="space-y-4"><SkeletonStats tiles={5} /><SkeletonRows rows={8} /></div>}>
             <ReportsInner />
         </Suspense>
     )

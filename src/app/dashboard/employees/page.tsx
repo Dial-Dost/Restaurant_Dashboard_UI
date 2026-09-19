@@ -1,1293 +1,566 @@
 "use client";
 
+// Employees — the web copy of Flutter `employeesModule` (modules.dart
+// ~30515): a team dashboard, not an admin table. One scrolling page:
+// password-requests banner → "Team" card grid (every card drills into the
+// employee sheet) → "Scoring" band (five box-level drill-downs into ranking
+// boards) → "Leave" register (tiles, approvals, request-leave). Roles live on
+// their own page (/dashboard/roles); role ASSIGNMENT stays here, in the
+// per-card "Manage roles" sheet.
+//
+// Performance and leave are optional reads: each is gated on its own
+// permission + plan feature, fetched separately, and a refusal is stated once
+// in words above the roster — never an empty list that reads as "no leave".
+
 import type { JSX } from "react";
-import { Suspense, useMemo, useState, useEffect, useRef } from "react";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { BadgeCheck, CalendarX2, Crown, Gauge, KeyRound, MoreVertical, Palmtree, Shield, UserMinus, UserPlus } from "lucide-react";
+
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { MoreHorizontal, PlusCircle, Trash2, Crown, KeyRound, LockKeyhole } from "lucide-react";
+import { ForkCard } from "@/components/ui/fork-card";
+import { SectionHeader } from "@/components/ui/section-header";
+import { EmptyState } from "@/components/ui/empty-state";
+import { LoadErrorState } from "@/components/ui/load-error-state";
+import { SkeletonRows, SkeletonStats } from "@/components/ui/fork-skeleton";
+import { CacheStalePill } from "@/components/ui/stale-pill";
+import { InfoChip, StatusChip } from "@/components/ui/status-chip";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useForm, Controller } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { z } from "zod";
+import { InitialsAvatar } from "@/components/customers/guest-bits";
+import { moneyOf } from "@/components/overview/overview-utils";
+import { EmployeeSheet } from "@/components/employees/employee-sheet";
+import {
+  LeaveListSheet,
+  LeaveSection,
+  LeaveSheet,
+  PickMemberDialog,
+  RequestLeaveDialog,
+  leaveCovers,
+  type LeaveList,
+} from "@/components/employees/leave";
+import { ManageRolesSheet } from "@/components/employees/manage-roles-sheet";
+import { MetricBoard, ScoreChip, ScoringBand, memberScore, type TeamMember } from "@/components/employees/performance";
+import { ConfirmDialog, RoleChip, roleLabel, str, todayIn } from "@/components/employees/shared";
+import { AddEmployeeDialog, PasswordRequestsBanner, ResetPasswordDialog, type NewEmployee } from "@/components/employees/staff-dialogs";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/hooks/use-toast";
+import { useCachedFetch } from "@/hooks/use-cached-fetch";
+import { useCurrency } from "@/hooks/use-currency";
 import { useHighlightRow } from "@/hooks/use-highlight-row";
-import { isOptionalMobile10, MOBILE_10_ERROR, normalizeMobile10, PHONE_INPUT_PROPS, sanitizePhoneInput } from "@/lib/phone";
-import { addEmployeeToRestaurant, removeEmployeeFromRestaurant } from "@/services/authService";
-import type {
-  User,
-  RoleDefinition,
-  CoreRoleRow,
-  PasswordResetRequest} from "@/lib/db";
+import { usePlanFeatures } from "@/hooks/use-plan-features";
+import { useTimezone } from "@/lib/use-timezone";
+import { cn } from "@/lib/utils";
+import { dismissPasswordRequest, setUserPassword, type User } from "@/lib/db";
 import {
-  UNKNOWN_PERMISSION_LABEL,
-  permissionSummary,
-  renderRolePermissions,
-  roleIsEditable,
-  unresolvedCount,
-  type ActionCatalog,
-  type RoleLike,
-} from "@/lib/role-permissions";
+  PERM_ANALYTICS,
+  PERM_REVIEW_ATTENDANCE,
+  addEmployee,
+  decideLeave,
+  fetchEmployeesBundle,
+  removeEmployee,
+  requestLeave,
+  type Row,
+} from "@/lib/api/employees";
 import {
-  getRestaurantUsers,
-  getRoles,
-  getActions,
-  getCoreRoles,
-  createRole,
-  deleteRole,
-  assignRoleToEmployee,
-  removeRoleFromEmployee,
-  setUserPassword,
-  getPasswordRequests,
-  dismissPasswordRequest,
-} from "@/lib/db";
-import{ toTitleCase } from "@/lib/utils";
-import {
-  can,
-  canOpenEmployeesPage,
-  canOpenRoles,
   hasPermission,
   PERM_ADD_EMPLOYEE,
-  PERM_ASSIGN_ROLE,
-  PERM_DELETE_ROLES,
   PERM_PASSWORDS,
   PERM_REMOVE_EMPLOYEE,
-  PERM_REMOVE_ROLE,
-  PERM_VIEW_ACTIONS,
   PERM_VIEW_EMPLOYEES,
 } from "@/lib/session-scope";
 
-// core roles are loaded from server
+type Sheet =
+  | { kind: "member"; empId: string }
+  | { kind: "board"; key: string; title: string }
+  | { kind: "leave"; leave: Row }
+  | { kind: "list"; list: LeaveList }
+  | { kind: "roles"; empId: string }
+  | { kind: "pick" }
+  | { kind: "request"; member: TeamMember }
+  | { kind: "reset"; employeeId: string; name: string }
+  | { kind: "remove"; member: TeamMember }
+  | { kind: "add" };
 
-// Actions catalog is fetched from backend into `accessCatalog` state.
+const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
-const addEmployeeSchema = z.object({
-  name: z.string().min(1, "Name is required."),
-  username: z.string().min(1, "Username is required."),
-  // Allow empty string or undefined, but validate non-empty values as email
-  email: z
-    .string()
-    .trim()
-    .optional()
-    .refine((val) => {
-      if (!val) {return true;}
-      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val);
-    }, { message: "Invalid email" }),
-  // Optional, but anything typed must be exactly 10 digits — POST
-  // /restaurant/users applies the same optional-field rule server-side.
-  phone: z.string().optional().refine(isOptionalMobile10, { message: MOBILE_10_ERROR }),
-  address: z.string().optional(),
-  // Any built-in role name OR a custom role's uuid. The old z.enum only allowed
-  // employee/admin/valet, so choosing Cashier/Captain/Manager failed validation
-  // and a CUSTOM role could not be picked at all. The server validates the value
-  // (an unknown role is rejected there), so a non-empty string is right here.
-  role: z.string().min(1, "Pick a role"),
-  password: z.string().min(6, "Password must be at least 6 characters."),
-});
-
-type AddEmployeeFormData = z.infer<typeof addEmployeeSchema>;
-
-/**
- * WHAT A ROLE GRANTS, READABLE — C6.
- *
- * ONE renderer for both kinds of role, because "what does this grant" is one
- * question and answering it twice is how a core role and a custom role start
- * disagreeing about the same permission id.
- *
- * IT DRAWS EVERY ID THE ROLE CARRIES. An id the server could not name is still a
- * permission the role GRANTS: it keeps its place, says so, and prints its id.
- * Dropping it — or shortening the list to the rows that resolved — would let
- * somebody open a role, count the lines and conclude it grants less than it
- * does, which on an access-control screen is the failure worth fearing. It is
- * not an ugly row that is dangerous, it is a safe-looking one.
- *
- * The names come from the server's `permissions` projection and need NO second
- * read; `renderRolePermissions` only falls back to the /actions catalogue for a
- * backend older than the projection. That is the whole of C6: this dialog used
- * to render uuids for anybody holding View Roles without View Actions.
- */
-function PermissionList({
-  role,
-  catalog,
-  emptyLabel,
-}: {
-  role: RoleLike | null | undefined;
-  catalog: ActionCatalog;
-  emptyLabel: string;
-}): JSX.Element {
-  const rows = renderRolePermissions(role, catalog);
-  if (rows.length === 0) {
-    return <p className="text-sm text-muted-foreground">{emptyLabel}</p>;
-  }
-  const unnamed = unresolvedCount(rows);
-  return (
-    <div className="grid gap-2">
-      {rows.map((row, index) => (
-        <div key={`${row.id}-${String(index)}`} className="text-sm" title={row.desc ?? row.id}>
-          {row.resolved ? (
-            <>
-              <span>{row.name}</span>
-              {row.group ? (
-                <span className="ml-2 text-xs text-muted-foreground">{row.group}</span>
-              ) : null}
-            </>
-          ) : (
-            <>
-              <span className="text-muted-foreground">{UNKNOWN_PERMISSION_LABEL}</span>
-              <span className="ml-2 font-mono text-xs text-muted-foreground break-all">{row.id}</span>
-            </>
-          )}
-        </div>
-      ))}
-      {unnamed > 0 ? (
-        // Said out loud, because the alternative reading of an unnamed row is
-        // "this screen is broken" and the true one is "this role grants
-        // something whose catalogue entry is missing" — a real answer, and one
-        // an admin can act on.
-        <p className="pt-1 text-xs text-muted-foreground">
-          {unnamed} of these {unnamed === 1 ? 'is' : 'are'} granted by id with no matching entry in the
-          permissions catalogue. {unnamed === 1 ? 'It is' : 'They are'} still granted.
-        </p>
-      ) : null}
-    </div>
-  );
+function buildTeam(users: User[], nameById: Record<string, string>, perfByEmp: Map<string, Row>, leavesByEmp: Map<string, Row[]>): TeamMember[] {
+  return users.map((u) => {
+    const raw = u as unknown as Row;
+    const empId = str(raw, "employee_id", str(raw, "id"));
+    const roleAll = Array.isArray(u.role_all)
+      ? u.role_all.filter((s) => s !== "")
+      : [str(raw, "role", "staff")];
+    const name = `${str(raw, "emp_Fname")} ${str(raw, "emp_Lname")}`.trim();
+    const display = name || str(raw, "employee_Username");
+    return {
+      user: u,
+      empId,
+      display,
+      initials: display.split(/\s+/).filter(Boolean).slice(0, 2).map((s) => s[0]).join("").toUpperCase(),
+      roleLabels: roleAll.map((r) => roleLabel(r, nameById)),
+      isSuper: u.is_superadmin === true,
+      perfRow: perfByEmp.get(empId) ?? null,
+      leaves: leavesByEmp.get(empId) ?? [],
+    };
+  });
 }
 
-function EmployeesPageInner() {
+function EmployeesPageInner(): JSX.Element {
   const { user } = useAuth();
   const { toast } = useToast();
+  const { timezone } = useTimezone();
+  const { currencySymbol } = useCurrency();
+  const { featureEnabled } = usePlanFeatures();
+  const money = useMemo(() => moneyOf(currencySymbol), [currencySymbol]);
   const hasShownAccessToastRef = useRef(false);
 
-  /*
-    C5 + C6 — WHAT THIS SCREEN OFFERS IS DECIDED BY THE SERVER'S RESOLVED ACTION
-    SET, NOT BY THE NAME OF A ROLE.
-
-    THE C6 DEFECT, WHICH TURNED OUT NOT TO BE THE CORE-ROLE DIALOG AT ALL. The
-    dialog, the fetch and the click handler were all present and correct. What
-    stopped "users clicking and viewing core roles" was the gate above them:
-
-        if (user?.role !== "admin") { return <p>You do not have permission…</p> }
-
-    `user.role` is the PRIMARY role from the session, and the backend's
-    `parseEmployeeRoles` rewrites a primary it does not recognise — a custom
-    role's UUID, or an employee record whose primary was never set — to the
-    literal string "employee" (database_supabase.ts, `toRole` does the same).
-    So a genuine Super Admin who had also been given one custom role arrived
-    here as `role: "employee"`, was refused the entire page, and never reached a
-    core role to click. It is the same defect family as the waiter scoping that
-    just landed: a decision taken on the SPELLING of a role rather than on
-    authority, taken in the client, where the answer is a guess.
-
-    AND C5's OTHER HALF. "Super Admins and Managers can view and edit custom
-    roles" cannot be expressed as `role === "admin"` at all. It is expressed as
-    the permission the route itself demands: GET /roles and GET /core-roles are
-    gated on "View Roles", POST /roles on "Create Role", and so on. Asking
-    `actions_set` means an admin is admitted by the "*" wildcard however their
-    primary role was recorded, and a manager is admitted exactly when the tenant
-    has granted them the permission — which is what "customizable" means.
-
-    THE HIDING IS THE COURTESY, NOT THE CONTROL. Every one of these ids is the
-    backend's own `validateAction` argument; a control hidden here is a control
-    whose route already refuses, so a deep link or a stale tab gains nothing.
-  */
   const actions = user?.actions_set;
+  const restaurantId = user?.restaurantUsername ?? "";
+  const selfId = user?.employeeId ?? "";
   const canSeeEmployees = hasPermission(actions, PERM_VIEW_EMPLOYEES);
   const canAddEmployee = hasPermission(actions, PERM_ADD_EMPLOYEE);
   const canRemoveEmployee = hasPermission(actions, PERM_REMOVE_EMPLOYEE);
   const canManagePasswords = hasPermission(actions, PERM_PASSWORDS);
-  const canSeeRoles = canOpenRoles(user);
-  const canEditRoles = can(user, "manage_roles");
-  const canDeleteRoles = hasPermission(actions, PERM_DELETE_ROLES);
-  const canAssignRoles = hasPermission(actions, PERM_ASSIGN_ROLE);
-  const canRemoveRoles = hasPermission(actions, PERM_REMOVE_ROLE);
-  const canSeeActionCatalog = hasPermission(actions, PERM_VIEW_ACTIONS);
-  const canOpenPage = canOpenEmployeesPage(user);
+  const canPerf = hasPermission(actions, PERM_ANALYTICS) && featureEnabled("analytics");
+  const canLeave = hasPermission(actions, PERM_REVIEW_ATTENDANCE) && featureEnabled("attendance");
 
-  const [employees, setEmployees] = useState<User[]>([]);
-  const [roleDefinitions, setRoleDefinitions] = useState<RoleDefinition[]>([]);
-  // An employee-related notification links here as ?highlightEmployee=<id>.
-  const highlight = useHighlightRow("highlightEmployee", employees.length);
+  const fetcher = useCallback(
+    () => fetchEmployeesBundle({ restaurantId, canPerf, canLeave, canPasswords: canManagePasswords }),
+    [restaurantId, canPerf, canLeave, canManagePasswords],
+  );
+  const { data, loading, error, offline, fromCache, updatedAt, retry, refresh } = useCachedFetch(
+    `employees:${restaurantId}:${String(canPerf)}:${String(canLeave)}:${String(canManagePasswords)}`,
+    fetcher,
+    { enabled: restaurantId !== "" && canSeeEmployees },
+  );
 
-  const [isAddEmployeeDialogOpen, setIsAddEmployeeDialogOpen] = useState(false);
-  const [isCreateRoleDialogOpen, setIsCreateRoleDialogOpen] = useState(false);
-  const [newRoleName, setNewRoleName] = useState("");
-  const [newRoleActions, setNewRoleActions] = useState<string[]>([]);
+  const [sheet, setSheet] = useState<Sheet | null>(null);
+  const close = (): void => { setSheet(null); };
+  const today = todayIn(timezone);
 
-  const [accessCatalog, setAccessCatalog] = useState<
-    { group: string; actions: { id: string; name: string; desc?: string | null }[] }[]
-  >([]);
-  const [selectedRoleToEdit, setSelectedRoleToEdit] = useState<RoleDefinition | null>(null);
-  const [isEditRoleDialogOpen, setIsEditRoleDialogOpen] = useState(false);
-  const [editRoleActions, setEditRoleActions] = useState<string[]>([]);
-  const [coreRoles, setCoreRoles] = useState<CoreRoleRow[]>([]);
-  const [selectedCoreRoleToView, setSelectedCoreRoleToView] = useState<CoreRoleRow | null>(null);
-  const [isViewCoreRoleDialogOpen, setIsViewCoreRoleDialogOpen] = useState(false);
-
-  const [passwordRequests, setPasswordRequests] = useState<PasswordResetRequest[]>([]);
-  const [resetTarget, setResetTarget] = useState<{ employeeId: string; label: string } | null>(null);
-  const [newPassword, setNewPassword] = useState("");
-  const [isResetDialogOpen, setIsResetDialogOpen] = useState(false);
-
-  const allAssignableRoles = useMemo(() => {
-    // Represent custom roles by their IDs (so assignment stores IDs). Core roles remain names.
-    const custom = roleDefinitions.map((role) => role.id).filter(Boolean);
-    const cores = coreRoles.map((c) => (typeof c.role === 'string' ? c.role.trim().toLowerCase() : '')).filter(Boolean);
-    return Array.from(new Set([...cores, ...custom]));
-  }, [roleDefinitions, coreRoles]);
-
-  /*
-    THE /actions CATALOGUE — NOW A FALLBACK, NOT THE RENDERING STRATEGY.
-
-    C6's symptom was a role that opened to a column of raw UUIDs, and the reason
-    was here: to put a NAME on an id this screen had to join it against GET
-    /actions, which carries its OWN permission (2b6f7948…), different from the one
-    that opens this screen (17ba6407…). The stock core `manager` holds both; a
-    tenant's custom "shift lead" granted View Roles and not View Actions holds
-    one, opens a role, and is shown uuids. A join across two differently-
-    permissioned reads is not a rendering strategy, it is a coin flip on how the
-    tenant configured their roles.
-
-    /core-roles and /roles now project `permissions` — the same ids, same order,
-    same length, with name, description and group attached — exactly so this join
-    is no longer needed. `src/lib/role-permissions.ts` reads that projection and
-    falls back to this map ONLY for a backend older than it, which is why the map
-    survives at all. The checkbox grids below still need the full catalogue,
-    because offering a permission to GRANT is a different question from naming
-    one a role already holds.
-  */
-  const actionCatalog = useMemo<ActionCatalog>(() => {
-    const m: Record<string, { name: string; desc: string | null; group: string | null }> = {};
-    for (const g of accessCatalog) {
-      for (const a of g.actions) {
-        m[a.id] = { name: a.name, desc: a.desc ?? null, group: g.group };
+  const derived = useMemo(() => {
+    if (!data) { return null; }
+    const perf = data.performance.data;
+    const leavePage = data.leaves.data;
+    const perfNote = !data.canPerf
+      ? "Performance scores need the analytics permission, which this login does not hold."
+      : data.performance.error ? `Performance scores couldn't be loaded: ${data.performance.error}` : "";
+    const leaveNote = !data.canLeave
+      ? "Leave records need the Review Attendance permission, which this login does not hold."
+      : data.leaves.error ? `Leave records couldn't be loaded: ${data.leaves.error}` : "";
+    const perfByEmp = new Map<string, Row>();
+    for (const r of Array.isArray(perf.rows) ? perf.rows : []) {
+      if (r && typeof r === "object") {
+        const id = str(r as Row, "employee_id");
+        if (id) { perfByEmp.set(id, r as Row); }
       }
     }
-    return m;
-  }, [accessCatalog]);
-
-  /*
-    MAY THE ROLE CURRENTLY OPEN BE WRITTEN?
-
-    TWO questions, and both are the server's. `manage_roles` is whether this
-    SESSION may edit roles at all. `editable` is whether THIS ROLE has a write
-    route behind it — /roles projects it precisely so a client stops re-deriving
-    "is this name one of the core roles" by matching strings, which is the same
-    spelling-versus-authority mistake that un-scoped a waiter in production.
-
-    `!== false` and not `=== true`: a backend that does not send the flag leaves
-    the answer undefined, and the screen must then behave exactly as it did
-    before the flag existed rather than locking every role.
-  */
-  const editingRoleWritable = canEditRoles && roleIsEditable(selectedRoleToEdit) !== false;
-
-  const roleIdToName = useMemo(() => {
-    const m: Record<string, string> = {};
-    for (const r of roleDefinitions) {
-      if (r.id) {m[r.id] = r.role_name;}
+    const leavesByEmp = new Map<string, Row[]>();
+    for (const l of Array.isArray(leavePage.leaves) ? leavePage.leaves : []) {
+      if (l && typeof l === "object") {
+        const id = str(l as Row, "emp_id");
+        if (id) { leavesByEmp.set(id, [...(leavesByEmp.get(id) ?? []), l as Row]); }
+      }
     }
-    return m;
-  }, [roleDefinitions]);
-
-  function isUuid(val?: string) {
-    return typeof val === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(val);
-  }
-
-  const fetchEmployees = async () => {
-    if (!user?.restaurantUsername || !user.employeeId) {return;}
-    try {
-      const data = await getRestaurantUsers(user.restaurantUsername, user.employeeId);
-      setEmployees(Array.isArray(data) ? data : []);
-    } catch (error) {
-      console.error("fetch_employees_failed", error);
-      setEmployees([]);
+    // A custom role is stored on the employee as its uuid — map it back to a name.
+    const nameById: Record<string, string> = {};
+    for (const r of data.roles) {
+      if (r.id && r.role_name) { nameById[r.id.trim()] = r.role_name.trim(); }
     }
-  };
+    const team = buildTeam(data.users, nameById, perfByEmp, leavesByEmp);
+    return { perf, leavePage, perfNote, leaveNote, team };
+  }, [data]);
 
-  const fetchRoles = async () => {
-    if (!user?.restaurantUsername) {return;}
-    try {
-      const data = await getRoles(user.restaurantUsername);
-      setRoleDefinitions(Array.isArray(data) ? data : []);
-    } catch (error) {
-      console.error("fetch_roles_failed", error);
-      setRoleDefinitions([]);
-    }
-  };
-
-  const fetchPasswordRequests = async () => {
-    if (!user?.restaurantUsername) {return;}
-    try {
-      setPasswordRequests(await getPasswordRequests(user.restaurantUsername));
-    } catch (error) {
-      console.error("fetch_password_requests_failed", error);
-      setPasswordRequests([]);
-    }
-  };
-
-  const openResetPassword = (employeeId: string, label: string) => {
-    setResetTarget({ employeeId, label });
-    setNewPassword("");
-    setIsResetDialogOpen(true);
-  };
-
-  const handleResetPassword = async () => {
-    if (!user?.restaurantUsername || !resetTarget) {return;}
-    if (newPassword.trim().length < 4) {
-      toast({ title: "Password too short", description: "Use at least 4 characters.", variant: "destructive" });
-      return;
-    }
-    try {
-      await setUserPassword(user.restaurantUsername, resetTarget.employeeId, newPassword.trim());
-      setIsResetDialogOpen(false);
-      setResetTarget(null);
-      setNewPassword("");
-      await fetchPasswordRequests();
-      toast({ title: "Password updated", description: "The new password is active immediately." });
-    } catch (error: any) {
-      toast({ title: "Error", description: error?.message ?? "Unable to set password", variant: "destructive" });
-    }
-  };
-
-  const handleDismissRequest = async (requestId: string) => {
-    if (!user?.restaurantUsername) {return;}
-    await dismissPasswordRequest(user.restaurantUsername, requestId);
-    await fetchPasswordRequests();
-  };
+  const team = derived?.team ?? [];
+  const highlight = useHighlightRow("highlightEmployee", team.length);
+  const canReview = data?.canLeave === true;
 
   useEffect(() => {
-    if (!user?.restaurantUsername) {return;}
-
-    let isActive = true;
-
-    /*
-      EACH READ IS ASKED FOR ONLY BY A SESSION THE ROUTE WILL ANSWER.
-
-      Every one of these four endpoints carries its own permission, and firing
-      all four regardless meant a manager holding one half of this screen
-      collected three 403s on every mount — noise in the logs, and a console full
-      of failures that look like a broken page rather than a deliberate one.
-
-      A failure still degrades to empty rather than to a crash: `getCoreRoles`
-      and friends are 'use server' actions, and a throw there arrives as an
-      opaque redacted error, so the catch stays.
-    */
-    (async () => {
-      try {
-        const [employeesData, rolesData] = await Promise.all([
-          canSeeEmployees ? getRestaurantUsers(user.restaurantUsername, user.employeeId) : Promise.resolve([]),
-          canSeeRoles ? getRoles(user.restaurantUsername) : Promise.resolve([]),
-        ]);
-        if (!isActive) {return;}
-        setEmployees(Array.isArray(employeesData) ? employeesData : []);
-        setRoleDefinitions(Array.isArray(rolesData) ? rolesData : []);
-      } catch (err) {
-        console.error('fetch_employees_or_roles_failed', err);
-        if (isActive) {
-          setEmployees([]);
-          setRoleDefinitions([]);
-        }
-      }
-
-      if (canSeeRoles) {
-        try {
-          // `actions_set` may be undefined on a session stored before it existed;
-          // getCoreRoles joins it into a header, and an undefined there throws
-          // ACROSS the server-action boundary, which lands in the catch below and
-          // renders as "No core roles available" — a page that looks broken for a
-          // reason that has nothing to do with roles.
-          const cores = await getCoreRoles(user.restaurantUsername, actions ?? []);
-          if (!isActive) {return;}
-          setCoreRoles(Array.isArray(cores) ? cores : []);
-        } catch (err) {
-          console.error('fetch_core_roles_failed', err);
-          if (isActive) {setCoreRoles([]);}
-        }
-      }
-
-      if (canSeeActionCatalog) {
-        try {
-          const catalog = await getActions(user.restaurantUsername, actions ?? []);
-          if (!isActive) {return;}
-          setAccessCatalog(Array.isArray(catalog) ? catalog : []);
-        } catch (err) {
-          console.error('fetch_actions_failed', err);
-          if (isActive) {setAccessCatalog([]);}
-        }
-      }
-
-      if (canManagePasswords) {
-        try {
-          const reqs = await getPasswordRequests(user.restaurantUsername);
-          if (!isActive) {return;}
-          setPasswordRequests(Array.isArray(reqs) ? reqs : []);
-        } catch (err) {
-          console.error('fetch_password_requests_failed', err);
-          if (isActive) {setPasswordRequests([]);}
-        }
-      }
-    })();
-
-    return () => { isActive = false; };
-  }, [user?.restaurantUsername, user?.employeeId, actions,
-      canSeeEmployees, canSeeRoles, canSeeActionCatalog, canManagePasswords]);
-
-  const handleAddEmployee = async (data: AddEmployeeFormData) => {
-    if (!user) {return;}
-    try {
-      // split full name into first + last
-      const parts = (data.name || '').trim().replace(/\s+/g, ' ').split(' ');
-      const first = parts.shift() ?? '';
-      const last = parts.join(' ') || null;
-
-      const payload = {
-        emp_Fname: first,
-        emp_Lname: last,
-        employeeId: typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : String(Date.now()) + '-' + Math.random().toString(36).slice(2,8),
-        username: data.username,
-        email: data.email?.trim() ? data.email.trim() : null,
-        // Blank stays blank; a typed number is stored as bare 10 digits.
-        ph: data.phone?.trim() ? normalizeMobile10(data.phone) : null,
-        add: data.address ?? null,
-        role: data.role,
-        password: data.password,
-      } as any;
-
-      await addEmployeeToRestaurant(user.restaurantUsername, user.outlet_id, payload, user.employeeId);
-      await fetchEmployees();
-      toast({
-        title: "Employee Added",
-        description: `${data.name} has been added to the system.`,
-      });
-      setIsAddEmployeeDialogOpen(false);
-    } catch (error: any) {
-      toast({
-        title: "Error",
-        description: error?.message ?? "Unable to add employee",
-        variant: "destructive",
-      });
-    }
-  };
-
-  const handleRemoveEmployee = async (employeeId: string) => {
-    if (!user) {return;}
-    try {
-      await removeEmployeeFromRestaurant(user.restaurantUsername, employeeId, user.res_id, user.employeeId, user.outlet_id);
-      await fetchEmployees();
-      toast({
-        title: "Employee Removed",
-        description: "The employee has been removed from the system.",
-      });
-    } catch (error: any) {
-      toast({
-        title: "Error",
-        description: error?.message ?? "Unable to remove employee",
-        variant: "destructive",
-      });
-    }
-  };
-
-  const handleAssignRole = async (employeeId: string, roleName: string) => {
-    if (!user?.restaurantUsername) {return;}
-    const ok = await assignRoleToEmployee(user.restaurantUsername, employeeId, roleName);
-    if (!ok) {
-      toast({ title: "Error", description: "Unable to assign role.", variant: "destructive" });
-      return;
-    }
-
-    await fetchEmployees();
-    toast({ title: "Role Assigned", description: `Assigned ${roleName} to ${employeeId}.` });
-  };
-
-  const handleRemoveRole = async (employee: User, roleName: string) => {
-    if (!user?.restaurantUsername) {return;}
-    const normalized = roleName.trim().toLowerCase();
-    if (normalized === employee.role) {
-      toast({
-        title: "Protected Role",
-        description: "Cannot remove an employee's primary role.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    const ok = await removeRoleFromEmployee(user.restaurantUsername, employee.employee_id, normalized);
-    if (!ok) {
-      toast({ title: "Error", description: "Unable to remove role.", variant: "destructive" });
-      return;
-    }
-
-    await fetchEmployees();
-    toast({ title: "Role Removed", description: `Removed ${normalized} from ${employee.employee_id}.` });
-  };
-
-  const toggleNewRoleAction = (action: string) => {
-    setNewRoleActions((prev) =>
-      prev.includes(action) ? prev.filter((entry) => entry !== action) : [...prev, action],
-    );
-  };
-
-  const toggleEditRoleAction = (action: string) => {
-    setEditRoleActions((prev) => (prev.includes(action) ? prev.filter((entry) => entry !== action) : [...prev, action]));
-  };
-
-  const openEditRole = (role: RoleDefinition) => {
-    setSelectedRoleToEdit(role);
-    setEditRoleActions(Array.isArray(role.actions_performable) ? role.actions_performable.slice() : []);
-    setIsEditRoleDialogOpen(true);
-  };
-
-  const openViewCoreRole = (role: CoreRoleRow): void => {
-    setSelectedCoreRoleToView(role);
-    setIsViewCoreRoleDialogOpen(true);
-  };
-
-  const handleSaveRoleChanges = async () => {
-    if (!user?.restaurantUsername || !selectedRoleToEdit) {return;}
-    try {
-      await createRole(user.restaurantUsername, selectedRoleToEdit.role_name, editRoleActions);
-      await fetchRoles();
-      setIsEditRoleDialogOpen(false);
-      setSelectedRoleToEdit(null);
-      setEditRoleActions([]);
-      toast({ title: 'Role Updated', description: `Role '${selectedRoleToEdit.role_name}' updated.` });
-    } catch (error: any) {
-      toast({ title: 'Error', description: error?.message ?? 'Unable to update role', variant: 'destructive' });
-    }
-  };
-
-  const handleCreateCustomRole = async () => {
-    if (!user?.restaurantUsername) {return;}
-
-    const normalizedName = newRoleName.trim().toLowerCase();
-    if (!normalizedName) {
-      toast({ title: "Role Name Required", description: "Please provide a role name.", variant: "destructive" });
-      return;
-    }
-
-    if (coreRoles.some((c) => c.role.trim().toLowerCase() === normalizedName)) {
-      toast({ title: "Protected Role", description: "Core roles cannot be recreated as custom roles.", variant: "destructive" });
-      return;
-    }
-
-    try {
-      const created = await createRole(user.restaurantUsername, normalizedName, newRoleActions);
-      if (!created) {
-        toast({ title: "Error", description: "Unable to create role.", variant: "destructive" });
-        return;
-      }
-
-      await fetchRoles();
-    } catch (error: any) {
-      toast({ title: "Error", description: error?.message ?? "Unable to create role", variant: "destructive" });
-      return;
-    }
-    setNewRoleName("");
-    setNewRoleActions([]);
-    setIsCreateRoleDialogOpen(false);
-    toast({ title: "Role Saved", description: `Role '${normalizedName}' has been saved with access rules.` });
-  };
-
-  const handleDeleteCustomRole = async (role: RoleDefinition) => {
-    if (!user?.restaurantUsername) {return;}
-
-    if (coreRoles.some((c) => c.role.trim().toLowerCase() === role.role_name.trim().toLowerCase())) {
-      toast({ title: "Protected Role", description: "Core roles cannot be deleted.", variant: "destructive" });
-      return;
-    }
-
-    const ok = await deleteRole(user.restaurantUsername, role.id);
-    if (!ok) {
-      toast({ title: "Error", description: "Unable to delete role.", variant: "destructive" });
-      return;
-    }
-
-    await Promise.all([fetchRoles(), fetchEmployees()]);
-    toast({ title: "Role Deleted", description: `Role '${role.role_name}' has been removed.` });
-  };
-
-  useEffect(() => {
-    if (!user || canOpenPage || hasShownAccessToastRef.current) {
-      return;
-    }
-
+    if (!user || canSeeEmployees || hasShownAccessToastRef.current) { return; }
     toast({
       title: "Access denied",
-      description: "This page needs the “View Employees” or “View Roles” permission.",
+      description: "This page needs the “View Employees” permission.",
       variant: "destructive",
     });
     hasShownAccessToastRef.current = true;
-  }, [user, canOpenPage, toast]);
+  }, [user, canSeeEmployees, toast]);
 
-  /*
-    The front door, and it names the PERMISSION rather than a role — see the
-    block at the top of this component for why "Required role: admin" was both
-    wrong and unactionable. It stays a hard stop because a deep link, a bookmark
-    or a back-navigation reaches this page regardless of the nav; the routes
-    behind it refuse independently, which is what makes that safe.
-  */
-  if (!user || !canOpenPage) {
+  // ------------------------------------------------------------- actions
+
+  const fail = (e: unknown): void => { toast({ title: errText(e), variant: "destructive" }); };
+
+  const onDecide = (leave: Row, approve: boolean): void => {
+    const id = str(leave, "id");
+    if (!id) { return; }
+    void (async () => {
+      try {
+        const changed = await decideLeave(restaurantId, id, approve);
+        const word = approve ? "approved" : "rejected";
+        toast({ title: changed ? `Leave ${word}.` : `Already ${word} — nothing changed.` });
+      } catch (e) {
+        fail(e);
+      }
+      refresh();
+    })();
+  };
+
+  const submitLeave = async (
+    member: TeamMember,
+    v: { leave_type: string; start_day: string; end_day: string; reason?: string },
+  ): Promise<boolean> => {
+    try {
+      // Filing for yourself omits emp_id, so it needs no permission.
+      await requestLeave(restaurantId, member.empId === selfId ? v : { ...v, emp_id: member.empId });
+      toast({ title: `Leave requested for ${member.display}.` });
+      refresh();
+      return true;
+    } catch (e) {
+      fail(e);
+      return false;
+    }
+  };
+
+  const submitPassword = async (employeeId: string, password: string): Promise<boolean> => {
+    try {
+      await setUserPassword(restaurantId, employeeId, password);
+      toast({ title: "Password updated." });
+      refresh();
+      return true;
+    } catch (e) {
+      fail(e);
+      return false;
+    }
+  };
+
+  const submitAdd = async (v: NewEmployee): Promise<boolean> => {
+    try {
+      await addEmployee(restaurantId, user?.outlet_id, v);
+      toast({ title: "Employee added." });
+      refresh();
+      return true;
+    } catch (e) {
+      fail(e);
+      return false;
+    }
+  };
+
+  const doRemove = (m: TeamMember): void => {
+    void (async () => {
+      try {
+        await removeEmployee(restaurantId, m.empId);
+        toast({ title: "Employee removed." });
+      } catch (e) {
+        fail(e);
+      }
+      refresh();
+    })();
+  };
+
+  const doDismiss = (id: string): void => {
+    void (async () => {
+      try {
+        await dismissPasswordRequest(restaurantId, id);
+      } catch (e) {
+        fail(e);
+      }
+      refresh();
+    })();
+  };
+
+  // ------------------------------------------------------------- render
+
+  if (!user || !canSeeEmployees) {
     return (
       <div className="p-4 text-sm text-muted-foreground">
         <p className="font-medium text-foreground">You do not have permission to view this page.</p>
-        <p className="mt-1">
-          Viewing staff needs the “View Employees” permission and viewing roles needs “View Roles”.
-          An admin can grant either from Role Access Control.
-        </p>
+        <p className="mt-1">Viewing staff needs the “View Employees” permission. An admin can grant it from Roles.</p>
       </div>
     );
   }
 
-  return (
-    <div className="grid gap-4 md:gap-8">
-      <div className="flex items-center justify-between max-lg:flex-wrap max-lg:gap-2">
-        <h1 className="text-lg font-semibold md:text-2xl">Employee List</h1>
-        {/* POST /restaurant/users carries its own permission; without it the
-            dialog's Save button is the only thing that would tell you. */}
-        <Dialog open={isAddEmployeeDialogOpen} onOpenChange={setIsAddEmployeeDialogOpen}>
-          <DialogTrigger asChild>
-            <Button disabled={!canAddEmployee} title={canAddEmployee ? undefined : "Adding staff needs the “Add Employee” permission"}>
-              <PlusCircle className="mr-2 h-4 w-4" />
-              Add Employee
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="sm:max-w-[425px]">
-            <DialogHeader>
-              <DialogTitle>Add New Employee</DialogTitle>
-              <DialogDescription>Fill in the details for the new employee.</DialogDescription>
-            </DialogHeader>
-            <AddEmployeeForm onSubmit={handleAddEmployee} customRoles={roleDefinitions} />
-          </DialogContent>
-        </Dialog>
+  const fab = canAddEmployee ? (
+    <Button
+      size="lg"
+      onClick={() => { setSheet({ kind: "add" }); }}
+      className="fixed bottom-6 right-6 z-40 h-12 rounded-full px-5 shadow-card-hover"
+    >
+      <UserPlus /> Add employee
+    </Button>
+  ) : null;
+
+  const memberById = (id: string): TeamMember | undefined => team.find((m) => m.empId === id);
+  const sheetMember = sheet?.kind === "member" ? memberById(sheet.empId) : undefined;
+  const rolesMember = sheet?.kind === "roles" ? memberById(sheet.empId) : undefined;
+
+  let body: JSX.Element;
+  if (loading) {
+    body = (
+      <div className="grid gap-6">
+        <SkeletonStats tiles={4} />
+        <SkeletonRows rows={6} />
       </div>
+    );
+  } else if (error || !data || !derived) {
+    body = <LoadErrorState whatFailed="Couldn't load the team." error={error} onRetry={retry} />;
+  } else if (data.users.length === 0) {
+    body = (
+      <EmptyState
+        icon={<BadgeCheck />}
+        title="No employees yet"
+        caption="Add your first team member to hand out logins and roles."
+      />
+    );
+  } else {
+    const { perf, leavePage, perfNote, leaveNote } = derived;
+    const windowDays = Number(perf.window_days);
+    body = (
+      <div className="grid gap-8">
+        {canManagePasswords && data.requests.length > 0 && (
+          <PasswordRequestsBanner
+            requests={data.requests}
+            onReset={(r) => { setSheet({ kind: "reset", employeeId: r.employee_id, name: r.name || r.username }); }}
+            onDismiss={(r) => { doDismiss(r.id); }}
+          />
+        )}
 
-      {passwordRequests.length > 0 ? (
-        <Card className="border-amber-500/60 bg-amber-500/5">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <LockKeyhole className="h-4 w-4 text-amber-600" />
-              {passwordRequests.length} password reset request{passwordRequests.length > 1 ? "s" : ""}
-            </CardTitle>
-            <CardDescription>Staff who can&apos;t sign in have asked you to reset their password.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {passwordRequests.map((req) => (
-              <div key={req.id} className="flex items-center justify-between gap-2 rounded-md border bg-background p-2">
-                <div>
-                  <p className="font-medium">{req.name}</p>
-                  <p className="text-xs text-muted-foreground">@{req.username}</p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button size="sm" onClick={() => { openResetPassword(req.employee_id, req.name); }}>
-                    <KeyRound className="mr-1 h-4 w-4" /> Reset
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => void handleDismissRequest(req.id)}>Dismiss</Button>
-                </div>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-      ) : null}
-
-      <Dialog open={isResetDialogOpen} onOpenChange={setIsResetDialogOpen}>
-        <DialogContent className="sm:max-w-[425px]">
-          <DialogHeader>
-            <DialogTitle>Reset password</DialogTitle>
-            <DialogDescription>Set a new password for {resetTarget?.label}. They can sign in with it immediately.</DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-2">
-            <Label htmlFor="new-password">New password</Label>
-            <Input
-              id="new-password"
-              type="password"
-              value={newPassword}
-              onChange={(e) => { setNewPassword(e.target.value); }}
-              placeholder="At least 4 characters"
-            />
-          </div>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => { setIsResetDialogOpen(false); }}>Cancel</Button>
-            <Button onClick={() => void handleResetPassword()}>Set password</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* The staff half of this page. A session holding only "View Roles" — a
-          manager the tenant set up to manage permissions but not people — gets
-          the Role Access Control card below and nothing here, rather than an
-          empty table that looks like the restaurant has no staff. */}
-      {canSeeEmployees ? (
-      <Card>
-        <CardHeader>
-          <CardTitle>All Employees</CardTitle>
-          <CardDescription>A list of all employees at {user.restaurantName}.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Employee Username</TableHead>
-                <TableHead>Roles</TableHead>
-                <TableHead>
-                  <span className="sr-only">Actions</span>
-                </TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {employees.map((employee, idx) => {
-                const employeeRoles = Array.from(new Set(employee.role_all ?? [employee.role]));
-                // normalizedRoles set should include raw ids and lowercase names for comparison
-                const normalizedRolesSet = new Set<string>(
-                  employeeRoles.map((entry) => (isUuid(entry) ? entry : entry.trim().toLowerCase())),
-                );
-                const assignable = allAssignableRoles.filter((entry) => !normalizedRolesSet.has(entry));
-                const removable = Array.from(employeeRoles).filter((entry) => {
-                  const key = isUuid(entry) ? entry : entry.trim().toLowerCase();
-                  return key !== employee.role;
-                });
-
-                return (
-                  <TableRow key={employee.employee_id ?? employee.employee_Username ?? `emp-${idx}`} {...highlight.rowProps(employee.employee_id)}>
-                    <TableCell className="font-medium">
-                      <span className="inline-flex items-center gap-1.5">
-                        {`${employee.emp_Fname ?? ''}${employee.emp_Lname ? ` ${employee.emp_Lname}` : ''}`.trim() || employee.employee_id}
-                        {employee.is_superadmin ? (
-                          <span title="Superadmin (owner)" className="inline-flex">
-                            <Crown className="h-4 w-4 text-amber-500" aria-label="Superadmin" />
+        <section>
+          <SectionHeader
+            title="Team"
+            count={data.users.length}
+            trailing={
+              perfNote === "" && Object.keys(perf).length > 0 ? (
+                <InfoChip icon={<Gauge />} label={`Scored over ${Number.isFinite(windowDays) && windowDays > 0 ? windowDays : 30} days`} />
+              ) : undefined
+            }
+          />
+          {(perfNote || leaveNote) && (
+            <div className="mb-3 grid gap-0.5 text-xs text-muted-foreground">
+              {perfNote && <p>{perfNote}</p>}
+              {leaveNote && <p>{leaveNote}</p>}
+            </div>
+          )}
+          <div className="grid grid-cols-1 gap-3 min-[720px]:grid-cols-2 min-[1120px]:grid-cols-3 min-[1500px]:grid-cols-4">
+            {team.map((m) => {
+              const pending = m.leaves.filter((l) => str(l, "status") === "requested").length;
+              const onLeaveNow = m.leaves.some((l) => str(l, "status") === "approved" && leaveCovers(l, today));
+              const hl = highlight.rowProps(m.empId);
+              const mayRequest = m.empId !== "" && (canReview || m.empId === selfId);
+              return (
+                <ForkCard
+                  key={m.empId || m.display}
+                  id={hl.id}
+                  className={cn("px-3.5 py-3", hl.className)}
+                  chevron={false}
+                  onClick={() => { setSheet({ kind: "member", empId: m.empId }); }}
+                  aria-label={`Open ${m.display}`}
+                >
+                  <div className="flex items-center gap-3">
+                    <InitialsAvatar
+                      initials={m.initials || "?"}
+                      className={m.isSuper ? "border-warning/50 text-warning" : undefined}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="truncate text-sm font-semibold">{m.display}</span>
+                        {m.isSuper && (
+                          <span title="Superadmin (owner)" aria-label="Superadmin (owner)" className="shrink-0">
+                            <Crown className="h-[15px] w-[15px] text-warning" />
                           </span>
-                        ) : null}
-                      </span>
-                    </TableCell>
-                    <TableCell>{employee.employee_Username ?? employee.employee_id}</TableCell>
-                    <TableCell>
-                      <div className="flex flex-wrap gap-1">
-                        {employeeRoles.map((role) => {
-                          const display = isUuid(role) ? (roleIdToName[role] ?? role) : role;
-                          const key = `${employee.employee_id}-${role}`;
-                          return (
-                            <Badge key={key} variant={display === "admin" ? "default" : "secondary"}>
-                              {toTitleCase(display)}
-                            </Badge>
-                          );
-                        })}
+                        )}
                       </div>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <DropdownMenu>
+                      <div className="truncate text-xs text-muted-foreground">@{m.user.employee_Username}</div>
+                    </div>
+                    <div onClick={(e) => { e.stopPropagation(); }} onKeyDown={(e) => { e.stopPropagation(); }}>
+                      <DropdownMenu modal={false}>
                         <DropdownMenuTrigger asChild>
-                          <Button aria-haspopup="true" size="icon" variant="ghost">
-                            <MoreHorizontal className="h-4 w-4" />
-                            <span className="sr-only">Toggle menu</span>
+                          <Button size="icon" variant="ghost" aria-label={`Actions for ${m.display}`} className="h-8 w-8 text-muted-foreground">
+                            <MoreVertical className="h-[18px] w-[18px]" />
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          <DropdownMenuLabel>Actions</DropdownMenuLabel>
-
-                          {/* Each entry below is the permission the route it calls
-                              demands. A menu item that 403s is a menu item that
-                              teaches staff the screen is lying to them. */}
-                          {canAssignRoles ? (
-                          <DropdownMenuSub>
-                            <DropdownMenuSubTrigger>Add Role</DropdownMenuSubTrigger>
-                            <DropdownMenuSubContent>
-                              {assignable.length === 0 ? (
-                                <DropdownMenuItem disabled>No roles available</DropdownMenuItem>
-                              ) : (
-                                assignable.map((roleKey) => (
-                                  <DropdownMenuItem
-                                    key={`${employee.employee_id}-assign-${roleKey}`}
-                                    onClick={() => void handleAssignRole(employee.employee_id, roleKey)}
-                                  >
-                                    {toTitleCase(isUuid(roleKey) ? (roleIdToName[roleKey] ?? roleKey) : roleKey)}
-                                  </DropdownMenuItem>
-                                ))
-                              )}
-                            </DropdownMenuSubContent>
-                          </DropdownMenuSub>
-                          ) : null}
-
-                          {canRemoveRoles ? (
-                          <DropdownMenuSub>
-                            <DropdownMenuSubTrigger>Remove Role</DropdownMenuSubTrigger>
-                            <DropdownMenuSubContent>
-                              {removable.length === 0 ? (
-                                <DropdownMenuItem disabled>No removable roles</DropdownMenuItem>
-                              ) : (
-                                removable.map((roleKey) => (
-                                  <DropdownMenuItem
-                                    key={`${employee.employee_id}-remove-${roleKey}`}
-                                    onClick={() => void handleRemoveRole(employee, roleKey)}
-                                  >
-                                    {toTitleCase(isUuid(roleKey) ? (roleIdToName[roleKey] ?? roleKey) : roleKey)}
-                                  </DropdownMenuItem>
-                                ))
-                              )}
-                            </DropdownMenuSubContent>
-                          </DropdownMenuSub>
-                          ) : null}
-
-                          {canManagePasswords ? (
-                          <DropdownMenuItem
-                            onClick={() => { openResetPassword(
-                              employee.employee_id,
-                              `${employee.emp_Fname ?? ''}${employee.emp_Lname ? ` ${employee.emp_Lname}` : ''}`.trim() || (employee.employee_Username ?? employee.employee_id),
-                            ); }}
-                          >
-                            <KeyRound className="mr-2 h-4 w-4" />
-                            Reset Password
+                          <DropdownMenuItem onSelect={() => { setSheet({ kind: "roles", empId: m.empId }); }}>
+                            <Shield className="mr-2 h-4 w-4" /> Manage roles
                           </DropdownMenuItem>
-                          ) : null}
-
-                          {canRemoveEmployee && !employee.is_superadmin ? (
-                            <DropdownMenuItem
-                              onClick={() => void handleRemoveEmployee(employee.employee_id)}
-                              className="text-destructive"
-                            >
-                              <Trash2 className="mr-2 h-4 w-4" />
-                              Remove Employee
+                          {mayRequest && (
+                            <DropdownMenuItem onSelect={() => { setSheet({ kind: "request", member: m }); }}>
+                              <CalendarX2 className="mr-2 h-4 w-4" /> Request leave
                             </DropdownMenuItem>
-                          ) : null}
+                          )}
+                          {canManagePasswords && (
+                            <DropdownMenuItem onSelect={() => { setSheet({ kind: "reset", employeeId: m.empId, name: m.display }); }}>
+                              <KeyRound className="mr-2 h-4 w-4" /> Reset password
+                            </DropdownMenuItem>
+                          )}
+                          {canRemoveEmployee && !m.isSuper && (
+                            <DropdownMenuItem
+                              className="text-destructive focus:text-destructive"
+                              onSelect={() => { setSheet({ kind: "remove", member: m }); }}
+                            >
+                              <UserMinus className="mr-2 h-4 w-4" /> Remove
+                            </DropdownMenuItem>
+                          )}
                         </DropdownMenuContent>
                       </DropdownMenu>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
-      ) : null}
-
-      {canSeeRoles ? (
-      <Card>
-        <CardHeader className="flex flex-row items-start justify-between gap-4 max-lg:flex-wrap">
-          <div className="max-lg:min-w-0 max-lg:flex-[1_1_14rem]">
-            <CardTitle>Role Access Control</CardTitle>
-            <CardDescription>
-              Create custom roles and configure detailed access for each area. Core roles (admin, employee, valet) are protected.
-            </CardDescription>
-          </div>
-          <Dialog open={isCreateRoleDialogOpen} onOpenChange={setIsCreateRoleDialogOpen}>
-            <DialogTrigger asChild>
-              {/* POST /roles is what both creating and EDITING a role write, so
-                  one permission governs both and the button says so rather than
-                  failing after the form is filled in. */}
-              <Button
-                variant="outline"
-                disabled={!canEditRoles}
-                title={canEditRoles ? undefined : "Creating a role needs the “Create Role” permission"}
-              >
-                Create Custom Role
-              </Button>
-            </DialogTrigger>
-            <DialogContent className="sm:max-w-[740px]">
-              <DialogHeader>
-                <DialogTitle>Create Custom Role</DialogTitle>
-                <DialogDescription>
-                  Choose what this role can access. This role can then be assigned to employees from the list above.
-                </DialogDescription>
-              </DialogHeader>
-
-              <div className="grid gap-3">
-                <div className="grid gap-1">
-                  <Label htmlFor="role-name">Role Name</Label>
-                  <Input
-                    id="role-name"
-                    value={newRoleName}
-                    onChange={(event) => { setNewRoleName(event.target.value); }}
-                    placeholder="e.g. floor_manager"
-                  />
-                </div>
-
-                <div className="max-h-[360px] overflow-y-auto rounded-md border p-3">
-                  {accessCatalog.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">No actions available.</p>
-                  ) : (
-                    accessCatalog.map((group) => (
-                      <div key={group.group} className="mb-3">
-                        <p className="mb-1 text-sm font-semibold">{group.group}</p>
-                        <div className="grid gap-1 sm:grid-cols-2">
-                          {group.actions.map((action) => {
-                            const checked = newRoleActions.includes(action.id);
-                            return (
-                              <label key={action.id} className="flex items-center gap-2 rounded px-2 py-1 hover:bg-muted/40">
-                                <input
-                                  type="checkbox"
-                                  checked={checked}
-                                  onChange={() => { toggleNewRoleAction(action.id); }}
-                                />
-                                <span className="text-sm" title={action.desc ?? ''} aria-label={action.desc ?? ''}>{action.name}</span>
-                              </label>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-
-              <DialogFooter>
-                <Button onClick={() => void handleCreateCustomRole()}>Save Role</Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
-          <Dialog open={isEditRoleDialogOpen} onOpenChange={setIsEditRoleDialogOpen}>
-            <DialogContent className="sm:max-w-[740px]">
-              <DialogHeader>
-                <DialogTitle>{editingRoleWritable ? "Edit Role" : "Role"}</DialogTitle>
-                <DialogDescription>
-                  {editingRoleWritable
-                    ? "Modify the actions linked to this role. Saving signs out everyone holding it, so the new list actually applies."
-                    : roleIsEditable(selectedRoleToEdit) === false
-                      ? "What this role grants. This role is defined in the product and has no write route — a tenant that wants a different split creates a custom role."
-                      : "What this role grants. Changing it needs the “Create Role” permission."}
-                </DialogDescription>
-              </DialogHeader>
-
-              <div className="grid gap-3">
-                <div className="grid gap-1">
-                  <Label>Role Name</Label>
-                  <Input value={selectedRoleToEdit?.role_name ?? ''} readOnly />
-                </div>
-
-                <div className="max-h-[360px] overflow-y-auto rounded-md border p-3">
-                  {accessCatalog.length === 0 ? (
-                    /*
-                      NO CATALOGUE IS NOT "NO PERMISSIONS" — C6 ON A CUSTOM ROLE.
-
-                      The checkbox grid needs GET /actions, which carries its own
-                      permission: it is the list of everything that COULD be
-                      granted. An identity holding View Roles without View Actions
-                      cannot have it, and this panel used to answer them with "No
-                      actions available" — which reads as "this role grants
-                      nothing" and is false.
-
-                      What the role actually holds comes from the role itself now,
-                      so that session sees the grant read-only instead of an empty
-                      box. They still cannot re-grant it, which is correct: that
-                      is what the missing permission means.
-                    */
-                    <>
-                      <PermissionList
-                        role={selectedRoleToEdit}
-                        catalog={actionCatalog}
-                        emptyLabel="This role grants no permissions."
-                      />
-                      <p className="pt-2 text-xs text-muted-foreground">
-                        Shown read-only: changing which permissions a role holds needs the “View Actions”
-                        permission as well, because the full list of grantable permissions is served by it.
-                      </p>
-                    </>
-                  ) : (
-                    accessCatalog.map((group) => (
-                      <div key={group.group} className="mb-3">
-                        <p className="mb-1 text-sm font-semibold">{group.group}</p>
-                        <div className="grid gap-1 sm:grid-cols-2">
-                          {group.actions.map((action) => {
-                            const checked = editRoleActions.includes(action.id);
-                            return (
-                              <label key={action.id} className="flex items-center gap-2 rounded px-2 py-1 hover:bg-muted/40">
-                                <input
-                                  type="checkbox"
-                                  checked={checked}
-                                  disabled={!editingRoleWritable}
-                                  onChange={() => { toggleEditRoleAction(action.id); }}
-                                />
-                                <span className="text-sm" title={action.desc ?? ''} aria-label={action.desc ?? ''}>{action.name}</span>
-                              </label>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-
-              <DialogFooter>
-                {editingRoleWritable ? (
-                  <Button onClick={() => void handleSaveRoleChanges()}>Save Changes</Button>
-                ) : (
-                  <Button variant="outline" onClick={() => { setIsEditRoleDialogOpen(false); }}>Close</Button>
-                )}
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
-          <Dialog open={isViewCoreRoleDialogOpen} onOpenChange={setIsViewCoreRoleDialogOpen}>
-            <DialogContent className="sm:max-w-[560px]">
-              <DialogHeader>
-                <DialogTitle>Core Role: {selectedCoreRoleToView?.role}</DialogTitle>
-                <DialogDescription>Actions granted to this core role.</DialogDescription>
-              </DialogHeader>
-              <div className="p-3">
-                <PermissionList
-                  role={selectedCoreRoleToView}
-                  catalog={actionCatalog}
-                  emptyLabel="No actions configured for this core role."
-                />
-              </div>
-              <DialogFooter>
-                <Button onClick={() => { setIsViewCoreRoleDialogOpen(false); }}>Close</Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
-        </CardHeader>
-
-        <CardContent>
-          <div className="space-y-3">
-            {/* C6 — THE CORE ROLES, CLICKABLE. Each opens a read-only view of
-                exactly what that role grants. The roles themselves are the
-                backend's `CORE_ROLES` table and are not editable from anywhere;
-                a tenant that wants a different split creates a custom role, which
-                is what the list underneath is for. */}
-            <div>
-              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                Core roles — click one to see what it grants
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {coreRoles.length === 0 ? (
-                  // Says WHICH of the two it is. "No core roles available" was
-                  // shown both when the read was refused and when it failed, and
-                  // an owner looking at it had no way to tell a permissions
-                  // problem from an outage.
-                  <p className="text-sm text-muted-foreground">
-                    Core roles could not be loaded. They are served by GET /core-roles, which needs the
-                    “View Roles” permission — if you hold it, the backend is unreachable right now.
-                  </p>
-                ) : (
-                  coreRoles.map((r) => (
-                    <Button key={`core-${r.role}`} variant="outline" size="sm" onClick={() => { openViewCoreRole(r); }}>
-                      {toTitleCase(r.role)} (core)
-                    </Button>
-                  ))
-                )}
-              </div>
-            </div>
-
-            <div>
-              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                Custom roles
-              </p>
-              {roleDefinitions.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No custom roles created yet.</p>
-              ) : (
-                <div className="space-y-2">
-                  {roleDefinitions.map((role) => (
-                      <div key={role.id} className="flex items-center justify-between rounded-md border p-2">
-                        {/* Clickable whether or not you may SAVE: a manager who can
-                            see the roles but not change them still needs to be able
-                            to look at what one grants, which is the same thing C6
-                            asks for on the core roles. The dialog turns itself
-                            read-only rather than disappearing. */}
-                        <button type="button" onClick={() => { openEditRole(role); }} className="text-left">
-                          <p className="font-medium">{toTitleCase(role.role_name)}</p>
-                          {/* NAMES, FROM THE SERVER'S OWN PROJECTION — and the
-                              ids it could not name are still COUNTED into this
-                              line rather than quietly dropped from it. A summary
-                              that is shorter than the grant is how a reviewer
-                              decides a role is safe when it is not. */}
-                          <p className="text-xs text-muted-foreground break-words">
-                            {permissionSummary(renderRolePermissions(role, actionCatalog)) || 'No actions configured'}
-                          </p>
-                        </button>
-                        {canDeleteRoles ? (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="text-destructive"
-                            onClick={() => void handleDeleteCustomRole(role)}
-                          >
-                            <Trash2 className="mr-1 h-4 w-4" />
-                            Delete
-                          </Button>
-                        ) : null}
-                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-2.5 flex flex-wrap gap-1.5">
+                    {m.roleLabels.slice(0, 2).map((r, i) => (
+                      <RoleChip key={`${r}-${String(i)}`} role={r} />
                     ))}
-                </div>
-              )}
-            </div>
+                    {m.roleLabels.length > 2 && <RoleChip role={`+${m.roleLabels.length - 2}`} colorKey="employee" />}
+                  </div>
+                  {(perfNote === "" || onLeaveNow || pending > 0) && (
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      {perfNote === "" && <ScoreChip score={memberScore(m, "")} suffix=" score" />}
+                      {onLeaveNow ? (
+                        <InfoChip icon={<Palmtree />} label="On leave" />
+                      ) : pending > 0 ? (
+                        <StatusChip status="warning" label={`${pending} to review`} dense />
+                      ) : null}
+                    </div>
+                  )}
+                </ForkCard>
+              );
+            })}
           </div>
-        </CardContent>
-      </Card>
-      ) : null}
+        </section>
+
+        {perfNote === "" && (
+          <ScoringBand
+            team={team}
+            perf={perf}
+            money={money}
+            onOpenBoard={(key, title) => { setSheet({ kind: "board", key, title }); }}
+          />
+        )}
+
+        {leaveNote === "" && (
+          <LeaveSection
+            leavePage={leavePage}
+            canReview={canReview}
+            today={today}
+            onOpenLeave={(l) => { setSheet({ kind: "leave", leave: l }); }}
+            onOpenList={(list) => { setSheet({ kind: "list", list }); }}
+            onDecide={onDecide}
+            onRequest={() => { setSheet({ kind: "pick" }); }}
+          />
+        )}
+      </div>
+    );
+  }
+
+  const onOpenChange = (o: boolean): void => { if (!o) { close(); } };
+
+  return (
+    <div className="relative pb-24">
+      {body}
+      {fab}
+      <CacheStalePill offline={offline} fromCache={fromCache} updatedAt={updatedAt} />
+
+      {sheetMember && derived && (
+        <EmployeeSheet
+          member={sheetMember}
+          perfMeta={derived.perf}
+          perfNote={derived.perfNote}
+          leaveNote={derived.leaveNote}
+          canReview={canReview}
+          selfId={selfId}
+          onDecide={onDecide}
+          onOpenLeave={(l) => { setSheet({ kind: "leave", leave: l }); }}
+          onRequestLeave={(m) => { setSheet({ kind: "request", member: m }); }}
+          onOpenChange={onOpenChange}
+        />
+      )}
+      {sheet?.kind === "board" && derived && (
+        <MetricBoard
+          metricKey={sheet.key}
+          title={sheet.title}
+          team={team}
+          perf={derived.perf}
+          perfNote={derived.perfNote}
+          money={money}
+          onOpenMember={(m) => { setSheet({ kind: "member", empId: m.empId }); }}
+          onOpenChange={onOpenChange}
+        />
+      )}
+      {sheet?.kind === "leave" && (
+        <LeaveSheet
+          leave={sheet.leave}
+          canReview={canReview}
+          timezone={timezone}
+          today={today}
+          onDecide={onDecide}
+          onOpenChange={onOpenChange}
+        />
+      )}
+      {sheet?.kind === "list" && (
+        <LeaveListSheet
+          list={sheet.list}
+          onOpenLeave={(l) => { setSheet({ kind: "leave", leave: l }); }}
+          onOpenChange={onOpenChange}
+        />
+      )}
+      {rolesMember && data && (
+        <ManageRolesSheet
+          restaurantId={restaurantId}
+          employee={rolesMember.user}
+          display={rolesMember.display}
+          initials={rolesMember.initials}
+          isSuper={rolesMember.isSuper}
+          customRoles={data.roles}
+          onDone={(changed) => {
+            close();
+            if (changed) { refresh(); }
+          }}
+        />
+      )}
+      {sheet?.kind === "pick" && (
+        <PickMemberDialog
+          team={team}
+          onPick={(m) => { setSheet({ kind: "request", member: m }); }}
+          onOpenChange={onOpenChange}
+        />
+      )}
+      {sheet?.kind === "request" && (
+        <RequestLeaveDialog
+          member={sheet.member}
+          today={today}
+          onSubmit={(v) => submitLeave(sheet.member, v)}
+          onOpenChange={onOpenChange}
+        />
+      )}
+      {sheet?.kind === "reset" && (
+        <ResetPasswordDialog
+          name={sheet.name}
+          onSubmit={(pw) => submitPassword(sheet.employeeId, pw)}
+          onOpenChange={onOpenChange}
+        />
+      )}
+      {sheet?.kind === "add" && data && (
+        <AddEmployeeDialog customRoles={data.roles} onSubmit={submitAdd} onOpenChange={onOpenChange} />
+      )}
+      <ConfirmDialog
+        open={sheet?.kind === "remove"}
+        title="Remove employee"
+        body={sheet?.kind === "remove" ? `Remove ${sheet.member.display}? This cannot be undone.` : ""}
+        confirmLabel="Remove"
+        onConfirm={() => {
+          if (sheet?.kind === "remove") { doRemove(sheet.member); }
+          close();
+        }}
+        onOpenChange={onOpenChange}
+      />
     </div>
   );
 }
 
-function AddEmployeeForm({ onSubmit, customRoles = [] }: { onSubmit: (data: AddEmployeeFormData) => void; customRoles?: RoleDefinition[] }) {
-  const {
-    register,
-    handleSubmit,
-    control,
-    reset,
-    formState: { errors },
-  } = useForm<AddEmployeeFormData>({
-    resolver: zodResolver(addEmployeeSchema),
-  });
-
-  const handleFormSubmit = (data: AddEmployeeFormData) => {
-    onSubmit(data);
-    reset();
-  };
-
-  // Keeps the phone field at 10 bare digits as it is typed or pasted.
-  const phoneField = register("phone");
-
+export default function EmployeesPage(): JSX.Element {
   return (
-    <form onSubmit={handleSubmit(handleFormSubmit)} className="grid gap-4 py-4">
-      <div className="grid grid-cols-4 items-center gap-4">
-        <Label htmlFor="name" className="text-right">
-          Full Name
-        </Label>
-        <div className="col-span-3">
-          <Input id="name" {...register("name")} placeholder="e.g., John Doe" />
-          {errors.name ? <p className="mt-1 text-sm text-destructive">{errors.name.message}</p> : null}
-        </div>
-      </div>
-
-      
-
-      <div className="grid grid-cols-4 items-center gap-4">
-        <Label htmlFor="username" className="text-right">Username</Label>
-        <div className="col-span-3">
-          <Input id="username" {...register("username")} placeholder="e.g., jdoe" />
-          {errors.username ? <p className="mt-1 text-sm text-destructive">{errors.username.message}</p> : null}
-        </div>
-      </div>
-
-      <div className="grid grid-cols-4 items-center gap-4">
-        <Label htmlFor="email" className="text-right">Email</Label>
-        <div className="col-span-3">
-          <Input id="email" {...register("email")} placeholder="e.g., jdoe@example.com" />
-          {errors.email ? <p className="mt-1 text-sm text-destructive">{errors.email.message}</p> : null}
-        </div>
-      </div>
-
-      <div className="grid grid-cols-4 items-center gap-4">
-        <Label htmlFor="phone" className="text-right">Phone</Label>
-        <div className="col-span-3">
-          <Input
-            id="phone"
-            type="tel"
-            {...PHONE_INPUT_PROPS}
-            {...phoneField}
-            onChange={(e) => { e.target.value = sanitizePhoneInput(e.target.value); void phoneField.onChange(e); }}
-            placeholder="10-digit mobile (optional)"
-          />
-          {errors.phone ? <p className="mt-1 text-sm text-destructive">{errors.phone.message}</p> : null}
-        </div>
-      </div>
-
-      <div className="grid grid-cols-4 items-center gap-4">
-        <Label htmlFor="address" className="text-right">Address</Label>
-        <div className="col-span-3">
-          <Input id="address" {...register("address")} placeholder="Optional address" />
-          {errors.address ? <p className="mt-1 text-sm text-destructive">{errors.address.message}</p> : null}
-        </div>
-      </div>
-
-      <div className="grid grid-cols-4 items-center gap-4">
-        <Label htmlFor="role" className="text-right">
-          Role
-        </Label>
-        <div className="col-span-3">
-          <Controller
-            name="role"
-            control={control}
-            render={({ field }) => (
-              <Select onValueChange={field.onChange} defaultValue={field.value}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select a role" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="employee">Employee</SelectItem>
-                  <SelectItem value="admin">Admin</SelectItem>
-                  <SelectItem value="valet">Valet</SelectItem>
-                  <SelectItem value="cashier">Cashier</SelectItem>
-                  <SelectItem value="captain">Captain</SelectItem>
-                  <SelectItem value="manager">Manager</SelectItem>
-                  {/* Custom roles from Roles & Permissions — assigned by uuid, which
-                      the backend resolves against "Roles". Without these a custom
-                      role could only be granted AFTER the user was created. */}
-                  {customRoles
-                    .filter((r) => r.id && r.role_name)
-                    .map((r) => (
-                      <SelectItem key={r.id} value={r.id}>{r.role_name} (custom)</SelectItem>
-                    ))}
-                </SelectContent>
-              </Select>
-            )}
-          />
-          {errors.role ? <p className="mt-1 text-sm text-destructive">{errors.role.message}</p> : null}
-        </div>
-      </div>
-
-      <div className="grid grid-cols-4 items-center gap-4">
-        <Label htmlFor="password" className="text-right">
-          Password
-        </Label>
-        <div className="col-span-3">
-          <Input id="password" type="password" {...register("password")} />
-          {errors.password ? <p className="mt-1 text-sm text-destructive">{errors.password.message}</p> : null}
-        </div>
-      </div>
-
-      <DialogFooter>
-        <Button type="submit">Save Employee</Button>
-      </DialogFooter>
-    </form>
-  );
-}
-
-// useSearchParams (via useHighlightRow) requires a Suspense boundary
-// (same pattern as the accounting and queue pages).
-export default function EmployeesPage() {
-  return (
-    <Suspense fallback={<div className="py-10 text-center text-muted-foreground">Loading…</div>}>
+    <Suspense fallback={<SkeletonRows rows={6} />}>
       <EmployeesPageInner />
     </Suspense>
   );

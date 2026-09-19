@@ -153,7 +153,7 @@ export function BillActions({
           {/* First, because it is the only one of these that is a CORRECTION
               rather than a decision: somebody noticed the wrong name on a bill
               they are about to hand over. */}
-          <DropdownMenuItem onClick={() => { setCustomerOpen(true); }}>Edit name / GSTIN…</DropdownMenuItem>
+          <DropdownMenuItem onClick={() => { setCustomerOpen(true); }}>Edit name / GSTIN / address…</DropdownMenuItem>
           <DropdownMenuItem onClick={() => { setDialog("discount"); }}>Discount</DropdownMenuItem>
           <DropdownMenuItem onClick={() => { setDialog("loyalty"); }}>Loyalty</DropdownMenuItem>
           <DropdownMenuItem onClick={() => { setDialog("split"); }}>Split bill</DropdownMenuItem>

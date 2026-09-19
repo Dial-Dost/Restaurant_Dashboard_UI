@@ -193,7 +193,7 @@ describe('after a move, the clocks are re-read along with the grid', () => {
     });
 
     // Fixed paths under src/, named in this file — not user input.
-    // eslint-disable-next-line security/detect-non-literal-fs-filename
+     
     const src = (rel: string): string => readFileSync(join(__dirname, '..', '..', rel), 'utf8');
 
     it('both move handlers on the tables page use it — a grid-only reload is the bug', () => {
@@ -205,9 +205,12 @@ describe('after a move, the clocks are re-read along with the grid', () => {
         };
         for (const name of ['handleMoveParty', 'handleMoveOrder']) {
             const body = handler(name);
-            expect([name, body.includes('refreshAfterTableMove({ tables: loadTables, orders: reloadOrders })')]).toEqual([name, true]);
-            expect([name, body.includes('await loadTables();')]).toEqual([name, false]);
+            // Both go through reloadBoth, which is refreshAfterTableMove over grid AND orders.
+            expect([name, body.includes('await reloadBoth();')]).toEqual([name, true]);
+            expect([name, /await (loadTables|refresh)\(\);/.test(body)]).toEqual([name, false]);
         }
+        const both = page.slice(page.indexOf('const reloadBoth = React.useCallback('));
+        expect(both.slice(0, both.indexOf('}, ['))).toContain('refreshAfterTableMove({ tables: () => { refresh(); return Promise.resolve(); }, orders: reloadOrders })');
         // …and a move made on another device reaches the same refresh.
         expect(page).toMatch(/isTableMoveEvent\(/);
     });

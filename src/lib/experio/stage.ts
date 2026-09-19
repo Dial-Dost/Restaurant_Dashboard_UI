@@ -25,7 +25,7 @@ export const objectState = {
 /** Where the dashboard frame currently sits, in normalized coords. */
 export const dashRect = { x0: -0.05, y0: -0.62, x1: 0.93, y1: 0.62 };
 
-export type Module = { label: string; nx: number; ny: number };
+export interface Module { label: string; nx: number; ny: number }
 
 /** Six real CuisineFlow modules on a ring around the centered object (act 4).
  * Labels are content; the nx/ny ring geometry is mechanics — leave it. */
@@ -40,12 +40,12 @@ export const MODULES: Module[] = [
 
 const CENTER = { nx: 0, ny: 0.04 };
 
-export type Ribbon = {
+export interface Ribbon {
   p0: [number, number];
   p1: [number, number];
   p2: [number, number];
   p3: [number, number];
-};
+}
 
 /** Cubic bezier per module, sagging like silk between hub and satellite. */
 export const RIBBONS: Ribbon[] = MODULES.map((m) => {

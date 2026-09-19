@@ -334,9 +334,9 @@ const toTableStatus = (booked: unknown, reserved: unknown, occupied?: unknown, p
     // A table inside an ACTIVE booking window (get-tables booked=true) is NOT
     // physically occupied — it is "Booked" (an in-progress reservation). It must
     // stay visually distinct from Occupied and remain orderable/occupiable.
-    if (Boolean(booked)) {return 'Booked';}
+    if (booked) {return 'Booked';}
     // An upcoming (future-window) booking marks the table "Reserved".
-    if (Boolean(reserved)) {return 'Reserved';}
+    if (reserved) {return 'Reserved';}
     return 'Available';
 };
 
@@ -2864,6 +2864,11 @@ export interface RefreshedSession {
       change takes effect on the next launch instead of the next login.
     */
     scope?: SessionScope;
+    /*
+      The subscription plan's feature-flag map — the same `features` the login
+      payload carries. Read additively (usePlanFeatures): absent means allowed.
+    */
+    features?: Record<string, unknown>;
 }
 
 /**
@@ -4800,6 +4805,26 @@ export const markAllNotificationsRead = async (restaurantId: string): Promise<vo
 
 export const deleteNotification = async (restaurantId: string, id: string): Promise<void> => {
     await backendCall(`/notifications/${encodeURIComponent(id)}`, restaurantId, { method: 'DELETE' });
+};
+
+/** The bell header's red "Clear all" — DELETE /notifications, same as Flutter. */
+export const clearAllNotifications = async (restaurantId: string): Promise<void> => {
+    await backendCall('/notifications', restaurantId, { method: 'DELETE' });
+};
+
+/**
+ * The thermal bill print for one table — POST /print/bill, exactly what the
+ * table sheet's own Print button sends. Used by the shell's reprint-needed
+ * prompt so a senior can put the right total in front of the guest without
+ * hunting for the table first (reprint_needed.dart).
+ */
+export const printTableBill = async (restaurantId: string, tableName: string): Promise<void> => {
+    const res = await backendCall('/print/bill', restaurantId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ table_name: tableName }),
+    });
+    if (!res?.ok) {throw new Error(res ? await readErrorMessage(res) : 'Unable to print the bill');}
 };
 
 // --- Multi-outlet -----------------------------------------------------------

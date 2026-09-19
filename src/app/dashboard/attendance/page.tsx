@@ -1,234 +1,432 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+// Attendance — Flutter parity (docs/parity/attendance.md; modules.dart
+// `_AttendanceView`). Tiles → my-shift card → pending approval → team hours,
+// with the four drill-down sheets and the lazily-read punctuality block.
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { JSX } from "react";
+import { Briefcase, Check, Hourglass, LogIn, LogOut, Repeat, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Clock, LogIn, LogOut, RefreshCw } from "lucide-react";
-import { useAuth } from "@/context/AuthContext";
+import { DrillSheet } from "@/components/ui/drill-sheet";
+import { ForkCard } from "@/components/ui/fork-card";
+import { SkeletonRows, SkeletonStats } from "@/components/ui/fork-skeleton";
+import { LoadErrorState } from "@/components/ui/load-error-state";
+import { MicroStat } from "@/components/ui/micro-stat";
+import { SectionHeader } from "@/components/ui/section-header";
+import { CacheStalePill } from "@/components/ui/stale-pill";
+import { StatCard } from "@/components/ui/stat-card";
+import { InfoChip, StatusChip } from "@/components/ui/status-chip";
+import { useCachedFetch } from "@/hooks/use-cached-fetch";
+import { usePlanFeatures } from "@/hooks/use-plan-features";
 import { useToast } from "@/hooks/use-toast";
-import { daysAgoInZone, formatDateTime, formatTime, todayInZone } from "@/lib/tz";
+import { useAuth } from "@/context/AuthContext";
 import { useTimezone } from "@/lib/use-timezone";
-import type {
-  MyAttendance,
-  AttendanceSummaryRow,
-  PendingClockIn} from "@/lib/db";
+import { todayInZone } from "@/lib/tz";
+import { hasPermission, PERM_ACCOUNTING } from "@/lib/mis-capture";
+import { cn } from "@/lib/utils";
 import {
-  reviewClockIn,
-  getMyAttendance,
-  clockIn,
-  clockOut,
-  getAttendanceSummary,
-} from "@/lib/db";
+  fetchAttendanceBoard,
+  fetchPunctuality,
+  reviewAttendance,
+  toggleClock,
+} from "@/lib/api/attendance";
+import type { AttendanceBoard, AttendanceSummaryRow, PendingClockIn } from "@/lib/api/attendance";
+import { Avatar, Kv, PunctualityBlock, SheetRecordRow } from "@/components/attendance/bits";
+import type { PunctualityState } from "@/components/attendance/bits";
+import { clock, dayLabel, hm, shiftMinutes, stamp, windowLabel, zoneLabel } from "@/components/attendance/format";
 
-const fmtMinutes = (m: number) => {
-  const mins = Math.max(0, Math.round(m));
-  const h = Math.floor(mins / 60);
-  const r = mins % 60;
-  return h > 0 ? `${h}h ${r}m` : `${r}m`;
-};
+/** Flutter `_analyticsPermissionId` — the analytics action id. */
+const ANALYTICS_PERMISSION = PERM_ACCOUNTING;
+const COPPER = "hsl(var(--primary))";
+const RUNAWAY_MINUTES = 16 * 60;
 
-export default function AttendancePage() {
+type Sheet =
+  | { kind: "me" }
+  | { kind: "pending"; row: PendingClockIn }
+  | { kind: "team"; row: AttendanceSummaryRow }
+  | { kind: "people-pending" }
+  | { kind: "people-on-shift" };
+
+const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+const stop = { onClick: (e: React.SyntheticEvent) => { e.stopPropagation(); }, onKeyDown: (e: React.SyntheticEvent) => { e.stopPropagation(); } };
+
+export default function AttendancePage(): JSX.Element {
   const { user } = useAuth();
   const { toast } = useToast();
   const { timezone } = useTimezone();
-  // A shift that starts at 22:00 and ends at 02:00 belongs to the restaurant's
-  // day, not UTC's — the old `toISOString().slice(0, 10)` split those in two.
-  const todayIso = useCallback(() => todayInZone(timezone), [timezone]);
-  const daysAgoIso = useCallback((n: number) => daysAgoInZone(n, timezone), [timezone]);
+  const { featureEnabled } = usePlanFeatures();
   const restaurantId = user?.restaurantUsername ?? "";
 
   const isManager = useMemo(() => {
-    if (!user) {return false;}
+    if (!user) { return false; }
     const roles = [user.role, ...(Array.isArray(user.role_all) ? user.role_all : [])];
     return roles.includes("admin") || roles.includes("manager");
   }, [user]);
+  const canReadPunctuality = hasPermission(user?.actions_set, ANALYTICS_PERMISSION) && featureEnabled("analytics");
 
-  const [me, setMe] = useState<MyAttendance | null>(null);
-  const [busy, setBusy] = useState(false);
+  const fetcher = useCallback(() => fetchAttendanceBoard(restaurantId, isManager), [restaurantId, isManager]);
+  const { data, loading, error, offline, fromCache, updatedAt, retry, refresh } = useCachedFetch<AttendanceBoard>(
+    `attendance:${restaurantId}:${isManager ? "m" : "s"}`,
+    fetcher,
+    { enabled: Boolean(restaurantId) },
+  );
 
-  const [from, setFrom] = useState(daysAgoIso(29));
-  const [to, setTo] = useState(todayIso());
-  const [rows, setRows] = useState<AttendanceSummaryRow[]>([]);
-  const [pending, setPending] = useState<PendingClockIn[]>([]);
-  const [summaryLoading, setSummaryLoading] = useState(false);
+  // Refetch when the tab regains focus — the web stand-in for pull-to-refresh.
+  useEffect(() => {
+    const onFocus = (): void => { if (document.visibilityState === "visible") { refresh(); } };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+    };
+  }, [refresh]);
 
-  const loadMe = useCallback(async () => {
-    if (!restaurantId) {return;}
-    try {
-      setMe(await getMyAttendance(restaurantId));
-    } catch {
-      setMe(null);
-    }
+  // Punctuality: one memoised GET, requested the first time a sheet shows it.
+  const punctualityRequested = useRef(false);
+  const [punctuality, setPunctuality] = useState<PunctualityState>({ status: "idle" });
+  const ensurePunctuality = useCallback(() => {
+    if (punctualityRequested.current || !restaurantId) { return; }
+    punctualityRequested.current = true;
+    setPunctuality({ status: "loading" });
+    fetchPunctuality(restaurantId)
+      .then((byEmp) => { setPunctuality({ status: "done", byEmp }); })
+      .catch((e: unknown) => { setPunctuality({ status: "error", error: errText(e) }); });
   }, [restaurantId]);
 
-  const loadSummary = useCallback(async () => {
-    if (!restaurantId || !isManager) {return;}
-    setSummaryLoading(true);
-    try {
-      const res = await getAttendanceSummary(restaurantId, from, to);
-      setRows(res.rows);
-      setPending(res.pending ?? []);
-    } catch {
-      setRows([]);
-      setPending([]);
-    } finally {
-      setSummaryLoading(false);
-    }
-  }, [restaurantId, isManager, from, to]);
+  const [sheet, setSheet] = useState<Sheet | null>(null);
+  const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    void loadMe();
-  }, [loadMe]);
+  const me = data?.me;
+  const clockedIn = me?.clocked_in === true;
+  const todayMins = me?.today_minutes ?? 0;
+  const pending = data?.pending ?? [];
+  const team = data?.team ?? [];
+  const onShift = team.filter((t) => t.open);
+  const period = windowLabel(data?.from ?? "", data?.to ?? "", timezone);
 
-  useEffect(() => {
-    void loadSummary();
-  }, [loadSummary]);
-
-  const toggleClock = async () => {
-    if (!restaurantId || !me) {return;}
+  const doToggle = async (): Promise<void> => {
+    if (!restaurantId || !me || busy) { return; }
     setBusy(true);
     try {
-      const ok = me.clocked_in ? await clockOut(restaurantId) : await clockIn(restaurantId);
-      if (!ok) {
-        toast({ title: "Couldn't update attendance", variant: "destructive" });
-      } else {
-        toast({ title: me.clocked_in ? "Clocked out" : "Clocked in" });
-      }
-      await loadMe();
-      await loadSummary();
+      await toggleClock(restaurantId, !clockedIn);
+    } catch (e) {
+      toast({ title: errText(e), variant: "destructive" });
     } finally {
+      refresh();
       setBusy(false);
     }
   };
 
-  const totalMinutes = rows.reduce((s, r) => s + r.minutes, 0);
+  const doReview = async (id: string, approve: boolean): Promise<void> => {
+    try {
+      await reviewAttendance(restaurantId, id, approve);
+    } catch (e) {
+      toast({ title: errText(e), variant: "destructive" });
+    } finally {
+      // Whole-screen reload: my own "awaiting approval" note clears too.
+      refresh();
+    }
+  };
+
+  const pendingSub = (p: PendingClockIn): string =>
+    p.clock_out ? `In ${clock(p.clock_in, timezone)} · out ${clock(p.clock_out, timezone)}` : `In ${clock(p.clock_in, timezone)} · still on shift`;
+
+  if (loading) {
+    return (
+      <div className="grid gap-4">
+        <SkeletonStats tiles={isManager ? 3 : 1} />
+        <SkeletonRows rows={6} title />
+      </div>
+    );
+  }
+  if (error || !data) {
+    return <LoadErrorState whatFailed="Could not load attendance" error={error} onRetry={retry} />;
+  }
+
+  // --- sheets -----------------------------------------------------------------
+  const renderSheet = (): { eyebrow: string; title: string; body: JSX.Element } | null => {
+    if (!sheet) { return null; }
+    const small = "text-xs text-muted-foreground";
+    switch (sheet.kind) {
+      case "me":
+        return {
+          eyebrow: "Attendance · my day",
+          title: dayLabel(todayInZone(timezone), timezone),
+          body: (
+            <>
+              <Kv label="Hours today" value={hm(todayMins)} />
+              <Kv label="Right now" value={clockedIn ? "On shift" : "Off shift"} />
+              <Kv label="Since" value={me?.since ? stamp(me.since, timezone) : "—"} />
+              <Kv label="Timezone" value={zoneLabel(timezone)} />
+              {me?.pending_approval && <Kv label="Approval" value="One clock-in today is awaiting review" />}
+              <p className={cn(small, "mt-3.5")}>
+                Every shift you started today is added together. A rejected clock-in is left out; an open shift is
+                counted up to this moment, so this figure keeps rising while you are on it.
+              </p>
+              <SectionHeader title="My punctuality — last 30 days" className="mb-2 mt-5" />
+              <PunctualityBlock empId={user?.employeeId ?? ""} allowed={canReadPunctuality} state={punctuality} ensure={ensurePunctuality} />
+              <Button size="sm" className="mt-3.5" disabled={busy} onClick={() => { setSheet(null); void doToggle(); }}>
+                {clockedIn ? <LogOut className="mr-2 h-4 w-4" /> : <LogIn className="mr-2 h-4 w-4" />}
+                {clockedIn ? "Clock out" : "Clock in"}
+              </Button>
+            </>
+          ),
+        };
+      case "pending": {
+        const p = sheet.row;
+        const mins = shiftMinutes(p.clock_in, p.clock_out);
+        const open = !p.clock_out;
+        return {
+          eyebrow: "Attendance · pending approval",
+          title: p.name || "Employee",
+          body: (
+            <>
+              <Kv label="Clocked in" value={stamp(p.clock_in, timezone)} />
+              <Kv label="Clocked out" value={p.clock_out ? stamp(p.clock_out, timezone) : "Still on shift"} />
+              <Kv label="Length" value={mins == null ? "—" : `${hm(mins)}${open ? " so far" : ""}`} />
+              <Kv label="Status" value="Awaiting approval" />
+              <div className="mt-3">
+                <PunctualityBlock empId={p.emp_id} allowed={canReadPunctuality} state={punctuality} ensure={ensurePunctuality} baselineOnly />
+              </div>
+              {open && mins != null && mins > RUNAWAY_MINUTES && (
+                <p className="mt-3 text-xs font-medium text-warning">
+                  Still open after more than 16 hours. Payroll and staff analytics both credit a shift at 16 hours, so
+                  approving this as it stands records a length nothing else will agree with — check for a missed
+                  clock-out first.
+                </p>
+              )}
+              <p className={cn(small, "mt-3.5")}>
+                Approving keeps the clock-in time above exactly as recorded — the decision is stamped separately.
+              </p>
+              <div className="mt-3 flex gap-2">
+                <Button size="sm" onClick={() => { setSheet(null); void doReview(p.id, true); }}>
+                  <Check className="mr-1.5 h-4 w-4" /> Approve
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => { setSheet(null); void doReview(p.id, false); }}>
+                  <X className="mr-1.5 h-4 w-4" /> Reject
+                </Button>
+              </div>
+            </>
+          ),
+        };
+      }
+      case "team": {
+        const t = sheet.row;
+        return {
+          eyebrow: "Attendance · team hours",
+          title: t.name || "Employee",
+          body: (
+            <>
+              <Kv label="Hours" value={hm(t.minutes)} />
+              <Kv label="Shifts" value={t.shifts} />
+              <Kv label="Average shift" value={t.shifts > 0 ? hm(Math.floor(t.minutes / t.shifts)) : "—"} />
+              <Kv label="Right now" value={t.open ? "On shift" : "Off shift"} />
+              {period && <Kv label="Period" value={period} />}
+              <p className={cn(small, "mt-3.5")}>
+                Totals count approved shifts only — a pending or rejected clock-in adds nothing here. An open shift is
+                counted up to this moment.
+              </p>
+              <SectionHeader title="Punctuality — last 30 days" className="mb-2 mt-5" />
+              <PunctualityBlock empId={t.emp_id} allowed={canReadPunctuality} state={punctuality} ensure={ensurePunctuality} />
+            </>
+          ),
+        };
+      }
+      case "people-pending":
+        return {
+          eyebrow: "Attendance · pending approval",
+          title: `${pending.length} clock-in${pending.length === 1 ? "" : "s"} awaiting review`,
+          body: (
+            <>
+              <p className={cn(small, "mb-4")}>
+                Each one is already recorded — approving confirms the time as clocked, it does not set it. Open a name
+                to review it.
+              </p>
+              {pending.map((p) => {
+                const mins = shiftMinutes(p.clock_in, p.clock_out);
+                return (
+                  <SheetRecordRow
+                    key={p.id}
+                    title={p.name || "Employee"}
+                    sub={pendingSub(p)}
+                    trailing={mins == null ? "" : hm(mins)}
+                    // Replace rather than stack.
+                    onClick={() => { setSheet({ kind: "pending", row: p }); }}
+                  />
+                );
+              })}
+            </>
+          ),
+        };
+      case "people-on-shift":
+        return {
+          eyebrow: "Attendance · on shift",
+          title: `${onShift.length} on shift now`,
+          body: (
+            <>
+              <p className={cn(small, "mb-4")}>
+                Clocked in with no clock-out yet, over {period || "the summarised window"}. Hours shown are this
+                window&apos;s total, not the open shift alone.
+              </p>
+              {onShift.map((t) => (
+                <SheetRecordRow
+                  key={t.emp_id}
+                  title={t.name || "Employee"}
+                  sub={`${t.shifts} shift${t.shifts === 1 ? "" : "s"} in the window`}
+                  trailing={hm(t.minutes)}
+                  onClick={() => { setSheet({ kind: "team", row: t }); }}
+                />
+              ))}
+            </>
+          ),
+        };
+    }
+  };
+  const openSheet = renderSheet();
 
   return (
-    <div className="grid gap-4 md:gap-8">
-      <h1 className="text-lg font-semibold md:text-2xl">Attendance</h1>
+    <div className="relative grid gap-4">
+      <CacheStalePill offline={offline} fromCache={fromCache} updatedAt={updatedAt} />
 
-      {/* My attendance */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Clock className="h-4 w-4" /> My shift
-          </CardTitle>
-          <CardDescription>Clock in when you start and out when you finish.</CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-wrap items-center justify-between gap-4">
-          <div>
-            {me?.clocked_in ? (
-              <p className="text-sm">
-                <span className="font-medium text-green-600">Clocked in</span>
-                {me.since ? ` since ${formatTime(me.since, timezone)}` : ""}
-              </p>
-            ) : (
-              <p className="text-sm text-muted-foreground">Not clocked in</p>
+      {/* 1. Stat tiles */}
+      <div className={cn("grid grid-cols-1 gap-4", isManager && "min-[760px]:grid-cols-3")}>
+        <StatCard
+          value={hm(todayMins)}
+          caption="HOURS TODAY"
+          tag={clockedIn ? "On shift" : undefined}
+          tagColor={COPPER}
+          onClick={() => { setSheet({ kind: "me" }); }}
+        />
+        {isManager && (
+          <StatCard
+            value={String(pending.length)}
+            caption="PENDING APPROVALS"
+            tag={pending.length > 0 ? "Review" : undefined}
+            tagColor="hsl(var(--warning))"
+            // Nothing waiting is nothing to open: inert at zero.
+            onClick={pending.length === 0 ? undefined : () => { setSheet({ kind: "people-pending" }); }}
+          />
+        )}
+        {isManager && (
+          <StatCard
+            value={String(onShift.length)}
+            caption="ON SHIFT NOW"
+            onClick={onShift.length === 0 ? undefined : () => { setSheet({ kind: "people-on-shift" }); }}
+          />
+        )}
+      </div>
+
+      {/* 2. My shift card */}
+      <ForkCard onClick={() => { setSheet({ kind: "me" }); }}>
+        <div className="flex items-center gap-3 pr-5">
+          <span
+            aria-hidden
+            className={cn(
+              "flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] border transition-colors duration-base",
+              clockedIn ? "border-[hsl(var(--primary)/0.4)] bg-[hsl(var(--primary)/0.12)] text-accent-foreground" : "border-border bg-inset text-muted-foreground",
             )}
-            <p className="text-2xl font-semibold">{fmtMinutes(me?.today_minutes ?? 0)} <span className="text-sm font-normal text-muted-foreground">today</span></p>
-            {me?.pending_approval ? (
-              <p className="mt-1 text-xs font-medium text-amber-600 dark:text-amber-400">⏳ Awaiting admin approval — your clock-in time is already recorded.</p>
-            ) : null}
+          >
+            <Briefcase className="h-5 w-5" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-semibold text-foreground">
+                {clockedIn ? `Clocked in · since ${clock(data.me.since, timezone) || "—"}` : "Not clocked in"}
+              </span>
+              {clockedIn
+                ? <StatusChip key="on" color={COPPER} label="On shift" dense />
+                : <StatusChip key="off" status="neutral" label="Off shift" dense />}
+            </div>
+            {me?.pending_approval && (
+              <p className="mt-1 flex items-center gap-1 text-xs font-medium text-warning">
+                <Hourglass className="h-[13px] w-[13px]" />
+                Awaiting admin approval — your clock-in time is already recorded.
+              </p>
+            )}
           </div>
-          <Button onClick={() => void toggleClock()} disabled={busy || !me} variant={me?.clocked_in ? "destructive" : "default"}>
-            {me?.clocked_in ? <LogOut className="mr-2 h-4 w-4" /> : <LogIn className="mr-2 h-4 w-4" />}
-            {me?.clocked_in ? "Clock out" : "Clock in"}
-          </Button>
-        </CardContent>
-      </Card>
+          <div {...stop} className="shrink-0">
+            <Button size="sm" onClick={() => void doToggle()} disabled={busy || !me}>
+              {clockedIn ? <LogOut className="mr-2 h-4 w-4" /> : <LogIn className="mr-2 h-4 w-4" />}
+              {busy ? "…" : clockedIn ? "Clock out" : "Clock in"}
+            </Button>
+          </div>
+        </div>
+      </ForkCard>
 
-      {/* Pending clock-in approvals (admin/manager) */}
+      {/* 3. Pending approval (manager, only when non-empty) */}
       {isManager && pending.length > 0 && (
-        <Card className="border-amber-300 dark:border-amber-800">
-          <CardHeader>
-            <CardTitle className="text-base">Pending clock-in approvals ({pending.length})</CardTitle>
-            <CardDescription>Approving keeps the employee&apos;s original clock-in time — approval never changes when they clocked in.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {pending.map((p) => (
-              <div key={p.id} className="flex flex-wrap items-center gap-3 rounded-lg border bg-amber-50/50 p-2 text-sm dark:bg-amber-950/20">
-                <div className="min-w-0 flex-1">
-                  <p className="font-medium">{p.name}</p>
-                  <p className="text-xs text-muted-foreground">
-                    Clocked in {formatDateTime(p.clock_in, timezone)}
-                    {p.clock_out ? ` → out ${formatTime(p.clock_out, timezone)}` : " · still on shift"}
-                  </p>
+        <section className="grid gap-2">
+          <SectionHeader title="Pending approval" count={pending.length} />
+          <p className="-mt-1 text-xs text-muted-foreground">Approving keeps the employee&apos;s original clock-in time.</p>
+          {pending.map((p) => (
+            <ForkCard key={p.id} onClick={() => { setSheet({ kind: "pending", row: p }); }} className="py-3">
+              <div className="flex flex-col gap-2.5 pr-5 min-[760px]:flex-row min-[760px]:items-center">
+                <div className="flex min-w-0 flex-1 items-center gap-3">
+                  <Avatar name={p.name} warning />
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-semibold text-foreground">{p.name || "Employee"}</div>
+                    <div className="mt-1 flex flex-wrap gap-1.5">
+                      <InfoChip icon={<LogIn />} label={`In ${clock(p.clock_in, timezone)}`} />
+                      {p.clock_out
+                        ? <StatusChip key="ended" status="neutral" label="Shift ended" dense />
+                        : <StatusChip key="on" color={COPPER} label="On shift" dense />}
+                    </div>
+                  </div>
                 </div>
-                <Button size="sm" onClick={async () => { try { await reviewClockIn(restaurantId, p.id, true); toast({ title: "Clock-in approved" }); await loadSummary(); } catch (e: any) { toast({ title: "Couldn't approve", description: String(e?.message ?? e), variant: "destructive" }); } }}>Approve</Button>
-                <Button size="sm" variant="outline" onClick={async () => { try { await reviewClockIn(restaurantId, p.id, false); toast({ title: "Clock-in rejected" }); await loadSummary(); } catch (e: any) { toast({ title: "Couldn't reject", description: String(e?.message ?? e), variant: "destructive" }); } }}>Reject</Button>
+                <div {...stop} className="flex shrink-0 gap-2">
+                  <Button size="sm" onClick={() => void doReview(p.id, true)}>
+                    <Check className="mr-1.5 h-4 w-4" /> Approve
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => void doReview(p.id, false)}>
+                    <X className="mr-1.5 h-4 w-4" /> Reject
+                  </Button>
+                </div>
               </div>
-            ))}
-          </CardContent>
-        </Card>
+            </ForkCard>
+          ))}
+        </section>
       )}
 
-      {/* Team hours (admin/manager) */}
+      {/* 4. Team hours (manager) */}
       {isManager && (
-        <Card>
-          <CardHeader className="flex flex-row flex-wrap items-end justify-between gap-3">
-            <div>
-              <CardTitle className="text-base">Team hours</CardTitle>
-              <CardDescription>Worked hours per employee over the selected range.</CardDescription>
-            </div>
-            <div className="flex items-end gap-2 max-sm:w-full max-sm:flex-wrap max-sm:justify-end">
-              <div className="grid min-w-0 flex-[1_1_9rem] gap-1 sm:flex-none">
-                <label className="text-xs text-muted-foreground">From</label>
-                <Input type="date" value={from} max={to} onChange={(e) => { setFrom(e.target.value); }} className="h-9 w-full sm:w-[150px]" />
-              </div>
-              <div className="grid min-w-0 flex-[1_1_9rem] gap-1 sm:flex-none">
-                <label className="text-xs text-muted-foreground">To</label>
-                <Input type="date" value={to} min={from} max={todayIso()} onChange={(e) => { setTo(e.target.value); }} className="h-9 w-full sm:w-[150px]" />
-              </div>
-              <Button variant="outline" size="icon" onClick={() => void loadSummary()} disabled={summaryLoading} aria-label="Refresh">
-                <RefreshCw className={`h-4 w-4 ${summaryLoading ? "animate-spin" : ""}`} />
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Employee</TableHead>
-                  <TableHead className="text-right">Shifts</TableHead>
-                  <TableHead className="text-right">Hours</TableHead>
-                  <TableHead className="text-right">Status</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {rows.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={4} className="text-center text-sm text-muted-foreground">
-                      {summaryLoading ? "Loading…" : "No attendance recorded for this range."}
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  rows.map((r) => (
-                    <TableRow key={r.emp_id}>
-                      <TableCell className="font-medium">{r.name}</TableCell>
-                      <TableCell className="text-right">{r.shifts}</TableCell>
-                      <TableCell className="text-right">{fmtMinutes(r.minutes)}</TableCell>
-                      <TableCell className="text-right">
-                        {r.open ? <Badge variant="secondary">on shift</Badge> : <span className="text-xs text-muted-foreground">—</span>}
-                      </TableCell>
-                    </TableRow>
-                  ))
-                )}
-                {rows.length > 0 && (
-                  <TableRow>
-                    <TableCell className="font-semibold">Total</TableCell>
-                    <TableCell className="text-right font-semibold">{rows.reduce((s, r) => s + r.shifts, 0)}</TableCell>
-                    <TableCell className="text-right font-semibold">{fmtMinutes(totalMinutes)}</TableCell>
-                    <TableCell />
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
+        <section className="grid gap-2">
+          <SectionHeader title="Team hours — last 30 days" count={team.length} />
+          {team.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No attendance recorded yet.</p>
+          ) : (
+            team.map((t) => (
+              <ForkCard key={t.emp_id} onClick={() => { setSheet({ kind: "team", row: t }); }} className="py-3">
+                <div className="flex flex-col gap-2.5 pr-5 min-[760px]:flex-row min-[760px]:items-center">
+                  <div className="flex min-w-0 flex-1 items-center gap-3">
+                    <Avatar name={t.name} />
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-semibold text-foreground">{t.name || "Employee"}</div>
+                      <div className="mt-1 flex flex-wrap gap-1.5">
+                        <InfoChip icon={<Repeat />} label={`${t.shifts} shift${t.shifts === 1 ? "" : "s"}`} />
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-3">
+                    {t.open && <StatusChip color={COPPER} label="On shift" dense />}
+                    <MicroStat value={hm(t.minutes)} label="hours" alignEnd />
+                  </div>
+                </div>
+              </ForkCard>
+            ))
+          )}
+        </section>
       )}
+
+      <DrillSheet
+        open={openSheet != null}
+        onOpenChange={(o) => { if (!o) { setSheet(null); } }}
+        eyebrow={openSheet?.eyebrow}
+        title={openSheet?.title ?? ""}
+      >
+        {openSheet?.body}
+      </DrillSheet>
     </div>
   );
 }

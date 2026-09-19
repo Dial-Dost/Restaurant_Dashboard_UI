@@ -108,7 +108,7 @@ export function readSettlementBreakdown(payload: MisReportPayload | null): Settl
 
     const modes = shapeModes(rows);
 
-    const totals = (payload.totals ?? {}) as Record<string, unknown>;
+    const totals = (payload.totals ?? {});
     // Prefer the server's own totals — it computed them from the same rows and a
     // client-side re-sum would drift on rounding. Fall back to summing so a
     // payload without totals still renders rather than showing zero.

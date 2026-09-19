@@ -3,6 +3,22 @@
 // e.g. "grams" or "chopped").
 export interface RecipeIngredient { inventory_id: string; qty: number; note?: string }
 
+// One choice inside a modifier group ("Large", +₹40).
+export interface MenuItemModifierOption { name: string; price: number }
+
+/**
+ * A modifier / variant group on a dish ("Size", "Add-ons"): `multi` allows more
+ * than one option at once, `required` forces a choice. Edited in the item
+ * dialog and sent as `modifiers` on the /menu upsert; omitted on write = keep
+ * what is stored (the same preserve-on-omit rule as every other item extra).
+ */
+export interface MenuItemModifierGroup {
+  name: string;
+  multi: boolean;
+  required: boolean;
+  options: MenuItemModifierOption[];
+}
+
 export interface MenuItem {
   id: string;
   name: string;
@@ -30,6 +46,9 @@ export interface MenuItem {
    * NOT listed here — they come from `allergens` (see lib/menu-badges.ts).
    */
   badges?: string[];
+  /** Modifier / variant groups (see MenuItemModifierGroup). Optional so every
+   *  existing minimal payload (and preserve-on-omit write) stays valid. */
+  modifiers?: MenuItemModifierGroup[];
 }
 
 export const initialMenuItems: MenuItem[] = [

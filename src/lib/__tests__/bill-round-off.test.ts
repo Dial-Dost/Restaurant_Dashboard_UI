@@ -25,7 +25,7 @@ function readSource(relative: string): string {
     for (const base of [process.cwd(), path.join(__dirname, '..', '..', '..')]) {
         const full = path.join(base, relative);
         // A fixed list of this repo's own source files, not user input.
-        // eslint-disable-next-line security/detect-non-literal-fs-filename
+         
         if (fs.existsSync(full)) { return fs.readFileSync(full, 'utf8'); }
     }
     throw new Error(`readSource could not find ${relative} from ${process.cwd()}`);
@@ -59,7 +59,7 @@ describe('roundOffOf — the server\'s round-off, or nothing to show', () => {
     });
 
     it('formats with a sign always, so a round-off can never be read as a charge or a discount', () => {
-        const money = (n: number) => `₹${n.toFixed(2)}`;
+        const money = (n: number): string => `₹${n.toFixed(2)}`;
         expect(formatRoundOff(-0.26, money)).toBe('−₹0.26');
         expect(formatRoundOff(0.5, money)).toBe('+₹0.50');
     });
@@ -80,9 +80,10 @@ describe('every web surface that shows the ladder shows the round-off rung', () 
 
     it('closed bills (Accounting and History)', () => {
         const src = code(readSource('src/components/closed-bills.tsx'));
-        expect(src).toMatch(/roundOffOf\(d\) !== null && \(\s*<Row label="Round off" value=\{formatRoundOff\(roundOffOf\(d\)!/);
+        expect(src).toContain('const roundOff = roundOffOf(d)');
+        expect(src).toMatch(/roundOff !== null && <MoneyRow label="Round off" value=\{formatRoundOff\(roundOff,/);
         // Between the taxes and the grand total, where the paper has it.
-        expect(src.indexOf('label="Round off"')).toBeGreaterThan(src.indexOf('d.taxes.map('));
+        expect(src.indexOf('label="Round off"')).toBeGreaterThan(src.indexOf('taxes.map('));
         expect(src.indexOf('label="Round off"')).toBeLessThan(src.indexOf('label="Grand total"'));
     });
 
@@ -95,9 +96,10 @@ describe('every web surface that shows the ladder shows the round-off rung', () 
     });
 
     it('the MIS report bill drill-down', () => {
-        const src = code(readSource('src/app/dashboard/reports/drill-down.tsx'));
-        expect(src).toContain('<Line label="Round off" value={formatRoundOff(roundOffOf(bill)!, money)} />');
-        expect(src.indexOf('label="Round off"')).toBeLessThan(src.indexOf('label="Grand total"'));
+        const src = code(readSource('src/components/reports/drill-down.tsx'));
+        expect(src).toContain('const ro = roundOffOf(bill)');
+        expect(src).toContain('<Line label="Round off" value={formatRoundOff(ro, money)} />');
+        expect(src.indexOf('label="Round off"')).toBeLessThan(src.indexOf('<Line label={kGross} value={money(bill.grand_total)} strong />'));
     });
 
     it('the customer-facing display', () => {
@@ -156,9 +158,8 @@ describe('a waiver\'s pre-round reduction is never labelled as what the guest pa
     });
 
     it('the Service Charge Deny report tile says the same', () => {
-        const src = code(readSource('src/app/dashboard/reports/context-panels.tsx'));
-        expect(src).toContain('const denied = num(totals.grand_total_reduction) ?? 0');
+        const src = code(readSource('src/components/reports/context-panels.tsx'));
         expect(src).not.toMatch(/label="Guests paid less by"/);
-        expect(src).toContain('<Tile label="Charge + tax denied" value={money(denied)} hint="Before each bill\'s round-off"');
+        expect(src).toContain('<Stat label="Total reduction" value={money(t.grand_total_reduction)} sub="charge + tax, before round-off" />');
     });
 });

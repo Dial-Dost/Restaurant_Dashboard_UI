@@ -18,7 +18,7 @@
 */
 
 function readSource(relative: string): string {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+   
   const fs = require("node:fs") as typeof import("node:fs");
   const path = require("node:path") as typeof import("node:path");
   for (const base of [process.cwd(), path.join(__dirname, "..", "..", "..")]) {
@@ -48,7 +48,8 @@ function componentBody(src: string, name: string): string {
 
 describe("2.1 — the floor plan does not repeat the Tables screen", () => {
   const floor = code(readSource("src/app/dashboard/floor-plan/page.tsx"));
-  const tile = componentBody(floor, "PlanTable");
+  // The rebuilt tile is two components: the card it draws and the draggable button around it.
+  const tile = componentBody(floor, "PlanTileCard") + componentBody(floor, "PlanTile");
 
   it("a floor-plan tile takes no occupancy and no booking", () => {
     expect(tile).not.toMatch(/occupancy/);
@@ -62,14 +63,14 @@ describe("2.1 — the floor plan does not repeat the Tables screen", () => {
   });
 
   it("it still shows what a layout needs: the name, the seats, the grip and Edit seating", () => {
-    expect(tile).toContain("table.name");
-    expect(tile).toContain("Seats:");
+    expect(tile).toContain("{row.name}");
+    expect(tile).toContain("seatsLabel(row.raw)");
     expect(tile).toContain("GripVertical");
-    expect(tile).toContain("Edit seating");
+    expect(tile).toContain("Tap to edit seating");
   });
 
   it("no caller hands a tile the live floor", () => {
-    expect(floor).not.toMatch(/<PlanTable[^>]*occupancy=/);
+    expect(floor).not.toMatch(/<PlanTile[^>]*occupancy=/);
     expect(floor).not.toMatch(/combinedByName/);
   });
 });
@@ -93,7 +94,7 @@ describe("5.1 — the print preview shows the logo, address and GSTIN clearly", 
   const print = code(readSource("src/app/dashboard/orders/print/page.tsx"));
 
   it("the receipt is black ink on white whatever the dashboard theme", () => {
-    expect(print).toMatch(/<Card className="[^"]*receipt-card[^"]*\bbg-white\b[^"]*\btext-black\b/);
+    expect(print).toMatch(/<Card className=\{?[`"][^`"]*receipt-card[^`"]*\bbg-white\b[^`"]*\btext-black\b/);
   });
 
   it("the address/GSTIN lines are black, not the muted description grey", () => {

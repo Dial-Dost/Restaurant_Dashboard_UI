@@ -1,16 +1,10 @@
-import { Separator } from "@/components/ui/separator"
 import { SettingsForm } from "./settings-form"
 
-export default function SettingsPage() {
+// Flutter `settingsModule`: one centered column (max-width 760) of grouped
+// cards under section headers — no page-level title or global save.
+export default function SettingsPage(): React.JSX.Element {
   return (
-    <div className="space-y-6">
-      <div>
-        <h3 className="text-lg font-medium">Settings</h3>
-        <p className="text-sm text-muted-foreground">
-          Manage your restaurant&apos;s profile and settings.
-        </p>
-      </div>
-      <Separator />
+    <div className="mx-auto w-full max-w-[760px]">
       <SettingsForm />
     </div>
   )

@@ -51,7 +51,7 @@ function popCounts(scope: string) {
       v: to,
       duration: 1.1,
       ease: "power2.out",
-      onUpdate: () => formatCount(el, proxy.v),
+      onUpdate: () => { formatCount(el, proxy.v); },
     });
   });
 }
@@ -59,7 +59,7 @@ function popCounts(scope: string) {
 function resetCounts(scope: string) {
   document
     .querySelectorAll<HTMLElement>(`${scope} .exp-count`)
-    .forEach((el) => formatCount(el, 0));
+    .forEach((el) => { formatCount(el, 0); });
 }
 
 /** querySelectorAll → array, so empty selections skip cleanly. */
@@ -72,7 +72,7 @@ function popCharts(scope: string) {
     // Final states immediately — no autonomous draw animations.
     const set = (sel: string, vars: gsap.TweenVars) => {
       const els = q$(scope, sel);
-      if (els.length) gsap.set(els, vars);
+      if (els.length) {gsap.set(els, vars);}
     };
     set(".exp-chart-line", { strokeDashoffset: 0 });
     set(".exp-chart-area", { opacity: 1 });
@@ -87,23 +87,23 @@ function popCharts(scope: string) {
   }
   const lines = q$(scope, ".exp-chart-line");
   if (lines.length)
-    gsap.fromTo(
+    {gsap.fromTo(
       lines,
       { strokeDasharray: 1, strokeDashoffset: 1 },
       { strokeDashoffset: 0, duration: 0.9, ease: "power2.inOut" }
-    );
+    );}
   const areas = q$(scope, ".exp-chart-area");
-  if (areas.length) gsap.fromTo(areas, { opacity: 0 }, { opacity: 1, duration: 0.8, delay: 0.35 });
+  if (areas.length) {gsap.fromTo(areas, { opacity: 0 }, { opacity: 1, duration: 0.8, delay: 0.35 });}
   const bars = q$(scope, ".exp-chart-bar");
   if (bars.length)
-    gsap.fromTo(bars, { scaleY: 0 }, { scaleY: 1, duration: 0.7, stagger: 0.05, ease: "power2.out" });
+    {gsap.fromTo(bars, { scaleY: 0 }, { scaleY: 1, duration: 0.7, stagger: 0.05, ease: "power2.out" });}
   const rows = q$(scope, ".exp-row-bar");
   if (rows.length)
-    gsap.fromTo(
+    {gsap.fromTo(
       rows,
       { scaleX: 0 },
       { scaleX: 1, duration: 0.7, stagger: 0.06, ease: "power2.out", transformOrigin: "0% 50%" }
-    );
+    );}
   q$(scope, ".exp-donut").forEach((el) =>
     gsap.fromTo(
       el,
@@ -121,7 +121,7 @@ function resetCharts(scope: string) {
   resetCounts(scope);
   const set = (sel: string, vars: gsap.TweenVars) => {
     const els = q$(scope, sel);
-    if (els.length) gsap.set(els, vars);
+    if (els.length) {gsap.set(els, vars);}
   };
   set(".exp-chart-line", { strokeDasharray: 1, strokeDashoffset: 1 });
   set(".exp-chart-area", { opacity: 0 });
@@ -140,7 +140,7 @@ export default function Experience() {
     gsap.registerPlugin(ScrollTrigger);
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     scrollState.reducedMotion = reduced;
-    if ("scrollRestoration" in history) history.scrollRestoration = "manual";
+    if ("scrollRestoration" in history) {history.scrollRestoration = "manual";}
     window.scrollTo(0, 0);
 
     let lenis: Lenis | null = null;
@@ -149,7 +149,7 @@ export default function Experience() {
       lenis = new Lenis({ lerp: 0.09 });
       runtime.lenis = lenis;
       lenis.on("scroll", ScrollTrigger.update);
-      lenisTick = (t: number) => lenis!.raf(t * 1000);
+      lenisTick = (t: number) => { lenis!.raf(t * 1000); };
       gsap.ticker.add(lenisTick);
       gsap.ticker.lagSmoothing(0);
     }
@@ -157,7 +157,7 @@ export default function Experience() {
     /* Measure the dashboard so particles and modules agree with the DOM. */
     const measure = () => {
       const el = document.querySelector(".exp-dash");
-      if (!el) return;
+      if (!el) {return;}
       const r = el.getBoundingClientRect();
       dashRect.x0 = (r.left / window.innerWidth) * 2 - 1;
       dashRect.x1 = (r.right / window.innerWidth) * 2 - 1;
@@ -195,7 +195,7 @@ export default function Experience() {
           onUpdate(self) {
             scrollState.progress = self.progress;
             scrollState.velocity = self.getVelocity() / 1000;
-            if (self.progress > 0.02 && intro?.isActive()) intro.progress(1);
+            if (self.progress > 0.02 && intro?.isActive()) {intro.progress(1);}
           },
         },
       });
@@ -237,28 +237,28 @@ export default function Experience() {
       const v0 = '.exp-cell-layer[data-vi="0"]';
       const v0Lines = q$(v0, ".exp-chart-line");
       if (v0Lines.length)
-        tl.fromTo(
+        {tl.fromTo(
           v0Lines,
           { strokeDasharray: 1, strokeDashoffset: 1 },
           { strokeDashoffset: 0, duration: 5, ease: "power1.inOut" },
           24
-        );
+        );}
       const v0Areas = q$(v0, ".exp-chart-area");
-      if (v0Areas.length) tl.fromTo(v0Areas, { opacity: 0 }, { opacity: 1, duration: 3 }, 27);
+      if (v0Areas.length) {tl.fromTo(v0Areas, { opacity: 0 }, { opacity: 1, duration: 3 }, 27);}
       const v0Bars = q$(v0, ".exp-chart-bar");
       if (v0Bars.length)
-        tl.fromTo(v0Bars, { scaleY: 0 }, { scaleY: 1, duration: 3, stagger: 0.2, ease: "power2.out" }, 25);
+        {tl.fromTo(v0Bars, { scaleY: 0 }, { scaleY: 1, duration: 3, stagger: 0.2, ease: "power2.out" }, 25);}
       const v0Rows = q$(v0, ".exp-row-bar");
       if (v0Rows.length)
-        tl.fromTo(
+        {tl.fromTo(
           v0Rows,
           { scaleX: 0, transformOrigin: "0% 50%" },
           { scaleX: 1, duration: 2.5, stagger: 0.25, ease: "power2.out" },
           26
-        );
+        );}
       const v0Donuts = q$(v0, ".exp-donut");
       if (v0Donuts.length)
-        tl.to(
+        {tl.to(
           v0Donuts,
           {
             strokeDashoffset: (i, el) => parseFloat((el as HTMLElement).dataset.donutTo || "0"),
@@ -266,7 +266,7 @@ export default function Experience() {
             ease: "power1.inOut",
           },
           26
-        );
+        );}
 
       /* ---- ACT 3 · one frame, every view (34–58) ---- */
       tl.fromTo(".exp-view-index", { autoAlpha: 0, x: -24 }, { autoAlpha: 1, x: 0, duration: 2, ease: "power2.out" }, 34);
@@ -390,15 +390,15 @@ export default function Experience() {
       tl.to(".exp-nav", { autoAlpha: 0, y: -16, duration: 2 }, 84);
 
       /* Views > 0 start with undrawn charts, ready for their one-shot pop. */
-      for (let k = 1; k < 6; k++) resetCharts(`.exp-cell-layer[data-vi="${k}"]`);
+      for (let k = 1; k < 6; k++) {resetCharts(`.exp-cell-layer[data-vi="${k}"]`);}
 
       /* One-shot counter/chart pops at each view's arrival. */
       const maxScroll = () => document.documentElement.scrollHeight - window.innerHeight;
       ScrollTrigger.create({
         start: () => 0.245 * maxScroll(),
         end: () => 0.245 * maxScroll() + 1,
-        onEnter: () => popCounts(v0),
-        onLeaveBack: () => resetCounts(v0),
+        onEnter: () => { popCounts(v0); },
+        onLeaveBack: () => { resetCounts(v0); },
       });
       for (let k = 1; k < 6; k++) {
         const at = (34 + k * 4) / 100;
@@ -406,8 +406,8 @@ export default function Experience() {
         ScrollTrigger.create({
           start: () => at * maxScroll(),
           end: () => at * maxScroll() + 1,
-          onEnter: () => popCharts(scope),
-          onLeaveBack: () => resetCharts(scope),
+          onEnter: () => { popCharts(scope); },
+          onLeaveBack: () => { resetCharts(scope); },
         });
       }
 
@@ -442,18 +442,18 @@ export default function Experience() {
     /* Bridge: 3D object state → CSS vars for shadow, ribbons origin, logomark. */
     const varTick = () => {
       const st = stageRef.current;
-      if (!st) return;
+      if (!st) {return;}
       st.style.setProperty("--obj-x", `${objectState.sx}px`);
       st.style.setProperty("--obj-y", `${objectState.sy}px`);
       st.style.setProperty("--obj-r", `${objectState.sr}px`);
       const node = document.querySelector<HTMLElement>(".exp-rail-node");
-      if (node) node.style.top = `${scrollState.progress * 100}%`;
+      if (node) {node.style.top = `${scrollState.progress * 100}%`;}
     };
     gsap.ticker.add(varTick);
 
     return () => {
       gsap.ticker.remove(varTick);
-      if (lenisTick) gsap.ticker.remove(lenisTick);
+      if (lenisTick) {gsap.ticker.remove(lenisTick);}
       lenis?.destroy();
       runtime.lenis = null;
       ScrollTrigger.removeEventListener("refresh", measure);

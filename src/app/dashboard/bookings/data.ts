@@ -1,56 +1,6 @@
-
-export const initialBookings = [
-  {
-    id: "1",
-    customer: "Liam Johnson",
-    time: "19:00",
-    guests: 2,
-    table: "T2",
-    source: "Dineout",
-    status: "Confirmed",
-    notes: "Birthday - vegan preference",
-  },
-  {
-    id: "2",
-    customer: "Olivia Smith",
-    time: "19:15",
-    guests: 4,
-    table: "T6",
-    source: "Call",
-    status: "Arrived",
-    notes: "Window seat",
-  },
-  {
-    id: "3",
-    customer: "Noah Williams",
-    time: "20:00",
-    guests: 2,
-    table: "T8",
-    source: "Easydiner",
-    status: "Confirmed",
-    notes: "Allergic to peanuts",
-  },
-  {
-    id: "4",
-    customer: "Emma Brown",
-    time: "20:30",
-    guests: 3,
-    table: "T4",
-    source: "Walk-in",
-    status: "Seated",
-    notes: "Anniversary",
-  },
-  {
-    id: "5",
-    customer: "James Jones",
-    time: "21:00",
-    guests: 5,
-    table: "T9",
-    source: "Call",
-    status: "Pending",
-    notes: "",
-  },
-];
+// Types shared with src/lib/db.ts (`getBookings`) and the bookings components.
+// The demo `initialBookings` seed rows died with the table layout — every row
+// on the page now comes from GET /get-bookings.
 
 // Reservation deposit as returned inside /get-bookings rows (lives in the
 // booking's slot JSON server-side). refund_due/forfeited are set on cancel.
