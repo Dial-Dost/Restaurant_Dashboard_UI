@@ -17,6 +17,8 @@ import { DrillSheet } from "@/components/ui/drill-sheet"
 import { useToast } from "@/hooks/use-toast"
 import { isUnreachableError } from "@/hooks/use-cached-fetch"
 import { fetchDelivery, fetchSendSetup, sendReportEmail, type ApiError } from "@/lib/api/reports"
+import { reportMailStatus, sendReportsFromWebApp } from "@/lib/api/report-mail"
+import { WEB_MAIL_HINT, WEB_MAIL_TITLE, webMailUnknown, type WebMailStatus } from "@/lib/report-mail"
 import { cn } from "@/lib/utils"
 
 import {
@@ -99,6 +101,9 @@ export function EmailSendSheet({ open, onClose, reportKey, from, to, slotPhrase,
     const [error, setError] = React.useState<string | null>(null)
     const [sending, setSending] = React.useState(false)
     const [delivery, setDelivery] = React.useState<Record<string, unknown> | null>(null)
+    // This app's own transport, for when the restaurant server has none.
+    const [webMail, setWebMail] = React.useState<WebMailStatus>(webMailUnknown())
+    const [webRows, setWebRows] = React.useState<RecipientOutcome[]>([])
     const last = React.useRef<LastSend | null>(null)
     const alive = React.useRef(true)
     const isAlive = (): boolean => alive.current
@@ -113,7 +118,9 @@ export function EmailSendSheet({ open, onClose, reportKey, from, to, slotPhrase,
         setKeys([reportKey])
         setError(null)
         setDelivery(null)
+        setWebRows([])
         setAsked(false)
+        void reportMailStatus().then((st) => { if (alive.current) { setWebMail(st) } }).catch(() => { /* treated as not ready */ })
         void fetchSendSetup().then((r) => {
             if (!alive.current) { return }
             setConfig(configFromJson(r.config))
@@ -125,12 +132,43 @@ export function EmailSendSheet({ open, onClose, reportKey, from, to, slotPhrase,
 
     const catalogue = config?.reports ?? []
     const mode = closeOn ? "trading_day" : "calendar"
-    const blocked = asked ? sendNowBlocked(config, configMissing) : null
+    // When the restaurant server cannot send, this app does — same reports,
+    // same address book, this app's transport.
+    const viaWebApp = config !== null && !config.emailAvailable && webMail.ready
+    const blocked = asked ? sendNowBlocked(config, configMissing, webMail.ready) : null
     const allOutletsRefused = combined && config !== null && !config.canUseAllOutlets
     const maxRecipients = config?.recipientsPerSend ?? 10
     const misAll = MIS_EMAIL_KEYS.every((k) => keys.includes(k))
 
     const toggle = (list: string[], v: string, on: boolean): string[] => (on ? [...list.filter((x) => x !== v), v] : list.filter((x) => x !== v))
+
+    /** The fallback send: this app builds the files and mails them itself. */
+    const sendHere = async (): Promise<void> => {
+        setError(null)
+        setSending(true)
+        setWebRows([])
+        setDelivery(null)
+        try {
+            const res = await sendReportsFromWebApp({
+                reportKeys: keys, formats, from, to,
+                dayClose: closeOn ? closeAt : "", allOutlets: combined, recipientIds: chosen,
+            }, timezone)
+            if (!alive.current) { return }
+            setWebRows([
+                ...res.sent.map((email): RecipientOutcome => ({ email, outcome: "sent" })),
+                ...res.failed.map((f): RecipientOutcome => ({ email: f.email, outcome: "refused" })),
+            ])
+            if (!res.ok) { setError(res.description || res.refusal) }
+            toast({ title: res.title, description: res.description, variant: res.ok ? undefined : "destructive" })
+            if (res.ok && res.failed.length === 0) { onClose() }
+        } catch (e) {
+            const message = emailErrorSentence(e)
+            setError(message)
+            toast({ title: "Couldn't send", description: message, variant: "destructive" })
+        } finally {
+            if (alive.current) { setSending(false) }
+        }
+    }
 
     const send = async (): Promise<void> => {
         const fresh = newClientRequestId()
@@ -139,6 +177,7 @@ export function EmailSendSheet({ open, onClose, reportKey, from, to, slotPhrase,
             dayClose: closeOn ? closeAt : "", allOutlets: combined, recipientIds: chosen, maxRecipients,
         })
         if (!built.body) { setError(built.error); return }
+        if (viaWebApp) { await sendHere(); return }
         const key = sendBodyKey(built.body)
         const current: LastSend = { id: requestIdFor(last.current, key, fresh), bodyKey: key, settled: false }
         last.current = current
@@ -174,7 +213,7 @@ export function EmailSendSheet({ open, onClose, reportKey, from, to, slotPhrase,
         }
     }
 
-    const outcomes = delivery ? recipientOutcomes(delivery) : []
+    const outcomes = delivery ? recipientOutcomes(delivery) : webRows
 
     return (
         <DrillSheet
@@ -195,6 +234,13 @@ export function EmailSendSheet({ open, onClose, reportKey, from, to, slotPhrase,
                 <div className="space-y-5">
                     {(blocked || allOutletsRefused) && (
                         <Banner tone="error" text={blocked ?? "All outlets needs an admin or a manager"} />
+                    )}
+                    {viaWebApp && !blocked && (
+                        <Banner
+                            tone="info"
+                            text={WEB_MAIL_TITLE}
+                            detail={webMail.from ? `${WEB_MAIL_HINT} Sent as ${webMail.from}.` : WEB_MAIL_HINT}
+                        />
                     )}
                     {slotPhrase && <Banner tone="info" text={WHOLE_DAYS_NOTE} />}
 

@@ -35,6 +35,8 @@ import {
     fetchLegacyDeliveryCsv, patchEmailSchedule, removeRecipient, runEmailScheduleNow, sendTestEmail,
     type ApiError, type EmailPanelData,
 } from "@/lib/api/reports"
+import { reportMailStatus, sendWebTestMail } from "@/lib/api/report-mail"
+import { WEB_MAIL_TITLE, webMailUnknown, type WebMailStatus } from "@/lib/report-mail"
 import { formatFullDateTime } from "@/lib/tz"
 import { cn } from "@/lib/utils"
 
@@ -87,6 +89,14 @@ export function EmailReportsPanel({ restaurantId, timezone, combined }: Props): 
     const [deleting, setDeleting] = React.useState<Json | null>(null)
     const [editing, setEditing] = React.useState<{ existing: Json | null } | null>(null)
     const [openRow, setOpenRow] = React.useState<string | null>(null)
+    // Whether THIS app can send, for when the restaurant server cannot.
+    const [webMail, setWebMail] = React.useState<WebMailStatus>(webMailUnknown())
+
+    React.useEffect(() => {
+        let alive = true
+        void reportMailStatus().then((st) => { if (alive) { setWebMail(st) } }).catch(() => { /* treated as not ready */ })
+        return () => { alive = false }
+    }, [])
 
     const data = panel.data
     const config: ReportEmailConfig | null = data ? configFromJson(data.config) : null
@@ -97,7 +107,9 @@ export function EmailReportsPanel({ restaurantId, timezone, combined }: Props): 
     const isOwner = Boolean(user) && (user?.role === "admin" || (Array.isArray(user?.role_all) && user.role_all.includes("admin")))
     const history = deliveries ?? (data?.deliveries ?? []).filter((x): x is Json => Boolean(x) && typeof x === "object")
     const byId = new Map(schedules.map((x) => [s(x.id), x]))
-    const banners = data ? configBanners(config, data.configMissing) : []
+    const banners = data ? configBanners(config, data.configMissing, webMail.ready) : []
+    /** The restaurant server cannot send, and this app can: the fallback path. */
+    const viaWebApp = config !== null && !config.emailAvailable && webMail.ready
     const max = config?.addressBookMax ?? MAX_ADDRESS_BOOK
     const canEdit = config?.canEditRecipients === true
     const serverOutdated = data?.configMissing === true && !config
@@ -135,6 +147,21 @@ export function EmailReportsPanel({ restaurantId, timezone, combined }: Props): 
         const l = label.trim()
         setAddProblem(null)
         void write(async () => { await addRecipient(e, l || null); setEmail(""); setLabel("") }, `${e} can now be chosen for reports.`)
+    }
+
+    /** The server queues and retries its test; this app's goes straight out. */
+    const test = async (b: BookEntry): Promise<void> => {
+        if (!viaWebApp) {
+            await write(() => sendTestEmail(b.id, newClientRequestId()), `Test email queued — check ${b.email} in a minute, and its spam folder.`)
+            return
+        }
+        setBusy(true)
+        try {
+            const res = await sendWebTestMail(b.id)
+            toast({ title: res.title, description: res.description, variant: res.ok ? undefined : "destructive" })
+        } finally {
+            setBusy(false)
+        }
     }
 
     const runNow = async (sch: Json): Promise<void> => {
@@ -183,16 +210,20 @@ export function EmailReportsPanel({ restaurantId, timezone, combined }: Props): 
                 const mailOff = b.title === MAIL_OFF_SENTENCE && isOwner
                 const detail = mailOff
                     ? (config?.reason ? `${MAIL_OFF_OWNER_HINT} (${config.reason})` : MAIL_OFF_OWNER_HINT)
-                    : b.detail
+                    : b.title === WEB_MAIL_TITLE && webMail.from
+                        ? `${b.detail ?? ""} Sent as ${webMail.from}.`
+                        : b.detail
+                // The owner is the one reader who can change either of these.
+                const owned = mailOff || (b.title === WEB_MAIL_TITLE && isOwner)
                 return (
                     <Banner
                         key={b.title}
                         tone={b.tone}
                         text={b.title}
                         detail={detail}
-                        action={mailOff ? (
+                        action={owned ? (
                             <Button asChild size="sm" variant="outline">
-                                <Link href="/dashboard/settings#email-settings">Set up email</Link>
+                                <Link href="/dashboard/settings#email-settings">{mailOff ? "Set up email" : "Email settings"}</Link>
                             </Button>
                         ) : null}
                     />
@@ -215,9 +246,7 @@ export function EmailReportsPanel({ restaurantId, timezone, combined }: Props): 
                                     {b.label && <div className="truncate text-xs text-muted-foreground">{b.email}</div>}
                                 </div>
                                 {!b.active && <StatusChip status="warning" dense label="Paused" title={b.suppressedReason ?? undefined} />}
-                                <Button variant="outline" size="sm" disabled={busy || !b.active} onClick={() => {
-                                    void write(() => sendTestEmail(b.id, newClientRequestId()), `Test email queued — check ${b.email} in a minute, and its spam folder.`)
-                                }}>
+                                <Button variant="outline" size="sm" disabled={busy || !b.active} onClick={() => { void test(b) }}>
                                     <Send className="mr-1.5 h-3.5 w-3.5" /> {TEST_EMAIL_LABEL}
                                 </Button>
                                 {canEdit && (

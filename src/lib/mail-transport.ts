@@ -15,10 +15,18 @@ import { randomUUID } from "node:crypto";
 
 import { addressOf, effectiveFrom, mailSettingsProblem, type MailSettings } from "@/lib/mail-settings";
 
+/** One file on the message. `content` is the bytes, never a path or a URL. */
+export interface MailAttachment {
+  filename: string;
+  contentType: string;
+  content: Buffer;
+}
+
 export interface MailMessage {
   to: string;
   subject: string;
   text: string;
+  attachments?: MailAttachment[];
 }
 
 export interface MailSendResult {
@@ -52,6 +60,10 @@ function sentenceFor(error: unknown): string {
   }
 }
 
+/** How many bytes of files ride on this message. */
+const attachedBytes = (msg: MailMessage): number =>
+  (msg.attachments ?? []).reduce((sum, a) => sum + a.content.byteLength, 0);
+
 /** A promise that loses the race after `ms`, and cleans its timer up either way. */
 async function bounded<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -81,8 +93,20 @@ async function sendSmtp(s: MailSettings, msg: MailMessage, from: string): Promis
   });
   try {
     const info = await bounded(
-      transporter.sendMail({ from, to: msg.to, subject: msg.subject, text: msg.text }),
-      s.timeoutMs,
+      transporter.sendMail({
+        from,
+        to: msg.to,
+        subject: msg.subject,
+        text: msg.text,
+        attachments: (msg.attachments ?? []).map((a) => ({
+          filename: a.filename,
+          content: a.content,
+          contentType: a.contentType,
+        })),
+      }),
+      // Files take longer over the wire than a sentence does, so the race is
+      // given room per megabyte instead of timing a real send out as a hang.
+      s.timeoutMs + attachedBytes(msg) / 1024,
       "The mail server",
     );
     const id = typeof info.messageId === "string" ? info.messageId : "";
@@ -106,10 +130,24 @@ async function sendResend(s: MailSettings, msg: MailMessage, from: string): Prom
           // A retried request must not mail twice.
           "Idempotency-Key": randomUUID(),
         },
-        body: JSON.stringify({ from, to: [addressOf(msg.to)], subject: msg.subject, text: msg.text }),
+        body: JSON.stringify({
+          from,
+          to: [addressOf(msg.to)],
+          subject: msg.subject,
+          text: msg.text,
+          ...((msg.attachments ?? []).length > 0
+            ? {
+              attachments: (msg.attachments ?? []).map((a) => ({
+                filename: a.filename,
+                content: a.content.toString("base64"),
+                content_type: a.contentType,
+              })),
+            }
+            : {}),
+        }),
         cache: "no-store",
       }),
-      s.timeoutMs,
+      s.timeoutMs + attachedBytes(msg) / 1024,
       "Resend",
     );
     if (!res.ok) {
@@ -151,6 +189,7 @@ export async function sendWithSettings(s: MailSettings, msg: MailMessage): Promi
       from: addressOf(from),
       subject: msg.subject,
       bytes: msg.text.length,
+      files: (msg.attachments ?? []).map((a) => a.filename),
     });
     return { ok: false, message: "Nothing was sent: the transport is “Log only”, which writes to the server log and contacts nobody." };
   }

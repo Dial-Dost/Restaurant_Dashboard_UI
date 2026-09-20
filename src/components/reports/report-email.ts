@@ -3,6 +3,12 @@
 // Send-now body and request-id rule, delivery states and per-address outcomes,
 // and the schedule form. The screens (email-send.tsx, email-reports.tsx) only
 // lay these out. No React, no network.
+//
+// The one thing the app has no counterpart for: when the restaurant server
+// carries no mail transport, this app can send on its own (lib/report-mail.ts).
+// `webMail` below is that state, and it changes only the transport sentences.
+
+import { WEB_MAIL_HINT, WEB_MAIL_TITLE } from "@/lib/report-mail"
 
 export interface EmailableReport {
     key: string
@@ -270,7 +276,13 @@ export function configFromJson(raw: unknown): ReportEmailConfig | null {
 
 export interface EmailBanner { tone: "error" | "warning" | "info"; title: string; detail: string | null }
 
-export function configBanners(c: ReportEmailConfig | null, serverOutdated = false): EmailBanner[] {
+/**
+ * `webMail` is true when THIS app can send (Settings → Email). It changes only
+ * the mail-transport sentences: the schema, the scheduler and the operator's
+ * send-now switch are the restaurant server's own state, and a fallback send
+ * is not a way around any of them.
+ */
+export function configBanners(c: ReportEmailConfig | null, serverOutdated = false, webMail = false): EmailBanner[] {
     if (!c) {
         return serverOutdated
             ? [{ tone: "warning", title: SERVER_PREDATES_EMAIL_SENTENCE, detail: SERVER_PREDATES_EMAIL_HINT }]
@@ -278,7 +290,9 @@ export function configBanners(c: ReportEmailConfig | null, serverOutdated = fals
     }
     const out: EmailBanner[] = []
     if (!c.schemaReady) { out.push({ tone: "error", title: SCHEMA_PENDING_SENTENCE, detail: "Ask your administrator to apply migrations 056–058." }) }
-    if (!c.emailAvailable) {
+    if (!c.emailAvailable && webMail) {
+        out.push({ tone: "info", title: WEB_MAIL_TITLE, detail: WEB_MAIL_HINT })
+    } else if (!c.emailAvailable) {
         out.push({ tone: "error", title: MAIL_OFF_SENTENCE, detail: c.reason ? `${MAIL_OFF_HINT} (${c.reason})` : MAIL_OFF_HINT })
     } else if (!c.schedulerEnabled) {
         out.push({ tone: "info", title: SCHEDULER_OFF_SENTENCE, detail: null })
@@ -287,10 +301,12 @@ export function configBanners(c: ReportEmailConfig | null, serverOutdated = fals
     return out
 }
 
-export function sendNowBlocked(c: ReportEmailConfig | null, serverOutdated = false): string | null {
+export function sendNowBlocked(c: ReportEmailConfig | null, serverOutdated = false, webMail = false): string | null {
     if (!c) { return serverOutdated ? SERVER_PREDATES_EMAIL_SENTENCE : "Couldn't check the email settings — reload and try again." }
+    // The address book and its ids come from the server either way, so a
+    // pending schema still blocks — this app has nothing to address.
     if (!c.schemaReady) { return SCHEMA_PENDING_SENTENCE }
-    if (!c.emailAvailable) { return MAIL_OFF_SENTENCE }
+    if (!c.emailAvailable && !webMail) { return MAIL_OFF_SENTENCE }
     if (!c.sendNowEnabled) { return SEND_NOW_OFF_SENTENCE }
     return null
 }
