@@ -4,7 +4,8 @@
  * The tap-a-table sheet — the web `_TableSheet` (screens/modules.dart).
  *
  * A full mini-overview of one table: state chip, seats, elapsed chips, printed
- * banner, guest name/GSTIN header, Add order / Print bill hero buttons, QR,
+ * banner, guest name/GSTIN header, Add order / Seat guests / Print bill hero
+ * buttons, QR,
  * waiter row, per-KOT order blocks, bill card, APC insight, bill ops, payment
  * review, settle / move / release actions. Bottom sheet below 760px, centred
  * dialog above (DrillSheet), with "View in Orders" as the footer jump.
@@ -690,6 +691,15 @@ export function TableSheet({
                     <Plus /> Add order
                 </Button>
             )}
+            {/* An EMPTY table's seating sits directly under "Add order": the two
+                things a free table is opened to do, in the order they are done.
+                (The app keeps it under "Actions"; the web puts it here.) */}
+            {!occupied && scope.seat ? (
+                <Button size="lg" variant="outline" className="w-full" disabled={busy}
+                    onClick={() => { setCoversText("2"); setDialog({ kind: "covers", forSeat: true }); }}>
+                    <Users /> Seat guests &amp; take order
+                </Button>
+            ) : null}
             {occupied ? (
                 <Button size="lg" variant="outline" className="w-full" disabled={busy} onClick={() => { setDialog({ kind: "print" }); }}>
                     <Printer /> {printLabel}
@@ -994,13 +1004,10 @@ export function TableSheet({
                         </>
                     ) : null}
 
-                    {/* Actions. */}
-                    {(scope.seat || occupied) ? <SectionHeader title="Actions" /> : null}
-                    {scope.seat && !occupied ? (
-                        <Button size="lg" className="w-full" disabled={busy} onClick={() => { setCoversText("2"); setDialog({ kind: "covers", forSeat: true }); }}>
-                            <Users /> Seat guests &amp; take order
-                        </Button>
-                    ) : null}
+                    {/* Actions. A FREE table has none left under this heading:
+                        its seating moved up beside "Add order" (heroButtons),
+                        which is where anyone opening an empty table looks. */}
+                    {occupied ? <SectionHeader title="Actions" /> : null}
                     {occupied ? (
                         <div className="flex flex-wrap justify-center gap-2.5">
                             {scope.seat && scope.settle ? (

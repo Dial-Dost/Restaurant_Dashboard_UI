@@ -25,6 +25,9 @@ import { SkeletonRows } from "@/components/ui/fork-skeleton"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { StatusChip } from "@/components/ui/status-chip"
 import { Switch } from "@/components/ui/switch"
+import Link from "next/link"
+
+import { useAuth } from "@/context/AuthContext"
 import { useCachedFetch } from "@/hooks/use-cached-fetch"
 import { useToast } from "@/hooks/use-toast"
 import {
@@ -38,7 +41,8 @@ import { cn } from "@/lib/utils"
 import { downloadDeliveryFile } from "./download-action"
 import { Banner, OutcomeList, emailErrorSentence } from "./email-send"
 import {
-    ADDRESS_BOOK_EMPTY, ADDRESS_BOOK_READ_ONLY, ADDRESS_BOOK_TITLE, ALL_MIS_REPORTS, FORMAT_LABELS, MAX_ADDRESS_BOOK,
+    ADDRESS_BOOK_EMPTY, ADDRESS_BOOK_READ_ONLY, ADDRESS_BOOK_TITLE, ALL_MIS_REPORTS, FORMAT_LABELS, MAIL_OFF_OWNER_HINT,
+    MAIL_OFF_SENTENCE, MAX_ADDRESS_BOOK,
     MIS_EMAIL_KEYS, POLL_INTERVAL_MS, SERVER_PREDATES_EMAIL_SENTENCE, TEST_EMAIL_LABEL, WEEKDAY_NAMES, WINDOW_MODE_LABELS,
     addressProblem, bookFromJson, buildSchedulePatch, cadenceCaption, configBanners, configFromJson, coverageCaption,
     deliveryKind, deliveryStatus, fileLabel, formFromSchedule, hhmm, isFinalDelivery, isWatched, newClientRequestId,
@@ -72,6 +76,7 @@ interface Props {
 
 export function EmailReportsPanel({ restaurantId, timezone, combined }: Props): React.JSX.Element {
     const { toast } = useToast()
+    const { user } = useAuth()
     const panel = useCachedFetch<EmailPanelData>(`reports:email:${restaurantId}:${combined ? "all" : "one"}`, fetchEmailPanel, { enabled: Boolean(restaurantId) })
     const [deliveries, setDeliveries] = React.useState<Json[] | null>(null)
     const [busy, setBusy] = React.useState(false)
@@ -88,6 +93,8 @@ export function EmailReportsPanel({ restaurantId, timezone, combined }: Props): 
     const book: BookEntry[] = data ? bookFromJson(data.recipients) ?? [] : []
     const bookFailed = data ? bookFromJson(data.recipients) === null : false
     const schedules = (data?.schedules ?? []).filter((x): x is Json => Boolean(x) && typeof x === "object")
+    // The owner: the one identity that can set this app's mail transport up.
+    const isOwner = Boolean(user) && (user?.role === "admin" || (Array.isArray(user?.role_all) && user.role_all.includes("admin")))
     const history = deliveries ?? (data?.deliveries ?? []).filter((x): x is Json => Boolean(x) && typeof x === "object")
     const byId = new Map(schedules.map((x) => [s(x.id), x]))
     const banners = data ? configBanners(config, data.configMissing) : []
@@ -170,7 +177,27 @@ export function EmailReportsPanel({ restaurantId, timezone, combined }: Props): 
 
     return (
         <div className="flex flex-col gap-6">
-            {banners.map((b) => <Banner key={b.title} tone={b.tone} text={b.title} detail={b.detail} />)}
+            {/* "Ask your administrator" is the wrong sentence when the reader IS
+                the administrator: an owner gets the way to fix it instead. */}
+            {banners.map((b) => {
+                const mailOff = b.title === MAIL_OFF_SENTENCE && isOwner
+                const detail = mailOff
+                    ? (config?.reason ? `${MAIL_OFF_OWNER_HINT} (${config.reason})` : MAIL_OFF_OWNER_HINT)
+                    : b.detail
+                return (
+                    <Banner
+                        key={b.title}
+                        tone={b.tone}
+                        text={b.title}
+                        detail={detail}
+                        action={mailOff ? (
+                            <Button asChild size="sm" variant="outline">
+                                <Link href="/dashboard/settings#email-settings">Set up email</Link>
+                            </Button>
+                        ) : null}
+                    />
+                )
+            })}
 
             {/* ---- Address book ---- */}
             <ForkCard>

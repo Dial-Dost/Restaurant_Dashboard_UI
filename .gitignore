@@ -46,3 +46,7 @@ next-env.d.ts
 # firebase
 firebase-debug.log
 firestore-debug.log
+# the mail transport this app was set up with (Settings → Email): holds an
+# SMTP password or an API key, written 0600 by lib/api/mail-settings.ts
+.mail-settings.json
+.mail-settings.json.tmp

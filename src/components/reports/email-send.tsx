@@ -273,17 +273,24 @@ export function EmailSendSheet({ open, onClose, reportKey, from, to, slotPhrase,
     )
 }
 
-export function Banner({ tone, text, detail }: { tone: "error" | "warning" | "info"; text: string; detail?: string | null }): React.JSX.Element {
+export function Banner({ tone, text, detail, action }: {
+    tone: "error" | "warning" | "info"
+    text: string
+    detail?: string | null
+    /** The way out of what the banner reports, for whoever may take it. */
+    action?: React.ReactNode
+}): React.JSX.Element {
     return (
         <div className={cn(
             "flex items-start gap-2 rounded-md border px-3 py-2 text-sm",
             tone === "error" ? "border-destructive/30 bg-destructive/10" : tone === "warning" ? "border-warning/30 bg-warning/10" : "border-info/30 bg-info/10",
         )}>
             <AlertTriangle className={cn("mt-0.5 h-4 w-4 shrink-0", tone === "error" ? "text-destructive" : tone === "warning" ? "text-warning" : "text-info")} />
-            <div>
+            <div className="min-w-0 flex-1">
                 <div className="font-medium">{text}</div>
                 {detail ? <div className="text-xs text-muted-foreground">{detail}</div> : null}
             </div>
+            {action ? <div className="shrink-0">{action}</div> : null}
         </div>
     )
 }

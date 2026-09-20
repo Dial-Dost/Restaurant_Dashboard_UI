@@ -46,6 +46,12 @@ export const EMAIL_BUTTON_LABEL = "Email"
 export const EMAIL_BUTTON_TOOLTIP = "Email this report"
 export const MAIL_OFF_SENTENCE = "Email is not set up on this server"
 export const MAIL_OFF_HINT = "Ask your administrator to set up the mail settings. Reports can still be downloaded here."
+// The same fact said to the person who can act on it: the owner sets the
+// transport up in Settings → Email (components/settings/mail-settings-card).
+// Scheduled sends stay the restaurant server's own, which is why they are named.
+export const MAIL_OFF_OWNER_HINT =
+    "Set it up in Settings → Email. Reports can still be downloaded here. Emails on a schedule are sent by the " +
+    "restaurant server itself and need the same settings in its environment."
 export const SCHEMA_PENDING_SENTENCE = "Email reports need a database update that has not been applied to this server yet."
 export const SCHEDULER_OFF_SENTENCE = "Scheduled emails are switched off on this server. Send now still works."
 export const SEND_NOW_OFF_SENTENCE = "Sending reports on demand is switched off on this server."

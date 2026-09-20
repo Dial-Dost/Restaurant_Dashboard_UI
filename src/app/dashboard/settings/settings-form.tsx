@@ -44,6 +44,7 @@ import { BillLogoCard, BillingControlsCard, TaxCard } from "@/components/setting
 import { BrandingLogoCard, FeedbackFormCard } from "@/components/settings/branding-feedback-cards"
 import { AutoPushCard, KotAutoPrintCard, KotDocketCard, QueueMenuCard, RequireOtpCard } from "@/components/settings/ordering-cards"
 import { MessagingCard, RazorpayCard } from "@/components/settings/razorpay-messaging-cards"
+import { MailSettingsCard } from "@/components/settings/mail-settings-card"
 import { FieldLabel, SettingsCard } from "@/components/settings/settings-card"
 import { BillPrintSettingsCard } from "./bill-print-settings"
 import { BillingCountersCard } from "./billing-counters"
@@ -276,6 +277,15 @@ export function SettingsForm(): React.JSX.Element {
           />
         </div>
       )}
+
+      {/* Web-extra, after Flutter's own order: the app has no such card because
+          a Windows till has no mail settings to keep. Owner-only, and the
+          Server Actions behind it check that again on every call. */}
+      {isAdmin ? (
+        <Group title="Email">
+          <MailSettingsCard />
+        </Group>
+      ) : null}
 
       <Group title="My feedback QR">
         <FeedbackQrCard />
