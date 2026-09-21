@@ -1,5 +1,5 @@
 
-import type {Metadata} from 'next';
+import type {Metadata, Viewport} from 'next';
 import { Cormorant_Garamond, Instrument_Sans, Inter } from 'next/font/google';
 import './globals.css';
 import { Toaster } from "@/components/ui/toaster";
@@ -31,6 +31,24 @@ const instrumentSans = Instrument_Sans({
 export const metadata: Metadata = {
   title: 'CuisineFlow',
   description: 'Streamline Your Restaurant Management',
+};
+
+/**
+ * THE VIEWPORT, stated rather than defaulted (docs/responsive.md §5).
+ *
+ * `viewport-fit=cover` lets the page paint under a notch and the home bar; the
+ * shell pads itself back out with env(safe-area-inset-*) in globals.css. Next's
+ * default omits it, so on an iPhone the bottom bar sat over the last row.
+ *
+ * NO `maximum-scale` and NO `user-scalable: false`. Pinch-zoom is how a
+ * partially sighted cashier reads a total, and iOS ignores the ban anyway since
+ * 10 — all it does is fail an accessibility audit. Fields are pinned to 16px
+ * below `sm` instead, which is what actually stops Safari auto-zooming.
+ */
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover',
 };
 
 export default function RootLayout({

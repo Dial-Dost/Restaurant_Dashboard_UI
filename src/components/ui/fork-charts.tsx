@@ -123,7 +123,7 @@ export function Sparkline({ values, height = 40, color, className }: SparklinePr
     )
   }
   return (
-    <div ref={ref} className={cn("w-full", className)} style={{ height }} aria-hidden>
+    <div data-chart ref={ref} className={cn("w-full", className)} style={{ height }} aria-hidden>
       {content}
     </div>
   )
@@ -204,7 +204,7 @@ export function Barcode({
   }
 
   return (
-    <div
+    <div data-chart
       ref={ref}
       aria-hidden={!live}
       className={cn("relative w-full", className)}
@@ -270,7 +270,7 @@ export function WeekdayBars({
   const barArea = height - 22 // 6px gap + label line, out of the fixed box
 
   return (
-    <div
+    <div data-chart
       className={cn("relative flex w-full items-end gap-1.5", className)}
       style={{ height }}
       onMouseLeave={live ? () => { setHover(null) } : undefined}
@@ -354,7 +354,7 @@ export function Columns({
   const barArea = height - 40
 
   return (
-    <div
+    <div data-chart
       className={cn("relative flex w-full items-end gap-2", className)}
       style={{ height }}
       onMouseLeave={live ? () => { setHover(null) } : undefined}
@@ -463,7 +463,7 @@ export function Donut({
   const gradientId = React.useId()
 
   const ring = (
-    <div
+    <div data-chart
       className={cn("relative transition-transform duration-fast ease-out", live && hover && "scale-[1.06]")}
       style={{ width: size, height: size }}
     >
@@ -620,7 +620,7 @@ export function HBarRow({
   const clamped = Math.min(1, Math.max(0, fraction))
 
   const row = (
-    <div className="w-full py-[7px]">
+    <div data-chart className="w-full py-[7px]">
       <div className="flex items-center gap-2">
         <span className="min-w-0 flex-1 truncate text-left text-[12.5px] font-medium text-foreground">
           {label}
