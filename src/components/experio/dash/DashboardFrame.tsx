@@ -25,7 +25,7 @@ const CELL_POS = [
  */
 export default function DashboardFrame() {
   return (
-    <div className="exp-dash-wrap pre-hide absolute left-[4vw] right-[4vw] top-1/2 -translate-y-1/2 lg:left-[29vw] lg:right-[5.5vw]">
+    <div data-scaled-preview className="exp-dash-wrap pre-hide absolute left-[4vw] right-[4vw] top-1/2 -translate-y-1/2 lg:left-[29vw] lg:right-[5.5vw]">
       {/* Ghost folio numeral in the left whitespace, rolling as the dial clicks. */}
       <div
         aria-hidden
