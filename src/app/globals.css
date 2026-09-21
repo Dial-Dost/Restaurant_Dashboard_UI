@@ -358,13 +358,17 @@
    touches implicit tracks, so every `grid-cols-N` layout is untouched, and
    nothing in this app uses `grid-flow-col` / `auto-cols-*`.
 
-   BELOW 1024px ONLY. The brief was phones and tablets; from `lg` up the desktop
-   site keeps the browser default, so it lays out exactly as it always has.
+   EVERY WIDTH, since 2026-09-21. This was scoped `max-width: 1023.98px` when the
+   brief was phones and tablets, and desktop kept the bug: at 1280px the
+   Analytics tab row (one `whitespace-nowrap` strip of eight tabs) sized the
+   implicit track to its own min-content, pushing the page 218px wide and
+   scrolling the whole dashboard sideways. `minmax(0, 1fr)` is what
+   `grid-cols-1` already resolves to, so no explicit `grid-cols-N` layout — and
+   nothing using `grid-flow-col` / `auto-cols-*`, of which this app has none —
+   changes at any width.
    --------------------------------------------------------------------------- */
-@media (max-width: 1023.98px) {
-  .grid {
-    grid-auto-columns: minmax(0, 1fr);
-  }
+.grid {
+  grid-auto-columns: minmax(0, 1fr);
 }
 
 /* ---------------------------------------------------------------------------
@@ -471,4 +475,182 @@
   .dashboard-shell::-webkit-scrollbar-thumb {
     min-height: 64px;
   }
+}
+
+/* ===========================================================================
+   THE RESPONSIVE SYSTEM — docs/responsive.md carries the reasoning; this is
+   the implementation. Mobile-first throughout: the base rules describe the
+   SMALLEST screen (a 320px legacy phone, a 344px folded Z Fold cover), and
+   every query below is `min-width`, so the layout only ever grows.
+
+   The breakpoints, once, for anyone reading CSS instead of Tailwind classes.
+   They are mirrored in tailwind.config.ts (`xs`, `fold`) and must stay in step.
+
+     base        0    small mobile   320-359   iPhone SE, Fold cover
+     --bp-xs     360  mobile         360-599   Pixel, iPhone, most Androids
+     --bp-fold   600  foldable       600-767   Z Fold open (717), phablets
+     --bp-md     768  tablet         768-1023  iPad portrait (768/820/834)
+     --bp-lg     1024 laptop         1024-1279 iPad landscape, touch monitors
+     --bp-xl     1280 desktop        1280-1399
+     --bp-2xl    1400 large desktop  1400+
+   =========================================================================== */
+:root {
+  --bp-xs: 360px;
+  --bp-fold: 600px;
+  --bp-md: 768px;
+  --bp-lg: 1024px;
+  --bp-xl: 1280px;
+  --bp-2xl: 1400px;
+
+  /* FLUID TYPE. Each step interpolates between its 320px and 1440px value, so
+     nothing jumps at a breakpoint and a 27" monitor is not reading phone type.
+     The vw coefficient is (max - min) / (1440 - 320) expressed in vw; the rem
+     term is what is left at 320px. 12px is the floor for a reason: smaller than
+     that stops being readable at arm's length on a counter monitor. */
+  /* The label voice (.micro-label and friends). 11px is the floor a design
+     token this deliberate can take without becoming a different typeface; the
+     12px reading floor is applied under a coarse pointer instead. */
+  --fs-micro: clamp(0.6875rem, 0.665rem + 0.114vw, 0.75rem); /* 11 -> 12 by 1280 */
+  --fs-xs: clamp(0.75rem, 0.732rem + 0.089vw, 0.8125rem);   /* 12 -> 13 */
+  --fs-sm: clamp(0.8125rem, 0.795rem + 0.089vw, 0.875rem);  /* 13 -> 14 */
+  --fs-base: clamp(0.9375rem, 0.92rem + 0.089vw, 1rem);     /* 15 -> 16 */
+  --fs-lg: clamp(1.0625rem, 1.027rem + 0.179vw, 1.1875rem); /* 17 -> 19 */
+  --fs-xl: clamp(1.25rem, 1.179rem + 0.357vw, 1.5rem);      /* 20 -> 24 */
+  --fs-2xl: clamp(1.5rem, 1.357rem + 0.714vw, 2rem);        /* 24 -> 32 */
+  --fs-money: clamp(1.75rem, 1.536rem + 1.071vw, 2.5rem);   /* 28 -> 40 */
+
+  /* The gutter a page keeps between its content and the screen edge. Grows
+     with the device rather than stepping, so a 320px phone keeps its 16px and
+     a desktop does not run text to the bezel. */
+  --page-gutter: clamp(1rem, 0.786rem + 1.071vw, 2rem);     /* 16 -> 32 */
+
+  /* What a fingertip needs. WCAG 2.5.5 asks 24px; Apple says 44; a wet finger
+     on a counter monitor says 44 is the honest number. */
+  --touch-target: 44px;
+  --touch-row: 48px;
+}
+
+/* SAFE AREAS. The viewport is declared `viewport-fit=cover` (src/app/layout.tsx)
+   so the page may paint under the notch and the home bar; the shell pads itself
+   back out here. Anything pinned to an edge must add these too. */
+.dashboard-shell {
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+.dashboard-shell [data-fixed-bottom],
+.dashboard-shell .fixed.bottom-0 {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* TOUCH TARGETS, centrally — so a button added tomorrow is correct without
+   anyone remembering this file. Only under a COARSE pointer: on a mouse the
+   same rule would cost a manager three visible rows per screen for no gain.
+
+   `min-height` rather than `height`, and no `min-width` on text buttons: a
+   button that says "Waive service charge" must stay as wide as its words, and
+   forcing 44px onto an inline link inside a sentence would break the line box.
+   Icon-only controls DO get a square, because they are the ones people miss. */
+@media (pointer: coarse) {
+  .dashboard-shell button,
+  .dashboard-shell [role="button"],
+  .dashboard-shell a[href]:not(:where(p, li, span, td) a),
+  .dashboard-shell select,
+  .dashboard-shell summary,
+  .dashboard-shell input:not([type="checkbox"]):not([type="radio"]):not([type="range"]) {
+    min-height: var(--touch-target);
+  }
+
+  /* Square up the icon-only ones. Two ways in, because a shadcn icon button is
+     `h-8 w-8` with an svg inside and a screen-reader span beside it, so "only
+     child is an svg" misses it: match the icon-size classes as well. Without
+     this the button grows to 44 tall and stays 32 wide — which is exactly what
+     the audit found on Analytics. */
+  .dashboard-shell :is(button, [role="button"]):has(svg):is(
+      [class*="w-7"], [class*="w-8"], [class*="w-9"], [class*="size-7"], [class*="size-8"], [class*="size-9"]
+    ),
+  .dashboard-shell :is(button, [role="button"]):not(:has(:not(svg))):has(svg) {
+    min-width: var(--touch-target);
+  }
+
+  /* A DATA MARK IS NOT A CONTROL. A 5px column in a bar chart is clickable, and
+     widening it to 44px would redraw the chart as five fat stripes. Charts opt
+     out by ancestor and answer for their own reachability — every one of them
+     sits beside a table of the same figures. */
+  .dashboard-shell [data-chart] :is(button, [role="button"]) {
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .dashboard-shell input[type="checkbox"],
+  .dashboard-shell input[type="radio"] {
+    min-width: 24px;
+    min-height: 24px;
+  }
+
+  /* A row people tap to open a record. Table cells keep their own padding —
+     this is the clickable row itself. */
+  .dashboard-shell [role="row"],
+  .dashboard-shell tbody tr {
+    min-height: var(--touch-row);
+  }
+
+  /* Adjacent targets need daylight between them or the wrong one gets hit. */
+  .dashboard-shell .flex > button + button,
+  .dashboard-shell .flex > [role="button"] + [role="button"] {
+    margin-left: max(0.5rem, var(--tw-space-x-reverse, 0px));
+  }
+}
+
+/* TYPE FLOOR — the label sizes, lifted; the data marks, left alone.
+   `text-[10px]` … `text-[11.5px]` and `.micro-label` appear ~220 times and are
+   the difference between a glance and a squint on a counter monitor at arm's
+   length. They move to --fs-micro: 11px on a phone, 12px on a wide screen, and
+   a hard 12px under a coarse pointer, where the reader is furthest away.
+
+   NOT EVERYTHING SMALL IS TEXT TO READ. A chart's axis labels sit under 5px-wide
+   bars and a scaled bill mock is a picture of a receipt, not a receipt: raising
+   either overlaps the thing it labels. Both are exempted by ancestor, so the
+   exemption is a property of the component rather than a list of sizes. */
+.dashboard-shell :is(.micro-label, .text-\[10px\], .text-\[10\.5px\], .text-\[11px\], .text-\[11\.5px\]):not(
+    :is([data-chart], [data-scaled-preview], svg) *
+  ) {
+  font-size: var(--fs-micro);
+  line-height: 1.35;
+}
+
+@media (pointer: coarse) {
+  .dashboard-shell :is(.micro-label, .text-\[10px\], .text-\[10\.5px\], .text-\[11px\], .text-\[11\.5px\]):not(
+      :is([data-chart], [data-scaled-preview], svg) *
+    ) {
+    font-size: 0.75rem;
+  }
+}
+
+/* FOLDABLES. Two things break on a folding device and neither is width alone.
+   First, the device changes width mid-session, so nothing may be positioned by
+   a fixed offset from the right edge. Second, on a dual-screen device the hinge
+   sits in the middle of the viewport and swallows whatever is under it. */
+@media (horizontal-viewport-segments: 2) {
+  .dashboard-shell {
+    /* Keep the content out of the seam: the shell splits at the hinge rather
+       than painting a card across it. */
+    column-gap: env(viewport-segment-left 0 0, 0px);
+  }
+  .dashboard-shell .grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* THE FOLDABLE BAND, 600-767px. Between a phone and an iPad: two columns of
+   cards fit comfortably, one wastes half the screen. */
+@media (min-width: 600px) and (max-width: 767.98px) {
+  .dashboard-shell [data-card-grid] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* PAGE GUTTER. One rule so pages stop each inventing their own padding, and
+   the phone keeps 16px while the desktop gets 32px. */
+.dashboard-shell [data-page] {
+  padding-inline: var(--page-gutter);
 }

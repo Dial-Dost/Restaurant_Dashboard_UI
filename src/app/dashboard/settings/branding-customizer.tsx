@@ -382,7 +382,7 @@ function GuestPreview({ theme, palette, font, restaurantName }: { theme: GuestTh
   }
 
   return (
-    <div
+    <div data-scaled-preview
       className="relative overflow-hidden"
       style={{ ...guestThemeVars(theme), ...paletteVars(palette), background: "var(--bgWash)", color: "var(--ink)", fontFamily: bodyFont }}
     >

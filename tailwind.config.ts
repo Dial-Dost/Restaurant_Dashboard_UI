@@ -18,6 +18,29 @@ export default {
       },
     },
     extend: {
+      // THE TWO BREAKPOINTS TAILWIND DOES NOT SHIP, added rather than
+      // renaming the defaults — 76 source files already use sm/md/lg/xl.
+      //   xs   360px  a real phone, as opposed to the 320px floor the base
+      //                rules are written for (iPhone SE, Z Fold cover at 344)
+      //   fold 600px  a foldable opened (Z Fold is 717) or a phablet: wider
+      //                than a phone, far narrower than the 768px iPad, and
+      //                without this stop it inherits one of the two badly
+      // docs/responsive.md carries the table and the reasoning.
+      screens: {
+        xs: '360px',
+        fold: '600px',
+      },
+      fontSize: {
+        // Fluid steps — see docs/responsive.md. Each clamps between its 320px
+        // and 1440px size, so type never jumps at a breakpoint.
+        fluidXs: ['var(--fs-xs)', { lineHeight: '1.35' }],
+        fluidSm: ['var(--fs-sm)', { lineHeight: '1.45' }],
+        fluidBase: ['var(--fs-base)', { lineHeight: '1.55' }],
+        fluidLg: ['var(--fs-lg)', { lineHeight: '1.4' }],
+        fluidXl: ['var(--fs-xl)', { lineHeight: '1.3' }],
+        fluid2xl: ['var(--fs-2xl)', { lineHeight: '1.2' }],
+        money: ['var(--fs-money)', { lineHeight: '1.1' }],
+      },
       fontFamily: {
         // next/font registers a hashed family behind this variable; the bare
         // string "Inter" only resolved inside the dashboard shell, which
