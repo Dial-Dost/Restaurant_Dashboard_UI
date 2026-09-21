@@ -74,10 +74,16 @@ form controls are pinned to 16px below `sm` (already in `globals.css`).
 
 ## 4. Touch targets
 
-Under `@media (pointer: coarse)` every interactive element gets **44 × 44px**
+Under `@media (pointer: coarse)` every interactive element **on every page —
+dashboard, landing film, login and signup alike** — gets **44 × 44px**
 minimum (WCAG 2.5.5 AA is 24px; 44 is Apple's guidance and what a fingertip
 actually needs on a wet counter). Icon-only buttons get 44px square. Rows in a
 list are 48px tall. Spacing between adjacent targets is at least 8px.
+
+An inline link inside a sentence cannot grow without breaking the line box, so
+it grows its hit area instead: `padding-block: 0.75rem; margin-block: -0.75rem`,
+which is 44px to a fingertip and unchanged to the eye. ("Register here" under
+the login form was 15px tall — a miss and a retype on a phone.)
 
 This is applied centrally in `globals.css` rather than per component, so a new
 button is correct by default. Fine pointers (mouse) keep the denser sizing,

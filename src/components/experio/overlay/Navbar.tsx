@@ -20,7 +20,7 @@ export default function Navbar() {
     <nav className="exp-nav pre-hide pointer-events-none fixed inset-x-0 top-0 z-40 flex h-16 items-center justify-between px-[4vw]">
       <div className="flex items-center gap-2.5 text-ink">
         <MiniMark className="h-3.5 w-auto" />
-        <span className="flex flex-col leading-none">
+        <span data-wordmark className="flex flex-col leading-none">
           <span className="text-[13px] font-black tracking-[0.06em] text-ink">EXPERIO</span>
           <span className="mt-[3px] text-[6.5px] font-medium italic tracking-[0.42em] text-ink-2">
             SOLUTIONS

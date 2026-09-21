@@ -124,12 +124,12 @@ export default function RestaurantSignUpPage() {
                <Button type="submit" className="w-full">
                 Register Restaurant
               </Button>
-               <div className="mt-4 text-center text-sm">
+               <p className="mt-4 text-center text-sm">
                 Already registered?{" "}
                 <Link href="/login" className="underline">
                   Sign in
                 </Link>
-              </div>
+              </p>
             </CardContent>
           </Card>
         </form>

@@ -533,7 +533,8 @@
 /* SAFE AREAS. The viewport is declared `viewport-fit=cover` (src/app/layout.tsx)
    so the page may paint under the notch and the home bar; the shell pads itself
    back out here. Anything pinned to an edge must add these too. */
-.dashboard-shell {
+.dashboard-shell,
+body > main {
   padding-left: env(safe-area-inset-left, 0px);
   padding-right: env(safe-area-inset-right, 0px);
 }
@@ -542,22 +543,41 @@
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
-/* TOUCH TARGETS, centrally — so a button added tomorrow is correct without
-   anyone remembering this file. Only under a COARSE pointer: on a mouse the
-   same rule would cost a manager three visible rows per screen for no gain.
+/* TOUCH TARGETS, centrally and on EVERY page — so a button added tomorrow is
+   correct without anyone remembering this file. Not just `.dashboard-shell`:
+   the landing film, login and signup are where a first-time user meets this
+   product on a phone, and they shipped with 36px CTAs, 40px fields and a 15px
+   "Register here" link. Only under a COARSE pointer: on a mouse the same rule
+   would cost a manager three visible rows per screen for no gain.
 
    `min-height` rather than `height`, and no `min-width` on text buttons: a
    button that says "Waive service charge" must stay as wide as its words, and
    forcing 44px onto an inline link inside a sentence would break the line box.
    Icon-only controls DO get a square, because they are the ones people miss. */
 @media (pointer: coarse) {
-  .dashboard-shell button,
-  .dashboard-shell [role="button"],
-  .dashboard-shell a[href]:not(:where(p, li, span, td) a),
-  .dashboard-shell select,
-  .dashboard-shell summary,
-  .dashboard-shell input:not([type="checkbox"]):not([type="radio"]):not([type="range"]) {
+  button,
+  [role="button"],
+  a[href]:not(:where(p, li, span, td) a),
+  select,
+  summary,
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]) {
     min-height: var(--touch-target);
+  }
+
+  /* AN INLINE LINK CANNOT GROW — it would break the line box around it. So it
+     grows its HIT AREA instead: padding out, margin back in. "Register here"
+     under the login form was 15px tall, which is a miss and a retype on a
+     phone; it is now 44px to a fingertip and unchanged to the eye. */
+  :where(p, li, span, td) a[href] {
+    padding-block: 1rem;
+    margin-block: -1rem;
+  }
+
+  /* A standalone link can be 44 tall and still be 36 wide — "Log in" in the
+     landing header was exactly that. Padding rather than min-width, so a long
+     link is not stretched and a short one still clears the target. */
+  a[href]:not(:where(p, li, span, td) a) {
+    padding-inline: max(0.5rem, var(--link-pad, 0px));
   }
 
   /* Square up the icon-only ones. Two ways in, because a shadcn icon button is
@@ -565,10 +585,10 @@
      child is an svg" misses it: match the icon-size classes as well. Without
      this the button grows to 44 tall and stays 32 wide — which is exactly what
      the audit found on Analytics. */
-  .dashboard-shell :is(button, [role="button"]):has(svg):is(
+  :is(button, [role="button"]):has(svg):is(
       [class*="w-7"], [class*="w-8"], [class*="w-9"], [class*="size-7"], [class*="size-8"], [class*="size-9"]
     ),
-  .dashboard-shell :is(button, [role="button"]):not(:has(:not(svg))):has(svg) {
+  :is(button, [role="button"]):not(:has(:not(svg))):has(svg) {
     min-width: var(--touch-target);
   }
 
@@ -576,27 +596,27 @@
      widening it to 44px would redraw the chart as five fat stripes. Charts opt
      out by ancestor and answer for their own reachability — every one of them
      sits beside a table of the same figures. */
-  .dashboard-shell [data-chart] :is(button, [role="button"]) {
+  [data-chart] :is(button, [role="button"]) {
     min-width: 0;
     min-height: 0;
   }
 
-  .dashboard-shell input[type="checkbox"],
-  .dashboard-shell input[type="radio"] {
+  input[type="checkbox"],
+  input[type="radio"] {
     min-width: 24px;
     min-height: 24px;
   }
 
   /* A row people tap to open a record. Table cells keep their own padding —
      this is the clickable row itself. */
-  .dashboard-shell [role="row"],
-  .dashboard-shell tbody tr {
+  [role="row"],
+  tbody tr {
     min-height: var(--touch-row);
   }
 
   /* Adjacent targets need daylight between them or the wrong one gets hit. */
-  .dashboard-shell .flex > button + button,
-  .dashboard-shell .flex > [role="button"] + [role="button"] {
+  .flex > button + button,
+  .flex > [role="button"] + [role="button"] {
     margin-left: max(0.5rem, var(--tw-space-x-reverse, 0px));
   }
 }
@@ -611,7 +631,7 @@
    bars and a scaled bill mock is a picture of a receipt, not a receipt: raising
    either overlaps the thing it labels. Both are exempted by ancestor, so the
    exemption is a property of the component rather than a list of sizes. */
-.dashboard-shell :is(.micro-label, .text-\[10px\], .text-\[10\.5px\], .text-\[11px\], .text-\[11\.5px\]):not(
+:is(.micro-label, .text-\[10px\], .text-\[10\.5px\], .text-\[11px\], .text-\[11\.5px\]):not(
     :is([data-chart], [data-scaled-preview], svg) *
   ) {
   font-size: var(--fs-micro);
@@ -619,7 +639,7 @@
 }
 
 @media (pointer: coarse) {
-  .dashboard-shell :is(.micro-label, .text-\[10px\], .text-\[10\.5px\], .text-\[11px\], .text-\[11\.5px\]):not(
+  :is(.micro-label, .text-\[10px\], .text-\[10\.5px\], .text-\[11px\], .text-\[11\.5px\]):not(
       :is([data-chart], [data-scaled-preview], svg) *
     ) {
     font-size: 0.75rem;
