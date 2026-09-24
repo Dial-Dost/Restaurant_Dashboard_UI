@@ -21,7 +21,7 @@
 
 import * as React from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { Armchair, Loader2, Receipt, TriangleAlert, X } from "lucide-react";
+import { Armchair, Loader2, Receipt, RotateCcw, TriangleAlert, X } from "lucide-react";
 
 import { AppSearchField } from "@/components/ui/app-search-field";
 import {
@@ -76,6 +76,15 @@ import {
   type TableBill,
   type WriteOutcome,
 } from "@/lib/api/order-entry";
+import {
+  clearPadDraft,
+  draftCartCount,
+  draftStoreKey,
+  readPadDraft,
+  restoredDraftNote,
+  writePadDraft,
+  type PadDraftSnapshot,
+} from "@/lib/order-draft-store";
 import { LineControls } from "./line-controls";
 import { ReviewSheet } from "./review-sheet";
 import { TableApcStrip } from "./table-apc-strip";
@@ -143,12 +152,77 @@ export function OrderPad({ request, restaurantId, onClose, onSent }: OrderPadPro
 
   /* ── Draft + fields ─────────────────────────────────────────────────── */
 
-  const [draft, setDraft] = React.useState<DraftState>(EMPTY_DRAFT);
+  /*
+    THE CART IS KEPT ON THIS DEVICE WHILE IT IS BEING BUILT.
+
+    Closing the pad — the X, Escape, a mis-aimed tap, or the party not being
+    seated yet — used to throw the whole order away, which is the behaviour the
+    client reported. `lib/order-draft-store.ts` holds the rules (one draft per
+    table, twelve hours, silent on any storage failure); this is the wiring.
+
+    The key is built from the target the pad was OPENED for, deliberately not
+    from `retarget`: taking the same cart onto the server's next-party seat is
+    one order being finished, not a second draft being started.
+  */
+  const storageKey = React.useMemo(
+    () => draftStoreKey(restaurantId, request.kind === "dine" ? { kind: "dine", table: request.table } : { kind: request.kind }),
+    [restaurantId, request],
+  );
+  // Read ONCE, during the first render for this mount: an effect would run after
+  // the save effect below had already written the empty cart over the draft.
+  const [firstDraft] = React.useState<PadDraftSnapshot | null>(() => readPadDraft(storageKey));
+
+  const [draft, setDraft] = React.useState<DraftState>(() => firstDraft?.draft ?? EMPTY_DRAFT);
   const [query, setQuery] = React.useState("");
-  const [kitchenNote, setKitchenNote] = React.useState("");
-  const [customer, setCustomer] = React.useState("");
-  const [phone, setPhone] = React.useState("");
-  const [address, setAddress] = React.useState("");
+  const [kitchenNote, setKitchenNote] = React.useState(() => firstDraft?.kitchenNote ?? "");
+  const [customer, setCustomer] = React.useState(() => firstDraft?.customer ?? "");
+  const [phone, setPhone] = React.useState(() => firstDraft?.phone ?? "");
+  const [address, setAddress] = React.useState(() => firstDraft?.address ?? "");
+  // What the strip above the menu says it brought back, until it is dismissed.
+  const [restored, setRestored] = React.useState<string | null>(
+    () => (firstDraft === null ? null : restoredDraftNote(draftCartCount(firstDraft.draft), firstDraft.savedAt)),
+  );
+  /*
+    WHICH TARGET THE FIELDS ABOVE ARE CURRENTLY HOLDING.
+
+    State, not a ref, and that is the point: while it disagrees with
+    `storageKey` the save effect stands down, so the commit in which the pad is
+    re-pointed at another table cannot file the previous table's cart under the
+    new table's key. The re-hydrate effect below is what makes them agree again.
+  */
+  const [loadedKey, setLoadedKey] = React.useState(storageKey);
+
+  React.useEffect(() => {
+    if (loadedKey === storageKey) { return; }
+    const next = readPadDraft(storageKey);
+    setDraft(next?.draft ?? EMPTY_DRAFT);
+    setKitchenNote(next?.kitchenNote ?? "");
+    setCustomer(next?.customer ?? "");
+    setPhone(next?.phone ?? "");
+    setAddress(next?.address ?? "");
+    setRestored(next === null ? null : restoredDraftNote(draftCartCount(next.draft), next.savedAt));
+    setLoadedKey(storageKey);
+  }, [loadedKey, storageKey]);
+
+  React.useEffect(() => {
+    if (loadedKey !== storageKey) { return; }
+    writePadDraft(storageKey, { draft, kitchenNote, customer, phone, address, savedAt: Date.now() });
+  }, [loadedKey, storageKey, draft, kitchenNote, customer, phone, address]);
+
+  /** Nothing is unsent any more — drop the draft so it cannot be offered twice. */
+  const forgetDraft = React.useCallback((): void => {
+    clearPadDraft(storageKey);
+    setRestored(null);
+  }, [storageKey]);
+
+  const startFresh = React.useCallback((): void => {
+    setDraft(EMPTY_DRAFT);
+    setKitchenNote("");
+    setCustomer("");
+    setPhone("");
+    setAddress("");
+    forgetDraft();
+  }, [forgetDraft]);
 
   const [sending, setSending] = React.useState(false);
   const sendingRef = React.useRef(false);
@@ -362,6 +436,9 @@ export function OrderPad({ request, restaurantId, onClose, onSent }: OrderPadPro
         });
         announceReprintNeeded(readReprintNeeded(data));
       }
+      // Sent, or honestly queued in the outbox: either way this cart is going
+      // to the kitchen, so the draft must not be offered again.
+      forgetDraft();
       sendingRef.current = false;
       onSent?.();
       onClose();
@@ -502,6 +579,20 @@ export function OrderPad({ request, restaurantId, onClose, onSent }: OrderPadPro
 
               {isDineIn && bill !== null ? (
                 <TableApcStrip bill={bill} showsMoney={moneyShows} pendingTotal={moneyShows ? total : 0} money={money} onOpen={() => { setBillOpen(true); }} />
+              ) : null}
+
+              {/* What the pad brought back with it. Says WHEN, because "3 items"
+                  alone leaves a waiter wondering whose order this is; and offers
+                  the one-tap way out, because a restored cart that cannot be
+                  cleared is worse than no restore at all. */}
+              {restored !== null && count > 0 ? (
+                <div className="flex items-center gap-2 rounded-md border border-info/30 bg-info/10 px-3 py-2">
+                  <RotateCcw aria-hidden className="h-4 w-4 shrink-0 text-info" />
+                  <span className="min-w-0 flex-1 text-sm">{restored} — still here.</span>
+                  <Button variant="ghost" size="sm" className="h-7 shrink-0 px-2 text-xs" disabled={sending} onClick={startFresh}>
+                    Start fresh
+                  </Button>
+                </div>
               ) : null}
 
               <AppSearchField placeholder="Search menu…" onQuery={setQuery} debounceMs={150} aria-label="Search menu" />

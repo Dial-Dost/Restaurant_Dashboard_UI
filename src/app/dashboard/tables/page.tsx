@@ -42,6 +42,8 @@ import { TableBox } from "@/components/tables/table-box";
 import { TableSheet } from "@/components/tables/table-sheet";
 import { useFloor } from "@/components/tables/use-floor";
 import { useAuth } from "@/context/AuthContext";
+import { useShiftGate } from "@/hooks/use-shift-gate";
+import { ShiftGateCard } from "@/components/attendance/shift-gate";
 import { useToast } from "@/hooks/use-toast";
 import { useCurrency } from "@/hooks/use-currency";
 import { useTimezone } from "@/lib/use-timezone";
@@ -509,6 +511,9 @@ export default function TablesPage(): React.JSX.Element {
         }
     };
 
+    // Tables are a shift activity for a waiter (hooks/use-shift-gate.ts).
+    const shift = useShiftGate();
+
     /* ── Render ────────────────────────────────────────────────────── */
     const showFloorPlanLink = canOpenFloorPlan(user);
     const sheetRow = sheetName !== null ? byName.get(sheetName.toLowerCase()) ?? null : null;
@@ -536,8 +541,24 @@ export default function TablesPage(): React.JSX.Element {
         return <div className="grid gap-4 md:gap-8">{header}<FloorSkeleton /></div>;
     }
 
-    if (floor.loading) {
+    if (floor.loading || shift.loading) {
         return <div className="grid gap-4 md:gap-8">{header}<FloorSkeleton /></div>;
+    }
+
+    /*
+      A WAITER OFF SHIFT DOES NOT GET THE FLOOR.
+
+      Drawn before the error state on purpose: a waiter who has not clocked in
+      needs the clock-in button, not a retry for a floor they may not open.
+      Managers, cashiers and owners never reach this branch (useShiftGate).
+    */
+    if (shift.applies && !shift.clockedIn) {
+        return (
+            <div className="grid gap-4 md:gap-8">
+                {header}
+                <ShiftGateCard what="The floor" onClockIn={shift.clockIn} />
+            </div>
+        );
     }
 
     if (floor.error != null) {

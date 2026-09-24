@@ -2854,6 +2854,17 @@ export const saveMenuItems = async (restaurantId: string, items: MenuItem[]) => 
 
 /** What GET /auth/me answers with, in the fields this app re-hydrates from. */
 export interface RefreshedSession {
+    /*
+      WHO THE SERVER SAYS THIS SESSION IS.
+
+      Carried so the caller can check the answer belongs to the person it asked
+      about. /auth/me reads the httpOnly `authUser` cookie, and that cookie is
+      written by a separate request from the one that sets the React session —
+      so a refresh fired the instant a DIFFERENT employee signed in could come
+      back describing the PREVIOUS one. AuthContext drops any payload whose
+      employeeId is not the current user's rather than merging it.
+    */
+    employeeId?: string;
     role?: string;
     role_all?: string[];
     actions_set?: string[];

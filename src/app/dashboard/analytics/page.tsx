@@ -48,6 +48,7 @@ import { todayInZone } from "@/lib/tz"
 import type { DateRange } from "@/lib/date-range"
 import type { KpiCard, OrderApcInsight } from "@/lib/db"
 import { loadAnalyticsBundle } from "@/lib/api/analytics"
+import { showsMoney as sessionShowsMoney } from "@/lib/session-scope"
 import type { AnalyticsBundle } from "@/lib/api/analytics"
 
 import { AttendanceSection } from "@/components/analytics/attendance"
@@ -58,6 +59,7 @@ import { ddmm, fmtDur, money0, money2, monthsSpanned, num0, ranked, str, ym } fr
 import type { SeriesPoint } from "@/components/analytics/format"
 import { PriceSuggestionsSection, SlowMoversSection, TopDishesSection, TopWaitersSection } from "@/components/analytics/insights"
 import { KitchenSection } from "@/components/analytics/kitchen"
+import { LiveItemPerformance } from "@/components/analytics/live-items"
 import { kpiStatusLabel, kpiChipStatus, MetricDrillSheet } from "@/components/analytics/metric-sheet"
 import type { MetricDrillRequest } from "@/components/analytics/metric-sheet"
 import { applySort, SortHeader, useSectionSort } from "@/components/analytics/sort"
@@ -170,6 +172,9 @@ export default function AnalyticsPage(): React.JSX.Element {
     const { currencySymbol } = useCurrency()
     const { range, setRange, query, label: rangeText, timezone } = useDateRange("analytics")
     const restaurantId = user?.restaurantUsername ?? ""
+    // A session with no money on its screens gets the live block's counts
+    // without its takings — the same rule every other priced surface follows.
+    const showsMoney = sessionShowsMoney(user)
     // Reads are outlet-scoped server-side, so the cache key must be too; the
     // shell remounts this page on an outlet switch.
     const [outletKey] = React.useState(() => getSelectedOutletId() ?? "")
@@ -903,6 +908,15 @@ export default function AnalyticsPage(): React.JSX.Element {
                         className="mb-0 mt-1 scroll-mt-24"
                         title="Actionable insights"
                         trailing={sectionRange("insights")}
+                    />
+                )}
+                {/* The live block leads the menu slice: it is the only one that
+                    moves during service (components/analytics/live-items.tsx). */}
+                {vis("menu", true) && (
+                    <LiveItemPerformance
+                        restaurantId={restaurantId}
+                        currencySymbol={currencySymbol}
+                        showsMoney={showsMoney}
                     />
                 )}
                 {vis("menu", true) && topDishes.length > 0 && (

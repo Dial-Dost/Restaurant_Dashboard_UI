@@ -195,7 +195,18 @@ export default function LoginPage(): React.JSX.Element {
         scope: u.scope as AuthUser["scope"],
         features: u.features as AuthUser["features"],
       };
-      login(authUser);
+      /*
+        THE COOKIE IS WRITTEN FIRST, AND THAT ORDER IS THE FIX.
+
+        `login()` puts the session in React state, which immediately runs
+        AuthContext's /auth/me re-hydration — and /auth/me is resolved on the
+        server from this httpOnly cookie. With the write second, signing in as
+        the admin right after a waiter signed out re-hydrated the admin's
+        session from the WAITER's cookie: waiter role, waiter action set,
+        waiter_only scope, persisted to localStorage. The dashboard then drew
+        the waiter's nav for the admin until another sign-out and sign-in, which
+        is exactly what was reported.
+      */
       try {
         // Persist session on server so server-side helpers can read it via cookies.
         await fetch("/api/session", {
@@ -207,6 +218,7 @@ export default function LoginPage(): React.JSX.Element {
       } catch (err) {
         console.warn("Unable to persist session cookie", err);
       }
+      login(authUser);
       setSessionExpired(false);
       router.push("/dashboard");
     } catch (error) {

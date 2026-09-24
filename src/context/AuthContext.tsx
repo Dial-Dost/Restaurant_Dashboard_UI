@@ -124,6 +124,29 @@ export const AuthProvider = ({ children }: { children: ReactNode }): React.JSX.E
       if (!mounted.current || fresh === null) { return; }
       setUser((current) => {
         if (!current) { return current; }
+        /*
+          THE ANSWER HAS TO BE ABOUT THIS PERSON.
+
+          /auth/me is resolved on the server from the httpOnly `authUser`
+          cookie, which is written by a SECOND request the login screen makes
+          after `login()` has already put the new session in React state. Sign
+          out as a waiter, sign straight back in as the admin, and this effect
+          fired between the two: the cookie still held the WAITER's token, so
+          /auth/me answered with the waiter's role, action set and
+          `scope.waiter_only` — and the merge below wrote all three over the
+          admin's session AND into localStorage. That is the "I have to log out
+          and in again before the admin dashboard appears" report: the second
+          login read a cookie that by then was the admin's.
+
+          The cookie write is now ordered before `login()` (login/page.tsx) so
+          the race is gone at the source; this stays as the guard, because a
+          stale cookie can also be left behind by a crashed tab or a second
+          window signed in as somebody else, and permissions must never be
+          taken from a payload that is describing another employee.
+        */
+        if (typeof fresh.employeeId === 'string' && fresh.employeeId !== '' && fresh.employeeId !== current.employeeId) {
+          return current;
+        }
         const next: AuthUser = { ...current };
         // Field by field, and only when the server actually sent one: a
         // spread of `fresh` would blank `scope` and `actions_set` on a backend
@@ -155,6 +178,18 @@ export const AuthProvider = ({ children }: { children: ReactNode }): React.JSX.E
     void signOutUser(); // Call mock signout service — fire-and-forget
     setUser(null);
     localStorage.removeItem('authUser');
+    /*
+      AND THE SERVER-SIDE HALF OF THE SESSION.
+
+      `authUser` is also an httpOnly cookie, because every accessor in db.ts runs
+      as a Server Action and takes the bearer token from there. Clearing only the
+      localStorage copy left that cookie — and therefore a live token for the
+      person who just signed out — in the browser until somebody else's login
+      overwrote it. Fire-and-forget: a failed clear must never strand the user on
+      a screen they have already left, and the token is refused by the backend
+      the moment the session is gone anyway.
+    */
+    void fetch('/api/session', { method: 'DELETE', cache: 'no-store' }).catch(() => undefined);
   };
 
   return (

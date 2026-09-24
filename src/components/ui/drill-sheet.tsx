@@ -5,6 +5,7 @@ import * as DialogPrimitive from "@radix-ui/react-dialog"
 import { ArrowRight, X } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { useSheetDrag } from "@/hooks/use-sheet-drag"
 
 /**
  * The drill-down mini-overview: the surface a tapped stat tile / chart mark /
@@ -31,6 +32,10 @@ export interface DrillSheetProps {
 }
 
 function DrillSheet({ open, onOpenChange, eyebrow, title, description, children, action }: DrillSheetProps): React.JSX.Element {
+  // Swipe the bottom sheet down to close it — the handle below is what the
+  // finger lands on (hooks/use-sheet-drag.ts explains the rules).
+  const close = React.useCallback(() => { onOpenChange(false) }, [onOpenChange])
+  const drag = useSheetDrag(close)
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
@@ -38,6 +43,7 @@ function DrillSheet({ open, onOpenChange, eyebrow, title, description, children,
           className="fixed inset-0 z-50 bg-black/80 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0"
         />
         <DialogPrimitive.Content
+          ref={drag.contentRef}
           className={cn(
             "fixed z-50 flex flex-col border border-border bg-card text-card-foreground shadow-lg outline-none duration-200",
             // Below 760px: the bottom sheet — full width, top radius, handle.
@@ -52,10 +58,18 @@ function DrillSheet({ open, onOpenChange, eyebrow, title, description, children,
             "gaia:rounded-[2px] gaia:max-[759px]:rounded-t-[2px]"
           )}
         >
-          {/* The grab handle — bottom-sheet grammar only. */}
-          <div aria-hidden className="mx-auto mt-2.5 h-1 w-10 shrink-0 rounded-full bg-input min-[760px]:hidden" />
+          {/* The grab handle — bottom-sheet grammar only, and a real one: the
+              row around it is the drag target, sized for a thumb rather than
+              for the 4px bar it draws. */}
+          <div
+            {...drag.handleProps}
+            className="flex h-7 w-full shrink-0 cursor-grab items-center justify-center active:cursor-grabbing min-[760px]:hidden"
+          >
+            <div aria-hidden className="h-1 w-10 rounded-full bg-input" />
+            <span className="sr-only">Drag down to close</span>
+          </div>
 
-          <div className="flex items-start justify-between gap-3 px-5 pb-1 pt-4 min-[760px]:pt-5">
+          <div className="flex items-start justify-between gap-3 px-5 pb-1 pt-2 min-[760px]:pt-5">
             <div className="min-w-0">
               {eyebrow != null && <div className="micro-label mb-1.5">{eyebrow}</div>}
               <DialogPrimitive.Title className="truncate text-[17px] font-semibold tracking-[-0.01em] text-foreground gaia:font-serif gaia:text-[22px] gaia:font-medium">

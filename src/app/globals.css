@@ -125,6 +125,90 @@
   body {
     @apply bg-background text-foreground;
   }
+
+  /* -------------------------------------------------------------------------
+     POINTING AT THINGS, AND THE 300ms THAT WAS NOT OURS
+
+     Client: "Fix the annoying cursor behaviour and interaction delay. Make it
+     responsive and instant." Three separate causes, all of them here:
+
+     1. THE CURSOR ONLY CHANGED OVER REAL <button>s. Tailwind's preflight sets
+        the hand on `button` and `[role="button"]` and nothing else, so every
+        Radix surface built from a div with a role — a dropdown item, a select
+        option, a tab, a menu row, a combobox row — kept the text I-beam or the
+        plain arrow while being perfectly clickable. On a dense screen that
+        reads as "this is not the control", which is why the pointer felt
+        erratic rather than simply wrong.
+
+     2. TOUCH ADDED ~300ms TO EVERY TAP. Without `touch-action: manipulation`
+        a touch browser has to wait out the double-tap-to-zoom window before it
+        may deliver a click. Nothing in the app was waiting; the browser was.
+        This is the "delay" on a tablet on the floor, and it is the single
+        biggest responsiveness win in the file.
+
+     3. A TAP THAT LANDED ON A LABEL STARTED A TEXT SELECTION, leaving the grey
+        highlight and the I-beam behind on the card that was just pressed.
+
+     Text is deliberately left selectable — a table name, a bill total and a
+     KOT number all get copied in real service. Only the CONTROLS opt out.
+     ------------------------------------------------------------------------- */
+  a[href],
+  summary,
+  label[for],
+  [role="button"],
+  [role="link"],
+  [role="tab"],
+  [role="option"],
+  [role="menuitem"],
+  [role="menuitemcheckbox"],
+  [role="menuitemradio"],
+  [role="checkbox"],
+  [role="radio"],
+  [role="switch"] {
+    cursor: pointer;
+  }
+
+  /* A disabled control says so under the cursor instead of pretending. Radix
+     marks its own disabled items with the attribute rather than the property. */
+  button:disabled,
+  [aria-disabled="true"],
+  [data-disabled] {
+    cursor: not-allowed;
+  }
+
+  button,
+  a[href],
+  summary,
+  [role="button"],
+  [role="tab"],
+  [role="option"],
+  [role="menuitem"],
+  [role="menuitemcheckbox"],
+  [role="menuitemradio"],
+  [role="switch"],
+  input[type="checkbox"],
+  input[type="radio"] {
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* The selection opt-out is the SMALL controls only. `[role="button"]` is
+     deliberately absent: ForkCard wears that role around whole tiles, and a
+     table's covers, a bill total or a KOT number inside one still has to be
+     selectable to be copied. */
+  button,
+  summary,
+  [role="tab"],
+  [role="option"],
+  [role="menuitem"],
+  [role="menuitemcheckbox"],
+  [role="menuitemradio"],
+  [role="switch"],
+  input[type="checkbox"],
+  input[type="radio"] {
+    -webkit-user-select: none;
+    user-select: none;
+  }
 }
 
 /* ---------------------------------------------------------------------------

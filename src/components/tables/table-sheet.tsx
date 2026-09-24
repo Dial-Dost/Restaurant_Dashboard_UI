@@ -87,6 +87,7 @@ import { isRefusedAction } from "@/lib/error-message";
 import { seatingLeftTableUnattended } from "@/lib/table-assignment";
 import { announceReprintNeeded, readReprintNeeded } from "@/lib/reprint-needed";
 import { groupItemsByKot, type KotGroupOrder } from "@/lib/kot-groups";
+import { draftCartCount, draftStoreKey, readPadDraft } from "@/lib/order-draft-store";
 import {
     elapsedSincePlaced,
     elapsedToSettlement,
@@ -127,10 +128,13 @@ import {
     tableSeated,
     tableSentenceNameOf,
     greenSeatLabel,
+    movedDishesOf,
+    movedOrderDishesSentence,
+    orderDishLines,
     type AssignableWaiter,
     type FloorRow,
 } from "@/lib/api/tables-floor";
-import { assignTableToEmployee, unassignTableEmployee } from "@/lib/db";
+import { assignTableToEmployee, moveOrderToTable, unassignTableEmployee } from "@/lib/db";
 import { FloorChip } from "./floor-chips";
 import { PaymentSheet } from "@/components/payment/payment-sheet";
 import { CompSheet } from "@/components/payment/comp-sheet";
@@ -261,6 +265,25 @@ export function TableSheet({
         [orders, name],
     );
 
+    /*
+      "VIEW PREVIOUSLY ADDED ITEMS" — the client's second half of the draft ask.
+
+      Keeping the cart (lib/order-draft-store.ts) is no use if the only way to
+      discover it is to reopen the pad on the off-chance. The sheet reads the
+      draft for THIS table each time it opens and says how much is waiting right
+      on the button that reopens it, so a party that has not been seated — or a
+      pad somebody closed by mistake — announces itself.
+
+      Read on open only: a draft changes while the PAD is up, and the pad is
+      never up at the same time as this sheet.
+    */
+    const [unsentItems, setUnsentItems] = React.useState(0);
+    React.useEffect(() => {
+        if (!open || name === "") { setUnsentItems(0); return; }
+        const snapshot = readPadDraft(draftStoreKey(rid, { kind: "dine", table: name }));
+        setUnsentItems(snapshot === null ? 0 : draftCartCount(snapshot.draft));
+    }, [open, name, rid]);
+
     /* ── The clocks (server-owned; this only ticks the display) ────── */
     const [tickMs, setTickMs] = React.useState(0);
     const tickOriginRef = React.useRef(monotonicNow());
@@ -305,6 +328,8 @@ export function TableSheet({
         | { kind: "assignWaiter"; employees: AssignableWaiter[] }
         | { kind: "staleSettle"; warning: string }
         | { kind: "customer" }
+        /* One whole ticket on its way to another table — see moveKot below. */
+        | { kind: "moveKot"; order: SheetOrder; label: string }
         | null;
     const [dialog, setDialog] = React.useState<DialogKind>(null);
     const [busy, setBusy] = React.useState(false);
@@ -369,9 +394,26 @@ export function TableSheet({
                 kind: "dine",
                 table: opts?.table ?? name,
                 parentTable: opts?.table !== undefined ? (opts.parentTable ?? null) : parentTableOf(row.raw),
-                // ITEM 16 — only a reader with no seating control opening a FREE
-                // table has the send occupy it; everyone else seats first.
-                occupyOnSend: opts?.occupyOnSend ?? (opts?.seated !== true && !scope.seat && !occupied),
+                /*
+                  OCCUPANCY FOLLOWS THE ORDER, FOR EVERYONE.
+
+                  ITEM 16 gave this to readers with no seating control only, so
+                  an admin who tapped "Add order" on a FREE table filled a cart,
+                  pressed Send and met the server's flat refusal — "Cannot add
+                  order to unoccupied table. Please occupy the table first." —
+                  with the whole order still on screen and nothing to do about
+                  it but close the pad and start again. Client: "can we do
+                  something where they can start taking orders and just put
+                  number of guests after taking order".
+
+                  Now any send onto a table that is not yet occupied asks for the
+                  cover count at Send (the pad's own "Number of guests" step) and
+                  seats the table a moment before the order goes in, which is the
+                  same two calls in the same order the waiter path already made.
+                  "Seat guests & take order" is untouched for anyone who prefers
+                  to seat first — this only removes the dead end.
+                */
+                occupyOnSend: opts?.occupyOnSend ?? (opts?.seated !== true && !occupied),
                 addToPrintedBill: opts?.addToPrinted === true,
             });
             return;
@@ -415,6 +457,54 @@ export function TableSheet({
             onReload();
         } catch (error: unknown) {
             failToast("Unable to update covers", error);
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    /*
+      MOVE THE WHOLE TICKET, NOT ONE DISH AT A TIME.
+
+      Client: "I'm only able to move each individual item to another table,
+      ideally I should be able to move every KOT to another table." The per-line
+      ⋮ menu moved ONE dish (PATCH the bill item); a KOT of six lines therefore
+      meant six moves, six correction dockets and six chances to leave a line
+      behind on the wrong table.
+
+      The server has always had the right call for this — POST /tables/move-order
+      takes the ORDER, which in this schema IS the kitchen docket (see
+      lib/kot-groups.ts) — and the Tables page's own move dialog already used it.
+      It just was not reachable from the place the KOT is actually read, which is
+      this sheet. One call, one atomic move, one correction docket carrying the
+      SAME KOT number, and the destination may be occupied: moving a mis-keyed
+      ticket onto a table that already has guests is the ordinary case.
+    */
+    const moveKot = async (order: SheetOrder, toTable: string): Promise<void> => {
+        setBusy(true);
+        try {
+            const result = await moveOrderToTable(rid, order.id, toTable);
+            if (isRefusedAction(result)) {
+                toast({ title: "KOT not moved", description: result.error, variant: "destructive" });
+                return;
+            }
+            const served = movedDishesOf(result);
+            toast({
+                title: "KOT moved",
+                description: movedOrderDishesSentence({
+                    toTable: result.to_table,
+                    printed: result.print?.printed === true,
+                    kotNo: result.print?.kot_no,
+                    dishes: served.length > 0 ? served : orderDishLines(order as unknown as Record<string, unknown>),
+                }),
+            });
+            // A move between printed bills names the reprints it caused.
+            const reprints = readReprintNeeded(result);
+            if (reprints.length > 0) { announceReprintNeeded(reprints); }
+            setDialog(null);
+            bill.retry();
+            onReload();
+        } catch (error: unknown) {
+            failToast("Unable to move that KOT", error);
         } finally {
             setBusy(false);
         }
@@ -688,7 +778,9 @@ export function TableSheet({
                 </Button>
             ) : (
                 <Button size="lg" className="w-full" disabled={busy} onClick={() => { openOrders(); }}>
-                    <Plus /> Add order
+                    <Plus /> {unsentItems > 0
+                        ? `Add order · ${String(unsentItems)} unsent item${unsentItems === 1 ? "" : "s"} waiting`
+                        : "Add order"}
                 </Button>
             )}
             {/* An EMPTY table's seating sits directly under "Add order": the two
@@ -860,10 +952,30 @@ export function TableSheet({
                                     {kotGroups.length > 0 ? (
                                         kotGroups.map((group) => (
                                             <div key={group.key} className="mb-3">
-                                                <div className="micro-label mb-1.5">
-                                                    {group.label}
-                                                    {/* Finding 18 — a ticket moved here from another table. */}
-                                                    {movedFromOf(group.order) !== "" ? ` · from ${movedFromOf(group.order)}` : ""}
+                                                <div className="mb-1.5 flex min-h-[22px] items-center justify-between gap-2">
+                                                    <div className="micro-label min-w-0 truncate">
+                                                        {group.label}
+                                                        {/* Finding 18 — a ticket moved here from another table. */}
+                                                        {movedFromOf(group.order) !== "" ? ` · from ${movedFromOf(group.order)}` : ""}
+                                                    </div>
+                                                    {/* The whole docket to another table — one call, one
+                                                        correction slip (moveKot). Only on a numbered ticket:
+                                                        the trailing "No KOT number" block gathers several
+                                                        orders and is not one thing to move. */}
+                                                    {scope.moveOrder && group.order !== null && otherTableNames.length > 0 ? (
+                                                        <Button
+                                                            variant="ghost"
+                                                            size="sm"
+                                                            className="h-7 shrink-0 px-2 text-[11px]"
+                                                            disabled={busy}
+                                                            onClick={() => {
+                                                                const order = group.order;
+                                                                if (order !== null) { setDialog({ kind: "moveKot", order, label: group.label }); }
+                                                            }}
+                                                        >
+                                                            <ArrowLeftRight className="!h-3.5 !w-3.5" /> Move KOT
+                                                        </Button>
+                                                    ) : null}
                                                 </div>
                                                 {group.items.map((item, i) => {
                                                     const qty = item.quantity || 1;
@@ -1073,6 +1185,36 @@ export function TableSheet({
                     onChanged={() => { bill.retry(); onReload(); }}
                 />
             ) : null}
+
+            {/* Where this whole docket goes. EVERY other table is offered,
+                occupied ones included — the ticket was rung in on the wrong
+                table and the right one usually has guests on it already
+                (lib/table-move.ts orderMoveDestinations says why at length). */}
+            <Dialog open={dialog?.kind === "moveKot"} onOpenChange={(o) => { if (!o && !busy) { setDialog(null); } }}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Move {dialog?.kind === "moveKot" ? dialog.label : "this KOT"} to…</DialogTitle>
+                        <DialogDescription>
+                            The whole ticket moves in one go. A correction docket carrying the same KOT number
+                            prints for the new table — tell the pass.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="grid max-h-[50vh] grid-cols-2 gap-2 overflow-y-auto sm:grid-cols-3">
+                        {otherTableNames.map((t) => (
+                            <Button
+                                key={t}
+                                variant="outline"
+                                disabled={busy}
+                                onClick={() => {
+                                    if (dialog?.kind === "moveKot") { void moveKot(dialog.order, t); }
+                                }}
+                            >
+                                Table {t}
+                            </Button>
+                        ))}
+                    </div>
+                </DialogContent>
+            </Dialog>
 
             <Dialog open={dialog?.kind === "covers"} onOpenChange={(o) => { if (!o) { setDialog(null); } }}>
                 <DialogContent className="sm:max-w-[360px]">

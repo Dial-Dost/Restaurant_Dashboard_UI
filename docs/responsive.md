@@ -89,6 +89,30 @@ This is applied centrally in `globals.css` rather than per component, so a new
 button is correct by default. Fine pointers (mouse) keep the denser sizing,
 because a 44px row limit would cost a manager three visible rows per screen.
 
+### 4a. Pointer feedback and the tap delay
+
+Two element-level defaults in `globals.css`'s `@layer base`, which is where they
+belong: they are what a control IS, not what a breakpoint makes it.
+
+**The cursor.** Tailwind's preflight puts the hand on `button` and
+`[role="button"]` and nothing else, so every Radix surface built from a div with
+a role — a dropdown item, a select option, a tab, a switch — kept the text
+I-beam while being perfectly clickable. All of those roles now get
+`cursor: pointer`; a disabled control gets `cursor: not-allowed`, including
+Radix's `[data-disabled]`, which is an attribute rather than the DOM property.
+
+**The 300ms.** Without `touch-action: manipulation` a touch browser waits out
+the double-tap-to-zoom window before it may deliver a click. Nothing in the app
+was waiting — the browser was. Every control carries it, with
+`-webkit-tap-highlight-color: transparent` so a press does not leave a grey
+block behind.
+
+**Selection.** The small controls (buttons, menu items, options, tabs, switches)
+opt out of text selection so a tap-drag does not leave an I-beam and a
+highlighted label. `[role="button"]` deliberately does NOT: ForkCard wears that
+role around whole tiles, and a covers count or a bill total inside one still has
+to be selectable to be copied.
+
 ## 5. Viewport and safe areas
 
 ```

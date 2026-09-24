@@ -27,12 +27,14 @@ import { hasPermission, PERM_ACCOUNTING } from "@/lib/mis-capture";
 import { cn } from "@/lib/utils";
 import {
   fetchAttendanceBoard,
+  fetchAttendanceInsights,
   fetchPunctuality,
   reviewAttendance,
   toggleClock,
 } from "@/lib/api/attendance";
 import type { AttendanceBoard, AttendanceSummaryRow, PendingClockIn } from "@/lib/api/attendance";
 import { Avatar, Kv, PunctualityBlock, SheetRecordRow } from "@/components/attendance/bits";
+import { MyShiftPanel, TeamInsights, type InsightsState } from "@/components/attendance/insights";
 import type { PunctualityState } from "@/components/attendance/bits";
 import { clock, dayLabel, hm, shiftMinutes, stamp, windowLabel, zoneLabel } from "@/components/attendance/format";
 
@@ -93,6 +95,23 @@ export default function AttendancePage(): JSX.Element {
     fetchPunctuality(restaurantId)
       .then((byEmp) => { setPunctuality({ status: "done", byEmp }); })
       .catch((e: unknown) => { setPunctuality({ status: "error", error: errText(e) }); });
+  }, [restaurantId]);
+
+  /*
+    THE INSIGHT BLOCK'S OWN READ — same endpoint as the punctuality drill-down,
+    asked once, and only for a manager who may read analytics. Lazy for the same
+    reason `ensurePunctuality` is: /analytics/advanced is the heaviest read in
+    the product and the page must paint the shift card without waiting for it.
+  */
+  const insightsRequested = useRef(false);
+  const [insights, setInsights] = useState<InsightsState>({ status: "idle" });
+  const ensureInsights = useCallback(() => {
+    if (insightsRequested.current || !restaurantId) { return; }
+    insightsRequested.current = true;
+    setInsights({ status: "loading" });
+    fetchAttendanceInsights(restaurantId)
+      .then((payload) => { setInsights({ status: "done", ...payload }); })
+      .catch((e: unknown) => { setInsights({ status: "error", error: errText(e) }); });
   }, [restaurantId]);
 
   const [sheet, setSheet] = useState<Sheet | null>(null);
@@ -228,6 +247,23 @@ export default function AttendancePage(): JSX.Element {
                 Totals count approved shifts only — a pending or rejected clock-in adds nothing here. An open shift is
                 counted up to this moment.
               </p>
+              {/*
+                MANAGER CLOCK-OUT, HONESTLY.
+
+                It was asked for, and the server cannot do it: /attendance/clock-out
+                closes the shift of whoever is HOLDING THE SESSION, and there is no
+                route that takes an employee id. Rather than draw a button that
+                would fail, the sheet says who can end this shift and flags the one
+                case that is nearly always a missed punch rather than a long night.
+              */}
+              {t.open && (
+                <p className="mt-3 text-xs font-medium text-warning">
+                  {t.minutes > RUNAWAY_MINUTES
+                    ? `Open for ${hm(t.minutes)} — almost always a missed clock-out rather than a real shift. `
+                    : "Still on shift. "}
+                  A shift can only be ended by the person on it, so ask them to clock out on their own device.
+                </p>
+              )}
               <SectionHeader title="Punctuality — last 30 days" className="mb-2 mt-5" />
               <PunctualityBlock empId={t.emp_id} allowed={canReadPunctuality} state={punctuality} ensure={ensurePunctuality} />
             </>
@@ -354,6 +390,22 @@ export default function AttendancePage(): JSX.Element {
           </div>
         </div>
       </ForkCard>
+
+      {/* 2b. The shift, in full — the personal half of the page that used to be
+             half a screen of nothing (components/attendance/insights.tsx). */}
+      <MyShiftPanel
+        clockedIn={clockedIn}
+        since={me?.since ?? null}
+        todayMinutes={todayMins}
+        pendingApproval={me?.pending_approval === true}
+        startedAtLabel={clock(data.me.since, timezone) || "—"}
+        zone={zoneLabel(timezone)}
+      />
+
+      {/* 2c. The team block from the client's mock — manager + analytics only. */}
+      {isManager ? (
+        <TeamInsights state={insights} ensure={ensureInsights} allowed={canReadPunctuality} />
+      ) : null}
 
       {/* 3. Pending approval (manager, only when non-empty) */}
       {isManager && pending.length > 0 && (

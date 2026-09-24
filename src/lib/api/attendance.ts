@@ -10,6 +10,7 @@
 import { requestBackend } from '@/lib/db';
 import type { MyAttendance, AttendanceSummaryRow, PendingClockIn } from '@/lib/db';
 import { refusalSentence } from '@/lib/error-message';
+import type { AttendanceStatRow, AttendanceStatSummary } from '@/lib/attendance-insights';
 
 export type { MyAttendance, AttendanceSummaryRow, PendingClockIn };
 
@@ -44,6 +45,22 @@ export interface AttendanceBoard {
  * GET /attendance/me, plus GET /attendance (no range — the server's default
  * window, exactly like the app) for managers.
  */
+/**
+ * GET /attendance/me on its own — this employee's shift, nothing else.
+ *
+ * The board reader above also needs the manager summary and therefore needs
+ * the attendance PERMISSION; a waiter asking "am I on shift" holds no such
+ * permission and must not be made to pay for a 403 to find out. Used by the
+ * shift gate (hooks/use-shift-gate.ts) and by the personal attendance view.
+ */
+export const fetchMyShift = async (restaurantId: string): Promise<MyAttendance> => {
+    const res = await requestBackend<MyAttendance>({ restaurantId, path: '/attendance/me', method: 'GET' });
+    if (!res.ok) {
+        throwBackendError(res.status, res.text, 'Could not load your shift');
+    }
+    return res.data ?? { clocked_in: false, since: null, today_minutes: 0 };
+};
+
 export const fetchAttendanceBoard = async (restaurantId: string, isManager: boolean): Promise<AttendanceBoard> => {
     const meRes = await requestBackend<MyAttendance>({ restaurantId, path: '/attendance/me', method: 'GET' });
     if (!meRes.ok) {
@@ -107,6 +124,34 @@ export interface StaffPunctuality {
     leave_days?: number | null;
     absent_days?: number | null;
 }
+
+/**
+ * The SAME read as `fetchPunctuality`, returning the rows as a list and the
+ * team summary beside them — what the Attendance page's insight tiles reduce
+ * (lib/attendance-insights.ts).
+ *
+ * Kept separate from `fetchPunctuality` rather than replacing it: that reader is
+ * keyed by employee for the per-person drill-downs and is called from four
+ * places, and widening its return type to serve one more caller would touch all
+ * of them for no gain. Both are behind the analytics permission, so a waiter
+ * never calls either.
+ */
+export const fetchAttendanceInsights = async (
+    restaurantId: string,
+): Promise<{ rows: AttendanceStatRow[]; summary: AttendanceStatSummary | null }> => {
+    const r = await requestBackend<{ staff_attendance?: AttendanceStatRow[]; attendance_summary?: AttendanceStatSummary }>({
+        restaurantId,
+        path: `/analytics/advanced?restaurantId=${encodeURIComponent(restaurantId)}&days=30`,
+        method: 'GET',
+    });
+    if (!r.ok) {
+        throwBackendError(r.status, r.text, 'Could not load attendance insights');
+    }
+    return {
+        rows: Array.isArray(r.data?.staff_attendance) ? r.data.staff_attendance : [],
+        summary: r.data?.attendance_summary ?? null,
+    };
+};
 
 /**
  * GET /analytics/advanced?days=30 → `staff_attendance` keyed by `emp_id`
