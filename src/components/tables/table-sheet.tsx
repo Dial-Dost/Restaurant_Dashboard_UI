@@ -437,6 +437,13 @@ export function TableSheet({
                 description: assignment ? assignment.message : `${name} is now occupied with ${covers} cover${covers === 1 ? "" : "s"}.`,
                 variant: unattended ? "destructive" : undefined,
             });
+            // CLIENT ITEM 3. A party bigger than the table is set for is seated
+            // rather than refused — the refusal used to reach the floor as a KOT
+            // that would not punch. Said, not enforced, and never in place of
+            // the seating itself.
+            if (res.covers_warning !== null) {
+                toast({ title: "More guests than this table is set for", description: res.covers_warning, duration: 8000 });
+            }
             setDialog(null);
             onReload();
             // Mirrors the app's _seat(): seating flows straight into order entry.
@@ -451,8 +458,11 @@ export function TableSheet({
     const updateCovers = async (covers: number): Promise<void> => {
         setBusy(true);
         try {
-            await updateTableCovers(rid, name, covers);
+            const res = await updateTableCovers(rid, name, covers);
             toast({ title: "Covers updated", description: `${name} now has ${covers} cover${covers === 1 ? "" : "s"}.` });
+            if (res.covers_warning !== null) {
+                toast({ title: "More guests than this table is set for", description: res.covers_warning, duration: 8000 });
+            }
             setDialog(null);
             onReload();
         } catch (error: unknown) {

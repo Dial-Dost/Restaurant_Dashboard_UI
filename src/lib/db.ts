@@ -1476,6 +1476,10 @@ export interface OccupyTableResult {
      *  an already-occupied table around every save, and that has no opinion
      *  about the waiter. */
     assignment: TableAssignmentOutcome | null;
+    /** CLIENT ITEM 3. Set when the party is bigger than the table is set for:
+     *  the seating went through and the true covers were recorded, and this is
+     *  the sentence to show. Null on an older backend and on a party that fits. */
+    covers_warning: string | null;
 }
 
 export const occupyTable = async (restaurantId: string, tableName: string, numCovers?: number | null, linkedOrderId?: string | null): Promise<OccupyTableResult> => {
@@ -1514,13 +1518,14 @@ export const occupyTable = async (restaurantId: string, tableName: string, numCo
             num_covers: body?.num_covers,
             linked_order_id: body?.linked_order_id ?? null,
             assignment: body?.assignment ?? null,
+            covers_warning: body?.covers_warning ?? null,
         };
     }
 
     throw new Error(response ? await readErrorMessage(response) : 'Unable to occupy table');
 };
 
-export const updateTableCovers = async (restaurantId: string, tableName: string, numCovers: number) => {
+export const updateTableCovers = async (restaurantId: string, tableName: string, numCovers: number): Promise<{ acknowledged: true; covers_warning: string | null }> => {
     const response = await backendCall('/table-covers', restaurantId, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -1528,8 +1533,13 @@ export const updateTableCovers = async (restaurantId: string, tableName: string,
     });
 
     if (response?.ok) {
+        // CLIENT ITEM 3: a correction past the table's max is accepted now, and
+        // the body says so. Covers is the APC denominator — the number the floor
+        // counted is the number that has to be stored, warning or not.
+        let body: { covers_warning?: string | null } | null = null;
+        try { body = (await response.json()) as { covers_warning?: string | null }; } catch { body = null; }
         await getTables(restaurantId);
-        return { acknowledged: true };
+        return { acknowledged: true, covers_warning: body?.covers_warning ?? null };
     }
 
     throw new Error(response ? await readErrorMessage(response) : 'Unable to update table covers');
