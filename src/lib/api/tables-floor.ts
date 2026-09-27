@@ -518,10 +518,29 @@ const mapFloorRow = (raw: Row): FloorRow => ({
  */
 export const fetchFloor = async (
     restaurantId: string,
-    opts: { live: boolean; canReadZones: boolean },
+    opts: {
+        live: boolean;
+        canReadZones: boolean;
+        /**
+         * THE LAYOUT EDITOR READS THE ROOM, THE TABLES SCREEN READS THE FLOOR.
+         *
+         * Round-3 item 4 keeps one card per table number by leaving rows off
+         * /get-tables, and the row it leaves off is sometimes the ROOT's — a
+         * settled "14" beside a running "14 #2". The plan page builds its grid,
+         * its table/seat counts, its delete picker and its "name already taken"
+         * list by dropping every `parent_table` row from this payload, so a
+         * hidden root takes 14 out of the layout screen altogether and the owner
+         * reads it as a table we deleted. `?include_hidden=1` answers every live
+         * row; the page's own filter still leaves the seats out.
+         *
+         * NEVER TRUE ON THE SERVICE SURFACE. That one draws cards, and putting
+         * the hidden rows back is precisely the duplicate this round removed.
+         */
+        includeHidden: boolean;
+    },
 ): Promise<FloorPayload> => {
     const tablesRes = await requestBackend<Row[]>({
-        path: `/get-tables?restaurantId=${encodeURIComponent(restaurantId)}`,
+        path: `/get-tables?restaurantId=${encodeURIComponent(restaurantId)}${opts.includeHidden ? '&include_hidden=1' : ''}`,
         method: 'GET',
         restaurantId,
     });

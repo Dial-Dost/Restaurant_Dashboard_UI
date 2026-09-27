@@ -142,8 +142,20 @@ export interface FloorTableRow {
     [key: string]: unknown;
 }
 
+/**
+ * `include_hidden=1` BECAUSE THE OVERVIEW COUNTS THE ROOM. "N of M tables
+ * occupied" is countRoomsInUse over these rows: it folds "14 #2" into 14 and
+ * counts the ROOTS. Round-3 item 4 keeps one card per table number by leaving
+ * rows off the default payload, and the row it leaves off is sometimes the root
+ * — a settled 14 beside a running "14 #2" — so the default read would count
+ * that number in neither half and quietly shrink M. This is a count, not a
+ * floor: it asks for every live row.
+ */
 export const getFloorTableRows = async (restaurantId: string): Promise<FloorTableRow[]> => {
-    const rows = await fetchJson<unknown>(`/get-tables?restaurantId=${encodeURIComponent(restaurantId)}`, restaurantId);
+    const rows = await fetchJson<unknown>(
+        `/get-tables?restaurantId=${encodeURIComponent(restaurantId)}&include_hidden=1`,
+        restaurantId,
+    );
     return Array.isArray(rows) ? rows as FloorTableRow[] : [];
 };
 

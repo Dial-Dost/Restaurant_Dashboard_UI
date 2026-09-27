@@ -48,10 +48,16 @@ export function useFloor(
     const outletId = session?.outlet_id ?? "";
     const canZones = canReadZoneRoster(session);
     const live = surface === "service";
+    // The layout editor lists TABLES and the Tables screen draws CARDS, so only
+    // the editor asks for the rows the duplicate rule hides (round-3 item 4: a
+    // settled "14" beside a running "14 #2" leaves 14 off the floor, and off the
+    // plan it would be a table that has vanished). See fetchFloor's includeHidden.
+    // The two surfaces already cache apart, so neither ever gets the other's list.
+    const includeHidden = !live;
 
     const fetcher = React.useCallback(
-        () => fetchFloor(restaurantId, { live, canReadZones: canZones }),
-        [restaurantId, live, canZones],
+        () => fetchFloor(restaurantId, { live, canReadZones: canZones, includeHidden }),
+        [restaurantId, live, canZones, includeHidden],
     );
 
     const state = useCachedFetch<FloorPayload>(
