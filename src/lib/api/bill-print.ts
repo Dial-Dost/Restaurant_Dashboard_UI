@@ -88,19 +88,36 @@ export const saveBillItemNote = async (
     if (!res.ok) { throw new Error(failMessage(res, 'Could not save the note.')); }
 };
 
-/** POST /bills/remove-item — admin. */
+/**
+ * POST /bills/remove-item — admin. Returns the raw answer (the CANCELLED
+ * docket's number rides on it).
+ *
+ * CLIENT ITEM 1 — THE LINE'S OWN IDENTITY TRAVELS WITH IT. The button is drawn
+ * per line inside a KOT block, but the request used to carry only the dish's
+ * name and price, and the server took every line on the table answering to
+ * that name — across every KOT, because one order is one KOT. `orderId` (the
+ * ticket the line sits on) and `id` (the line itself) say which one, so exactly
+ * that line comes off. Both are optional: the trailing "No KOT number" block
+ * gathers several orders and has no single ticket, and an old line written
+ * without an id has none to send.
+ */
 export const removeBillItem = async (
     restaurantId: string,
     tableName: string,
-    item: { name: string; price: number },
-): Promise<void> => {
+    item: { name: string; price: number; id?: string | null; orderId?: string | null },
+): Promise<unknown> => {
     const res = await requestBackend({
         restaurantId,
         path: '/bills/remove-item',
         method: 'POST',
-        body: { table_name: tableName, item_name: item.name, price: item.price },
+        body: {
+            table_name: tableName, item_name: item.name, price: item.price,
+            ...(typeof item.orderId === 'string' && item.orderId !== '' ? { order_id: item.orderId } : {}),
+            ...(typeof item.id === 'string' && item.id !== '' ? { item_id: item.id } : {}),
+        },
     });
     if (!res.ok) { throw new Error(failMessage(res, 'Could not remove the item.')); }
+    return res.data;
 };
 
 /** POST /bills/move-item — admin. Returns the raw answer (reprint notices ride on it). */
