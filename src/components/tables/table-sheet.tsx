@@ -1015,7 +1015,7 @@ export function TableSheet({
                                                             <KotLineActions
                                                                 restaurantId={rid}
                                                                 tableName={name}
-                                                                // The ticket and the line, so "Remove from bill" takes
+                                                                // The ticket and the line, so "Remove from KOT" takes
                                                                 // THIS dish and not every copy on the table (client item 1).
                                                                 orderId={group.order?.id ?? null}
                                                                 item={{ name: item.name, price: Number((item as { price?: unknown }).price) || 0, note, id: item.id ?? null }}

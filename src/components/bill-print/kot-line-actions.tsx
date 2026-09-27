@@ -4,7 +4,25 @@
  * Per-line controls on a table's KOT list (docs/parity/bill-preview.md 19–20;
  * Flutter modules.dart itemRow): the sticky-note button any staff may use
  * ("Add note" / "Edit note", copper when a note exists) and, for an admin, the
- * "Edit item" menu — Remove from bill / Move to another table.
+ * "Edit item" menu — Remove from KOT / Move to another table.
+ *
+ * ROUND 4 ITEM 2 — WHY THE FIRST ENTRY IS NO LONGER "REMOVE FROM BILL". The
+ * client's words: 'Remove from bill makes it sound like the item is going to be
+ * served but only removed from bill.' They are right, and the misreading is not
+ * hypothetical — it is the exact description of a COMP, which this product has
+ * as a separate act on a separate surface: "Non-chargeable item…" in the Orders
+ * screen's capture menu, and "Comp an item" on the order sheet, both gated on
+ * the comp permission. A comped dish IS cooked and IS carried to the table; the
+ * house simply does not charge for it.
+ *
+ * This control does the opposite. The line comes off the ticket, the pass is
+ * sent a CANCELLED slip for it, and nobody plates anything. Naming it after the
+ * bill described the one part of the act that is a side effect and hid the part
+ * that matters, on a menu that sits one row above "Move to another table" — two
+ * kitchen acts and, until now, one of them wearing a money label.
+ *
+ * THE ROUTE IT POSTS TO IS UNCHANGED (/bills/remove-item). Every till in the
+ * field speaks that path; a label is not a contract.
  */
 
 import * as React from "react";
@@ -41,8 +59,8 @@ const removedItemSentence = (dish: string, response: unknown): string => {
     const answer = typeof response === "object" && response !== null ? (response as Record<string, unknown>) : {};
     const no = typeof answer.kot_no === "number" ? String(answer.kot_no) : typeof answer.kot_no === "string" ? answer.kot_no.trim() : "";
     return answer.kot_cancelled === true && no !== ""
-        ? `Removed ${dish}. KOT-${no} is printing as CANCELLED for it — tell the pass.`
-        : `Removed ${dish}.`;
+        ? `Removed ${dish} from KOT-${no}. The slip is printing as CANCELLED — tell the pass.`
+        : `Removed ${dish} from the KOT. It will not be cooked.`;
 };
 
 /** order_moves.dart `movedItemSentence`. */
@@ -144,7 +162,7 @@ export function KotLineActions({ restaurantId, tableName, orderId, item, isAdmin
                         </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
-                        <DropdownMenuItem onSelect={() => { setOpen("remove"); }}>Remove from bill</DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => { setOpen("remove"); }}>Remove from KOT</DropdownMenuItem>
                         <DropdownMenuItem
                             onSelect={() => {
                                 if (otherTables.length === 0) { toast({ title: "No other tables available." }); return; }
@@ -178,8 +196,15 @@ export function KotLineActions({ restaurantId, tableName, orderId, item, isAdmin
             <AlertDialog open={open === "remove"} onOpenChange={(o) => { if (!o && !busy) { setOpen(null); } }}>
                 <AlertDialogContent>
                     <AlertDialogHeader>
-                        <AlertDialogTitle>Remove item?</AlertDialogTitle>
-                        <AlertDialogDescription>Remove &quot;{item.name}&quot; from this table&apos;s bill?</AlertDialogDescription>
+                        <AlertDialogTitle>Remove &quot;{item.name}&quot; from this KOT?</AlertDialogTitle>
+                        {/* Says what the kitchen is about to be told, and what the
+                            guest will not get — the two facts "remove from bill"
+                            left to be guessed. To take the charge off but still
+                            serve the dish, the act is Non-chargeable, not this. */}
+                        <AlertDialogDescription>
+                            It comes off the ticket and off the bill, and the kitchen gets a CANCELLED slip for it, so it
+                            will not be cooked or served. To serve it free of charge instead, mark it non-chargeable.
+                        </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
                         <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
