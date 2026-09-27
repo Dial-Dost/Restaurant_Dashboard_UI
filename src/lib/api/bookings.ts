@@ -121,10 +121,18 @@ export const fetchBookings = async (
  * next-party seats ("12 #2", rows with a `parent_table`) exist while the
  * root's bill is unpaid and the server refuses a booking on one (Flutter
  * `_pickTable` + `isNextPartyRow`).
+ *
+ * `include_hidden=1` BECAUSE THIS IS A LIST OF TABLES, NOT A FLOOR. Round-3
+ * item 4 keeps one card per table number by leaving rows off the default
+ * payload, and the row it leaves off is sometimes the root's — a settled "14"
+ * beside a running "14 #2". Dropping the `parent_table` rows out of THAT would
+ * leave 14 in neither half, and a table nobody can book is a table the owner
+ * thinks we deleted. The flag asks for every live row; the filter below still
+ * takes the seats out.
  */
 export const fetchRoomTables = async (restaurantId: string): Promise<RoomTable[]> => {
   const response = await requestBackend<unknown[]>({
-    path: `/get-tables?restaurantId=${encodeURIComponent(restaurantId)}`,
+    path: `/get-tables?restaurantId=${encodeURIComponent(restaurantId)}&include_hidden=1`,
     method: "GET",
     restaurantId,
   });
