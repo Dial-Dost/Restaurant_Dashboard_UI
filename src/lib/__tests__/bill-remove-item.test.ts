@@ -2,7 +2,8 @@
 // KOT) gets deleted. That's if we use the Remove from bill option (before bill
 // printing)."
 //
-// The web half of it. "Remove from bill" is drawn per line inside a KOT block
+// The web half of it. The control (named "Remove from KOT" since round 4
+// item 2; see kot-line-actions.tsx) is drawn per line inside a KOT block
 // (table-sheet.tsx, groupItemsByKot), but the request carried only the dish's
 // NAME and its price — and POST /bills/remove-item answers a name with every
 // line on the table that has it, across every ticket, because one order is one
