@@ -57,6 +57,7 @@ import {
   EMPTY_DRAFT,
   OrderEntryError,
   addingToPrintedBillStrip,
+  coversWarning,
   draftBlock,
   draftItemCount,
   draftLines,
@@ -390,9 +391,16 @@ export function OrderPad({ request, restaurantId, onClose, onSent }: OrderPadPro
     try {
       let outcome: WriteOutcome;
       let occupyQueued = false;
+      // CLIENT ITEM 3. A party bigger than the table is set for is SEATED, not
+      // refused — the order below is the whole point of this send, and it used
+      // to die with the seating's 400. The sentence the server hands back is
+      // shown AFTER the order lands, so nothing about the head count comes
+      // between the waiter and the confirmation that the kitchen has the food.
+      let coversNote: string | null = null;
       if (occupyOnSend && covers !== null && effTable !== null) {
         const occ = await occupyForOrder(restaurantId, effTable, covers);
         occupyQueued = occ.kind === "queued";
+        coversNote = occ.kind === "sent" ? coversWarning(occ.data) : null;
       }
       if (request.kind === "dine" && effTable !== null) {
         outcome = await postDineInOrder(
@@ -435,6 +443,9 @@ export function OrderPad({ request, restaurantId, onClose, onSent }: OrderPadPro
           description: barkOutcomeMessage(data) ?? undefined,
         });
         announceReprintNeeded(readReprintNeeded(data));
+      }
+      if (coversNote !== null) {
+        toast({ title: "More guests than this table is set for", description: coversNote, duration: 8000 });
       }
       // Sent, or honestly queued in the outbox: either way this cart is going
       // to the kitchen, so the draft must not be offered again.

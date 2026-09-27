@@ -343,6 +343,24 @@ export const occupyForOrder = (restaurantId: string, table: string, covers: numb
         'Unable to occupy the table.',
     );
 
+/**
+ * CLIENT ITEM 3 — WHAT A BIGGER PARTY THAN THE TABLE HOLDS IS NOW TOLD.
+ *
+ * Seating six at a two-top used to answer 400, and because the pad seats the
+ * table BEFORE it sends the order, that refusal took the KOT with it: the
+ * kitchen never heard about the food. The server now seats them, records the
+ * true six covers (it is the APC denominator — clamping it to two would double
+ * the APC of every bill on that table) and hands back `covers_warning` instead.
+ *
+ * Null on an older backend, on a party that fits, and on a queued write — the
+ * outbox has no answer to read, and the seating will be judged on replay.
+ */
+export const coversWarning = (data: unknown): string | null => {
+    if (data === null || typeof data !== 'object') { return null; }
+    const w = (data as Record<string, unknown>).covers_warning;
+    return typeof w === 'string' && w.trim() !== '' ? w : null;
+};
+
 export const postDineInOrder = (
     restaurantId: string,
     body: Record<string, unknown>,
