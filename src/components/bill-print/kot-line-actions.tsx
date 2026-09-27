@@ -28,6 +28,23 @@ import { moveDishSummary, movedDishesOf } from "@/lib/api/tables-floor";
 import { announceReprintNeeded, readReprintNeeded } from "@/lib/reprint-needed";
 import { moveBillItem, removeBillItem, saveBillItemNote } from "@/lib/api/bill-print";
 
+/**
+ * CLIENT ITEM 2 — WHAT TO TELL THE ADMIN ABOUT THE PASS.
+ *
+ * A removed dish now prints a CANCELLED slip under the number the kitchen knows
+ * the ticket by, the same sentence shape a move's correction docket gets. When
+ * nothing printed — the line was never ticketed, or the tenant prints on demand
+ * — there is nothing to say and the toast stays the plain confirmation, because
+ * a docket line that names no docket is worse than none.
+ */
+const removedItemSentence = (dish: string, response: unknown): string => {
+    const answer = typeof response === "object" && response !== null ? (response as Record<string, unknown>) : {};
+    const no = typeof answer.kot_no === "number" ? String(answer.kot_no) : typeof answer.kot_no === "string" ? answer.kot_no.trim() : "";
+    return answer.kot_cancelled === true && no !== ""
+        ? `Removed ${dish}. KOT-${no} is printing as CANCELLED for it — tell the pass.`
+        : `Removed ${dish}.`;
+};
+
 /** order_moves.dart `movedItemSentence`. */
 const movedItemSentence = (toTable: string, fallbackName: string, response: unknown): string => {
     const dishes = movedDishesOf(response);
@@ -48,14 +65,16 @@ const movedItemSentence = (toTable: string, fallbackName: string, response: unkn
 export interface KotLineActionsProps {
     restaurantId: string;
     tableName: string;
-    item: { name: string; price: number; note: string };
+    /** The KOT block this line sits in — null on the trailing "No KOT number" block. */
+    orderId: string | null;
+    item: { name: string; price: number; note: string; id?: string | null };
     isAdmin: boolean;
     /** Every other table on the floor (move destinations). */
     otherTables: readonly string[];
     onChanged: () => void;
 }
 
-export function KotLineActions({ restaurantId, tableName, item, isAdmin, otherTables, onChanged }: KotLineActionsProps): React.JSX.Element {
+export function KotLineActions({ restaurantId, tableName, orderId, item, isAdmin, otherTables, onChanged }: KotLineActionsProps): React.JSX.Element {
     const { toast } = useToast();
     const [open, setOpen] = React.useState<"note" | "remove" | "move" | null>(null);
     const [noteText, setNoteText] = React.useState("");
@@ -81,8 +100,9 @@ export function KotLineActions({ restaurantId, tableName, item, isAdmin, otherTa
     const remove = async (): Promise<void> => {
         setBusy(true);
         try {
-            await removeBillItem(restaurantId, tableName, ref);
-            toast({ title: `Removed ${item.name}.` });
+            // The LINE, not every dish on the table with this name (client item 1).
+            const res = await removeBillItem(restaurantId, tableName, { ...ref, id: item.id ?? null, orderId });
+            toast({ title: removedItemSentence(item.name, res) });
             setOpen(null);
             onChanged();
         } catch (e: unknown) { fail(e); } finally { setBusy(false); }

@@ -1015,7 +1015,10 @@ export function TableSheet({
                                                             <KotLineActions
                                                                 restaurantId={rid}
                                                                 tableName={name}
-                                                                item={{ name: item.name, price: Number((item as { price?: unknown }).price) || 0, note }}
+                                                                // The ticket and the line, so "Remove from bill" takes
+                                                                // THIS dish and not every copy on the table (client item 1).
+                                                                orderId={group.order?.id ?? null}
+                                                                item={{ name: item.name, price: Number((item as { price?: unknown }).price) || 0, note, id: item.id ?? null }}
                                                                 isAdmin={isAdmin}
                                                                 otherTables={otherTableNames}
                                                                 onChanged={() => { bill.retry(); onReload(); }}
